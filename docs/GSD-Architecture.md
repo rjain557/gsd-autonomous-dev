@@ -1,0 +1,272 @@
+\# GSD Engine Architecture
+
+
+
+\## Overview
+
+
+
+The GSD Engine orchestrates two AI agents (Claude Code and Codex CLI) through PowerShell scripts to autonomously develop, fix, and verify code against specifications.
+
+
+
+\## Installed Directory Structure
+
+
+
+After running install-gsd-all.ps1, the engine creates:
+
+
+
+%USERPROFILE%\\.gsd-global\\
+
+&nbsp; bin\\                        # gsd-status.ps1
+
+&nbsp; lib\\modules\\
+
+&nbsp;   resilience.ps1            # Retry, checkpoint, lock, rollback, adaptive batch
+
+&nbsp;   interfaces.ps1            # Multi-interface detection + auto-discovery
+
+&nbsp;   interface-wrapper.ps1     # Context builder for agent prompts
+
+&nbsp; prompts\\
+
+&nbsp;   claude\\                   # Claude Code prompt templates
+
+&nbsp;   codex\\                    # Codex prompt templates
+
+&nbsp; blueprint\\
+
+&nbsp;   scripts\\
+
+&nbsp;     blueprint-pipeline.ps1  # Blueprint generation + build loop
+
+&nbsp;     assess.ps1              # Assessment script (gsd-assess)
+
+&nbsp; scripts\\
+
+&nbsp;   convergence-loop.ps1      # 5-phase convergence engine
+
+&nbsp;   gsd-profile-functions.ps1 # PowerShell profile (gsd-\* commands)
+
+&nbsp; VERSION                     # Installed version stamp
+
+
+
+\## Per-Project State (.gsd/ folder)
+
+
+
+When you run gsd-assess or gsd-converge in a repo, it creates:
+
+
+
+.gsd\\
+
+&nbsp; assessment\\
+
+&nbsp;   assessment-summary.md     # Human-readable findings
+
+&nbsp;   work-classification.json  # Skip/fix/build/review per item
+
+&nbsp;   backend-inventory.json    # C# layer detail
+
+&nbsp;   database-inventory.json   # SQL layer detail
+
+&nbsp;   frontend-inventory.json   # React layer detail
+
+&nbsp;   file-inventory.json       # Complete file catalog
+
+&nbsp; logs\\
+
+&nbsp;   errors.jsonl              # Categorized errors
+
+&nbsp;   iter{N}-{phase}.log       # Per-iteration agent output
+
+&nbsp; file-map.json               # Machine-readable repo inventory
+
+&nbsp; file-map-tree.md            # Human-readable directory tree
+
+&nbsp; spec-consistency-report.md  # Spec conflict analysis
+
+&nbsp; .gsd-checkpoint.json        # Crash recovery state
+
+&nbsp; .gsd-lock                   # Prevents concurrent runs
+
+
+
+\## Data Flow
+
+
+
+\### gsd-assess
+
+1\. Detect interfaces (recursive scan for design\\{type}\\v##)
+
+2\. Auto-discover \_analysis/ and \_stubs/ within each interface
+
+3\. Generate file map (JSON + tree)
+
+4\. Send assessment prompt to Claude with file map + interface context
+
+5\. Claude produces work classification and inventories
+
+
+
+\### gsd-converge (per iteration)
+
+1\. REVIEW: Claude reviews code, identifies issues
+
+2\. RESEARCH: Codex researches patterns (skippable with -SkipResearch)
+
+3\. PLAN: Claude creates fix plan
+
+4\. EXECUTE: Codex makes code changes
+
+5\. VERIFY: Claude re-scores health, commits if improved
+
+
+
+\### gsd-blueprint
+
+1\. GENERATE: Claude creates blueprint manifest from \_analysis/ specs
+
+2\. BUILD: Codex generates code for each blueprint item (batch)
+
+3\. VERIFY: Claude verifies against specs, scores health
+
+4\. Repeat until 100% or stalled
+
+
+
+\## Agent Assignment
+
+
+
+| Phase | Agent | Why |
+
+|-------|-------|-----|
+
+| Review | Claude | Better at architectural analysis |
+
+| Research | Codex | Faster at pattern lookup, cheaper tokens |
+
+| Plan | Claude | Better at strategic planning |
+
+| Execute | Codex | Faster at bulk code generation |
+
+| Verify | Claude | Better at spec compliance checking |
+
+| Blueprint | Claude | Better at spec-to-manifest generation |
+
+| Build | Codex | Faster at code generation from specs |
+
+
+
+\## Resilience Features
+
+
+
+\### Retry with Batch Reduction
+
+Failed agent calls retry 3 times. Each retry halves the batch size. Minimum batch is 1.
+
+
+
+\### Checkpoint Recovery
+
+After each successful phase, state is saved to .gsd-checkpoint.json. On restart, the engine resumes from the last checkpoint.
+
+
+
+\### Lock File
+
+.gsd-lock prevents concurrent GSD runs in the same repo. Lock includes timestamp for stale detection (auto-cleared after 120 min).
+
+
+
+\### Quota Management
+
+Detects "quota exhausted" or "rate limit" in agent output. Sleeps 60 minutes and retries, up to 24 cycles (24 hours).
+
+
+
+\### Network Polling
+
+Tests network by running: claude -p "PING" --max-turns 1
+
+Polls every 30 seconds when offline. Resumes when connectivity returns.
+
+
+
+\### Git Snapshots
+
+Creates git snapshot before any destructive operation. Auto-commits after each successful iteration with message: gsd: iter N (health: X%)
+
+
+
+\## Interface Detection
+
+
+
+The engine searches for design folders in this order:
+
+1\. Direct: {repo}\\design\\{type}\\ (e.g., design\\web\\)
+
+2\. Recursive: searches up to 3 levels deep for any folder named {type} whose parent is "design"
+
+
+
+Supported interface types: web, mcp, browser, mobile, agent
+
+
+
+Within each interface version folder, it recursively finds:
+
+\- \_analysis/ (12 expected deliverable files)
+
+\- \_stubs/ (backend controllers, DTOs, database scripts)
+
+
+
+\## File Map System
+
+
+
+Generated by Update-FileMap function in resilience.ps1.
+
+
+
+file-map.json contains:
+
+\- generated: timestamp
+
+\- repo\_root: absolute path
+
+\- total\_files, total\_dirs, total\_size\_bytes
+
+\- extensions: per-extension counts and sizes
+
+\- directories: per-directory stats
+
+\- files: every file with path, dir, name, ext, size, modified
+
+
+
+file-map-tree.md contains:
+
+\- File type summary sorted by count
+
+\- Directory tree with indentation
+
+\- Per-directory file counts and extension breakdown
+
+
+
+Exclusions: node\_modules, .git, bin, obj, packages, dist, build, .gsd, .vs, .vscode, TestResults, coverage
+
+
+
+Injected into every agent prompt so they know where files are.
+
