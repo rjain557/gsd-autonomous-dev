@@ -238,70 +238,16 @@ Write-Host ""
 # Master runner script
 # ========================================
 
-Write-Host "[ROCKET] Creating master install script..." -ForegroundColor Yellow
+Write-Host "[ROCKET] Copying master install script..." -ForegroundColor Yellow
 
-$masterRunner = @'
-<#
-.SYNOPSIS
-    GSD Master Installer - Runs ALL scripts in correct order.
-.USAGE
-    Place all .ps1 files in the same folder, then:
-    powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
-#>
-
-$ErrorActionPreference = "Stop"
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-$scripts = @(
-    "install-gsd-global.ps1",
-    "install-gsd-blueprint.ps1",
-    "patch-gsd-partial-repo.ps1",
-    "patch-gsd-resilience.ps1",
-    "patch-gsd-hardening.ps1",
-    "patch-gsd-figma-make.ps1",
-    "final-patch-1-spec-check.ps1",
-    "final-patch-2-sql-cli.ps1",
-    "final-patch-3-storyboard-verify.ps1",
-    "final-patch-4-blueprint-pipeline.ps1",
-    "final-patch-5-convergence-pipeline.ps1",
-    "final-patch-6-assess-limitations.ps1"
-)
-
-Write-Host ""
-Write-Host "=========================================================" -ForegroundColor Cyan
-Write-Host "  GSD Master Installer - All 12 Scripts" -ForegroundColor Cyan
-Write-Host "=========================================================" -ForegroundColor Cyan
-Write-Host ""
-
-$step = 0
-foreach ($s in $scripts) {
-    $step++
-    $path = Join-Path $scriptDir $s
-    if (Test-Path $path) {
-        Write-Host "[$step/12] $s" -ForegroundColor White
-        & $path
-        Write-Host ""
-    } else {
-        Write-Host "[$step/12] [!!]  $s NOT FOUND - skipping" -ForegroundColor DarkYellow
-    }
+# Copy the actual install-gsd-all.ps1 from the source scripts directory instead of a stale hardcoded version
+$sourceInstaller = Join-Path $scriptDir "install-gsd-all.ps1"
+if (Test-Path $sourceInstaller) {
+    Copy-Item -Path $sourceInstaller -Destination "$GsdGlobalDir\install-gsd-all.ps1" -Force
+    Write-Host "   [OK] install-gsd-all.ps1 (copied from source)" -ForegroundColor DarkGreen
+} else {
+    Write-Host "   [!!] install-gsd-all.ps1 not found in script directory - skipped" -ForegroundColor Yellow
 }
-
-Write-Host "=========================================================" -ForegroundColor Green
-Write-Host "  [OK] ALL PATCHES APPLIED" -ForegroundColor Green
-Write-Host "=========================================================" -ForegroundColor Green
-Write-Host ""
-Write-Host "  [!!]  RESTART YOUR TERMINAL" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "  Then from any repo:" -ForegroundColor White
-Write-Host "    gsd-assess                # analyze existing code" -ForegroundColor Cyan
-Write-Host "    gsd-blueprint             # generate from spec+Figma" -ForegroundColor Cyan
-Write-Host "    gsd-converge              # maintenance loop" -ForegroundColor Cyan
-Write-Host "    gsd-status                # check health" -ForegroundColor Cyan
-Write-Host ""
-'@
-
-Set-Content -Path "$GsdGlobalDir\install-gsd-all.ps1" -Value $masterRunner -Encoding UTF8
-Write-Host "   [OK] install-gsd-all.ps1 (master runner)" -ForegroundColor DarkGreen
 
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Green

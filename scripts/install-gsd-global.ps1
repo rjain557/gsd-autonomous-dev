@@ -951,6 +951,10 @@ Write-Host "   [OK] scripts\gsd-profile-functions.ps1" -ForegroundColor DarkGree
 
 # Add to PowerShell profile
 $profilePath = $PROFILE.CurrentUserAllHosts
+# Fallback when $PROFILE is empty (non-interactive / invoked from bash)
+if ([string]::IsNullOrWhiteSpace($profilePath)) {
+    $profilePath = Join-Path $env:USERPROFILE "Documents\PowerShell\profile.ps1"
+}
 $profileDir = Split-Path $profilePath -Parent
 if (-not (Test-Path $profileDir)) {
     New-Item -ItemType Directory -Path $profileDir -Force | Out-Null

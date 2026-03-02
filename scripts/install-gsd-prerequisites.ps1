@@ -493,6 +493,10 @@ if (Test-CommandExists "npm") {
 }
 
 $profilePath = $PROFILE.CurrentUserAllHosts
+# Fallback when $PROFILE is empty (non-interactive / invoked from bash)
+if ([string]::IsNullOrWhiteSpace($profilePath)) {
+    $profilePath = Join-Path $env:USERPROFILE "Documents\PowerShell\profile.ps1"
+}
 if (Test-Path $profilePath) {
     $profileContent = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
     if ($profileContent -match "gsd-global") {

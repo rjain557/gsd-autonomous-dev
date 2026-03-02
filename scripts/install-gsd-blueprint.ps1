@@ -887,6 +887,15 @@ powershell -ExecutionPolicy Bypass -File "%USERPROFILE%\.gsd-global\blueprint\sc
 Set-Content -Path "$binDir\gsd-blueprint.cmd" -Value $wrapperCmd -Encoding ASCII
 Write-Host "   [OK] bin\gsd-blueprint.cmd" -ForegroundColor DarkGreen
 
+# CMD wrapper for gsd-status (calls the profile function via PowerShell)
+$statusCmd = @"
+@echo off
+powershell -ExecutionPolicy Bypass -NoProfile -Command "& { . '%USERPROFILE%\.gsd-global\scripts\gsd-profile-functions.ps1'; gsd-status }"
+"@
+
+Set-Content -Path "$binDir\gsd-status.cmd" -Value $statusCmd -Encoding ASCII
+Write-Host "   [OK] bin\gsd-status.cmd" -ForegroundColor DarkGreen
+
 # PowerShell profile function
 $profileFunctions = @'
 function gsd-blueprint {
@@ -969,6 +978,10 @@ if (Test-Path $profileFile) {
 
 # Ensure profile sources the functions file
 $psProfilePath = $PROFILE.CurrentUserAllHosts
+# Fallback when $PROFILE is empty (non-interactive / invoked from bash)
+if ([string]::IsNullOrWhiteSpace($psProfilePath)) {
+    $psProfilePath = Join-Path $env:USERPROFILE "Documents\PowerShell\profile.ps1"
+}
 $psProfileDir = Split-Path $psProfilePath -Parent
 if (-not (Test-Path $psProfileDir)) {
     New-Item -ItemType Directory -Path $psProfileDir -Force | Out-Null
