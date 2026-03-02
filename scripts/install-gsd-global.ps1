@@ -949,31 +949,35 @@ function gsd-init {
 Set-Content -Path "$GsdGlobalDir\scripts\gsd-profile-functions.ps1" -Value $wrapperPs1 -Encoding UTF8
 Write-Host "   [OK] scripts\gsd-profile-functions.ps1" -ForegroundColor DarkGreen
 
-# Add to PowerShell profile
-$profilePath = $PROFILE.CurrentUserAllHosts
-# Fallback when $PROFILE is empty (non-interactive / invoked from bash)
-if ([string]::IsNullOrWhiteSpace($profilePath)) {
-    $profilePath = Join-Path $env:USERPROFILE "Documents\PowerShell\profile.ps1"
-}
-$profileDir = Split-Path $profilePath -Parent
-if (-not (Test-Path $profileDir)) {
-    New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-}
+# Add to ALL PowerShell profile paths (AllHosts + CurrentHost for console and VS Code)
+$gsdSourceBlock = @"
+`$gsdFunctions = Join-Path `$env:USERPROFILE '.gsd-global\scripts\gsd-profile-functions.ps1'
+if (Test-Path `$gsdFunctions) { . `$gsdFunctions }
+"@
 
-$profileLine = ". `"$GsdGlobalDir\scripts\gsd-profile-functions.ps1`""
+$profileDirs = @(
+    (Join-Path $env:USERPROFILE "Documents\PowerShell"),
+    (Join-Path $env:USERPROFILE "Documents\WindowsPowerShell")
+)
+$profileNames = @("profile.ps1", "Microsoft.PowerShell_profile.ps1", "Microsoft.VSCode_profile.ps1")
 
-if (Test-Path $profilePath) {
-    $existingProfile = Get-Content $profilePath -Raw
-    if ($existingProfile -notmatch "gsd-profile-functions") {
-        Add-Content -Path $profilePath -Value "`n# GSD Convergence Engine`n$profileLine" -Encoding UTF8
-        Write-Host "   [OK] Added to PowerShell profile: $profilePath" -ForegroundColor DarkGreen
-    } else {
-        Write-Host "   [>>]  Already in PowerShell profile" -ForegroundColor DarkGray
+foreach ($dir in $profileDirs) {
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    foreach ($name in $profileNames) {
+        $p = Join-Path $dir $name
+        if (Test-Path $p) {
+            $content = Get-Content $p -Raw -ErrorAction SilentlyContinue
+            if ($content -notmatch "gsd-profile-functions") {
+                Add-Content -Path $p -Value "`n$gsdSourceBlock" -Encoding UTF8
+                Write-Host "   [OK] Updated $name in $dir" -ForegroundColor DarkGreen
+            }
+        } else {
+            Set-Content -Path $p -Value $gsdSourceBlock -Encoding UTF8
+            Write-Host "   [OK] Created $name in $dir" -ForegroundColor DarkGreen
+        }
     }
-} else {
-    Set-Content -Path $profilePath -Value "# GSD Convergence Engine`n$profileLine" -Encoding UTF8
-    Write-Host "   [OK] Created PowerShell profile: $profilePath" -ForegroundColor DarkGreen
 }
+Write-Host "   [>>]  GSD functions registered in all PowerShell profiles" -ForegroundColor DarkGray
 
 # Add bin to PATH if not already
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")

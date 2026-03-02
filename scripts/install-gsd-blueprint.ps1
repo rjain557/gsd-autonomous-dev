@@ -976,28 +976,34 @@ if (Test-Path $profileFile) {
     Write-Host "   [OK] Created gsd-profile-functions.ps1" -ForegroundColor DarkGreen
 }
 
-# Ensure profile sources the functions file
-$psProfilePath = $PROFILE.CurrentUserAllHosts
-# Fallback when $PROFILE is empty (non-interactive / invoked from bash)
-if ([string]::IsNullOrWhiteSpace($psProfilePath)) {
-    $psProfilePath = Join-Path $env:USERPROFILE "Documents\PowerShell\profile.ps1"
-}
-$psProfileDir = Split-Path $psProfilePath -Parent
-if (-not (Test-Path $psProfileDir)) {
-    New-Item -ItemType Directory -Path $psProfileDir -Force | Out-Null
-}
+# Ensure ALL PowerShell profile paths source the functions file
+# (AllHosts + CurrentHost for console and VS Code)
+$gsdSourceBlock = @"
+`$gsdFunctions = Join-Path `$env:USERPROFILE '.gsd-global\scripts\gsd-profile-functions.ps1'
+if (Test-Path `$gsdFunctions) { . `$gsdFunctions }
+"@
 
-$profileLine = ". `"$GsdGlobalDir\scripts\gsd-profile-functions.ps1`""
-if (Test-Path $psProfilePath) {
-    $existingProfile = Get-Content $psProfilePath -Raw
-    if ($existingProfile -notmatch "gsd-profile-functions") {
-        Add-Content -Path $psProfilePath -Value "`n# GSD Engine`n$profileLine" -Encoding UTF8
-        Write-Host "   [OK] Added to PowerShell profile" -ForegroundColor DarkGreen
+$profileDirs = @(
+    (Join-Path $env:USERPROFILE "Documents\PowerShell"),
+    (Join-Path $env:USERPROFILE "Documents\WindowsPowerShell")
+)
+$profileNames = @("profile.ps1", "Microsoft.PowerShell_profile.ps1", "Microsoft.VSCode_profile.ps1")
+
+foreach ($dir in $profileDirs) {
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    foreach ($name in $profileNames) {
+        $p = Join-Path $dir $name
+        if (Test-Path $p) {
+            $content = Get-Content $p -Raw -ErrorAction SilentlyContinue
+            if ($content -notmatch "gsd-profile-functions") {
+                Add-Content -Path $p -Value "`n$gsdSourceBlock" -Encoding UTF8
+            }
+        } else {
+            Set-Content -Path $p -Value $gsdSourceBlock -Encoding UTF8
+        }
     }
-} else {
-    Set-Content -Path $psProfilePath -Value "# GSD Engine`n$profileLine" -Encoding UTF8
-    Write-Host "   [OK] Created PowerShell profile" -ForegroundColor DarkGreen
 }
+Write-Host "   [>>]  GSD functions registered in all PowerShell profiles" -ForegroundColor DarkGray
 
 # Ensure bin in PATH
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
