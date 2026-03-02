@@ -20,7 +20,7 @@ $script = @'
 param(
     [int]$MaxIterations = 30, [int]$StallThreshold = 3, [int]$BatchSize = 15,
     [switch]$DryRun, [switch]$BlueprintOnly, [switch]$BuildOnly, [switch]$VerifyOnly,
-    [switch]$SkipSpecCheck
+    [switch]$SkipSpecCheck, [switch]$AutoResolve
 )
 
 $ErrorActionPreference = "Continue"
@@ -138,14 +138,25 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     return $resolved
 }
 
-# Spec consistency check (GAP 5+15)
+# Spec consistency check (GAP 5+15) with optional auto-resolution
 if (-not $SkipSpecCheck -and -not $BuildOnly -and -not $VerifyOnly) {
     if (Get-Command Invoke-SpecConsistencyCheck -ErrorAction SilentlyContinue) {
         $Interfaces = if ($ifaceResult) { $ifaceResult.Interfaces } else { @() }
         $specResult = Invoke-SpecConsistencyCheck -RepoRoot $RepoRoot -GsdDir $GsdDir -Interfaces $Interfaces -DryRun:$DryRun
         if (-not $specResult.Passed) {
-            Write-Host "  [BLOCK] Fix spec conflicts first." -ForegroundColor Red
-            Remove-GsdLock -GsdDir $GsdDir; exit 1
+            if ($AutoResolve -and (Get-Command Invoke-SpecConflictResolution -ErrorAction SilentlyContinue)) {
+                $resolution = Invoke-SpecConflictResolution -RepoRoot $RepoRoot -GsdDir $GsdDir `
+                    -Interfaces $Interfaces -Conflicts $specResult.Conflicts `
+                    -Warnings $specResult.Warnings -DryRun:$DryRun
+                if (-not $resolution.Resolved) {
+                    Write-Host "  [BLOCK] Auto-resolution failed. Fix spec conflicts manually." -ForegroundColor Red
+                    Write-Host "  See: .gsd\spec-conflicts\conflicts-to-resolve.json" -ForegroundColor Yellow
+                    Remove-GsdLock -GsdDir $GsdDir; exit 1
+                }
+            } else {
+                Write-Host "  [BLOCK] Fix spec conflicts first. Use -AutoResolve to attempt auto-fix." -ForegroundColor Red
+                Remove-GsdLock -GsdDir $GsdDir; exit 1
+            }
         }
     }
     Write-Host ""

@@ -901,6 +901,7 @@ $profileFunctions = @'
 function gsd-blueprint {
     param(
         [switch]$DryRun, [switch]$BlueprintOnly, [switch]$BuildOnly, [switch]$VerifyOnly,
+        [switch]$AutoResolve,
         [int]$MaxIterations = 30, [int]$StallThreshold = 3, [int]$BatchSize = 15
     )
     $params = @{ MaxIterations=$MaxIterations; StallThreshold=$StallThreshold; BatchSize=$BatchSize }
@@ -908,6 +909,7 @@ function gsd-blueprint {
     if ($BlueprintOnly) { $params.BlueprintOnly = $true }
     if ($BuildOnly) { $params.BuildOnly = $true }
     if ($VerifyOnly) { $params.VerifyOnly = $true }
+    if ($AutoResolve) { $params.AutoResolve = $true }
     & "$env:USERPROFILE\.gsd-global\blueprint\scripts\blueprint-pipeline.ps1" @params
 }
 

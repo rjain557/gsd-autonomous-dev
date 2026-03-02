@@ -109,7 +109,19 @@ Rules: Be FAST. Only flag REAL conflicts. Under 2000 tokens output.
                 foreach ($c in $criticals) {
                     Write-Host "      - [$($c.type)] $($c.description)" -ForegroundColor Red
                 }
-                Write-Host "    [BLOCK] Fix these in your specs before running the pipeline." -ForegroundColor Red
+
+                # Always write conflicts to file for review or auto-resolution
+                $conflictsDir = Join-Path $GsdDir "spec-conflicts"
+                if (-not (Test-Path $conflictsDir)) { New-Item -ItemType Directory -Path $conflictsDir -Force | Out-Null }
+                @{
+                    generated_at = (Get-Date -Format "o")
+                    total_critical = $criticals.Count
+                    total_warnings = $warnings.Count
+                    conflicts = @($criticals) + @($warnings | Where-Object { $_ })
+                } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $conflictsDir "conflicts-to-resolve.json") -Encoding UTF8
+                Write-Host "    [>>]  Written to: .gsd\spec-conflicts\conflicts-to-resolve.json" -ForegroundColor DarkGray
+
+                Write-Host "    [BLOCK] Fix these in your specs or use -AutoResolve to auto-fix." -ForegroundColor Red
                 return @{ Passed = $false; Conflicts = $criticals; Warnings = $warnings }
             }
 

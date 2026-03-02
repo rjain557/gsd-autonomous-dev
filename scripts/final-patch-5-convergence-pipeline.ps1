@@ -17,7 +17,8 @@ $script = @'
 #>
 param(
     [int]$MaxIterations = 20, [int]$StallThreshold = 3, [int]$BatchSize = 8,
-    [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck
+    [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck,
+    [switch]$AutoResolve
 )
 
 $ErrorActionPreference = "Continue"
@@ -99,10 +100,25 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     return $resolved
 }
 
-# Spec consistency check (GAP 5)
+# Spec consistency check (GAP 5) with optional auto-resolution
 if (-not $SkipSpecCheck -and -not $SkipInit) {
     if (Get-Command Invoke-SpecConsistencyCheck -ErrorAction SilentlyContinue) {
-        Invoke-SpecConsistencyCheck -RepoRoot $RepoRoot -GsdDir $GsdDir -Interfaces $Interfaces -DryRun:$DryRun | Out-Null
+        $specResult = Invoke-SpecConsistencyCheck -RepoRoot $RepoRoot -GsdDir $GsdDir -Interfaces $Interfaces -DryRun:$DryRun
+        if (-not $specResult.Passed) {
+            if ($AutoResolve -and (Get-Command Invoke-SpecConflictResolution -ErrorAction SilentlyContinue)) {
+                $resolution = Invoke-SpecConflictResolution -RepoRoot $RepoRoot -GsdDir $GsdDir `
+                    -Interfaces $Interfaces -Conflicts $specResult.Conflicts `
+                    -Warnings $specResult.Warnings -DryRun:$DryRun
+                if (-not $resolution.Resolved) {
+                    Write-Host "  [BLOCK] Auto-resolution failed. Fix spec conflicts manually." -ForegroundColor Red
+                    Write-Host "  See: .gsd\spec-conflicts\conflicts-to-resolve.json" -ForegroundColor Yellow
+                    Remove-GsdLock -GsdDir $GsdDir; exit 1
+                }
+            } else {
+                Write-Host "  [BLOCK] Spec conflicts detected. Use -AutoResolve to auto-fix." -ForegroundColor Red
+                Remove-GsdLock -GsdDir $GsdDir; exit 1
+            }
+        }
     }
     Write-Host ""
 }

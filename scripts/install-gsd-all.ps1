@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 12 scripts in correct order.
+    GSD Master Installer - Runs ALL 13 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 #>
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GSD_VERSION = "1.1.0"
-$GSD_DATE = "2026-03-01"
+$GSD_VERSION = "1.2.0"
+$GSD_DATE = "2026-03-02"
 
 # Run prerequisites check first if the script exists
 $prereqScript = Join-Path $scriptDir "install-gsd-prerequisites.ps1"
@@ -56,12 +56,13 @@ $scripts = @(
     @{ File="final-patch-4-blueprint-pipeline.ps1";  Desc="Blueprint Pipeline Final (all integrations)" }
     @{ File="final-patch-5-convergence-pipeline.ps1"; Desc="Convergence Pipeline Final (all integrations)" }
     @{ File="final-patch-6-assess-limitations.ps1";  Desc="Multi-Interface Assess + Final Docs" }
+    @{ File="final-patch-7-spec-resolve.ps1";       Desc="Spec Conflict Auto-Resolution (Codex)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 12 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 13 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -85,7 +86,7 @@ if ($missing.Count -gt 0) {
     exit 1
 }
 
-Write-Host "  All 12 scripts found in: $scriptDir" -ForegroundColor Green
+Write-Host "  All 13 scripts found in: $scriptDir" -ForegroundColor Green
 Write-Host ""
 
 # Execute in order
@@ -97,15 +98,15 @@ foreach ($s in $scripts) {
     $path = Join-Path $scriptDir $s.File
 
     Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
-    Write-Host "  [$step/12] $($s.File)" -ForegroundColor White
+    Write-Host "  [$step/$($scripts.Count)] $($s.File)" -ForegroundColor White
     Write-Host "  $($s.Desc)" -ForegroundColor DarkGray
     Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
 
     try {
         & $path
-        Write-Host "  [$step/12] Complete" -ForegroundColor DarkGreen
+        Write-Host "  [$step/$($scripts.Count)] Complete" -ForegroundColor DarkGreen
     } catch {
-        Write-Host "  [$step/12] FAILED: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  [$step/$($scripts.Count)] FAILED: $($_.Exception.Message)" -ForegroundColor Red
         $failed += $s.File
     }
 
@@ -116,7 +117,7 @@ foreach ($s in $scripts) {
 Write-Host ""
 if ($failed.Count -eq 0) {
     Write-Host "=================================================================" -ForegroundColor Green
-    Write-Host "  ALL 12 SCRIPTS COMPLETED SUCCESSFULLY" -ForegroundColor Green
+    Write-Host "  ALL $($scripts.Count) SCRIPTS COMPLETED SUCCESSFULLY" -ForegroundColor Green
     Write-Host "  Version: $GSD_VERSION ($GSD_DATE)" -ForegroundColor Green
     Write-Host "=================================================================" -ForegroundColor Green
 

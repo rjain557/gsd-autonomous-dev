@@ -932,11 +932,12 @@ Write-Host "   [OK] bin\gsd-converge.cmd" -ForegroundColor DarkGreen
 # Create PowerShell function in profile
 $wrapperPs1 = @"
 function gsd-converge {
-    param([switch]`$DryRun, [switch]`$SkipInit, [switch]`$SkipResearch, [int]`$MaxIterations = 20, [int]`$StallThreshold = 3)
+    param([switch]`$DryRun, [switch]`$SkipInit, [switch]`$SkipResearch, [switch]`$AutoResolve, [int]`$MaxIterations = 20, [int]`$StallThreshold = 3)
     `$params = @{ MaxIterations = `$MaxIterations; StallThreshold = `$StallThreshold }
     if (`$DryRun) { `$params.DryRun = `$true }
     if (`$SkipInit) { `$params.SkipInit = `$true }
     if (`$SkipResearch) { `$params.SkipResearch = `$true }
+    if (`$AutoResolve) { `$params.AutoResolve = `$true }
     & "`$env:USERPROFILE\.gsd-global\scripts\convergence-loop.ps1" @params
 }
 
