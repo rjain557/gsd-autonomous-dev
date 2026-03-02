@@ -341,23 +341,29 @@ function Test-AgentBoundaries {
     <#
     .SYNOPSIS
         After an agent runs, verify it didn't modify files outside its boundary.
+        Compares against a baseline of pre-existing dirty files to avoid false positives.
     #>
     param(
         [string]$Agent,       # "claude" or "codex"
         [string]$RepoRoot,
         [string]$GsdDir,
-        [string]$Pipeline
+        [string]$Pipeline,
+        [string[]]$BaselineDirty = @()   # Files already dirty before agent ran
     )
 
     # Get files modified since last commit
     $changedFiles = git -C $RepoRoot diff --name-only HEAD 2>$null
     if (-not $changedFiles) { return $true }
 
+    # Only check files the agent actually changed (exclude pre-existing dirty files)
+    $agentChanged = $changedFiles | Where-Object { $_ -notin $BaselineDirty }
+    if (-not $agentChanged -or @($agentChanged).Count -eq 0) { return $true }
+
     $violations = @()
 
     if ($Agent -eq "claude") {
         # Claude should NOT modify source code
-        $changedFiles | ForEach-Object {
+        $agentChanged | ForEach-Object {
             if ($_ -notmatch "^\.gsd" -and $_ -notmatch "^\.vscode") {
                 $violations += $_
             }
@@ -382,7 +388,7 @@ function Test-AgentBoundaries {
     if ($Agent -eq "codex") {
         # Codex should NOT modify .gsd/health, .gsd/code-review, .gsd/generation-queue, .gsd/blueprint (except build-log)
         $protectedPaths = @(".gsd/health", ".gsd/code-review", ".gsd/generation-queue", ".gsd/blueprint/blueprint.json", ".gsd/blueprint/health.json", ".gsd/blueprint/next-batch.json")
-        $changedFiles | ForEach-Object {
+        $agentChanged | ForEach-Object {
             $file = $_
             foreach ($p in $protectedPaths) {
                 if ($file -like "$p*" -and $file -notmatch "build-log|handoff-log") {
@@ -565,6 +571,9 @@ function Invoke-WithRetry {
         $effectivePrompt = $Prompt.Replace("{{BATCH_SIZE}}", "$CurrentBatchSize")
         Write-Host "    Attempt $i/$MaxAttempts (batch: $CurrentBatchSize)..." -ForegroundColor DarkGray
 
+        # Snapshot dirty files BEFORE agent runs (to avoid false boundary violations)
+        $baselineDirty = @(git diff --name-only HEAD 2>$null)
+
         try {
             $exitCode = 0
             $output = $null
@@ -573,7 +582,8 @@ function Invoke-WithRetry {
                 $output = claude -p $effectivePrompt --allowedTools $AllowedTools 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "codex") {
-                $output = codex exec --full-auto $effectivePrompt 2>&1
+                # Pass prompt via stdin to avoid Windows CLI length limits
+                $output = $effectivePrompt | codex exec --full-auto - 2>&1
                 $exitCode = $LASTEXITCODE
             }
 
@@ -630,9 +640,10 @@ function Invoke-WithRetry {
                     if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
                 ) | Out-Null
 
-                # -- Post-check: boundary enforcement --
+                # -- Post-check: boundary enforcement (with baseline to avoid false positives) --
                 Test-AgentBoundaries -Agent $(if ($Agent -eq "claude") { "claude" } else { "codex" }) `
-                    -RepoRoot (Get-Location).Path -GsdDir $GsdDir -Pipeline "any" | Out-Null
+                    -RepoRoot (Get-Location).Path -GsdDir $GsdDir -Pipeline "any" `
+                    -BaselineDirty $baselineDirty | Out-Null
 
                 return $result
             }
@@ -687,7 +698,7 @@ Rules:
 - Replace any string concatenation with parameterized queries
 - Use sp_executesql for dynamic SQL if absolutely needed
 "@
-            codex exec --full-auto $sqlFixPrompt 2>&1 |
+            $sqlFixPrompt | codex exec --full-auto - 2>&1 |
                 Out-File -FilePath "$GsdDir\logs\autofix-sql-iter$Iteration.log" -Encoding UTF8
 
             git add -A; git commit -m "gsd: auto-fix SQL patterns (iter $Iteration)" --no-verify 2>$null
