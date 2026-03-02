@@ -1,0 +1,1 @@
+powershell -ExecutionPolicy Bypass -File .\install-gsd-all.ps1
