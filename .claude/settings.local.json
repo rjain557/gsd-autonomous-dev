@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"$PATH\")",
+      "Bash(command -v gsd-status)",
+      "Bash(where gsd-status)",
+      "Bash(powershell -NoProfile -Command 'Write-Output $PROFILE.CurrentUserAllHosts')",
+      "Bash(powershell -NoProfile -Command '[Environment]::GetEnvironmentVariable\\(\"\"PATH\"\",\"\"User\"\"\\)')",
+      "Bash(tr ';' '\\\\n')",
+      "Bash(powershell -NoProfile -Command '$p = $PROFILE.CurrentUserAllHosts; Write-Host \"\"Profile path: $p\"\"; Write-Host \"\"Exists: $\\(Test-Path $p\\)\"\"; if\\(Test-Path $p\\) { Get-Content $p }')",
+      "Bash(powershell -NoProfile -Command \"Write-Host $PROFILE\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1)",
+      "Bash(powershell -NoProfile -Command '$env:PATH -split \"\";\"\" | Select-String \"\"gsd\"\"')",
+      "Bash(powershell -NoProfile -Command '[Environment]::GetEnvironmentVariable\\(\"\"PATH\"\",\"\"User\"\"\\) -split \"\";\"\" | Select-String \"\"gsd\"\"')",
+      "Bash(powershell -NoProfile -Command \"Get-Content ''$env:USERPROFILE\\\\.gsd-global\\\\scripts\\\\gsd-profile-functions.ps1'' | Select-String ''gsd-status''\")",
+      "Bash(powershell -NoProfile -Command 'Get-Content \"\"$env:USERPROFILE\\\\.gsd-global\\\\scripts\\\\gsd-profile-functions.ps1\"\" | Select-String \"\"gsd-status\"\"')",
+      "Bash(powershell -NoProfile -Command 'Get-Content \"\"$env:USERPROFILE\\\\Documents\\\\PowerShell\\\\profile.ps1\"\"')",
+      "Bash(powershell -NoProfile -Command 'Get-Content \"\"$env:USERPROFILE\\\\Documents\\\\WindowsPowerShell\\\\profile.ps1\"\"')",
+      "Bash(powershell -Command '$env:PATH -split \"\";\"\" | Select-String \"\"gsd\"\"')",
+      "Bash(powershell -Command 'Get-Command gsd-status -ErrorAction SilentlyContinue | Format-List; Get-Command gsd-converge -ErrorAction SilentlyContinue | Format-List')",
+      "Bash(powershell -Command 'Write-Host \"\"PATH has gsd: $\\($env:PATH -like ''*gsd*''\\)\"\"; Write-Host \"\"Profile loaded: $\\(Test-Path Function:\\\\gsd-converge\\)\"\"; Write-Host \"\"Profile path: $\\($PROFILE.CurrentUserAllHosts\\)\"\"')",
+      "Bash(powershell -Command \"Write-Host ''gsd in PATH:''; $env:PATH.Split\\('';''\\) | Where-Object { $_ -like ''*gsd*'' }; Write-Host ''Profile exists:''; Write-Host \\(Test-Path Function:\\\\gsd-converge\\)\")",
+      "Bash(powershell -Command 'Get-Command gsd-status -ErrorAction SilentlyContinue; if \\(Test-Path Function:\\\\gsd-status\\) { Write-Host \"\"gsd-status FOUND as function\"\" } else { Write-Host \"\"gsd-status NOT FOUND\"\" }')",
+      "Bash(powershell -Command '& { Write-Host \"\"Profile: $PROFILE\"\"; Write-Host \"\"AllHosts: $\\($PROFILE.CurrentUserAllHosts\\)\"\"; Write-Host \"\"Exists: $\\(Test-Path $PROFILE\\)\"\" }')",
+      "Bash(powershell -NoLogo -Command \". ''$USERPROFILE/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1''; if \\(Test-Path Function:\\\\gsd-status\\) { Write-Host ''SUCCESS: gsd-status loaded''; gsd-status } else { Write-Host ''FAIL'' }\")",
+      "Bash(powershell -NoLogo -Command 'Get-Host | Select-Object Name, Version | Format-List')",
+      "Bash(xxd \"$USERPROFILE/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1\")",
+      "Bash(xxd \"C:/Users/rjain/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1\")"
+    ]
+  }
+}
