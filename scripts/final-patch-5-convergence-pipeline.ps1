@@ -135,7 +135,8 @@ if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\create-phases.md" 0 0
     if (-not $DryRun) {
         Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "create-phases" `
-            -LogFile "$GsdDir\logs\phase0.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+            -LogFile "$GsdDir\logs\phase0.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+            -AllowedTools "Read,Write,Bash" | Out-Null
     }
     $Health = Get-Health
     Write-Host "  [OK] Matrix built. Health: ${Health}%" -ForegroundColor Green
@@ -161,7 +162,8 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
     if (-not $DryRun) {
         Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
-            -LogFile "$GsdDir\logs\iter${Iteration}-1.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+            -LogFile "$GsdDir\logs\iter${Iteration}-1.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+            -AllowedTools "Read,Write,Bash" | Out-Null
     }
     $Health = Get-Health
     if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
@@ -183,7 +185,8 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
     if (-not $DryRun) {
         Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
-            -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+            -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+            -AllowedTools "Read,Write,Bash" | Out-Null
     }
 
     # 4. EXECUTE (Codex)

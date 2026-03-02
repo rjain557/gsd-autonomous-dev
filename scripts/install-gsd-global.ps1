@@ -765,7 +765,7 @@ if (-not $hasRequirements -and -not $SkipInit) {
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\create-phases.md" 0 0
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Edit,Bash,mcp__*" 2>&1 |
+        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\phase0-create-phases.log"
     } else {
         Write-Host "   [DRY RUN] claude -p <create-phases prompt>" -ForegroundColor DarkYellow
@@ -792,7 +792,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Edit,Bash,mcp__*" 2>&1 |
+        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-1-code-review.log"
     } else {
         Write-Host "   [DRY RUN] claude -> code-review" -ForegroundColor DarkYellow
@@ -818,7 +818,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
 
         if (-not $DryRun) {
-            codex exec --full-auto $prompt 2>&1 |
+            $prompt | codex exec --full-auto - 2>&1 |
                 Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
         } else {
             Write-Host "   [DRY RUN] codex -> research" -ForegroundColor DarkYellow
@@ -834,7 +834,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Edit,Bash,mcp__*" 2>&1 |
+        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-3-plan.log"
     } else {
         Write-Host "   [DRY RUN] claude -> plan" -ForegroundColor DarkYellow
@@ -847,7 +847,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
 
     if (-not $DryRun) {
-        codex exec --full-auto $prompt 2>&1 |
+        $prompt | codex exec --full-auto - 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-4-execute.log"
 
         # Git commit

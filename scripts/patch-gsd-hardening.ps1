@@ -546,7 +546,7 @@ function Invoke-WithRetry {
         [int]$MaxAttempts = $script:RETRY_MAX,
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
-        [string]$AllowedTools = "Read,Write,Edit,Bash,mcp__*"
+        [string]$AllowedTools = "Read,Write,Bash,mcp__*"
     )
 
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }

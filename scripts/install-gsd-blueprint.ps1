@@ -643,7 +643,7 @@ if ($needsBlueprint) {
 
     if (-not $DryRun) {
         $startTime = Get-Date
-        claude -p $prompt --allowedTools "Read,Write,Edit,Bash,mcp__*" 2>&1 |
+        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-phase1-generate.log"
         $elapsed = (Get-Date) - $startTime
 
@@ -701,7 +701,7 @@ if ($VerifyOnly) {
     $prompt = Resolve-Prompt "$BpGlobalDir\prompts\claude\verify.md" 0 $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Edit,Bash,mcp__*" 2>&1 |
+        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-verify-only.log"
         $Health = Get-Health
         Write-Host "  [CHART] Health: ${Health}%" -ForegroundColor Yellow
@@ -732,7 +732,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$BpGlobalDir\prompts\claude\verify.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Edit,Bash,mcp__*" 2>&1 |
+        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-iter${Iteration}-1-verify.log"
     } else {
         Write-Host "    [DRY RUN] claude -> verify" -ForegroundColor DarkYellow
@@ -768,7 +768,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     if (-not $DryRun) {
         $buildStart = Get-Date
-        codex exec --full-auto $prompt 2>&1 |
+        $prompt | codex exec --full-auto - 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-iter${Iteration}-2-build.log"
         $buildElapsed = (Get-Date) - $buildStart
 

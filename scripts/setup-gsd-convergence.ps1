@@ -775,7 +775,7 @@ if (-not $hasRequirements -and -not $SkipInit) {
 
     if (-not $DryRun) {
         claude -p $initPrompt `
-            --allowedTools "Read,Write,Edit,Bash,mcp__*" `
+            --allowedTools "Read,Write,Bash" `
             2>&1 | Tee-Object (Join-Path $GsdDir "logs\phase0-init.log")
     } else {
         Write-Host "   [DRY RUN] Would execute: claude -p <phase0-init prompt>" -ForegroundColor DarkYellow
@@ -813,7 +813,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     if (-not $DryRun) {
         claude -p $reviewPrompt `
-            --allowedTools "Read,Write,Edit,Bash,mcp__*" `
+            --allowedTools "Read,Write,Bash" `
             2>&1 | Tee-Object (Join-Path $GsdDir "logs\claude-review-$Iteration.log")
     } else {
         Write-Host "   [DRY RUN] Would execute: claude -p <review prompt iter $Iteration>" -ForegroundColor DarkYellow
@@ -836,8 +836,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $generatePrompt = Build-GeneratePrompt $Health
 
     if (-not $DryRun) {
-        codex exec --full-auto `
-              $generatePrompt `
+        $generatePrompt | codex exec --full-auto - `
               2>&1 | Tee-Object (Join-Path $GsdDir "logs\codex-generate-$Iteration.log")
 
         # Git commit

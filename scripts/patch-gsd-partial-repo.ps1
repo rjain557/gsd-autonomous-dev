@@ -736,7 +736,7 @@ if (-not $DryRun) {
             Write-Host "  [XX] Assessment failed: $($result.Error)" -ForegroundColor Red
         }
     } else {
-        claude -p $prompt --allowedTools "Read,Write,Edit,Bash,mcp__*" 2>&1 |
+        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\assessment.log"
     }
 
