@@ -66,8 +66,11 @@ $hardeningCode = @'
 # ===============================================================
 
 # -- Hardening config --
-$script:QUOTA_SLEEP_MINUTES = 60
-$script:QUOTA_MAX_SLEEPS = 24          # max 24 hours of sleeping
+$script:QUOTA_SLEEP_INITIAL = 5         # start at 5 minutes (not 60!)
+$script:QUOTA_SLEEP_MAX = 60            # cap at 60 minutes
+$script:QUOTA_SLEEP_BACKOFF = 2         # double each cycle: 5, 10, 20, 40, 60, 60...
+$script:QUOTA_SLEEP_MINUTES = $script:QUOTA_SLEEP_INITIAL  # compat alias
+$script:QUOTA_MAX_SLEEPS = 24           # max total sleep cycles
 $script:NETWORK_POLL_SECONDS = 30
 $script:NETWORK_MAX_POLLS = 120        # max 1 hour of polling
 $script:DISK_MIN_FREE_GB = 0.5
@@ -202,23 +205,24 @@ function Wait-ForQuotaReset {
 
     if ($QuotaType -eq "quota_exhausted") {
         Write-Host "    Quota exhausted on $Agent." -ForegroundColor Red
-        Write-Host "    Sleeping $($script:QUOTA_SLEEP_MINUTES) minutes before retry..." -ForegroundColor Yellow
+        Write-Host "    Using adaptive backoff: ${script:QUOTA_SLEEP_INITIAL}min -> ${script:QUOTA_SLEEP_MAX}min" -ForegroundColor Yellow
 
         Write-GsdError -GsdDir $GsdDir -Category "quota" -Phase "wait" -Iteration 0 `
-            -Message "$Agent quota exhausted" -Resolution "Sleeping $($script:QUOTA_SLEEP_MINUTES) min"
+            -Message "$Agent quota exhausted" -Resolution "Adaptive backoff starting at $($script:QUOTA_SLEEP_INITIAL) min"
 
         $sleepCount = 0
+        $currentSleep = $script:QUOTA_SLEEP_INITIAL
         while ($sleepCount -lt $script:QUOTA_MAX_SLEEPS) {
             $sleepCount++
-            $wakeTime = (Get-Date).AddMinutes($script:QUOTA_SLEEP_MINUTES)
-            Write-Host "    Sleep $sleepCount/$($script:QUOTA_MAX_SLEEPS). Wake at: $($wakeTime.ToString('HH:mm'))" -ForegroundColor DarkGray
-            Start-Sleep -Seconds ($script:QUOTA_SLEEP_MINUTES * 60)
+            $wakeTime = (Get-Date).AddMinutes($currentSleep)
+            Write-Host "    Sleep $sleepCount/$($script:QUOTA_MAX_SLEEPS) (${currentSleep}min). Wake at: $($wakeTime.ToString('HH:mm'))" -ForegroundColor DarkGray
+            Start-Sleep -Seconds ($currentSleep * 60)
 
             # Test if quota has reset by trying a minimal call
             try {
                 $testOutput = claude -p "Reply with just the word READY" 2>&1
                 if ($testOutput -match "READY") {
-                    Write-Host "    [OK] Quota reset. Resuming..." -ForegroundColor Green
+                    Write-Host "    [OK] Quota reset after ${currentSleep}min. Resuming..." -ForegroundColor Green
                     return $true
                 }
                 $quotaCheck = Test-IsQuotaError ($testOutput -join "`n")
@@ -229,7 +233,9 @@ function Wait-ForQuotaReset {
             } catch {
                 # Still limited, continue sleeping
             }
-            Write-Host "    Still limited. Sleeping again..." -ForegroundColor DarkYellow
+            # Exponential backoff: 5 -> 10 -> 20 -> 40 -> 60 -> 60...
+            $currentSleep = [math]::Min($script:QUOTA_SLEEP_MAX, $currentSleep * $script:QUOTA_SLEEP_BACKOFF)
+            Write-Host "    Still limited. Next sleep: ${currentSleep}min..." -ForegroundColor DarkYellow
         }
 
         Write-Host "    [XX] Quota did not reset after $($script:QUOTA_MAX_SLEEPS) sleep cycles." -ForegroundColor Red

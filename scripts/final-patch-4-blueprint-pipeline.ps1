@@ -19,6 +19,7 @@ $script = @'
 #>
 param(
     [int]$MaxIterations = 30, [int]$StallThreshold = 3, [int]$BatchSize = 15,
+    [int]$ThrottleSeconds = 30,
     [switch]$DryRun, [switch]$BlueprintOnly, [switch]$BuildOnly, [switch]$VerifyOnly,
     [switch]$SkipSpecCheck, [switch]$AutoResolve
 )
@@ -122,6 +123,7 @@ if ($checkpoint -and $checkpoint.pipeline -eq "blueprint" -and -not $BlueprintOn
 }
 
 Write-Host "  Health:    ${Health}% -> 100% | Batch: $CurrentBatchSize (adaptive)" -ForegroundColor White
+if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle:  ${ThrottleSeconds}s between agent calls (prevents quota exhaustion)" -ForegroundColor DarkGray }
 if ($DryRun) { Write-Host "  MODE:      DRY RUN" -ForegroundColor Yellow }
 Write-Host ""
 
@@ -223,6 +225,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     if ($VerifyOnly) { break }
+
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
+    }
 
     # BUILD (Figma Make aware)
     Write-Host "  [WRENCH] CODEX -> build (batch: $CurrentBatchSize)" -ForegroundColor Magenta

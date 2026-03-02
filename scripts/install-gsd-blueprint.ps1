@@ -510,6 +510,7 @@ param(
     [int]$MaxIterations = 30,
     [int]$StallThreshold = 3,
     [int]$BatchSize = 15,
+    [int]$ThrottleSeconds = 30,
     [switch]$DryRun,
     [switch]$BlueprintOnly,
     [switch]$BuildOnly,
@@ -619,6 +620,7 @@ Write-Host "  Figma:      $FigmaVersion ($FigmaPath)" -ForegroundColor White
 Write-Host "  Docs:       $(if ($hasDocs) { 'docs\' } else { 'none' })" -ForegroundColor White
 Write-Host "  Health:     ${Health}% -> target ${TargetHealth}%" -ForegroundColor White
 Write-Host "  Batch size: $BatchSize items per cycle" -ForegroundColor White
+if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle:   ${ThrottleSeconds}s between agent calls" -ForegroundColor DarkGray }
 Write-Host "  Max iters:  $MaxIterations" -ForegroundColor White
 Write-Host "  Blueprint:  $(if (Has-Blueprint) { 'EXISTS' } else { 'needs generation' })" -ForegroundColor $(if (Has-Blueprint) { 'Green' } else { 'Yellow' })
 if ($DryRun) { Write-Host "  MODE:       DRY RUN" -ForegroundColor Yellow }
@@ -756,6 +758,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         } catch {
             Write-Host "  [!!]  Could not parse next-batch.json" -ForegroundColor DarkYellow
         }
+    }
+
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
     }
 
     # ==================================

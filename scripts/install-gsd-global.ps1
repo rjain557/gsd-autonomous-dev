@@ -611,6 +611,7 @@ $mainScript = @'
 param(
     [int]$MaxIterations = 20,
     [int]$StallThreshold = 3,
+    [int]$ThrottleSeconds = 30,
     [switch]$SkipInit,
     [switch]$SkipResearch,
     [switch]$DryRun
@@ -749,6 +750,7 @@ Write-Host "  Iterations:  max $MaxIterations, stall after $StallThreshold" -For
 Write-Host "  Global:      $GlobalDir" -ForegroundColor DarkGray
 if ($DryRun) { Write-Host "  MODE:        DRY RUN" -ForegroundColor Yellow }
 if ($SkipResearch) { Write-Host "  SKIP:        Research phase" -ForegroundColor Yellow }
+if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle:    ${ThrottleSeconds}s between agent calls" -ForegroundColor DarkGray }
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -806,6 +808,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         break
     }
 
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
+    }
+
     # == 2. RESEARCH (Codex) - optional ==
     if (-not $SkipResearch) {
         Write-Host "[$Iteration] CODEX -> research" -ForegroundColor Magenta
@@ -827,6 +835,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Write-Host "[>>]  [$Iteration] Skipping research phase" -ForegroundColor DarkGray
     }
 
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
+    }
+
     # == 3. PLAN (Claude Code) ==
     Write-Host "[$Iteration] CLAUDE CODE -> plan" -ForegroundColor Cyan
     Log-Handoff "claude-code" "plan" $Iteration $Health
@@ -838,6 +852,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Tee-Object "$GsdDir\logs\iter${Iteration}-3-plan.log"
     } else {
         Write-Host "   [DRY RUN] claude -> plan" -ForegroundColor DarkYellow
+    }
+
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
     }
 
     # == 4. EXECUTE (Codex) ==

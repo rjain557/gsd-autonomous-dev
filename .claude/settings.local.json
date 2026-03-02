@@ -36,7 +36,9 @@
       "Bash(codex --version)",
       "Bash(echo \"EXIT CODE: $?\")",
       "Bash(codex --help)",
-      "Bash(codex exec --full-auto \"echo hello world\")"
+      "Bash(codex exec --full-auto \"echo hello world\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File final-patch-4-blueprint-pipeline.ps1)",
+      "Bash(powershell -ExecutionPolicy Bypass -File final-patch-5-convergence-pipeline.ps1)"
     ]
   }
 }

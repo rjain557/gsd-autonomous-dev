@@ -17,6 +17,7 @@ $script = @'
 #>
 param(
     [int]$MaxIterations = 20, [int]$StallThreshold = 3, [int]$BatchSize = 8,
+    [int]$ThrottleSeconds = 30,
     [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck,
     [switch]$AutoResolve
 )
@@ -86,6 +87,7 @@ if ($checkpoint -and $checkpoint.pipeline -eq "converge") {
 }
 
 Write-Host "  Health: ${Health}% -> 100% | Batch: $CurrentBatchSize | Interfaces: $($Interfaces.Count)" -ForegroundColor White
+if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle: ${ThrottleSeconds}s between agent calls (prevents quota exhaustion)" -ForegroundColor DarkGray }
 Write-Host ""
 
 # Prompt resolver with interface context
@@ -168,6 +170,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $Health = Get-Health
     if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
 
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
+    }
+
     # 2. RESEARCH (Codex - optional)
     if (-not $SkipResearch) {
         Write-Host "  CODEX -> research" -ForegroundColor Magenta
@@ -179,6 +187,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         }
     }
 
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
+    }
+
     # 3. PLAN (Claude)
     Write-Host "  CLAUDE -> plan" -ForegroundColor Cyan
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "plan" -Health $Health -BatchSize $CurrentBatchSize
@@ -187,6 +201,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
             -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
             -AllowedTools "Read,Write,Bash" | Out-Null
+    }
+
+    # Throttle between phases
+    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $ThrottleSeconds
     }
 
     # 4. EXECUTE (Codex)
