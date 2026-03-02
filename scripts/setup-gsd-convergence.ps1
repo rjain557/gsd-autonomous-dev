@@ -836,8 +836,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $generatePrompt = Build-GeneratePrompt $Health
 
     if (-not $DryRun) {
-        codex --approval-mode full-auto `
-              --quiet `
+        codex exec --full-auto `
               $generatePrompt `
               2>&1 | Tee-Object (Join-Path $GsdDir "logs\codex-generate-$Iteration.log")
 
@@ -845,7 +844,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         git add -A
         git commit -m "gsd-convergence: iter $Iteration codex generation (health: ${Health}%)" --no-verify 2>$null
     } else {
-        Write-Host "   [DRY RUN] Would execute: codex --approval-mode full-auto <generate prompt>" -ForegroundColor DarkYellow
+        Write-Host "   [DRY RUN] Would execute: codex exec --full-auto <generate prompt>" -ForegroundColor DarkYellow
     }
 
     # -- Stall detection --

@@ -818,7 +818,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
 
         if (-not $DryRun) {
-            codex --approval-mode full-auto --quiet $prompt 2>&1 |
+            codex exec --full-auto $prompt 2>&1 |
                 Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
         } else {
             Write-Host "   [DRY RUN] codex -> research" -ForegroundColor DarkYellow
@@ -847,7 +847,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
 
     if (-not $DryRun) {
-        codex --approval-mode full-auto --quiet $prompt 2>&1 |
+        codex exec --full-auto $prompt 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-4-execute.log"
 
         # Git commit

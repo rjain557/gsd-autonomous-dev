@@ -768,7 +768,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     if (-not $DryRun) {
         $buildStart = Get-Date
-        codex --approval-mode full-auto --quiet $prompt 2>&1 |
+        codex exec --full-auto $prompt 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-iter${Iteration}-2-build.log"
         $buildElapsed = (Get-Date) - $buildStart
 

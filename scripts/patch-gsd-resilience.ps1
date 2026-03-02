@@ -305,7 +305,7 @@ function Invoke-WithRetry {
                 $output = claude -p $effectivePrompt --allowedTools $AllowedTools 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "codex") {
-                $output = codex --approval-mode full-auto --quiet $effectivePrompt 2>&1
+                $output = codex exec --full-auto $effectivePrompt 2>&1
                 $exitCode = $LASTEXITCODE
             }
 
@@ -445,7 +445,7 @@ Rules:
 - If a method signature doesn't match, fix the caller to match the definition
 - After fixing, the project must compile with: dotnet build $($slnFile.FullName)
 "@
-                    codex --approval-mode full-auto --quiet $fixPrompt 2>&1 |
+                    codex exec --full-auto $fixPrompt 2>&1 |
                         Out-File -FilePath (Join-Path $GsdDir "logs\autofix-dotnet-iter$Iteration.log") -Encoding UTF8
 
                     # Re-verify
@@ -514,7 +514,7 @@ Rules:
 - Module not found: install the package or fix the import path
 - After fixing, npm run build must succeed
 "@
-                        codex --approval-mode full-auto --quiet $fixPrompt 2>&1 |
+                        codex exec --full-auto $fixPrompt 2>&1 |
                             Out-File -FilePath (Join-Path $GsdDir "logs\autofix-npm-iter$Iteration.log") -Encoding UTF8
 
                         $reNpmOutput = npm run build 2>&1

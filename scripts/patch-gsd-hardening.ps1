@@ -573,7 +573,7 @@ function Invoke-WithRetry {
                 $output = claude -p $effectivePrompt --allowedTools $AllowedTools 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "codex") {
-                $output = codex --approval-mode full-auto --quiet $effectivePrompt 2>&1
+                $output = codex exec --full-auto $effectivePrompt 2>&1
                 $exitCode = $LASTEXITCODE
             }
 
@@ -687,7 +687,7 @@ Rules:
 - Replace any string concatenation with parameterized queries
 - Use sp_executesql for dynamic SQL if absolutely needed
 "@
-            codex --approval-mode full-auto --quiet $sqlFixPrompt 2>&1 |
+            codex exec --full-auto $sqlFixPrompt 2>&1 |
                 Out-File -FilePath "$GsdDir\logs\autofix-sql-iter$Iteration.log" -Encoding UTF8
 
             git add -A; git commit -m "gsd: auto-fix SQL patterns (iter $Iteration)" --no-verify 2>$null

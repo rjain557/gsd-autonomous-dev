@@ -535,7 +535,7 @@ if (-not $SkipAuth) {
 
     if (Test-CommandExists "codex") {
         try {
-            $authOut = codex --approval-mode full-auto --quiet "Reply with exactly: AUTH_OK" 2>&1 | Out-String
+            $authOut = codex exec --full-auto "Reply with exactly: AUTH_OK" 2>&1 | Out-String
             if ($authOut -match "AUTH_OK") {
                 Write-Check "Codex Auth" "pass" "Authenticated" "Green"
                 $results.Passed++
