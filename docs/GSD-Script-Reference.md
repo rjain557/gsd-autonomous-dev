@@ -242,7 +242,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 15 core scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 22 scripts total (1 master installer + 1 pre-flight + 15 core + 4 standalone utilities + 1 bug fix patch).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 16 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 22 scripts total (1 master installer + 1 pre-flight + 16 run by installer + 4 standalone utilities).
 
 Usage:
 
@@ -286,7 +286,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
-The master installer (`install-gsd-all.ps1`) runs these 15 scripts in order. Each is idempotent and safe to re-run.
+The master installer (`install-gsd-all.ps1`) runs these 16 scripts in order. Each is idempotent and safe to re-run.
 
 ### install-gsd-global.ps1 (Script 1)
 
@@ -350,6 +350,10 @@ Adds spec conflict auto-resolution via Gemini agent (`--yolo`). Installs Invoke-
 
 Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-converge.ps1 and supervisor-blueprint.ps1 wrappers, profile function updates (adds -SupervisorAttempts and -NoSupervisor params to gsd-converge and gsd-blueprint). Creates `~/.gsd-global/supervisor/` for cross-project pattern memory.
 
+### patch-false-converge-fix.ps1 (Script 16)
+
+One-time bug fix: fixes false "converged" exit when StallCount/TargetHealth/Iteration variables are null in the finally block (moves initialization before try block), and removes orphaned profile code statements outside function bodies. Idempotent.
+
 ### Optional standalone scripts
 
 These are NOT run by the installer but can be run manually:
@@ -358,7 +362,6 @@ These are NOT run by the installer but can be run manually:
 - **setup-gsd-convergence.ps1** -- Per-project convergence config setup. Detects latest Figma design version, references SDLC specs (Phase A-E), creates per-project .gsd/ folder structure. Legacy script superseded by the global install approach.
 - **install-gsd-keybindings.ps1** -- Adds VS Code keyboard shortcuts (Ctrl+Shift+G chord prefix).
 - **token-cost-calculator.ps1** -- Token cost estimator script (also installed globally as `gsd-costs` by install-gsd-global.ps1).
-- **patch-false-converge-fix.ps1** -- One-time bug fix: fixes false "converged" exit when variables are null in the finally block, and removes orphaned profile code. Idempotent. Already applied to current codebase.
 
 ### setup-gsd-api-keys.ps1
 

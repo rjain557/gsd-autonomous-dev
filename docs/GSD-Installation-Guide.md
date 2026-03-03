@@ -76,7 +76,7 @@ cd gsd-autonomous-dev
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-This runs all 15 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
+This runs all 16 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
 
 | Order | Script | What It Installs |
 |-------|--------|-----------------|
@@ -95,6 +95,7 @@ This runs all 15 install/patch scripts in dependency order. The installer also r
 | 13 | final-patch-6-assess-limitations.ps1 | Final assess script with known limitations |
 | 14 | final-patch-7-spec-resolve.ps1 | Spec conflict auto-resolution via Gemini |
 | 15 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
+| 16 | patch-false-converge-fix.ps1 | Fix false convergence exit + orphaned profile code |
 
 Optional standalone scripts (not run by installer):
 - **setup-gsd-api-keys.ps1** -- manage API key environment variables (set, show, clear)
@@ -102,7 +103,7 @@ Optional standalone scripts (not run by installer):
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
 - **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
 
-The repository contains 22 scripts total: 1 master installer, 1 pre-flight check, 15 core install/patch scripts, 4 standalone utilities, and 1 bug fix patch.
+The repository contains 22 scripts total: 1 master installer, 1 pre-flight check, 16 scripts run by installer (15 core patches + 1 bug fix), and 4 standalone utilities.
 
 ### Step 3: Restart Terminal
 

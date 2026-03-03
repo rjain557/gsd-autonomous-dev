@@ -178,7 +178,10 @@ gemini    # first run authenticates
 
 ### Retry with Batch Reduction
 
-Failed agent calls retry 3 times. Each retry halves the batch size (15 -> 7 -> 3 -> 1). Minimum batch is 1.
+Failed agent calls retry 3 times. Each retry halves the batch size (15 -> 7 -> 3 -> 2). Minimum batch is 2. Two different reduction factors apply:
+
+- **Agent failure/watchdog timeout** (in `Invoke-WithRetry`): reduces by 50% (`BATCH_REDUCTION_FACTOR = 0.5`)
+- **Stall** (no health progress in pipeline loop): reduces by 25% (multiplied by `0.75`), giving agents a slightly larger batch to work with since the issue is stagnation, not crashes
 
 ### Checkpoint Recovery
 
