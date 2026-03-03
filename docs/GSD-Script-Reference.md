@@ -242,7 +242,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 14 core scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 20 scripts total (1 master installer + 1 pre-flight + 14 core + 4 standalone utilities).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 15 core scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 22 scripts total (1 master installer + 1 pre-flight + 15 core + 4 standalone utilities + 1 bug fix patch).
 
 Usage:
 
@@ -254,16 +254,31 @@ Creates %USERPROFILE%\.gsd-global\ with all engine files and adds gsd-* commands
 
 ### install-gsd-prerequisites.ps1
 
-Checks all required tools and installs missing ones via winget/npm.
+Checks all required tools and installs missing ones via winget/npm. Auto-upgrades outdated packages. Refreshes PATH after installs so newly installed tools are immediately usable.
 
 Usage:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1
 powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1 -VerifyOnly
+powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1 -Force
 ```
 
-Required CLIs: claude, codex, dotnet, node, npm. Optional: gemini (for three-model optimization), sqlcmd (for SQL validation).
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -VerifyOnly | false | Check everything, install nothing |
+| -SkipOptional | false | Skip optional tools (sqlcmd) |
+| -Force | false | Reinstall even if already present |
+| -SkipAuth | false | Skip API key configuration section |
+| -AnthropicKey | "" | Set Anthropic API key directly (non-interactive) |
+| -OpenAIKey | "" | Set OpenAI API key directly (non-interactive) |
+| -GoogleKey | "" | Set Google API key directly (non-interactive) |
+
+Required tools: Node.js 18+, npm 8+, Git 2+, .NET SDK 8+, Claude Code CLI, Codex CLI. Optional: Gemini CLI (three-model optimization), sqlcmd (SQL validation).
+
+Reports a final summary with counts: Passed, Failed, Installed, Skipped, Warnings.
 
 ### install-gsd-keybindings.ps1
 
@@ -271,7 +286,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
-The master installer (`install-gsd-all.ps1`) runs these 14 scripts in order. Each is idempotent and safe to re-run.
+The master installer (`install-gsd-all.ps1`) runs these 15 scripts in order. Each is idempotent and safe to re-run.
 
 ### install-gsd-global.ps1 (Script 1)
 
@@ -295,39 +310,43 @@ Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-C
 
 Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Start-BackgroundHeartbeat, Stop-BackgroundHeartbeat, Start-CommandListener, Stop-CommandListener, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError, Update-EngineStatus, Start-EngineStatusHeartbeat, Stop-EngineStatusHeartbeat, Initialize-CostTracking, Get-TokenPrice, Extract-TokensFromOutput, Save-TokenUsage, Update-CostSummary, Rebuild-CostSummary, Complete-CostTrackingRun.
 
-### patch-gsd-figma-make.ps1 (Script 6)
+### patch-gsd-final-validation.ps1 (Script 6)
+
+Adds final validation gate and developer handoff report to resilience.ps1. Installs `Invoke-FinalValidation` (7-check quality gate at 100% health) and `New-DeveloperHandoff` (10-section developer handoff markdown generator). Hard failures reset health to 99% so the loop auto-fixes; warnings are included in the handoff report. Generates `developer-handoff.md` at pipeline exit with build commands, database setup, requirements status, cost summary, and known issues.
+
+### patch-gsd-figma-make.ps1 (Script 7)
 
 Installs interfaces.ps1 module: Find-ProjectInterfaces, Initialize-ProjectInterfaces, Show-InterfaceSummary, Get-InterfaceContext. Recursive design folder discovery, _analysis/_stubs auto-discovery, folder inventory.
 
-### final-patch-1-spec-check.ps1 (Script 7)
+### final-patch-1-spec-check.ps1 (Script 8)
 
 Adds Invoke-SpecConsistencyCheck to resilience.ps1. Pre-checks specs for conflicts before pipeline runs. Detects: data_type, api_contract, navigation, business_rule, design_system, database, missing_ref conflicts.
 
-### final-patch-2-sql-cli.ps1 (Script 8)
+### final-patch-2-sql-cli.ps1 (Script 9)
 
 Adds Test-SqlSyntaxWithSqlcmd, Test-SqlFiles, and Test-CliVersions to resilience.ps1. SQL pattern validation and CLI version compatibility checks.
 
-### final-patch-3-storyboard-verify.ps1 (Script 9)
+### final-patch-3-storyboard-verify.ps1 (Script 10)
 
 Installs storyboard-aware verification prompt for Claude. Traces data paths end-to-end through all layers.
 
-### final-patch-4-blueprint-pipeline.ps1 (Script 10)
+### final-patch-4-blueprint-pipeline.ps1 (Script 11)
 
-Final blueprint pipeline with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, and adaptive batch sizing.
+Final blueprint pipeline with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, final validation gate, developer handoff generation, and git commit traceability (review text in commit messages with auto-push).
 
-### final-patch-5-convergence-pipeline.ps1 (Script 11)
+### final-patch-5-convergence-pipeline.ps1 (Script 12)
 
-Final convergence loop with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, and adaptive batch sizing.
+Final convergence loop with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, final validation gate, developer handoff generation, and git commit traceability (code review text in commit messages with auto-push).
 
-### final-patch-6-assess-limitations.ps1 (Script 12)
+### final-patch-6-assess-limitations.ps1 (Script 13)
 
 Installs final assess.ps1 with Show-InterfaceSummary, Update-FileMap, -MapOnly, known limitations documentation.
 
-### final-patch-7-spec-resolve.ps1 (Script 13)
+### final-patch-7-spec-resolve.ps1 (Script 14)
 
 Adds spec conflict auto-resolution via Gemini agent (`--yolo`). Installs Invoke-SpecConflictResolution function and wires -AutoResolve flag into both pipelines. Falls back to Codex if Gemini CLI is not available.
 
-### patch-gsd-supervisor.ps1 (Script 14)
+### patch-gsd-supervisor.ps1 (Script 15)
 
 Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-converge.ps1 and supervisor-blueprint.ps1 wrappers, profile function updates (adds -SupervisorAttempts and -NoSupervisor params to gsd-converge and gsd-blueprint). Creates `~/.gsd-global/supervisor/` for cross-project pattern memory.
 
@@ -336,9 +355,10 @@ Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-c
 These are NOT run by the installer but can be run manually:
 
 - **setup-gsd-api-keys.ps1** -- Manages API key environment variables for all three providers. See below for full usage.
-- **setup-gsd-convergence.ps1** -- Per-project convergence config setup. Detects latest Figma design version, references SDLC specs (Phase A-E), creates per-project .gsd/ folder structure.
+- **setup-gsd-convergence.ps1** -- Per-project convergence config setup. Detects latest Figma design version, references SDLC specs (Phase A-E), creates per-project .gsd/ folder structure. Legacy script superseded by the global install approach.
 - **install-gsd-keybindings.ps1** -- Adds VS Code keyboard shortcuts (Ctrl+Shift+G chord prefix).
 - **token-cost-calculator.ps1** -- Token cost estimator script (also installed globally as `gsd-costs` by install-gsd-global.ps1).
+- **patch-false-converge-fix.ps1** -- One-time bug fix: fixes false "converged" exit when variables are null in the finally block, and removes orphaned profile code. Idempotent. Already applied to current codebase.
 
 ### setup-gsd-api-keys.ps1
 
@@ -725,6 +745,53 @@ Attempts to run the same prompt with an alternative agent when the primary agent
 
 Pipeline-internal function that resolves prompt templates before sending to agents. Replaces template variables ({{ITERATION}}, {{HEALTH}}, {{GSD_DIR}}, {{REPO_ROOT}}, {{BATCH_SIZE}}, {{INTERFACE_CONTEXT}}) and appends supervisor error context and prompt hints when present.
 
+### Invoke-FinalValidation
+
+Quality gate that runs when health reaches 100%. Executes 7 checks (build, tests, SQL, vulnerability audits) and returns structured results. Hard failures block convergence; warnings are advisory.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -RepoRoot | Repository root path |
+| -GsdDir | Path to .gsd directory |
+| -Iteration | Current iteration number |
+
+Returns: `@{ Passed=$bool; HardFailures=@(); Warnings=@(); Details=@{}; Timestamp=string }`
+
+Checks performed (in order):
+1. Strict .NET build (`dotnet build --no-restore`) → HARD failure
+2. npm build (`npm run build`) → HARD failure
+3. .NET tests (`dotnet test --no-build`) → HARD failure (if test projects exist)
+4. npm tests (`npm test` with CI=true) → HARD failure (if real test script exists)
+5. SQL validation (`Test-SqlFiles`) → WARNING
+6. .NET vulnerability audit (`dotnet list package --vulnerable`) → WARNING
+7. npm vulnerability audit (`npm audit --audit-level=high`) → WARNING
+
+Output files:
+- `.gsd/health/final-validation.json` -- structured results per check
+- `.gsd/logs/final-validation.log` -- human-readable log
+
+### New-DeveloperHandoff
+
+Generates `developer-handoff.md` in the repository root with everything a developer needs to pick up, compile, and run the project. Called automatically in the pipeline's `finally` block.
+
+Parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| -RepoRoot | string | (required) | Repository root path |
+| -GsdDir | string | (required) | Path to .gsd directory |
+| -Pipeline | string | "converge" | Pipeline type: "converge" or "blueprint" |
+| -ExitReason | string | "unknown" | Why the pipeline exited: "converged", "stalled", "max_iterations" |
+| -FinalHealth | double | 0 | Final health percentage |
+| -Iteration | int | 0 | Final iteration count |
+| -ValidationResult | object | $null | Output from Invoke-FinalValidation (if validation was run) |
+
+Returns: path to the generated `developer-handoff.md` file.
+
+Report sections: Header, Quick Start (auto-detected build commands), Database Setup (SQL files + connection strings), Environment Configuration (appsettings + .env files), Project Structure (file tree), Requirements Status (grouped table), Validation Results, Known Issues (drift report + recent errors), Health Progression (ASCII bar chart), Cost Summary (by agent and phase).
+
 ### Invoke-SpecConsistencyCheck
 
 Scans specification documents for contradictions. Blocks critical conflicts unless -AutoResolve is set.
@@ -746,5 +813,4 @@ Keyboard shortcuts (if install-gsd-keybindings.ps1 was run):
 |----------|--------|
 | Ctrl+Shift+G, C | Run convergence loop |
 | Ctrl+Shift+G, B | Run blueprint pipeline |
-| Ctrl+Shift+G, A | Run assessment |
 | Ctrl+Shift+G, S | Show status dashboard |

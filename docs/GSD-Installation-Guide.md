@@ -76,7 +76,7 @@ cd gsd-autonomous-dev
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-This runs all 14 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
+This runs all 15 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
 
 | Order | Script | What It Installs |
 |-------|--------|-----------------|
@@ -85,15 +85,16 @@ This runs all 14 install/patch scripts in dependency order. The installer also r
 | 3 | patch-gsd-partial-repo.ps1 | gsd-assess command, file map generation |
 | 4 | patch-gsd-resilience.ps1 | Resilience module (retry, checkpoint, lock, watchdog timeout) |
 | 5 | patch-gsd-hardening.ps1 | Hardening (quota, network, boundary, notifications, heartbeat) |
-| 6 | patch-gsd-figma-make.ps1 | Interface detection, _analysis/_stubs discovery |
-| 7 | final-patch-1-spec-check.ps1 | Spec consistency checker |
-| 8 | final-patch-2-sql-cli.ps1 | SQL validation, CLI version checks |
-| 9 | final-patch-3-storyboard-verify.ps1 | Storyboard-aware verification prompts |
-| 10 | final-patch-4-blueprint-pipeline.ps1 | Final blueprint pipeline with all features |
-| 11 | final-patch-5-convergence-pipeline.ps1 | Final convergence loop with all features |
-| 12 | final-patch-6-assess-limitations.ps1 | Final assess script with known limitations |
-| 13 | final-patch-7-spec-resolve.ps1 | Spec conflict auto-resolution via Gemini |
-| 14 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
+| 6 | patch-gsd-final-validation.ps1 | Final validation gate + developer handoff report |
+| 7 | patch-gsd-figma-make.ps1 | Interface detection, _analysis/_stubs discovery |
+| 8 | final-patch-1-spec-check.ps1 | Spec consistency checker |
+| 9 | final-patch-2-sql-cli.ps1 | SQL validation, CLI version checks |
+| 10 | final-patch-3-storyboard-verify.ps1 | Storyboard-aware verification prompts |
+| 11 | final-patch-4-blueprint-pipeline.ps1 | Final blueprint pipeline with all features |
+| 12 | final-patch-5-convergence-pipeline.ps1 | Final convergence loop with all features |
+| 13 | final-patch-6-assess-limitations.ps1 | Final assess script with known limitations |
+| 14 | final-patch-7-spec-resolve.ps1 | Spec conflict auto-resolution via Gemini |
+| 15 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
 
 Optional standalone scripts (not run by installer):
 - **setup-gsd-api-keys.ps1** -- manage API key environment variables (set, show, clear)
@@ -101,7 +102,7 @@ Optional standalone scripts (not run by installer):
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
 - **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
 
-The repository contains 20 scripts total: 1 master installer, 1 pre-flight check, 14 core install/patch scripts, and 4 standalone utilities.
+The repository contains 22 scripts total: 1 master installer, 1 pre-flight check, 15 core install/patch scripts, 4 standalone utilities, and 1 bug fix patch.
 
 ### Step 3: Restart Terminal
 
@@ -133,7 +134,7 @@ After installation, the engine creates:
     global-config.json          # Global settings (notifications, patterns, phases)
     agent-map.json              # Agent-to-phase assignments
   lib\modules\
-    resilience.ps1              # Retry, checkpoint, lock, rollback, adaptive batch, hardening
+    resilience.ps1              # Retry, checkpoint, lock, rollback, adaptive batch, hardening, final validation
     supervisor.ps1              # Self-healing supervisor (diagnosis, fix, pattern memory)
     interfaces.ps1              # Multi-interface detection + auto-discovery
     interface-wrapper.ps1       # Context builder for agent prompts
@@ -159,6 +160,19 @@ After installation, the engine creates:
 ```
 
 ## First Project Setup
+
+### What Happens at 100% Health
+
+When the engine reaches 100% health (all requirements matched), it runs a **final validation gate** before declaring success:
+
+1. **Compilation check**: Runs `dotnet build` and/or `npm run build` -- must pass
+2. **Test execution**: Runs `dotnet test` and/or `npm test` -- must pass (if tests exist)
+3. **SQL validation**: Checks SQL patterns -- advisory only
+4. **Vulnerability audit**: Checks NuGet and npm dependencies -- advisory only
+
+If compilation or tests fail, health is set to 99% and the engine automatically loops to fix the issues (up to 3 validation attempts).
+
+When the pipeline exits (converged, stalled, or max iterations), it generates `developer-handoff.md` in the repository root with build commands, database setup, environment configuration, requirements status, validation results, known issues, and cost summary.
 
 ### Using Blueprint Pipeline (new projects)
 

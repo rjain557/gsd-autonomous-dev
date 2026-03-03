@@ -30,7 +30,7 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 | ntfy_topic | string | "auto" | Set to "auto" for per-project auto-detection (gsd-{username}-{reponame}), or a specific string to use one topic for all projects |
 | notify_on | string[] | (all events) | Events that trigger push notifications |
 
-Notification events: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `progress_response`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`
+Notification events: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `progress_response`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`, `validation_failed`, `validation_passed`
 
 #### patterns
 
@@ -224,6 +224,52 @@ Live engine state file updated at every state transition and on a 60-second hear
 | last_error | string/null | Last error message (truncated to 200 chars) |
 | errors_this_iteration | int | Number of errors in the current iteration |
 | recovered_from_error | bool | Whether the engine recovered from an error this iteration |
+
+### final-validation.json
+
+Location: `.gsd\health\final-validation.json`
+
+Structured results from the final validation gate. Written when health reaches 100% and `Invoke-FinalValidation` runs.
+
+```json
+{
+  "passed": true,
+  "hard_failures": [],
+  "warnings": ["NuGet vulnerabilities: 2 package(s) flagged"],
+  "iteration": 12,
+  "timestamp": "2026-03-03T14:30:00Z",
+  "checks": {
+    "dotnet_build": { "passed": true, "warnings": 0 },
+    "npm_build": { "passed": true },
+    "dotnet_test": { "passed": true, "summary": ["MyApp.Tests.csproj: Passed (42 tests)"] },
+    "npm_test": { "passed": true },
+    "sql": { "passed": true },
+    "dotnet_audit": { "passed": false, "vulnerabilities": ["High: Package.Name 1.2.3"] },
+    "npm_audit": { "passed": true }
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| passed | bool | Overall result: false if any hard failure, true if only warnings or all clean |
+| hard_failures | string[] | List of hard failure descriptions (blocks convergence) |
+| warnings | string[] | List of warning descriptions (advisory, included in handoff) |
+| iteration | int | Iteration when validation ran |
+| timestamp | string | ISO 8601 timestamp |
+| checks | object | Per-check results: `dotnet_build`, `npm_build`, `dotnet_test`, `npm_test`, `sql`, `dotnet_audit`, `npm_audit` |
+
+Each check object has `passed` (bool) and optionally `skipped` (bool + `reason`), `errors` (string[]), `warnings` (int), `summary` (string[]), or `vulnerabilities` (string[]).
+
+### developer-handoff.md
+
+Location: Repository root (e.g., `C:\repos\my-app\developer-handoff.md`)
+
+Auto-generated markdown file containing everything a developer needs to pick up the project. Created by `New-DeveloperHandoff` in the pipeline's `finally` block. Committed and pushed to the remote repository automatically.
+
+Sections: Header (project metadata), Quick Start (auto-detected build commands), Database Setup (SQL files + connection strings), Environment Configuration (config files + .env), Project Structure (file tree), Requirements Status (grouped table), Validation Results, Known Issues (remaining gaps + recent errors), Health Progression (ASCII chart), Cost Summary (by agent and phase).
+
+This file is overwritten on each pipeline run.
 
 ### health-history.jsonl
 
@@ -477,7 +523,7 @@ Structured error log (append-only JSONL). Every error captured by the engine is 
 | message | string | Error description |
 | resolution | string | Action taken to resolve |
 
-Error categories: `quota`, `network`, `disk`, `corrupt_json`, `boundary_violation`, `agent_crash`, `health_regression`, `spec_conflict`, `watchdog_timeout`, `build_fail`, `fallback_success`
+Error categories: `quota`, `network`, `disk`, `corrupt_json`, `boundary_violation`, `agent_crash`, `health_regression`, `spec_conflict`, `watchdog_timeout`, `build_fail`, `fallback_success`, `validation_fail`
 
 ### Supervisor Constants
 
@@ -548,5 +594,4 @@ Installed by `install-gsd-keybindings.ps1` (Ctrl+Shift+G chord prefix):
 |----------|--------|
 | Ctrl+Shift+G, C | Run convergence loop |
 | Ctrl+Shift+G, B | Run blueprint pipeline |
-| Ctrl+Shift+G, A | Run assessment |
 | Ctrl+Shift+G, S | Show status dashboard |

@@ -1665,9 +1665,9 @@ function Extract-TokensFromOutput {
             # Extract token counts from usage if available, otherwise estimate from cost
             $inputTokens = 0; $outputTokens = 0; $cachedTokens = 0
             if ($resultEntry.usage) {
-                $inputTokens = [int]($resultEntry.usage.input_tokens ?? 0)
-                $outputTokens = [int]($resultEntry.usage.output_tokens ?? 0)
-                $cachedTokens = [int]($resultEntry.usage.cache_read_input_tokens ?? 0)
+                $inputTokens = if ($resultEntry.usage.input_tokens) { [int]$resultEntry.usage.input_tokens } else { 0 }
+                $outputTokens = if ($resultEntry.usage.output_tokens) { [int]$resultEntry.usage.output_tokens } else { 0 }
+                $cachedTokens = if ($resultEntry.usage.cache_read_input_tokens) { [int]$resultEntry.usage.cache_read_input_tokens } else { 0 }
             }
 
             return @{
@@ -1697,9 +1697,9 @@ function Extract-TokensFromOutput {
                     # Accumulate token usage from turn.completed events
                     if ($evt.type -eq "turn.completed" -and $evt.usage) {
                         $hasUsage = $true
-                        $totalInput += [int]($evt.usage.input_tokens ?? 0)
-                        $totalOutput += [int]($evt.usage.output_tokens ?? 0)
-                        $totalCached += [int]($evt.usage.cached_input_tokens ?? 0)
+                        $totalInput += if ($evt.usage.input_tokens) { [int]$evt.usage.input_tokens } else { 0 }
+                        $totalOutput += if ($evt.usage.output_tokens) { [int]$evt.usage.output_tokens } else { 0 }
+                        $totalCached += if ($evt.usage.cached_input_tokens) { [int]$evt.usage.cached_input_tokens } else { 0 }
                     }
 
                     # Extract text content from message events
@@ -1748,13 +1748,13 @@ function Extract-TokensFromOutput {
 
             $inputTokens = 0; $outputTokens = 0; $cachedTokens = 0
             if ($parsed.stats) {
-                $inputTokens = [int]($parsed.stats.prompt_tokens ?? $parsed.stats.input_tokens ?? 0)
-                $outputTokens = [int]($parsed.stats.response_tokens ?? $parsed.stats.output_tokens ?? 0)
-                $cachedTokens = [int]($parsed.stats.cached_tokens ?? 0)
+                $inputTokens = if ($parsed.stats.prompt_tokens) { [int]$parsed.stats.prompt_tokens } elseif ($parsed.stats.input_tokens) { [int]$parsed.stats.input_tokens } else { 0 }
+                $outputTokens = if ($parsed.stats.response_tokens) { [int]$parsed.stats.response_tokens } elseif ($parsed.stats.output_tokens) { [int]$parsed.stats.output_tokens } else { 0 }
+                $cachedTokens = if ($parsed.stats.cached_tokens) { [int]$parsed.stats.cached_tokens } else { 0 }
             } elseif ($parsed.usage) {
-                $inputTokens = [int]($parsed.usage.prompt_tokens ?? $parsed.usage.input_tokens ?? 0)
-                $outputTokens = [int]($parsed.usage.completion_tokens ?? $parsed.usage.output_tokens ?? 0)
-                $cachedTokens = [int]($parsed.usage.cached_tokens ?? 0)
+                $inputTokens = if ($parsed.usage.prompt_tokens) { [int]$parsed.usage.prompt_tokens } elseif ($parsed.usage.input_tokens) { [int]$parsed.usage.input_tokens } else { 0 }
+                $outputTokens = if ($parsed.usage.completion_tokens) { [int]$parsed.usage.completion_tokens } elseif ($parsed.usage.output_tokens) { [int]$parsed.usage.output_tokens } else { 0 }
+                $cachedTokens = if ($parsed.usage.cached_tokens) { [int]$parsed.usage.cached_tokens } else { 0 }
             }
 
             if ($inputTokens -eq 0 -and $outputTokens -eq 0) { return $null }
@@ -1810,14 +1810,14 @@ function Get-TokenPrice {
                 return @{
                     InputPerM = [double]$m.InputPerM
                     OutputPerM = [double]$m.OutputPerM
-                    CacheReadPerM = [double]($m.CacheReadPerM ?? 0)
+                    CacheReadPerM = if ($m.CacheReadPerM) { [double]$m.CacheReadPerM } else { 0 }
                     ModelKey = $modelKey
                 }
             }
         }
     } catch { }
 
-    return $fallback[$Agent] ?? $fallback["claude"]
+    $price = $fallback[$Agent]; if (-not $price) { $price = $fallback["claude"] }; return $price
 }
 
 function Initialize-CostTracking {

@@ -1,14 +1,23 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 14 scripts in correct order.
+    GSD Master Installer - Runs ALL 15 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
+
+    # With API keys (recommended)
+    powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1 -AnthropicKey "sk-ant-..." -OpenAIKey "sk-..." -GoogleKey "AIza..."
 #>
+
+param(
+    [string]$AnthropicKey = "",
+    [string]$OpenAIKey = "",
+    [string]$GoogleKey = ""
+)
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GSD_VERSION = "1.2.0"
-$GSD_DATE = "2026-03-02"
+$GSD_VERSION = "1.3.0"
+$GSD_DATE = "2026-03-03"
 
 # Run prerequisites check first if the script exists
 $prereqScript = Join-Path $scriptDir "install-gsd-prerequisites.ps1"
@@ -16,7 +25,11 @@ if (Test-Path $prereqScript) {
     Write-Host ""
     Write-Host "  Running prerequisites check first..." -ForegroundColor Cyan
     Write-Host ""
-    & $prereqScript -VerifyOnly
+    $prereqArgs = @{}
+    if ($AnthropicKey) { $prereqArgs["AnthropicKey"] = $AnthropicKey }
+    if ($OpenAIKey)    { $prereqArgs["OpenAIKey"]    = $OpenAIKey }
+    if ($GoogleKey)    { $prereqArgs["GoogleKey"]     = $GoogleKey }
+    & $prereqScript @prereqArgs
 
     $hasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
     $hasNode = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
@@ -59,6 +72,7 @@ $scripts = @(
     @{ File="patch-gsd-partial-repo.ps1";            Desc="Partial Repo Support (assess existing code)" }
     @{ File="patch-gsd-resilience.ps1";              Desc="Self-Healing (retry, checkpoint, lock, rollback)" }
     @{ File="patch-gsd-hardening.ps1";               Desc="Full Autonomous (quota sleep, network poll, JSON backup)" }
+    @{ File="patch-gsd-final-validation.ps1";        Desc="Final Validation Gate + Developer Handoff Report" }
     @{ File="patch-gsd-figma-make.ps1";              Desc="Figma Make Integration (multi-interface, _analysis/)" }
     @{ File="final-patch-1-spec-check.ps1";          Desc="Spec Consistency Pre-Check" }
     @{ File="final-patch-2-sql-cli.ps1";             Desc="SQL + CLI Enhancements" }
@@ -73,7 +87,7 @@ $scripts = @(
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 14 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 15 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

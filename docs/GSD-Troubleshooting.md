@@ -261,6 +261,86 @@ If you see `[GSD-STATUS]` messages you did not request, someone else (or another
 2. **Check other sessions**: If you have multiple terminals running the same project, each pipeline has its own listener -- a single "progress" post will trigger responses from all of them.
 3. **Feedback loop exclusion**: The listener ignores any message starting with `[GSD-STATUS]`, so it will not respond to its own output. If you are seeing repeated responses, another pipeline instance is likely running.
 
+## Final Validation Issues
+
+### Validation keeps failing (health stuck at 99%)
+
+The final validation gate runs when health reaches 100% and checks compilation, tests, SQL, and vulnerabilities. If validation fails, health is set to 99% and the loop continues to auto-fix. Max 3 validation attempts.
+
+If validation fails 3 times:
+
+1. **Check the validation log**: Review `.gsd/logs/final-validation.log` for exactly which checks failed
+2. **Check the structured results**: Read `.gsd/health/final-validation.json` for per-check details
+3. **Common causes**:
+   - Build errors that agents can't fix (missing NuGet packages, incompatible .NET versions)
+   - Test failures caused by missing test infrastructure (no test database, missing mock data)
+   - npm build failures from missing dependencies not in package.json
+4. **Fix manually and re-run**: Fix the underlying issue, then `gsd-converge` to resume
+
+```powershell
+# View validation results
+Get-Content ".gsd\health\final-validation.json" | ConvertFrom-Json | Format-List
+
+# View detailed log
+Get-Content ".gsd\logs\final-validation.log"
+```
+
+### Validation skips all checks
+
+If all 7 checks show "SKIP", the project may not have the expected build infrastructure:
+- No `.sln` file → all .NET checks skipped
+- No `package.json` → all npm checks skipped
+- No test projects → test checks skipped (warning only)
+
+This is normal for projects that don't use .NET or Node.js. The validation gate passes with no hard failures.
+
+### Build passes locally but validation fails
+
+The validation gate runs builds in the same working directory as the pipeline. Possible mismatches:
+
+1. **Missing NuGet restore**: The gate runs `dotnet build --no-restore`. Ensure packages are restored first (normally handled by the engine's execute phase).
+2. **Missing node_modules**: The gate runs `npm install --silent` if `node_modules` is missing, but network issues could cause this to fail.
+3. **Environment-specific issues**: If builds depend on specific environment variables or tools not available in the pipeline context.
+
+### npm test hangs / doesn't complete
+
+The validation gate sets `CI=true` to prevent interactive watch mode (Jest, Vitest). If tests still hang:
+
+1. **Watch mode not respecting CI**: Some test frameworks need explicit `--watchAll=false`. Update the test script in package.json.
+2. **Test timeout**: Individual tests may be slow. The gate has a 5-minute overall timeout per check.
+3. **Database dependencies**: Tests requiring a running database will fail in the pipeline context.
+
+## Developer Handoff Issues
+
+### developer-handoff.md is empty or missing sections
+
+The handoff report gracefully handles missing data -- sections show "Data not available" or "*No {data} detected*" when source files don't exist. If a section is completely missing:
+
+1. **Pipeline crashed before finally block**: The handoff is generated in the `finally` block. If PowerShell itself crashed (not the pipeline), the block may not run.
+2. **`New-DeveloperHandoff` not available**: Re-run `install-gsd-all.ps1` to ensure `patch-gsd-final-validation.ps1` (Script 6) is installed.
+
+### developer-handoff.md not committed to git
+
+The handoff is committed and pushed in the `finally` block. If it's generated but not committed:
+
+1. **Git authentication expired**: The push may fail silently. Check git credentials.
+2. **No remote configured**: `git push` requires a configured remote. The commit is still local.
+3. **Protected branch**: If the branch has push protection, the push will fail.
+
+### Requirements table is empty
+
+The requirements table reads from `requirements-matrix.json` (convergence) or `blueprint.json` (blueprint). If empty:
+
+1. **No matrix generated yet**: Run at least one iteration of `gsd-converge` to create the requirements matrix.
+2. **Blueprint manifest missing**: For blueprint pipeline, the manifest must be generated first via `gsd-blueprint -BlueprintOnly`.
+
+### Health progression chart not showing
+
+The ASCII chart reads from `health-history.jsonl`. If missing:
+
+1. **No iterations completed**: At least one full iteration must complete to create a health history entry.
+2. **Wrong path for blueprint**: Blueprint health history is at `.gsd/blueprint/health-history.jsonl`, not `.gsd/health/health-history.jsonl`.
+
 ## Supervisor Issues
 
 ### Supervisor keeps retrying the same fix

@@ -2,6 +2,8 @@
 .SYNOPSIS
     GSD Prerequisites Installer and Verifier
     Checks for all required tools, installs missing ones, validates the environment.
+    Checks npm packages for latest versions and upgrades if outdated.
+    Configures API keys for Claude, Codex, and Gemini agents.
 
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1
@@ -10,14 +12,30 @@
       -SkipOptional       Skip optional tools (sqlcmd)
       -VerifyOnly         Check everything, install nothing
       -Force              Reinstall even if already present
-      -SkipAuth           Skip authentication checks
+      -SkipAuth           Skip API key configuration
+      -AnthropicKey "sk-ant-..."   Set Anthropic API key (Claude)
+      -OpenAIKey "sk-..."          Set OpenAI API key (Codex)
+      -GoogleKey "AIza..."         Set Google API key (Gemini)
+
+.EXAMPLE
+    # Full run with API keys
+    .\install-gsd-prerequisites.ps1 -AnthropicKey "sk-ant-..." -OpenAIKey "sk-..." -GoogleKey "AIza..."
+
+    # Interactive - prompts for keys during auth section
+    .\install-gsd-prerequisites.ps1
+
+    # Verify only, skip auth
+    .\install-gsd-prerequisites.ps1 -VerifyOnly -SkipAuth
 #>
 
 param(
     [switch]$SkipOptional,
     [switch]$VerifyOnly,
     [switch]$Force,
-    [switch]$SkipAuth
+    [switch]$SkipAuth,
+    [string]$AnthropicKey = "",
+    [string]$OpenAIKey = "",
+    [string]$GoogleKey = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -208,24 +226,41 @@ function Install-ViaWinget {
     }
 }
 
+function Get-NpmLatestVersion {
+    param([string]$Package)
+    try {
+        $json = npm view $Package version --json 2>$null | Out-String
+        $ver = $json.Trim().Trim('"')
+        if ($ver -match '^\d+\.\d+') { return $ver }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
 function Install-ViaNpm {
-    param([string]$Package, [string]$Name)
+    param([string]$Package, [string]$Name, [switch]$Upgrade)
 
     if ($VerifyOnly) {
-        Write-Check $Name "fail" "Not installed (verify-only mode)" "Red"
+        if ($Upgrade) {
+            Write-Check $Name "fail" "Outdated (verify-only mode, needs upgrade)" "Red"
+        } else {
+            Write-Check $Name "fail" "Not installed (verify-only mode)" "Red"
+        }
         return $false
     }
 
-    Write-Check $Name "install" "Installing via npm..." "Yellow"
+    $action = if ($Upgrade) { "Upgrading" } else { "Installing" }
+    Write-Check $Name "install" "$action via npm..." "Yellow"
     try {
         $output = npm install -g $Package 2>&1 | Out-String
         if ($LASTEXITCODE -eq 0) {
             # Refresh PATH in case npm global bin changed
             Refresh-PathFromRegistry
-            Write-Check $Name "pass" "Installed via npm" "Green"
+            Write-Check $Name "pass" "$action completed via npm" "Green"
             return $true
         } else {
-            Write-Check $Name "fail" "npm install failed: $output" "Red"
+            Write-Check $Name "fail" "npm $($action.ToLower()) failed: $output" "Red"
             Write-Host "    Try manually: npm install -g $Package" -ForegroundColor DarkYellow
             return $false
         }
@@ -323,6 +358,21 @@ foreach ($tool in $REQUIRED_TOOLS) {
         if ($ver) {
             $versionOk = ($null -eq $tool.MinMajor) -or ($ver.Major -ge $tool.MinMajor)
             if ($versionOk) {
+                # For npm packages, check if a newer version is available
+                if ($tool.NpmPackage -and (Test-CommandExists "npm")) {
+                    $latest = Get-NpmLatestVersion $tool.NpmPackage
+                    if ($latest -and $latest -ne $ver.Full) {
+                        Write-Check $tool.Name "warn" "v$($ver.Full) installed, v$latest available" "Yellow"
+                        $upgraded = Install-ViaNpm -Package $tool.NpmPackage -Name $tool.Name -Upgrade
+                        if ($upgraded) {
+                            $results.Installed++
+                        } else {
+                            # Upgrade failed but current version is functional
+                            $results.Warnings++
+                        }
+                        continue
+                    }
+                }
                 Write-Check $tool.Name "pass" "v$($ver.Full)" "Green"
                 $results.Passed++
                 continue
@@ -511,44 +561,74 @@ if (Test-Path $profilePath) {
     $results.Warnings++
 }
 
-# --- Auth ---
+# --- API Keys ---
 if (-not $SkipAuth) {
-    Write-Section "Authentication"
+    Write-Section "API Keys"
 
-    if (Test-CommandExists "claude") {
-        try {
-            $authOut = claude -p "Reply with exactly: AUTH_OK" --max-turns 1 2>&1 | Out-String
-            if ($authOut -match "AUTH_OK") {
-                Write-Check "Claude Code Auth" "pass" "Authenticated" "Green"
-                $results.Passed++
-            } else {
-                Write-Check "Claude Code Auth" "warn" "May need auth. Run: claude auth" "Yellow"
-                $results.Warnings++
-            }
-        } catch {
-            Write-Check "Claude Code Auth" "warn" "Could not verify. Run: claude auth" "Yellow"
-            $results.Warnings++
-        }
-    } else {
-        Write-Check "Claude Code Auth" "skip" "CLI not installed yet" "DarkGray"
+    Write-Host "  API keys are stored as User-level environment variables." -ForegroundColor White
+    Write-Host "  They persist across sessions and are NEVER committed to git." -ForegroundColor White
+    Write-Host ""
+
+    # Key definitions: env var, display name, expected prefix, param value, docs URL
+    $apiKeys = @(
+        @{ Var = "ANTHROPIC_API_KEY"; Name = "Claude (Anthropic)"; Prefix = "sk-ant-"; ParamVal = $AnthropicKey; URL = "https://console.anthropic.com/settings/keys" },
+        @{ Var = "OPENAI_API_KEY";    Name = "Codex (OpenAI)";     Prefix = "sk-";     ParamVal = $OpenAIKey;    URL = "https://platform.openai.com/api-keys" },
+        @{ Var = "GOOGLE_API_KEY";    Name = "Gemini (Google)";    Prefix = "AIza";    ParamVal = $GoogleKey;    URL = "https://aistudio.google.com/apikey" }
+    )
+
+    function Mask-Key([string]$key) {
+        if (-not $key -or $key.Length -lt 8) { return "(not set)" }
+        return $key.Substring(0, 7) + ("*" * [Math]::Max(0, $key.Length - 11)) + $key.Substring($key.Length - 4)
     }
 
-    if (Test-CommandExists "codex") {
-        try {
-            $authOut = codex exec --full-auto "Reply with exactly: AUTH_OK" 2>&1 | Out-String
-            if ($authOut -match "AUTH_OK") {
-                Write-Check "Codex Auth" "pass" "Authenticated" "Green"
+    foreach ($ak in $apiKeys) {
+        $current = [System.Environment]::GetEnvironmentVariable($ak.Var, "User")
+
+        # Determine the new key: parameter > prompt > skip
+        $newKey = $ak.ParamVal
+        if (-not $newKey -and -not $VerifyOnly) {
+            if ($current) {
+                $masked = Mask-Key $current
+                Write-Host "  $($ak.Name)" -ForegroundColor Cyan
+                Write-Host "    Current: $masked" -ForegroundColor Green
+                Write-Host "    Press Enter to keep, or paste a new key: " -NoNewline -ForegroundColor White
+                $newKey = Read-Host
+            } else {
+                Write-Host "  $($ak.Name)" -ForegroundColor Cyan
+                Write-Host "    Current: (not set)" -ForegroundColor DarkYellow
+                Write-Host "    Get key: $($ak.URL)" -ForegroundColor DarkGray
+                Write-Host "    Paste your API key (or Enter to skip): " -NoNewline -ForegroundColor White
+                $newKey = Read-Host
+            }
+        }
+
+        if ($newKey -and $newKey.Trim()) {
+            $newKey = $newKey.Trim()
+
+            # Validate prefix
+            if ($ak.Prefix -and -not $newKey.StartsWith($ak.Prefix)) {
+                Write-Check $ak.Name "warn" "Expected key starting with '$($ak.Prefix)' - setting anyway, verify it's correct" "Yellow"
+            }
+
+            # Store persistently (User level) and in current session (Process level)
+            [System.Environment]::SetEnvironmentVariable($ak.Var, $newKey, "User")
+            [System.Environment]::SetEnvironmentVariable($ak.Var, $newKey, "Process")
+            Write-Check $ak.Name "pass" "$($ak.Var) = $(Mask-Key $newKey)" "Green"
+            $results.Installed++
+        } else {
+            if ($current) {
+                if ($VerifyOnly) {
+                    Write-Check $ak.Name "pass" "$($ak.Var) = $(Mask-Key $current)" "Green"
+                } else {
+                    Write-Check $ak.Name "pass" "Kept existing: $(Mask-Key $current)" "Green"
+                }
                 $results.Passed++
             } else {
-                Write-Check "Codex Auth" "warn" "May need auth. Run: codex auth" "Yellow"
+                Write-Check $ak.Name "warn" "$($ak.Var) not set. Agent will use interactive auth (lower rate limits)" "Yellow"
                 $results.Warnings++
             }
-        } catch {
-            Write-Check "Codex Auth" "warn" "Could not verify. Run: codex auth" "Yellow"
-            $results.Warnings++
         }
-    } else {
-        Write-Check "Codex Auth" "skip" "CLI not installed yet" "DarkGray"
+        Write-Host ""
     }
 }
 

@@ -21,7 +21,7 @@ After running install-gsd-all.ps1, the engine creates:
   config\
     global-config.json          # Global settings (notifications, patterns, phases)
   lib\modules\
-    resilience.ps1              # Retry, checkpoint, lock, rollback, adaptive batch, hardening
+    resilience.ps1              # Retry, checkpoint, lock, rollback, adaptive batch, hardening, final validation
     interfaces.ps1              # Multi-interface detection + auto-discovery
     interface-wrapper.ps1       # Context builder for agent prompts
   prompts\
@@ -75,8 +75,11 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
   costs\
     token-usage.jsonl             # Actual token costs per agent call (append-only)
     cost-summary.json             # Rolling cost totals by agent, phase, run
+  health\
+    final-validation.json         # Final validation gate results (7 checks)
   logs\
     errors.jsonl                # Categorized errors (JSONL)
+    final-validation.log        # Detailed final validation output
     iter{N}-{phase}.log         # Per-iteration agent output
   file-map.json                 # Machine-readable repo inventory
   file-map-tree.md              # Human-readable directory tree
@@ -91,6 +94,7 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
     escalation-report.md          # Full report when all strategies exhausted
   .gsd-checkpoint.json          # Crash recovery state (also read by background heartbeat)
   .gsd-lock                     # Prevents concurrent runs
+developer-handoff.md              # Auto-generated developer handoff report (repo root)
 ```
 
 ## Data Flow
@@ -198,9 +202,22 @@ Tests network by running: claude -p "PING" --max-turns 1
 
 Polls every 30 seconds when offline. Resumes when connectivity returns. Max wait: 1 hour.
 
-### Git Snapshots
+### Git Snapshots and Commit Traceability
 
-Creates git snapshot before any destructive operation. Auto-commits after each successful iteration with message: gsd: iter N (health: X%)
+Creates git snapshot before any destructive operation. After each successful iteration, the engine commits all changes with the code review text as the commit message body. This documents exactly what was reviewed, found, and fixed in each iteration.
+
+**Convergence pipeline**: Reads `.gsd/code-review/review-current.md` and uses it as the commit body via `git commit -F`.
+
+**Blueprint pipeline**: Uses the drift report and health data as the commit body.
+
+Commit messages follow this format:
+```
+gsd: iter N (health: X%)
+
+[Full code review text, truncated at 4000 characters]
+```
+
+All iteration commits are automatically pushed to the remote repository (`git push`). The final CONVERGED/COMPLETE commit includes a `gsd-converged-vN` tag that is also pushed.
 
 ### Health Regression Protection
 
@@ -309,7 +326,7 @@ Successful recovery patterns are saved to `~/.gsd-global/supervisor/pattern-memo
 
 ### Structured Error Logging
 
-All errors logged to .gsd/logs/errors.jsonl with categories: quota, network, disk, corrupt_json, boundary_violation, agent_crash, health_regression, spec_conflict, watchdog_timeout. Each entry includes timestamp, phase, iteration, message, and resolution.
+All errors logged to .gsd/logs/errors.jsonl with categories: quota, network, disk, corrupt_json, boundary_violation, agent_crash, health_regression, spec_conflict, watchdog_timeout, build_fail, fallback_success, validation_fail. Each entry includes timestamp, phase, iteration, message, and resolution.
 
 ## Push Notifications (ntfy.sh)
 
@@ -362,6 +379,8 @@ The topic is resolved in this order:
 | Supervisor restarting | "Supervisor: Restarting in new terminal" | default | rocket |
 | Supervisor recovered | "Supervisor: RECOVERED at {health}%" | high | white_check_mark |
 | Supervisor escalation | "Supervisor: NEEDS HUMAN - see escalation-report.md" | urgent | sos |
+| Validation failed | "Validation Failed (N/3)" | high | warning |
+| Validation passed | "Validation Passed" | default | white_check_mark |
 | Progress response | "[GSD-STATUS] Progress Report" | default | bar_chart |
 
 #### Background Heartbeat
@@ -619,6 +638,78 @@ Pre-flight checks for required tools:
 
 Warns on untested versions but does not block execution.
 
+## Final Validation Gate
+
+When health reaches 100%, the engine runs a final validation gate before declaring CONVERGED or BLUEPRINT COMPLETE. This bridges the gap between "all requirements have matching code references" and "the code actually compiles and runs."
+
+### Validation Checks
+
+| # | Check | Command | Fail Type | Description |
+|---|-------|---------|-----------|-------------|
+| 1 | .NET build | `dotnet build --no-restore` | HARD | Compilation must succeed with zero errors |
+| 2 | npm build | `npm run build` | HARD | Frontend must compile cleanly |
+| 3 | .NET tests | `dotnet test --no-build` | HARD | All test projects must pass (if tests exist) |
+| 4 | npm tests | `npm test` (with CI=true) | HARD | All tests must pass (if real test script exists) |
+| 5 | SQL validation | `Test-SqlFiles` (existing function) | WARN | SQL pattern violations are advisory |
+| 6 | .NET vulnerability audit | `dotnet list package --vulnerable` | WARN | Flags vulnerable NuGet packages |
+| 7 | npm vulnerability audit | `npm audit --audit-level=high` | WARN | Flags high+ severity npm vulnerabilities |
+
+### Failure Handling
+
+- **Hard failures** (checks 1-4): Set health to 99%, write failures to `.gsd/supervisor/error-context.md` so the next iteration's code review picks them up, loop continues to fix the issues
+- **Warnings** (checks 5-7): Included in the developer handoff report but do NOT block convergence
+- **Max 3 validation attempts**: If validation fails 3 times, the pipeline exits to avoid infinite loops
+- **Skipped checks**: If no .sln, no package.json, or no test projects exist, those checks are skipped (not a failure)
+
+### Validation Retry Loop
+
+The validation gate wraps the main iteration loop in an outer `do/while`:
+
+```
+do {
+    while (health < target) { ... iterate ... }
+    if (health >= 100%) {
+        run final validation
+        if (failed) { health = 99%, loop continues }
+    }
+} while (validation failed AND attempts < 3)
+```
+
+This allows the engine to automatically fix compilation errors, test failures, and build issues that only become apparent at 100% health.
+
+### Output Files
+
+| File | Purpose |
+|------|---------|
+| `.gsd/health/final-validation.json` | Structured results: passed/failed, hard failures, warnings, per-check details |
+| `.gsd/logs/final-validation.log` | Human-readable log of all 7 checks |
+
+## Developer Handoff Report
+
+When the pipeline exits (converged, stalled, or max iterations), it automatically generates `developer-handoff.md` in the repository root. This gives the developer everything needed to pick up, compile, and run the project with minimal intervention.
+
+### Report Sections
+
+| # | Section | Content Source |
+|---|---------|---------------|
+| 1 | Header | Project name, pipeline, date, final health, iterations, exit reason |
+| 2 | Quick Start | Auto-detected build commands (.sln → `dotnet restore && dotnet build`, package.json → `npm install && npm run build`, docker-compose → `docker-compose up`) |
+| 3 | Database Setup | Recursively scanned .sql files (sorted by name), connection strings from appsettings.json |
+| 4 | Environment Configuration | appsettings*.json files, .env files, placeholder value warnings |
+| 5 | Project Structure | Content of `.gsd/file-map-tree.md` (truncated at 5000 chars) |
+| 6 | Requirements Status | Table from requirements-matrix.json grouped by status (satisfied → partial → not_started) |
+| 7 | Validation Results | From `Invoke-FinalValidation` output or "not run" if health < 100% |
+| 8 | Known Issues | Remaining gaps from drift-report.md + last 10 entries from errors.jsonl |
+| 9 | Health Progression | ASCII bar chart from health-history.jsonl showing iteration-by-iteration progress |
+| 10 | Cost Summary | Total cost, breakdown by agent and phase from cost-summary.json |
+
+### Generation Behavior
+
+- Generated in the pipeline's `finally` block (always runs, even on crashes)
+- Auto-committed and pushed to the remote repository
+- Missing data files result in "Data not available" for that section (never crashes)
+- Blueprint pipeline reads from `.gsd/blueprint/` paths; convergence from `.gsd/health/`
+
 ## Project Patterns (Enforced)
 
 All pipelines enforce these patterns:
@@ -792,6 +883,9 @@ Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and ac
 - Stall (no progress): reduce batch, diagnose after threshold
 - Spec contradictions (with -AutoResolve): Gemini auto-resolves via authoritative sources
 - Pipeline stall/max iterations: supervisor root-causes via Claude, modifies prompts/specs/queue, restarts in new terminal (up to 5 attempts)
+- Compilation errors at 100% health: final validation gate detects, resets to 99%, loop auto-fixes (up to 3 attempts)
+- Test failures at 100% health: same as compilation errors -- auto-fix via validation retry loop
+- Developer handoff generation: auto-generated `developer-handoff.md` at pipeline exit with build commands, DB setup, requirements, costs
 
 ### Requires Human Intervention
 
@@ -802,3 +896,4 @@ Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and ac
 - Code compiles but logically wrong (review storyboards + unit tests)
 - Quota exhausted for more than 24 hours (wait for billing cycle)
 - CLI breaking changes (update scripts)
+- Validation fails 3 times (compilation/test issues too complex for auto-fix)

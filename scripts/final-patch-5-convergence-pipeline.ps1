@@ -192,6 +192,9 @@ if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
 
 # Main loop
 $StallCount = 0; $TargetHealth = 100
+$ValidationAttempts = 0; $MaxValidationAttempts = 3; $validationResult = $null
+
+do {
 
 while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallCount -lt $StallThreshold) {
     $Iteration++; $PrevHealth = $Health
@@ -386,6 +389,47 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     Write-Host ""; Start-Sleep -Seconds 2
 }
 
+    # Final validation gate - runs when health reaches 100%
+    $FinalHealth = Get-Health
+    $validationFailed = $false
+    if ($FinalHealth -ge $TargetHealth -and -not $DryRun -and $ValidationAttempts -lt $MaxValidationAttempts) {
+        if (Get-Command Invoke-FinalValidation -ErrorAction SilentlyContinue) {
+            $ValidationAttempts++
+            Write-Host ""
+            Write-Host "  [SHIELD] Final validation (attempt $ValidationAttempts/$MaxValidationAttempts)..." -ForegroundColor Cyan
+            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "final-validation" -Agent "local" -Iteration $Iteration -HealthScore $FinalHealth
+            }
+            $validationResult = Invoke-FinalValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration
+            if (-not $validationResult.Passed) {
+                $validationFailed = $true
+                foreach ($f in $validationResult.HardFailures) { Write-Host "    FAIL: $f" -ForegroundColor Red }
+                foreach ($w in $validationResult.Warnings) { Write-Host "    WARN: $w" -ForegroundColor DarkYellow }
+                # Write failures to error-context so code-review picks them up next iteration
+                $failText = ($validationResult.HardFailures | ForEach-Object { "- $_" }) -join "`n"
+                "## Final Validation Failures`n$failText" | Set-Content (Join-Path $GsdDir "supervisor\error-context.md") -Encoding UTF8
+                # Reset health to 99 so while loop re-enters
+                $healthObj = Get-Content $HealthFile -Raw | ConvertFrom-Json
+                $healthObj.health_score = 99
+                $healthObj | ConvertTo-Json | Set-Content $HealthFile -Encoding UTF8
+                $Health = 99; $FinalHealth = 99
+                Send-GsdNotification -Title "Validation Failed ($ValidationAttempts/$MaxValidationAttempts)" `
+                    -Message "$repoName | $($validationResult.HardFailures.Count) issues - loop continues" `
+                    -Tags "warning" -Priority "high"
+                $script:LAST_NOTIFY_TIME = Get-Date
+            } else {
+                if ($validationResult.Warnings.Count -gt 0) {
+                    Write-Host "  [OK] Validation passed with $($validationResult.Warnings.Count) warning(s)" -ForegroundColor Yellow
+                    foreach ($w in $validationResult.Warnings) { Write-Host "    WARN: $w" -ForegroundColor DarkYellow }
+                } else {
+                    Write-Host "  [OK] All validation checks passed" -ForegroundColor Green
+                }
+            }
+        }
+    }
+
+} while ($validationFailed -and $ValidationAttempts -lt $MaxValidationAttempts)
+
 # Final
 Write-Host ""; Write-Host "=========================================================" -ForegroundColor Green
 $FinalHealth = Get-Health
@@ -436,6 +480,19 @@ Write-Host "=========================================================" -Foregrou
         Save-TerminalSummary -GsdDir $GsdDir -Pipeline "converge" -ExitReason $exitReason `
             -Health $FinalHealth -Iteration $Iteration -StallCount $StallCount -BatchSize $CurrentBatchSize
     }
+
+    # Generate developer handoff report (always, regardless of exit reason)
+    if (Get-Command New-DeveloperHandoff -ErrorAction SilentlyContinue) {
+        Write-Host "  [DOC] Generating developer handoff..." -ForegroundColor Cyan
+        $handoffPath = New-DeveloperHandoff -RepoRoot $RepoRoot -GsdDir $GsdDir `
+            -Pipeline "converge" -ExitReason $exitReason `
+            -FinalHealth $FinalHealth -Iteration $Iteration -ValidationResult $validationResult
+        if ($handoffPath -and (Test-Path $handoffPath)) {
+            git add $handoffPath; git commit -m "gsd: developer handoff report" --no-verify 2>$null
+            git push 2>$null
+        }
+    }
+
     Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
 }
 '@
