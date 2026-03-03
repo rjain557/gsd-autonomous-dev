@@ -288,7 +288,7 @@ Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-C
 
 ### patch-gsd-hardening.ps1 (Script 5)
 
-Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Start-BackgroundHeartbeat, Stop-BackgroundHeartbeat, Start-CommandListener, Stop-CommandListener, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError.
+Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Start-BackgroundHeartbeat, Stop-BackgroundHeartbeat, Start-CommandListener, Stop-CommandListener, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError, Update-EngineStatus, Start-EngineStatusHeartbeat, Stop-EngineStatusHeartbeat.
 
 ### patch-gsd-figma-make.ps1 (Script 6)
 
@@ -428,6 +428,42 @@ Parameters (Start):
 | -IntervalMinutes | Notification interval (default: 10) |
 
 The job is started after the "Pipeline Started" notification and stopped in the `finally` block, ensuring cleanup even on crashes.
+
+### Update-EngineStatus
+
+Merge-on-write update to `.gsd/health/engine-status.json`. Reads the existing file to preserve fields not being updated, then merges in the provided parameters. Always updates `last_heartbeat` and `elapsed_minutes` on every call. Truncates `last_error` to 200 characters.
+
+Parameters:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| -GsdDir | string | Yes | Path to .gsd directory |
+| -State | string | Yes | Engine state (ValidateSet: starting, running, sleeping, stalled, completed, converged) |
+| -Phase | string | No | Current pipeline phase (e.g., "review", "execute") |
+| -Agent | string | No | Active agent ("claude", "codex", "gemini") |
+| -Iteration | int | No | Current iteration number |
+| -Attempt | string | No | Retry attempt in "N/M" format (e.g., "1/3") |
+| -BatchSize | int | No | Current batch size |
+| -HealthScore | number | No | Latest health score percentage |
+| -SleepUntil | string | No | ISO 8601 timestamp when sleep ends |
+| -SleepReason | string | No | Reason for sleep (e.g., "quota_backoff") |
+| -LastError | string | No | Last error message (truncated to 200 chars) |
+| -ErrorsThisIteration | int | No | Number of errors in the current iteration |
+| -RecoveredFromError | bool | No | Whether the engine recovered from an error |
+
+### Start-EngineStatusHeartbeat
+
+Starts a background PowerShell job (via `Start-Job`) that updates `last_heartbeat` and `elapsed_minutes` in engine-status.json every 60 seconds. This ensures the heartbeat timestamp stays fresh even during long-running agent calls that block the main thread.
+
+Parameters:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| -GsdDir | string | Yes | Path to .gsd directory (location of engine-status.json) |
+
+### Stop-EngineStatusHeartbeat
+
+Stops the background engine-status heartbeat job started by `Start-EngineStatusHeartbeat`. Called in the pipeline's `finally` block to ensure cleanup on exit (including crashes).
 
 ### Start-CommandListener / Stop-CommandListener
 

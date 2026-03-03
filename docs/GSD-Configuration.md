@@ -179,6 +179,52 @@ Current project health score and breakdown. Written by Claude during the review/
 }
 ```
 
+### engine-status.json
+
+Location: `.gsd\health\engine-status.json`
+
+Live engine state file updated at every state transition and on a 60-second heartbeat interval. Used for stall detection by external observers, dashboards, and the supervisor.
+
+```json
+{
+  "pid": 23340,
+  "state": "running",
+  "phase": "research",
+  "agent": "gemini",
+  "iteration": 4,
+  "attempt": "1/3",
+  "batch_size": 8,
+  "health_score": 87.5,
+  "last_heartbeat": "2026-03-02T22:27:00Z",
+  "started_at": "2026-03-02T22:00:00Z",
+  "elapsed_minutes": 27,
+  "sleep_until": null,
+  "sleep_reason": null,
+  "last_error": null,
+  "errors_this_iteration": 0,
+  "recovered_from_error": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| pid | int | OS process ID of the running pipeline |
+| state | string | Engine state: starting, running, sleeping, stalled, completed, converged |
+| phase | string | Current pipeline phase |
+| agent | string | Active agent ("claude", "codex", "gemini") |
+| iteration | int | Current iteration number |
+| attempt | string | Retry attempt in "N/M" format |
+| batch_size | int | Current batch size |
+| health_score | number | Latest health score percentage |
+| last_heartbeat | string | ISO 8601 timestamp of last heartbeat update (refreshed every 60s) |
+| started_at | string | ISO 8601 timestamp when the pipeline started |
+| elapsed_minutes | number | Total minutes since pipeline start |
+| sleep_until | string/null | ISO 8601 timestamp when sleep ends (null if not sleeping) |
+| sleep_reason | string/null | Reason for sleep (e.g., "quota_backoff", "rate_limit") |
+| last_error | string/null | Last error message (truncated to 200 chars) |
+| errors_this_iteration | int | Number of errors in the current iteration |
+| recovered_from_error | bool | Whether the engine recovered from an error this iteration |
+
 ### health-history.jsonl
 
 Location: `.gsd\health\health-history.jsonl`

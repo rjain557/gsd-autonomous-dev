@@ -289,6 +289,58 @@ This means the supervisor exhausted all recovery attempts (default 5). Read `.gs
 2. **Fundamental spec issues**: Specs are contradictory in a way that can't be auto-fixed. Review and correct the source specs.
 3. **Architecture mismatch**: The existing codebase structure conflicts with spec requirements. Manual refactoring needed.
 
+## Engine Status Issues
+
+### How to check if the engine is stalled
+
+Read `.gsd/health/engine-status.json` and inspect the `state` and `last_heartbeat` fields:
+
+```powershell
+$status = Get-Content ".gsd\health\engine-status.json" | ConvertFrom-Json
+Write-Host "State: $($status.state)"
+Write-Host "Last heartbeat: $($status.last_heartbeat)"
+Write-Host "Phase: $($status.phase) | Agent: $($status.agent) | Iteration: $($status.iteration)"
+```
+
+Interpret the results:
+
+1. **state is "running"**: Check heartbeat freshness:
+   - Less than 2 minutes old: **ACTIVE** -- engine is running normally
+   - 2-5 minutes old: **PROBABLY ACTIVE** -- an agent call may be in progress
+   - More than 5 minutes old: **LIKELY STALLED** -- the engine probably crashed without updating its state. Verify by checking if the PID is alive:
+     ```powershell
+     Get-Process -Id $status.pid -ErrorAction SilentlyContinue
+     ```
+2. **state is "sleeping"**: The engine is in a recoverable pause (quota backoff, rate limit). Check `sleep_until` to see when it should wake. If `sleep_until` is in the past, see the next troubleshooting entry.
+3. **state is "stalled"**: The engine has detected an unrecoverable failure. Check `last_error` for details. The supervisor (if enabled) should pick this up automatically.
+4. **state is "completed" or "converged"**: The pipeline finished. No action needed.
+
+### engine-status.json shows "sleeping" but sleep_until is in the past
+
+This indicates the engine likely crashed during a sleep/backoff period. The pipeline went to sleep for quota or rate-limit recovery but never woke up to update its state.
+
+To recover:
+
+1. Verify the pipeline process is dead:
+   ```powershell
+   $status = Get-Content ".gsd\health\engine-status.json" | ConvertFrom-Json
+   Get-Process -Id $status.pid -ErrorAction SilentlyContinue
+   ```
+2. If no process is running, clear the lock and restart:
+   ```powershell
+   Remove-Item ".gsd\.gsd-lock" -Force
+   gsd-converge    # or gsd-blueprint
+   ```
+3. The checkpoint system will resume from the last successful phase.
+
+### engine-status.json is missing
+
+The file is created when the pipeline first starts. If it does not exist:
+
+1. **Pipeline never started**: Run `gsd-converge` or `gsd-blueprint` to start a pipeline. The file is created during the `starting` state.
+2. **Directory was cleaned up**: If `.gsd/health/` exists but `engine-status.json` is missing, the file may have been manually deleted or the .gsd directory was partially cleaned. Re-running the pipeline will recreate it.
+3. **Old installation**: If the engine was installed before the engine-status feature was added, re-run `install-gsd-all.ps1` to update the resilience module with `Update-EngineStatus`, `Start-EngineStatusHeartbeat`, and `Stop-EngineStatusHeartbeat`.
+
 ## Spec Conflict Issues
 
 ### "BLOCKED: Critical spec conflicts detected"

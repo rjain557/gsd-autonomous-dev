@@ -62,6 +62,7 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
     health-history.jsonl        # Scores over time
     requirements-matrix.json    # Every requirement + status
     drift-report.md             # Human-readable gap analysis
+    engine-status.json          # Live engine state (stall detection, heartbeat)
   code-review\                  # Detailed review findings
   generation-queue\
     queue-current.json          # Prioritized next batch
@@ -393,6 +394,99 @@ The command listener:
 4. Repeat for each project you want to monitor
 
 Each project publishes to its own topic, so notifications are grouped by project on your phone.
+
+## Engine Status File
+
+### Purpose
+
+`.gsd/health/engine-status.json` is a live state file updated at every state transition and on a 60-second heartbeat interval. It allows external observers (dashboards, scripts, the supervisor) to distinguish between "crashed," "sleeping in recoverable backoff," and "actively running" without parsing logs or checking process tables.
+
+### File Location
+
+`.gsd\health\engine-status.json` (within the per-project .gsd directory)
+
+### Schema
+
+```json
+{
+  "pid": 23340,
+  "state": "running",
+  "phase": "research",
+  "agent": "gemini",
+  "iteration": 4,
+  "attempt": "1/3",
+  "batch_size": 8,
+  "health_score": 87.5,
+  "last_heartbeat": "2026-03-02T22:27:00Z",
+  "started_at": "2026-03-02T22:00:00Z",
+  "elapsed_minutes": 27,
+  "sleep_until": null,
+  "sleep_reason": null,
+  "last_error": null,
+  "errors_this_iteration": 0,
+  "recovered_from_error": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| pid | int | OS process ID of the running pipeline |
+| state | string | Current engine state (see state table below) |
+| phase | string | Current pipeline phase (e.g., "review", "research", "plan", "execute", "verify") |
+| agent | string | Active agent ("claude", "codex", "gemini") |
+| iteration | int | Current iteration number |
+| attempt | string | Retry attempt in "N/M" format (e.g., "1/3") |
+| batch_size | int | Current batch size (may be reduced from retries) |
+| health_score | number | Latest health score percentage |
+| last_heartbeat | string | ISO 8601 timestamp of the last heartbeat update |
+| started_at | string | ISO 8601 timestamp when the pipeline started |
+| elapsed_minutes | number | Total minutes since pipeline start |
+| sleep_until | string/null | ISO 8601 timestamp when sleep ends (null if not sleeping) |
+| sleep_reason | string/null | Reason for sleep (e.g., "quota_backoff", "rate_limit") |
+| last_error | string/null | Last error message (truncated to 200 chars) |
+| errors_this_iteration | int | Number of errors in the current iteration |
+| recovered_from_error | bool | Whether the engine recovered from an error this iteration |
+
+### States
+
+| State | Description |
+|-------|-------------|
+| starting | Pipeline initializing (pre-flight checks, loading config) |
+| running | Agent actively executing a phase |
+| sleeping | Recoverable pause (quota backoff, rate limit throttle) -- check `sleep_until` for expected wake time |
+| stalled | Unrecoverable failure or heartbeat timeout exceeded |
+| completed | Pipeline hit max iterations or stall threshold |
+| converged | Health score reached 100% |
+
+### State Machine
+
+```
+starting -> running -> sleeping -> running (recovered)
+                |           |
+                |           +-> stalled (sleep expired, no wake)
+                +-> stalled (3 consecutive failures)
+                +-> completed / converged
+```
+
+### Observer Logic (Stall Detection)
+
+External tools can detect stalls by reading engine-status.json and applying these rules:
+
+1. **Read the file**: If engine-status.json is missing, the pipeline was never started (or the .gsd directory was cleaned up).
+2. **Check the state field**:
+   - `running` -- check heartbeat freshness (see below)
+   - `sleeping` -- check if `sleep_until` is in the past (if yes, likely crashed during sleep)
+   - `stalled` -- alert immediately; the engine has given up
+   - `completed` / `converged` -- done; no action needed
+3. **Heartbeat freshness** (when state is `running`):
+   - Less than 2 minutes old: **ACTIVE** -- engine is running normally
+   - 2-5 minutes old: **PROBABLY ACTIVE** -- agent may be in a long call
+   - More than 5 minutes old: **LIKELY STALLED** -- engine may have crashed without updating state
+4. **Optional PID verification**: Check if the `pid` value corresponds to a still-alive process for definitive crash detection.
+
+### Heartbeat Interval
+
+A background PowerShell job (`Start-EngineStatusHeartbeat`) updates `last_heartbeat` and `elapsed_minutes` every 60 seconds, independent of the main pipeline thread. This ensures the heartbeat stays fresh even during long-running agent calls (15-30+ minutes). The job is started when the pipeline starts and stopped in the `finally` block on exit.
 
 ## Specification Management
 

@@ -107,10 +107,35 @@ function Get-SupervisorState {
 function Get-PipelineExitReason {
     param([string]$GsdDir)
     $path = Join-Path $GsdDir "supervisor\last-run-summary.json"
+    $result = $null
     if (Test-Path $path) {
-        try { return Get-Content $path -Raw | ConvertFrom-Json } catch { return $null }
+        try { $result = Get-Content $path -Raw | ConvertFrom-Json } catch {}
     }
-    return $null
+    # Enrich with engine-status.json if available
+    $enginePath = Join-Path $GsdDir "health\engine-status.json"
+    if (Test-Path $enginePath) {
+        try {
+            $engine = Get-Content $enginePath -Raw | ConvertFrom-Json
+            if ($result) {
+                $result | Add-Member -NotePropertyName "engine_state" -NotePropertyValue $engine.state -Force
+                $result | Add-Member -NotePropertyName "engine_last_error" -NotePropertyValue $engine.last_error -Force
+                $result | Add-Member -NotePropertyName "engine_last_heartbeat" -NotePropertyValue $engine.last_heartbeat -Force
+            } else {
+                # No summary but engine status exists - build result from engine state
+                $result = @{
+                    exit_reason = $engine.state
+                    final_health = $engine.health_score
+                    final_iteration = $engine.iteration
+                    stall_count = 0
+                    batch_size = $engine.batch_size
+                    engine_state = $engine.state
+                    engine_last_error = $engine.last_error
+                    engine_last_heartbeat = $engine.last_heartbeat
+                }
+            }
+        } catch {}
+    }
+    return $result
 }
 
 # ===========================================
@@ -828,6 +853,10 @@ function Invoke-SupervisorLoop {
                 Write-Host "  [!!] Pipeline threw exception: $($_.Exception.Message)" -ForegroundColor Red
             }
         } else {
+            # Clear stale engine-status.json before restart
+            $engineStatusPath = Join-Path $GsdDir "health\engine-status.json"
+            if (Test-Path $engineStatusPath) { Remove-Item $engineStatusPath -Force -ErrorAction SilentlyContinue }
+
             # Subsequent attempts: launch in new terminal and wait
             Start-PipelineInNewTerminal -Pipeline $Pipeline -Params $OriginalParams -RepoRoot $repoRoot
 

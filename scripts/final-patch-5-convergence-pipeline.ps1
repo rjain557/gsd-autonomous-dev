@@ -75,6 +75,11 @@ if (-not $DryRun) {
     New-GsdLock -GsdDir $GsdDir -Pipeline "converge"
 }
 
+# Engine status: starting
+if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+    Update-EngineStatus -GsdDir $GsdDir -State "starting" -Iteration 0 -HealthScore (Get-Health) -BatchSize $BatchSize
+}
+
 # Interface detection (GAP 13)
 $InterfaceContext = ""
 $Interfaces = @()
@@ -110,6 +115,11 @@ Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
 # Start background command listener (responds to "progress" commands via ntfy)
 Start-CommandListener -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
     -Pipeline "converge" -RepoName $repoName -PollIntervalSeconds 15
+
+# Start engine-status.json heartbeat (60s freshness signal)
+if (Get-Command Start-EngineStatusHeartbeat -ErrorAction SilentlyContinue) {
+    Start-EngineStatusHeartbeat -GsdDir $GsdDir
+}
 
 # Prompt resolver with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
@@ -188,10 +198,15 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         New-GitSnapshot -RepoRoot $RepoRoot -Iteration $Iteration -Pipeline "converge"
     }
 
+    $errorsThisIter = 0
+
     # 1. CODE REVIEW (Claude)
     Send-HeartbeatIfDue -Phase "code-review" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  [SEARCH] CLAUDE -> code-review" -ForegroundColor Cyan
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "code-review" -Health $Health -BatchSize $CurrentBatchSize
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "code-review" -Agent "claude" -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize -Attempt "1/$($script:RETRY_MAX)" -ErrorsThisIteration 0
+    }
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
     if (-not $DryRun) {
         Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
@@ -203,8 +218,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     # Throttle between phases
     if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($ThrottleSeconds))
+        }
         Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $ThrottleSeconds
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
     # 2. RESEARCH (Gemini plan mode, read-only - saves Claude/Codex quota)
@@ -215,6 +234,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         # Try Gemini first; fall back to Codex if gemini CLI not available
         $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
         if ($useGemini) {
+            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "gemini" -Iteration $Iteration -HealthScore $Health
+            }
             $prompt = Local-ResolvePrompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
             if (-not $DryRun) {
                 Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "research" `
@@ -223,6 +245,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             }
         } else {
             Write-Host "    (gemini not found, falling back to codex)" -ForegroundColor DarkYellow
+            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "codex" -Iteration $Iteration -HealthScore $Health
+            }
             $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
             if (-not $DryRun) {
                 Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "research" `
@@ -233,14 +258,21 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     # Throttle between phases
     if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($ThrottleSeconds))
+        }
         Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $ThrottleSeconds
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
     # 3. PLAN (Claude)
     Send-HeartbeatIfDue -Phase "plan" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  CLAUDE -> plan" -ForegroundColor Cyan
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "plan" -Health $Health -BatchSize $CurrentBatchSize
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "plan" -Agent "claude" -Iteration $Iteration -HealthScore $Health
+    }
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
     if (-not $DryRun) {
         Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
@@ -250,8 +282,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     # Throttle between phases
     if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($ThrottleSeconds))
+        }
         Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $ThrottleSeconds
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
     # 4. EXECUTE (Codex, or supervisor-overridden agent)
@@ -264,6 +300,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
     Write-Host "  [WRENCH] $($executeAgent.ToUpper()) -> execute (batch: $CurrentBatchSize)" -ForegroundColor Magenta
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "execute" -Agent $executeAgent -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize
+    }
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
     if (-not $DryRun) {
         $result = Invoke-WithRetry -Agent $executeAgent -Prompt $prompt -Phase "execute" `
@@ -277,7 +316,10 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             }
             Invoke-BuildValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -AutoFix | Out-Null
         } else {
-            $CurrentBatchSize = $result.FinalBatchSize; $StallCount++
+            $CurrentBatchSize = $result.FinalBatchSize; $StallCount++; $errorsThisIter++
+            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -ErrorsThisIteration $errorsThisIter -LastError "Execute failed: $($result.Error)"
+            }
             Send-GsdNotification -Title "Iter ${Iteration}: Execute Failed" `
                 -Message "$repoName | Health: ${Health}% | Batch reduced -> $CurrentBatchSize | Stall $StallCount/$StallThreshold" `
                 -Tags "warning" -Priority "default"
@@ -289,6 +331,10 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     # Regression + stall
     $NewHealth = Get-Health
     if (-not $DryRun -and $Iteration -gt 1 -and (Test-HealthRegression -PreviousHealth $PrevHealth -CurrentHealth $NewHealth -RepoRoot $RepoRoot -Iteration $Iteration)) {
+        $errorsThisIter++
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running" -ErrorsThisIteration $errorsThisIter -LastError "Regression: ${NewHealth}% from ${PrevHealth}%"
+        }
         Send-GsdNotification -Title "Iter ${Iteration}: Regression Reverted" `
             -Message "$repoName | ${NewHealth}% dropped from ${PrevHealth}% - reverted | Stall $($StallCount+1)/$StallThreshold" `
             -Tags "warning" -Priority "high"
@@ -304,6 +350,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             -Tags "hourglass" -Priority "default"
         $script:LAST_NOTIFY_TIME = Get-Date
         if ($StallCount -ge $StallThreshold -and -not $DryRun) {
+            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $NewHealth -LastError "Stalled: $StallCount consecutive iterations with no progress"
+            }
             Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read .gsd\health\*, .gsd\logs\errors.jsonl. Diagnose. Write .gsd\health\stall-diagnosis.md." `
                 -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
             break
@@ -325,20 +374,24 @@ $FinalHealth = Get-Health
 if ($FinalHealth -ge $TargetHealth) {
     Write-Host "  [PARTY] CONVERGED - ${FinalHealth}% in $Iteration iterations" -ForegroundColor Green
     if (-not $DryRun) { git add -A; git commit -m "gsd: CONVERGED" --no-verify 2>$null; git tag "gsd-converged-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null }
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     Send-GsdNotification -Title "CONVERGED!" -Message "$repoName | 100% in $Iteration iterations" -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
     Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
     Send-GsdNotification -Title "STALLED" -Message "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations. Check stall-diagnosis.md" -Tags "warning" -Priority "high"
 } else {
     Write-Host "  [!!]  MAX ITERATIONS at ${FinalHealth}%" -ForegroundColor Yellow
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
     Send-GsdNotification -Title "MAX ITERATIONS" -Message "$repoName | ${FinalHealth}% after $Iteration iterations" -Tags "warning" -Priority "high"
 }
 Write-Host "=========================================================" -ForegroundColor Green
 
 } finally {
-    # Stop background heartbeat and command listener
+    # Stop background heartbeat, command listener, and engine status heartbeat
     Stop-BackgroundHeartbeat
     Stop-CommandListener
+    if (Get-Command Stop-EngineStatusHeartbeat -ErrorAction SilentlyContinue) { Stop-EngineStatusHeartbeat }
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health

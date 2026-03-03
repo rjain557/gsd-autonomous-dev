@@ -778,8 +778,17 @@ function Invoke-WithRetry {
                 Write-GsdError -GsdDir $GsdDir -Category "quota" -Phase $Phase -Iteration $i `
                     -Message "$Agent $quotaType" -Resolution "Waiting for reset"
 
+                # Engine status: sleeping for quota backoff
+                if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                    Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -SleepReason "quota_backoff" -LastError "$Agent $quotaType"
+                }
+
                 $quotaOk = Wait-ForQuotaReset -QuotaType $quotaType -Agent $Agent -GsdDir $GsdDir
                 if ($quotaOk) {
+                    # Engine status: recovered from quota backoff
+                    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                        Update-EngineStatus -GsdDir $GsdDir -State "running" -RecoveredFromError $true
+                    }
                     # Don't count this as a retry - reset the attempt counter
                     $i--
                     continue
@@ -891,6 +900,10 @@ function Invoke-WithRetry {
     }
 
     if (-not $result.Error) { $result.Error = "All $MaxAttempts attempts failed" }
+    # Engine status: record last error from retry exhaustion
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        Update-EngineStatus -GsdDir $GsdDir -State "running" -LastError $result.Error
+    }
     return $result
 }
 
@@ -1074,6 +1087,7 @@ function Update-FileMap {
 
 $script:NTFY_TOPIC = $null  # Set via auto-detect, global-config.json, or -NtfyTopic param
 $script:LISTENER_JOB = $null  # Background command listener job
+$script:ENGINE_STATUS_JOB = $null  # Background engine-status.json heartbeat job
 
 function Get-GsdNtfyTopic {
     <#
@@ -1371,6 +1385,155 @@ function Stop-CommandListener {
         Stop-Job -Job $script:LISTENER_JOB -ErrorAction SilentlyContinue
         Remove-Job -Job $script:LISTENER_JOB -Force -ErrorAction SilentlyContinue
         $script:LISTENER_JOB = $null
+    }
+}
+
+# ===========================================
+# 12. ENGINE STATUS FILE (stall detection)
+# ===========================================
+
+function Update-EngineStatus {
+    <#
+    .SYNOPSIS
+        Writes/updates .gsd/health/engine-status.json with live pipeline state.
+        Merge-on-write: reads existing file, overwrites only fields explicitly passed.
+        Always updates last_heartbeat and elapsed_minutes.
+    #>
+    param(
+        [string]$GsdDir,
+        [ValidateSet('starting','running','sleeping','stalled','completed','converged')]
+        [string]$State,
+        [string]$Phase = $null,
+        [string]$Agent = $null,
+        [int]$Iteration = -1,
+        [string]$Attempt = $null,
+        [int]$BatchSize = -1,
+        [double]$HealthScore = -1,
+        [datetime]$SleepUntil = [datetime]::MinValue,
+        [string]$SleepReason = $null,
+        [string]$LastError = $null,
+        [int]$ErrorsThisIteration = -1,
+        [bool]$RecoveredFromError = $false
+    )
+
+    try {
+        $statusFile = Join-Path $GsdDir "health\engine-status.json"
+        $now = (Get-Date).ToUniversalTime().ToString("o")
+
+        # Read existing to preserve fields not being updated
+        $existing = $null
+        if (Test-Path $statusFile) {
+            try { $existing = Get-Content $statusFile -Raw | ConvertFrom-Json } catch {}
+        }
+
+        $startedAt = if ($existing -and $existing.started_at) { $existing.started_at } else { $now }
+        $elapsed = [math]::Round(((Get-Date).ToUniversalTime() - [datetime]::Parse($startedAt)).TotalMinutes)
+
+        # Build status object - merge existing with new values
+        $status = @{
+            pid                   = $PID
+            state                 = $State
+            phase                 = if ($null -ne $Phase) { $Phase }
+                                    elseif ($existing -and $State -eq 'running') { $existing.phase }
+                                    elseif ($existing) { $existing.phase }
+                                    else { $null }
+            agent                 = if ($null -ne $Agent) { $Agent }
+                                    elseif ($existing -and $State -eq 'running') { $existing.agent }
+                                    elseif ($existing) { $existing.agent }
+                                    else { $null }
+            iteration             = if ($Iteration -ge 0) { $Iteration }
+                                    elseif ($existing) { $existing.iteration }
+                                    else { 0 }
+            attempt               = if ($null -ne $Attempt) { $Attempt }
+                                    elseif ($existing) { $existing.attempt }
+                                    else { $null }
+            batch_size            = if ($BatchSize -ge 0) { $BatchSize }
+                                    elseif ($existing) { $existing.batch_size }
+                                    else { 0 }
+            health_score          = if ($HealthScore -ge 0) { $HealthScore }
+                                    elseif ($existing) { $existing.health_score }
+                                    else { 0 }
+            last_heartbeat        = $now
+            started_at            = $startedAt
+            elapsed_minutes       = $elapsed
+            sleep_until           = if ($SleepUntil -ne [datetime]::MinValue) {
+                                        $SleepUntil.ToUniversalTime().ToString("o")
+                                    } elseif ($State -eq 'sleeping' -and $existing -and $existing.sleep_until) {
+                                        $existing.sleep_until
+                                    } else { $null }
+            sleep_reason          = if ($null -ne $SleepReason) { $SleepReason }
+                                    elseif ($State -eq 'sleeping' -and $existing) { $existing.sleep_reason }
+                                    else { $null }
+            last_error            = if ($null -ne $LastError) {
+                                        if ($LastError.Length -gt 200) { $LastError.Substring(0, 200) } else { $LastError }
+                                    } elseif ($existing) { $existing.last_error }
+                                    else { $null }
+            errors_this_iteration = if ($ErrorsThisIteration -ge 0) { $ErrorsThisIteration }
+                                    elseif ($existing) { $existing.errors_this_iteration }
+                                    else { 0 }
+            recovered_from_error  = if ($RecoveredFromError) { $true }
+                                    elseif ($State -eq 'running' -and -not $RecoveredFromError -and $existing -and $existing.state -ne 'sleeping') { $false }
+                                    elseif ($existing) { $existing.recovered_from_error }
+                                    else { $false }
+        }
+
+        # Clear sleep fields when transitioning out of sleeping state
+        if ($State -ne 'sleeping') {
+            $status.sleep_until = $null
+            $status.sleep_reason = $null
+        }
+
+        $status | ConvertTo-Json -Depth 3 | Set-Content $statusFile -Encoding UTF8
+    } catch {
+        # Engine status update should never block the pipeline
+    }
+}
+
+function Start-EngineStatusHeartbeat {
+    <#
+    .SYNOPSIS
+        Starts a 60-second background job that touches last_heartbeat + elapsed_minutes
+        in engine-status.json. Separate from ntfy heartbeat (10min).
+    #>
+    param([string]$GsdDir)
+
+    Stop-EngineStatusHeartbeat
+
+    $statusPath = Join-Path $GsdDir "health\engine-status.json"
+
+    $script:ENGINE_STATUS_JOB = Start-Job -ScriptBlock {
+        param($StatusPath)
+        while ($true) {
+            Start-Sleep -Seconds 60
+            try {
+                if (Test-Path $StatusPath) {
+                    $status = Get-Content $StatusPath -Raw | ConvertFrom-Json
+                    $now = (Get-Date).ToUniversalTime().ToString("o")
+                    $elapsed = [math]::Round(
+                        ((Get-Date).ToUniversalTime() - [datetime]::Parse($status.started_at)).TotalMinutes
+                    )
+                    $status.last_heartbeat = $now
+                    $status.elapsed_minutes = $elapsed
+                    $status | ConvertTo-Json -Depth 3 | Set-Content $StatusPath -Encoding UTF8
+                }
+            } catch {
+                # Never let heartbeat failure kill the loop
+            }
+        }
+    } -ArgumentList $statusPath
+
+    Write-Host "  Engine status: heartbeat every 60s (background)" -ForegroundColor DarkGray
+}
+
+function Stop-EngineStatusHeartbeat {
+    <#
+    .SYNOPSIS
+        Stops the engine-status.json heartbeat job if running.
+    #>
+    if ($script:ENGINE_STATUS_JOB) {
+        Stop-Job -Job $script:ENGINE_STATUS_JOB -ErrorAction SilentlyContinue
+        Remove-Job -Job $script:ENGINE_STATUS_JOB -Force -ErrorAction SilentlyContinue
+        $script:ENGINE_STATUS_JOB = $null
     }
 }
 
