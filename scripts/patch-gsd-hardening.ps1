@@ -223,7 +223,7 @@ function Wait-ForQuotaReset {
                 if ($Agent -eq "codex") {
                     $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --sandbox 2>&1
+                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
                 } else {
                     $testOutput = claude -p "Reply with just the word READY" 2>&1
                 }
@@ -419,10 +419,10 @@ function Test-AgentBoundaries {
     }
 
     if ($Agent -eq "gemini-research" -or $Agent -eq "gemini") {
-        # Gemini research (--sandbox) should NOT modify ANY files
+        # Gemini research (plan mode) should NOT modify ANY files
         if ($agentChanged -and @($agentChanged).Count -gt 0) {
             $violations = @($agentChanged)
-            Write-Host "    [!!]  Gemini (research/sandbox) modified files (boundary violation):" -ForegroundColor DarkYellow
+            Write-Host "    [!!]  Gemini (research/plan) modified files (boundary violation):" -ForegroundColor DarkYellow
             $violations | Select-Object -First 5 | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkYellow }
             $violations | ForEach-Object { git -C $RepoRoot checkout HEAD -- $_ 2>$null }
             return $false
@@ -599,8 +599,8 @@ function Get-FailureDiagnosis {
 
     # -- Gemini-specific diagnostics --
     if ($Agent -eq "gemini") {
-        if ($OutputText -match "sandbox.*restrict|not.*allow|permission.*denied|read.only") {
-            $diagnosis = "Gemini sandbox blocked a write operation"
+        if ($OutputText -match "sandbox.*restrict|plan.*mode.*restrict|not.*allow|permission.*denied|read.only") {
+            $diagnosis = "Gemini plan mode blocked a write operation"
         } elseif ($OutputText -match "model.*not.*found|model.*unavail|invalid.*model|unsupported.*model") {
             $diagnosis = "Gemini model unavailable"
         } elseif ($OutputText -match "too.*large|input.*limit|prompt.*too|content.*length") {
@@ -686,7 +686,7 @@ function Invoke-AgentFallback {
             $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "gemini") {
-            $fbOutput = $Prompt | gemini --sandbox 2>&1
+            $fbOutput = $Prompt | gemini --approval-mode plan 2>&1
             $fbExit = $LASTEXITCODE
         }
 
@@ -722,7 +722,7 @@ function Invoke-WithRetry {
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
         [string]$AllowedTools = "Read,Write,Bash,mcp__*",
-        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--yolo" (write)
+        [string]$GeminiMode = "--approval-mode plan"   # "--approval-mode plan" (read-only) or "--yolo" (write)
     )
 
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }
@@ -762,7 +762,7 @@ function Invoke-WithRetry {
                 $output = $effectivePrompt | codex exec --full-auto - 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "gemini") {
-                # Gemini CLI: --sandbox (read-only) or --yolo (write)
+                # Gemini CLI: --approval-mode plan (read-only) or --yolo (write)
                 $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
                 $output = $effectivePrompt | gemini @geminiArgs 2>&1
                 $exitCode = $LASTEXITCODE
@@ -1194,6 +1194,77 @@ function Initialize-GsdNotifications {
     # Auto-detect from username + repo name
     $script:NTFY_TOPIC = Get-GsdNtfyTopic
     Write-Host "  ntfy topic (auto): $($script:NTFY_TOPIC)" -ForegroundColor DarkGray
+}
+
+function Start-BackgroundHeartbeat {
+    <#
+    .SYNOPSIS
+        Starts a background job that sends ntfy heartbeat notifications every N minutes.
+        Reads current state from .gsd-checkpoint.json so it works even while agents block.
+    #>
+    param(
+        [string]$GsdDir,
+        [string]$NtfyTopic,
+        [string]$Pipeline,
+        [string]$RepoName,
+        [int]$IntervalMinutes = 10
+    )
+
+    if (-not $NtfyTopic) { return }
+
+    # Stop any existing heartbeat job
+    Stop-BackgroundHeartbeat
+
+    $checkpointPath = Join-Path $GsdDir ".gsd-checkpoint.json"
+    $startTime = Get-Date -Format "o"
+
+    $script:HEARTBEAT_JOB = Start-Job -ScriptBlock {
+        param($CheckpointPath, $Topic, $Pipeline, $RepoName, $Interval, $StartTime)
+        $pipelineStart = [datetime]::Parse($StartTime)
+        while ($true) {
+            Start-Sleep -Seconds ($Interval * 60)
+            try {
+                $totalElapsed = [math]::Floor(((Get-Date) - $pipelineStart).TotalMinutes)
+                $phase = $Pipeline
+                $iter = "?"
+                $health = "?"
+
+                if (Test-Path $CheckpointPath) {
+                    $cp = Get-Content $CheckpointPath -Raw | ConvertFrom-Json
+                    $phase = $cp.phase
+                    $iter = $cp.iteration
+                    $health = "$($cp.health)%"
+                }
+
+                $title = "Working: $phase"
+                $body = "$RepoName | Iter $iter | Health: $health | ${totalElapsed}m total"
+
+                $headers = @{
+                    "Title"    = $title
+                    "Priority" = "low"
+                    "Tags"     = "hourglass_flowing_sand"
+                }
+                Invoke-RestMethod -Uri "https://ntfy.sh/$Topic" -Method Post `
+                    -Body $body -Headers $headers -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+            } catch {
+                # Never let notification failure kill the heartbeat loop
+            }
+        }
+    } -ArgumentList $checkpointPath, $NtfyTopic, $Pipeline, $RepoName, $IntervalMinutes, $startTime
+
+    Write-Host "  Heartbeat: every ${IntervalMinutes}m (background)" -ForegroundColor DarkGray
+}
+
+function Stop-BackgroundHeartbeat {
+    <#
+    .SYNOPSIS
+        Stops the background heartbeat job if running.
+    #>
+    if ($script:HEARTBEAT_JOB) {
+        Stop-Job -Job $script:HEARTBEAT_JOB -ErrorAction SilentlyContinue
+        Remove-Job -Job $script:HEARTBEAT_JOB -Force -ErrorAction SilentlyContinue
+        $script:HEARTBEAT_JOB = $null
+    }
 }
 
 Write-Host "  Hardening modules loaded." -ForegroundColor DarkGray

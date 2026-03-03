@@ -103,6 +103,10 @@ Send-GsdNotification -Title "GSD Converge Started" `
     -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize | Throttle: ${ThrottleSeconds}s" `
     -Tags "rocket" -Priority "default"
 
+# Start background heartbeat (sends progress every 10 min even during long agent calls)
+Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
+    -Pipeline "converge" -RepoName $repoName -IntervalMinutes 10
+
 # Prompt resolver with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
     $text = Get-Content $templatePath -Raw
@@ -199,10 +203,10 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Start-Sleep -Seconds $ThrottleSeconds
     }
 
-    # 2. RESEARCH (Gemini --sandbox, read-only - saves Claude/Codex quota)
+    # 2. RESEARCH (Gemini plan mode, read-only - saves Claude/Codex quota)
     if (-not $SkipResearch) {
         Send-HeartbeatIfDue -Phase "research" -Iteration $Iteration -Health $Health -RepoName $repoName
-        Write-Host "  GEMINI -> research (sandbox)" -ForegroundColor Magenta
+        Write-Host "  GEMINI -> research (read-only)" -ForegroundColor Magenta
         if (-not (Test-Path "$GsdDir\research")) { New-Item -ItemType Directory -Path "$GsdDir\research" -Force | Out-Null }
         # Try Gemini first; fall back to Codex if gemini CLI not available
         $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
@@ -211,7 +215,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             if (-not $DryRun) {
                 Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "research" `
                     -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-                    -GeminiMode "--sandbox" | Out-Null
+                    -GeminiMode "--approval-mode plan" | Out-Null
             }
         } else {
             Write-Host "    (gemini not found, falling back to codex)" -ForegroundColor DarkYellow
@@ -328,6 +332,9 @@ if ($FinalHealth -ge $TargetHealth) {
 Write-Host "=========================================================" -ForegroundColor Green
 
 } finally {
+    # Stop background heartbeat
+    Stop-BackgroundHeartbeat
+
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health
     if (Get-Command Save-TerminalSummary -ErrorAction SilentlyContinue) {

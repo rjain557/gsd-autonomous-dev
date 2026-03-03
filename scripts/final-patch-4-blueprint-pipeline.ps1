@@ -142,6 +142,10 @@ Send-GsdNotification -Title "GSD Blueprint Started" `
     -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize" `
     -Tags "rocket" -Priority "default"
 
+# Start background heartbeat (sends progress every 10 min even during long agent calls)
+Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
+    -Pipeline "blueprint" -RepoName $repoName -IntervalMinutes 10
+
 # Helper to resolve prompts with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
     $text = Get-Content $templatePath -Raw
@@ -353,6 +357,9 @@ if (Test-Path $HealthLog) {
 Write-Host "=========================================================" -ForegroundColor Blue
 
 } finally {
+    # Stop background heartbeat
+    Stop-BackgroundHeartbeat
+
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health
     if (Get-Command Save-TerminalSummary -ErrorAction SilentlyContinue) {

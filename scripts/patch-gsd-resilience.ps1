@@ -294,8 +294,8 @@ function Get-FailureDiagnosis {
     $fallbackMode = $null
 
     if ($Agent -eq "gemini") {
-        if ($OutputText -match "sandbox.*restrict|not.*allow|permission.*denied|read.only") {
-            $diagnosis = "Gemini sandbox blocked a write operation"
+        if ($OutputText -match "sandbox.*restrict|plan.*mode.*restrict|not.*allow|permission.*denied|read.only") {
+            $diagnosis = "Gemini plan mode blocked a write operation"
         } elseif ($OutputText -match "model.*not.*found|model.*unavail|invalid.*model") {
             $diagnosis = "Gemini model unavailable"
         } elseif ($OutputText -match "too.*large|input.*limit|prompt.*too|content.*length") {
@@ -353,7 +353,7 @@ function Invoke-AgentFallback {
             $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "gemini") {
-            $fbOutput = $Prompt | gemini --sandbox 2>&1
+            $fbOutput = $Prompt | gemini --approval-mode plan 2>&1
             $fbExit = $LASTEXITCODE
         }
         if ($LogFile -and $fbOutput) {
@@ -379,7 +379,7 @@ function Invoke-WithRetry {
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
         [string]$AllowedTools = "Read,Write,Bash,mcp__*",
-        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--yolo" (write)
+        [string]$GeminiMode = "--approval-mode plan"   # "--approval-mode plan" (read-only) or "--yolo" (write)
     )
 
     $result = @{

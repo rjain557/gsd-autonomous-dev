@@ -21,7 +21,7 @@
     +---------------------+--------------+-------------------------------------+
     | /gsd:code-review    | CLAUDE CODE  | Short output, judgment-heavy        |
     | /gsd:create-phases  | CLAUDE CODE  | Architecture decisions, small JSON  |
-    | /gsd:research       | GEMINI       | Read-only sandbox, saves quota      |
+    | /gsd:research       | GEMINI       | Read-only plan mode, saves quota    |
     | /gsd:plan           | CLAUDE CODE  | Prioritization, dependency graph    |
     | /gsd:execute        | CODEX        | Bulk code generation, high tokens   |
     | /gsd:spec-fix       | GEMINI       | Resolve spec contradictions         |
@@ -124,7 +124,7 @@ $agentMap = @{
         }
         "research" = @{
             agent = "gemini"
-            mode = "--sandbox"
+            mode = "--approval-mode plan"
             reason = "Reads many files, searches patterns, explores codebase and docs. Gemini saves Claude/Codex quota. Falls back to Codex if unavailable."
             estimated_output_tokens = "5000-15000"
             inputs = @("requirements-matrix.json", "specs", "figma designs", "existing code", "external references")
@@ -399,7 +399,7 @@ Write-Host "   [OK] prompts\codex\research.md (fallback)" -ForegroundColor DarkG
 
 # -- Gemini: Research (primary - saves Claude/Codex quota) --
 $geminiResearch = @'
-# GSD Research - Gemini Phase (sandbox / read-only)
+# GSD Research - Gemini Phase (plan mode / read-only)
 
 You are the RESEARCHER. Deeply analyze the codebase, specs, and designs to prepare
 for code generation. Be thorough - your findings drive the next planning + execution phases.
@@ -896,7 +896,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Start-Sleep -Seconds $ThrottleSeconds
     }
 
-    # == 2. RESEARCH (Gemini --sandbox, falls back to Codex) - optional ==
+    # == 2. RESEARCH (Gemini plan mode, falls back to Codex) - optional ==
     if (-not $SkipResearch) {
         # Ensure research dir exists
         $researchDir = Join-Path $GsdDir "research"
@@ -904,11 +904,11 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
         $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
         if ($useGemini) {
-            Write-Host "[$Iteration] GEMINI -> research (sandbox)" -ForegroundColor Magenta
+            Write-Host "[$Iteration] GEMINI -> research (read-only)" -ForegroundColor Magenta
             Log-Handoff "gemini" "research" $Iteration $Health
             $prompt = Resolve-Prompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
             if (-not $DryRun) {
-                $prompt | gemini --sandbox 2>&1 |
+                $prompt | gemini --approval-mode plan 2>&1 |
                     Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
             } else {
                 Write-Host "   [DRY RUN] gemini -> research" -ForegroundColor DarkYellow

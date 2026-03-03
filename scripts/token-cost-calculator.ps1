@@ -551,7 +551,7 @@ function Get-PipelineCost {
             InputTokens  = 25000 + $fileMapTokens
             OutputTokens = 6000
             Iterations   = $totalIterations
-            Description  = "Pattern research (sandbox read-only)"
+            Description  = "Pattern research (plan mode, read-only)"
         }
 
         # Plan (Claude)

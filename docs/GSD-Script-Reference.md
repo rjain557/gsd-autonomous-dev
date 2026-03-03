@@ -390,7 +390,7 @@ Parameters:
 | -LogFile | Path to log file |
 | -CurrentBatchSize | Starting batch size (halves on each retry or watchdog timeout) |
 | -GsdDir | Path to .gsd directory |
-| -GeminiMode | "--sandbox" (read-only, default) or "--yolo" (write) |
+| -GeminiMode | "--approval-mode plan" (read-only, default) or "--yolo" (write) |
 
 Watchdog timeout: controlled by `$script:AGENT_WATCHDOG_MINUTES` (default 30). On timeout, logs a `watchdog_timeout` entry to errors.jsonl and sends a high-priority push notification.
 
@@ -406,6 +406,22 @@ Parameters:
 | -GsdPath | Path to .gsd directory |
 
 Returns: path to file-map.json
+
+### Start-BackgroundHeartbeat / Stop-BackgroundHeartbeat
+
+Manages a background PowerShell job that sends ntfy progress notifications every 10 minutes, independent of the main pipeline execution. This ensures heartbeat notifications are sent even during long-running agent calls (which block the main thread for 15-30+ minutes).
+
+Parameters (Start):
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory (reads .gsd-checkpoint.json for current state) |
+| -NtfyTopic | The ntfy.sh topic to post to |
+| -Pipeline | "converge" or "blueprint" |
+| -RepoName | Repository display name |
+| -IntervalMinutes | Notification interval (default: 10) |
+
+The job is started after the "Pipeline Started" notification and stopped in the `finally` block, ensuring cleanup even on crashes.
 
 ### Wait-ForQuotaReset
 

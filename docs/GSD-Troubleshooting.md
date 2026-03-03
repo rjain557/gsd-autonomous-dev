@@ -289,14 +289,23 @@ If -AutoResolve cannot resolve after 2 attempts:
 
 ### Gemini CLI not responding / authentication failure
 
+Gemini CLI supports two auth methods:
+- **Google OAuth** (recommended): Uses your Google account subscription. Run `gemini` interactively once to trigger browser-based OAuth login. No API key needed.
+- **API key**: Set `GEMINI_API_KEY` environment variable, or configure in `~/.gemini/settings.json`
+
 ```powershell
-# Re-authenticate
-gemini    # interactive first-run auth
-# Verify
-"Say READY" | gemini --sandbox 2>&1
+# First-time setup (OAuth - opens browser)
+gemini
+
+# Verify it works
+"Say READY" | gemini --approval-mode plan 2>&1
 ```
 
 If Gemini is down or unresponsive, the engine automatically falls back to Codex for research and spec-fix phases. No manual intervention required.
+
+### Gemini exit code 44 (sandbox/Docker error)
+
+**This issue has been resolved.** Older versions used `--sandbox` which required Docker/Podman. The engine now uses `--approval-mode plan` which provides the same read-only protection without requiring a container runtime. If you see exit code 44, re-run `install-gsd-all.ps1` to update.
 
 ### Research output quality differs between Gemini and Codex
 
