@@ -299,12 +299,44 @@ $needsRestart = $false
 Write-Section "Environment"
 
 $psVer = $PSVersionTable.PSVersion
-if ($psVer.Major -ge 5) {
-    Write-Check "PowerShell" "pass" "v$($psVer.Major).$($psVer.Minor)" "Green"
+$hasPwsh = $false
+try { $null = Get-Command pwsh -ErrorAction Stop; $hasPwsh = $true } catch {}
+if ($psVer.Major -ge 7) {
+    Write-Check "PowerShell" "pass" "v$($psVer.Major).$($psVer.Minor) (PS7+)" "Green"
+    $results.Passed++
+} elseif ($hasPwsh) {
+    $pwshVer = (pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>$null)
+    Write-Check "PowerShell" "pass" "v$psVer (PS7 available: pwsh v$pwshVer)" "Green"
+    Write-Host "    Note: GSD commands auto-detect pwsh. Current session is PS $($psVer.Major).$($psVer.Minor)." -ForegroundColor DarkGray
     $results.Passed++
 } else {
-    Write-Check "PowerShell" "fail" "v$($psVer.Major).$($psVer.Minor) - requires 5.1+ or 7+" "Red"
-    $results.Failed++
+    # PS 5.1 without PS7 installed - need to install PowerShell 7
+    Write-Check "PowerShell" "warn" "v$($psVer.Major).$($psVer.Minor) - GSD requires PowerShell 7+" "Yellow"
+    if ($VerifyOnly) {
+        Write-Host "    Install PowerShell 7: winget install Microsoft.PowerShell" -ForegroundColor DarkYellow
+        $results.Failed++
+    } elseif ($hasWinget) {
+        Write-Check "PowerShell 7" "install" "Installing via winget..." "Yellow"
+        try {
+            $output = winget install --id Microsoft.PowerShell --accept-package-agreements --accept-source-agreements 2>&1
+            $outputStr = "$output"
+            if ($LASTEXITCODE -eq 0 -or $outputStr -match "Successfully installed" -or $outputStr -match "No applicable upgrade found") {
+                Refresh-PathFromRegistry
+                Write-Check "PowerShell 7" "pass" "Installed. Restart terminal to use 'pwsh'." "Green"
+                $results.Installed++
+                $needsRestart = $true
+            } else {
+                Write-Check "PowerShell 7" "fail" "winget install failed. Try: winget install Microsoft.PowerShell" "Red"
+                $results.Failed++
+            }
+        } catch {
+            Write-Check "PowerShell 7" "fail" "Install error: $($_.Exception.Message)" "Red"
+            $results.Failed++
+        }
+    } else {
+        Write-Check "PowerShell" "fail" "v$($psVer.Major).$($psVer.Minor) - Need PS 7+. Install: winget install Microsoft.PowerShell" "Red"
+        $results.Failed++
+    }
 }
 
 $hasWinget = Test-WingetAvailable

@@ -170,6 +170,8 @@ if (-not $SkipSpecCheck -and -not $SkipInit) {
     Write-Host ""
 }
 
+$StallCount = 0; $TargetHealth = 100
+
 trap { Remove-GsdLock -GsdDir $GsdDir }
 
 try {
@@ -191,7 +193,6 @@ if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
 }
 
 # Main loop
-$StallCount = 0; $TargetHealth = 100
 $ValidationAttempts = 0; $MaxValidationAttempts = 3; $validationResult = $null
 
 do {

@@ -414,6 +414,63 @@ This means the supervisor exhausted all recovery attempts (default 5). Read `.gs
 2. **Fundamental spec issues**: Specs are contradictory in a way that can't be auto-fixed. Review and correct the source specs.
 3. **Architecture mismatch**: The existing codebase structure conflicts with spec requirements. Manual refactoring needed.
 
+### Supervisor times out after 24 hours
+
+The supervisor has a wall-clock time limit (`SUPERVISOR_TIMEOUT_HOURS`, default 24). If the supervisor loop exceeds this limit:
+
+1. An escalation report is generated
+2. An urgent notification is sent
+3. The supervisor exits
+
+This prevents supervisor loops that run indefinitely when all strategies fail slowly. To adjust:
+
+```powershell
+# The timeout is a constant in supervisor.ps1
+# Default: $script:SUPERVISOR_TIMEOUT_HOURS = 24
+```
+
+### Debugging supervisor diagnosis files
+
+Each supervisor attempt produces a `diagnosis-{N}.md` file in `.gsd/supervisor/`. To review what the supervisor found:
+
+```powershell
+# View all diagnosis files
+Get-ChildItem ".gsd\supervisor\diagnosis-*.md" | ForEach-Object { Write-Host "=== $($_.Name) ==="; Get-Content $_.FullName; Write-Host "" }
+
+# View the latest diagnosis
+Get-ChildItem ".gsd\supervisor\diagnosis-*.md" | Sort-Object Name | Select-Object -Last 1 | ForEach-Object { Get-Content $_.FullName }
+```
+
+Each diagnosis contains: root cause, failure category, failing phase, error statistics, and recommended fix strategy. Compare consecutive diagnoses to see if the supervisor is converging on the right fix or if the root cause is shifting.
+
+### Supervisor prompt hints persisting after fix
+
+The supervisor writes `.gsd/supervisor/prompt-hints.md` with constraints for agents. These persist across pipeline restarts within a supervisor cycle. If the hints are no longer relevant (e.g., after manually fixing the issue):
+
+```powershell
+# Clear prompt hints
+Remove-Item ".gsd\supervisor\prompt-hints.md" -Force
+
+# Clear error context
+Remove-Item ".gsd\supervisor\error-context.md" -Force
+
+# Or clear all supervisor state for a fresh start
+Remove-Item ".gsd\supervisor\*" -Force
+```
+
+Note: Prompt hints are injected into all agent prompts. Stale or incorrect hints can cause agents to apply unnecessary constraints. If agents are producing unexpected behavior after a supervisor cycle, check for leftover prompt-hints.md.
+
+### Supervisor and final validation interaction
+
+When the final validation gate fails (health set to 99%), the convergence loop continues. If the loop then stalls because it cannot fix the validation failures, the supervisor activates:
+
+1. Supervisor reads the validation errors from `error-context.md`
+2. Diagnoses the root cause (e.g., missing NuGet package, test database not configured)
+3. Writes prompt-hints.md with specific fix instructions
+4. Restarts the pipeline in a new terminal
+
+This means the supervisor can help fix build/test failures that the normal convergence loop cannot resolve on its own. However, some validation failures require human intervention (e.g., missing test infrastructure, environment-specific dependencies).
+
 ## Engine Status Issues
 
 ### How to check if the engine is stalled

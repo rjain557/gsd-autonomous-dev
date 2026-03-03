@@ -161,6 +161,18 @@ After installation, the engine creates:
 
 ## First Project Setup
 
+### Blueprint vs Convergence: Which Pipeline to Use
+
+| Scenario | Recommended Pipeline | Why |
+|----------|---------------------|-----|
+| New project, no existing code | `gsd-blueprint` | Generates code from specs via blueprint manifest |
+| New project, partial code exists (scaffolding, some screens) | `gsd-assess` then `gsd-blueprint -BuildOnly` | Assessment classifies existing code; blueprint fills gaps |
+| Existing project, needs fixes/improvements | `gsd-converge` | Reviews code against specs, fixes issues iteratively |
+| Blueprint reached 60-80%, stuck on last mile | Switch to `gsd-converge` | Convergence handles iterative fix-and-verify better for remaining gaps |
+| Quick assessment only, no code changes | `gsd-assess` | Produces work classification and inventories without modifying code |
+
+**Decision heuristic**: If you have specification documents and need to build from scratch, start with `gsd-blueprint`. If you have an existing codebase that needs to match specs, use `gsd-converge`. You can switch between them at any point -- they share the same `.gsd/` state.
+
 ### What Happens at 100% Health
 
 When the engine reaches 100% health (all requirements matched), it runs a **final validation gate** before declaring success:

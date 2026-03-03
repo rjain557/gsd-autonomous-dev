@@ -1158,7 +1158,7 @@ if (Test-Path $profileFunctionsPath) {
 # Add -SupervisorAttempts and -NoSupervisor to gsd-converge
 if ($profileContent -notmatch "SupervisorAttempts") {
     # Replace gsd-converge function to point to supervisor wrapper
-    $oldConvergePattern = 'function gsd-converge\s*\{[^}]+\}'
+    $oldConvergePattern = '(?s)function gsd-converge\s*\{.+?\n\}'
     $newConverge = @'
 function gsd-converge {
     param(
@@ -1170,15 +1170,23 @@ function gsd-converge {
     )
     $script = "$env:USERPROFILE\.gsd-global\scripts\supervisor-converge.ps1"
     if (-not (Test-Path $script)) { $script = "$env:USERPROFILE\.gsd-global\scripts\convergence-loop.ps1" }
-    & $script -MaxIterations $MaxIterations -StallThreshold $StallThreshold -BatchSize $BatchSize `
-        -ThrottleSeconds $ThrottleSeconds -NtfyTopic $NtfyTopic `
-        -DryRun:$DryRun -SkipInit:$SkipInit -SkipResearch:$SkipResearch `
-        -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve `
-        -SupervisorAttempts $SupervisorAttempts -NoSupervisor:$NoSupervisor
+    $gsdArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script,
+        "-MaxIterations", $MaxIterations, "-StallThreshold", $StallThreshold, "-BatchSize", $BatchSize,
+        "-ThrottleSeconds", $ThrottleSeconds, "-SupervisorAttempts", $SupervisorAttempts)
+    if ($NtfyTopic)    { $gsdArgs += "-NtfyTopic"; $gsdArgs += $NtfyTopic }
+    if ($DryRun)       { $gsdArgs += "-DryRun" }
+    if ($SkipInit)     { $gsdArgs += "-SkipInit" }
+    if ($SkipResearch) { $gsdArgs += "-SkipResearch" }
+    if ($SkipSpecCheck){ $gsdArgs += "-SkipSpecCheck" }
+    if ($AutoResolve)  { $gsdArgs += "-AutoResolve" }
+    if ($NoSupervisor) { $gsdArgs += "-NoSupervisor" }
+    # Use pwsh (PS7) if available, otherwise fall back to current session
+    $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($pwsh) { & pwsh @gsdArgs } else { & $script -MaxIterations $MaxIterations -StallThreshold $StallThreshold -BatchSize $BatchSize -ThrottleSeconds $ThrottleSeconds -NtfyTopic $NtfyTopic -DryRun:$DryRun -SkipInit:$SkipInit -SkipResearch:$SkipResearch -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve -SupervisorAttempts $SupervisorAttempts -NoSupervisor:$NoSupervisor }
 }
 '@
 
-    $oldBlueprintPattern = 'function gsd-blueprint\s*\{[^}]+\}'
+    $oldBlueprintPattern = '(?s)function gsd-blueprint\s*\{.+?\n\}'
     $newBlueprint = @'
 function gsd-blueprint {
     param(
@@ -1190,22 +1198,31 @@ function gsd-blueprint {
     )
     $script = "$env:USERPROFILE\.gsd-global\blueprint\scripts\supervisor-blueprint.ps1"
     if (-not (Test-Path $script)) { $script = "$env:USERPROFILE\.gsd-global\blueprint\scripts\blueprint-pipeline.ps1" }
-    & $script -MaxIterations $MaxIterations -StallThreshold $StallThreshold -BatchSize $BatchSize `
-        -ThrottleSeconds $ThrottleSeconds -NtfyTopic $NtfyTopic `
-        -DryRun:$DryRun -BlueprintOnly:$BlueprintOnly -BuildOnly:$BuildOnly `
-        -VerifyOnly:$VerifyOnly -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve `
-        -SupervisorAttempts $SupervisorAttempts -NoSupervisor:$NoSupervisor
+    $gsdArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script,
+        "-MaxIterations", $MaxIterations, "-StallThreshold", $StallThreshold, "-BatchSize", $BatchSize,
+        "-ThrottleSeconds", $ThrottleSeconds, "-SupervisorAttempts", $SupervisorAttempts)
+    if ($NtfyTopic)    { $gsdArgs += "-NtfyTopic"; $gsdArgs += $NtfyTopic }
+    if ($DryRun)       { $gsdArgs += "-DryRun" }
+    if ($BlueprintOnly){ $gsdArgs += "-BlueprintOnly" }
+    if ($BuildOnly)    { $gsdArgs += "-BuildOnly" }
+    if ($VerifyOnly)   { $gsdArgs += "-VerifyOnly" }
+    if ($SkipSpecCheck){ $gsdArgs += "-SkipSpecCheck" }
+    if ($AutoResolve)  { $gsdArgs += "-AutoResolve" }
+    if ($NoSupervisor) { $gsdArgs += "-NoSupervisor" }
+    # Use pwsh (PS7) if available, otherwise fall back to current session
+    $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($pwsh) { & pwsh @gsdArgs } else { & $script -MaxIterations $MaxIterations -StallThreshold $StallThreshold -BatchSize $BatchSize -ThrottleSeconds $ThrottleSeconds -NtfyTopic $NtfyTopic -DryRun:$DryRun -BlueprintOnly:$BlueprintOnly -BuildOnly:$BuildOnly -VerifyOnly:$VerifyOnly -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve -SupervisorAttempts $SupervisorAttempts -NoSupervisor:$NoSupervisor }
 }
 '@
 
     # Overwrite the profile functions file with updated versions
     if ($profileContent -match 'function gsd-converge') {
-        $profileContent = $profileContent -replace 'function gsd-converge\s*\{[^}]+\}', $newConverge
+        $profileContent = $profileContent -replace '(?s)function gsd-converge\s*\{.+?\n\}', $newConverge
     } else {
         $profileContent += "`n$newConverge`n"
     }
     if ($profileContent -match 'function gsd-blueprint') {
-        $profileContent = $profileContent -replace 'function gsd-blueprint\s*\{[^}]+\}', $newBlueprint
+        $profileContent = $profileContent -replace '(?s)function gsd-blueprint\s*\{.+?\n\}', $newBlueprint
     } else {
         $profileContent += "`n$newBlueprint`n"
     }

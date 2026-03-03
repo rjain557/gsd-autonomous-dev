@@ -1363,6 +1363,8 @@ Write-Host "  Health: ${Health}% -> 100%" -ForegroundColor White
 Write-Host "  Batch:  $CurrentBatchSize (adaptive)" -ForegroundColor White
 Write-Host ""
 
+$StallCount = 0; $TargetHealth = 100
+
 trap { Remove-GsdLock -GsdDir $GsdDir }
 
 try {
@@ -1390,8 +1392,6 @@ if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
 # ========================================
 # MAIN LOOP
 # ========================================
-
-$StallCount = 0; $TargetHealth = 100
 
 while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallCount -lt $StallThreshold) {
     $Iteration++; $PrevHealth = $Health

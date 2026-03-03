@@ -610,6 +610,86 @@ Exclusions: node_modules, .git, bin, obj, packages, dist, build, .gsd, .vs, .vsc
 
 Injected into every agent prompt so they know where files are.
 
+## Prompt Template System
+
+### Template Resolution (Local-ResolvePrompt)
+
+Before sending any prompt to an agent, the pipeline resolves template variables and appends context via `Local-ResolvePrompt`. This is a pipeline-internal function (not exported) that runs synchronously before every agent call.
+
+### Template Variables
+
+| Variable | Replaced With |
+|----------|--------------|
+| `{{ITERATION}}` | Current iteration number |
+| `{{HEALTH}}` | Current health score percentage |
+| `{{GSD_DIR}}` | Absolute path to .gsd directory |
+| `{{REPO_ROOT}}` | Absolute path to repository root |
+| `{{BATCH_SIZE}}` | Current batch size |
+| `{{INTERFACE_CONTEXT}}` | Multi-interface summary (all detected interfaces, _analysis/ paths, _stubs/ paths) |
+
+### Context Injection Order
+
+Each resolved prompt is assembled in this order:
+
+1. **Base prompt template** from `~/.gsd-global/prompts/{agent}/` with variables replaced
+2. **File map** (`.gsd/file-map-tree.md`) appended for spatial awareness
+3. **Interface context** injected via `{{INTERFACE_CONTEXT}}` variable
+4. **Supervisor error context** (`.gsd/supervisor/error-context.md`) appended if present -- contains last iteration's errors and root cause
+5. **Supervisor prompt hints** (`.gsd/supervisor/prompt-hints.md`) appended if present -- contains extra constraints from supervisor diagnosis
+
+### Supervisor Prompt Modification
+
+The supervisor modifies agent behavior by writing to two files that are auto-injected into all prompts:
+
+- **error-context.md**: Written after each failed iteration. Contains the specific errors, root cause analysis, and instructions like "DO NOT use namespace X, use Y instead." Cleared when supervisor state is reset.
+- **prompt-hints.md**: Written by `Invoke-SupervisorFix` based on AI diagnosis. Contains persistent constraints that survive across pipeline restarts within a supervisor cycle. Examples: "Always include TRY/CATCH in stored procedures", "Use explicit table aliases in all SQL joins."
+
+Both files persist across pipeline restarts within a supervisor recovery cycle. They are only cleared when the supervisor state is manually reset or the issue is resolved.
+
+### Prompt Templates by Agent
+
+| Agent | Template Location | Phases |
+|-------|------------------|--------|
+| Claude | `~/.gsd-global/prompts/claude/` | review, plan, verify, blueprint, assess |
+| Codex | `~/.gsd-global/prompts/codex/` | execute, build, research (fallback) |
+| Gemini | `~/.gsd-global/prompts/gemini/` | research, spec-fix |
+
+## Health Score System
+
+### How Health Is Calculated
+
+Health score represents the percentage of requirements that are satisfied. The score is computed during the review/verify phase by Claude, which reads the requirements matrix and source code to determine status.
+
+| Requirement Status | Weight | Description |
+|-------------------|--------|-------------|
+| satisfied | 1.0 | Requirement fully implemented and verified |
+| partial | 0.5 | Requirement partially implemented (code exists but incomplete) |
+| not_started | 0.0 | No matching code found |
+| blocked | 0.0 | Cannot proceed (dependency or spec issue) |
+
+**Formula**: `health = (satisfied * 1.0 + partial * 0.5) / total_requirements * 100`
+
+### Health Progression
+
+Health is tracked over time in `health-history.jsonl` (one JSON line per iteration). The token cost calculator uses this data for historical progression analysis and the developer handoff report generates an ASCII bar chart from it.
+
+### Stall Detection
+
+The engine detects stalls when health does not improve for N consecutive iterations (configurable via `-StallThreshold`, default 3). When a stall is detected:
+
+1. Pipeline exits with `exit_reason: "stalled"`
+2. Supervisor (if enabled) reads `last-run-summary.json` and begins recovery
+3. If supervisor is disabled (`-NoSupervisor`), pipeline exits and sends notification
+
+### Regression Detection
+
+After each iteration, `Test-HealthRegression` compares the new health score against the pre-iteration score. If health drops by more than 5%:
+
+1. Git reverts to pre-iteration state (`git checkout` of changed files)
+2. Stall counter increments
+3. High-priority notification sent
+4. Error logged to errors.jsonl with category `health_regression`
+
 ## Code Quality Validation
 
 ### SQL Validation

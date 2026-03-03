@@ -50,7 +50,7 @@ if (Test-Path $profileFile) {
     $changed = $false
 
     # Remove orphaned gsd-converge block (lines after closing } of gsd-converge function)
-    $pattern1 = '(-NoSupervisor:\$NoSupervisor\s*\r?\n\})\s*\r?\n\s+if \(\$DryRun\).*?convergence-loop\.ps1" @params\s*\r?\n\}'
+    $pattern1 = '(?s)(-NoSupervisor:\$NoSupervisor\s*\r?\n\})\s*\r?\n\s+if \(\$DryRun\).*?convergence-loop\.ps1" @params\s*\r?\n\}'
     if ($content -match $pattern1) {
         $content = $content -replace $pattern1, '$1'
         $changed = $true
@@ -58,7 +58,7 @@ if (Test-Path $profileFile) {
     }
 
     # Remove orphaned gsd-blueprint block (lines after closing } of gsd-blueprint function)
-    $pattern2 = '(-NoSupervisor:\$NoSupervisor\s*\r?\n\})\s*\r?\n\s+if \(\$DryRun\).*?blueprint-pipeline\.ps1" @params\s*\r?\n\}'
+    $pattern2 = '(?s)(-NoSupervisor:\$NoSupervisor\s*\r?\n\})\s*\r?\n\s+if \(\$DryRun\).*?blueprint-pipeline\.ps1" @params\s*\r?\n\}'
     if ($content -match $pattern2) {
         $content = $content -replace $pattern2, '$1'
         $changed = $true
