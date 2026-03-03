@@ -70,7 +70,31 @@
       "Bash(pwsh -NoProfile -c \"& ./scripts/token-cost-calculator.ps1 -TotalItems 400 -BatchEfficiency 0.55 -RetryRate 0.25 -ClaudeModel opus -ShowComparison\")",
       "Bash(powershell -ExecutionPolicy Bypass -File scripts/patch-gsd-resilience.ps1)",
       "Bash(powershell -ExecutionPolicy Bypass -File scripts/patch-gsd-hardening.ps1)",
-      "Bash(pwsh -NoProfile -c '& ./scripts/token-cost-calculator.ps1 -TotalItems 300 -ClientQuote -Markup 8 -ClientName \"\"HealthTrack Pro\"\" -ClaudeModel opus -BatchEfficiency 0.55 -RetryRate 0.25')"
+      "Bash(pwsh -NoProfile -c '& ./scripts/token-cost-calculator.ps1 -TotalItems 300 -ClientQuote -Markup 8 -ClientName \"\"HealthTrack Pro\"\" -ClaudeModel opus -BatchEfficiency 0.55 -RetryRate 0.25')",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"& ./scripts/final-patch-5-convergence-pipeline.ps1; & ./scripts/final-patch-4-blueprint-pipeline.ps1\")",
+      "Bash(gemini --version)",
+      "Bash(gemini --sandbox -p \"say hello\")",
+      "Bash(gemini -p \"say hello in one word\")",
+      "Bash(echo $GEMINI_API_KEY)",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"& ./scripts/final-patch-4-blueprint-pipeline.ps1; & ./scripts/final-patch-5-convergence-pipeline.ps1\")",
+      "Bash(grep -n \"gsd-costs.cmd\\\\|bin\\\\\\\\gsd\" d:/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Installation-Guide.md)",
+      "Bash(grep -n \"14 scripts\\\\|14 components\\\\|14 install\\\\|16 scripts\" d:/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/*.md)",
+      "Bash(grep -r \"Send-Notif\\\\|Invoke.*Notif\\\\|function.*notif\" /d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/scripts/*.ps1)",
+      "Bash(grep -i \"heartbeat\\\\|background.*job\\\\|job.*notif\" /d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/scripts/*.ps1)",
+      "Bash(grep -l \"codex\\\\|gemini\\\\|claude\" /d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/scripts/*.ps1)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(grep -c \"claude\\\\|codex\\\\|gemini\" /d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/scripts/*.ps1)",
+      "Bash(ls -la \"d:\\\\vscode\\\\gsd-autonomous-dev\\\\gsd-autonomous-dev\\\\.gsd\\\\code-review\"\" 2>/dev/null || echo \"Directory not found or empty \")",
+      "Bash(powershell -NoProfile -Command \"try { [System.Management.Automation.Language.Parser]::ParseFile\\(''C:\\\\Users\\\\rjain\\\\.gsd-global\\\\scripts\\\\gsd-profile-functions.ps1'', [ref]$null, [ref]$null\\) | Out-Null; Write-Host ''gsd-profile-functions.ps1: OK'' } catch { Write-Host \"\"ERROR: $_\"\" }\")",
+      "Bash(powershell.exe -NoProfile -Command \"try { $null = [System.Management.Automation.Language.Parser]::ParseFile\\(''C:\\\\Users\\\\rjain\\\\.gsd-global\\\\lib\\\\modules\\\\resilience.ps1'', [ref]$null, [ref]$errors\\); if \\($errors.Count -gt 0\\) { $errors | ForEach-Object { Write-Host $_.ToString\\(\\) } } else { Write-Host ''No parse errors found'' } } catch { Write-Host $_.Exception.Message }\")",
+      "Bash(powershell.exe -NoProfile:*)",
+      "Bash(/tmp/check-profile.ps1:*)",
+      "Bash(grep -n \"Set-Content.*convergence-loop\" /d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/scripts/*.ps1)",
+      "Bash(grep -n \"Set-Content.*gsd-profile-functions\" /d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/scripts/*.ps1)",
+      "Bash(do node -e \"try{JSON.parse\\(require\\(''fs''\\).readFileSync\\(''$f'',''utf8''\\).replace\\(/^\\\\uFEFF/,''''\\)\\)}catch\\(e\\){console.log\\(''INVALID: $f ->'',e.message\\)}\")",
+      "Bash(node -e \"try{JSON.parse\\(require\\(''fs''\\).readFileSync\\(''D:/vscode/tech-web-chatai.v8/tech-web-chatai.v8/.gsd/health/requirements-matrix.json'',''utf8''\\).replace\\(/^\\\\uFEFF/,''''\\)\\);console.log\\(''VALID JSON''\\)}catch\\(e\\){console.log\\(''INVALID:'',e.message\\)}\")",
+      "Bash(wc -l /c/Users/rjain/.gsd-global/lib/modules/*.ps1 /c/Users/rjain/.gsd-global/scripts/*.ps1 /c/Users/rjain/.gsd-global/blueprint/scripts/*.ps1)",
+      "Bash(ls -1 \"d:/vscode/gsd-autonomous-dev/gsd-autonomous-dev/scripts/\"*.ps1)"
     ]
   }
 }

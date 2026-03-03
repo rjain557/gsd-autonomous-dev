@@ -5,9 +5,9 @@
 
 .DESCRIPTION
     Calculates estimated token usage and equivalent API costs for all 3 LLMs:
-      - Claude (Sonnet 4.6)  : Blueprint + Verify phases
-      - Codex (codex-mini)   : Build phase (code generation)
-      - Gemini (2.5 Pro)     : Research + Spec-fix phases
+      - Claude (Opus 4.6)    : Blueprint + Verify phases
+      - Codex (GPT 5.3)     : Build phase (code generation)
+      - Gemini (3.1 Pro)    : Research + Spec-fix phases
 
     Supports two modes:
       1. AUTO: Reads blueprint.json + health-history.jsonl from a project
@@ -119,9 +119,9 @@ $FallbackPricing = @{
         claude_sonnet = @{ Name = "Claude Sonnet 4.6";              InputPerM = 3.00;  OutputPerM = 15.00; CacheReadPerM = 0.30  }
         claude_opus   = @{ Name = "Claude Opus 4.6";                InputPerM = 5.00;  OutputPerM = 25.00; CacheReadPerM = 0.50  }
         claude_haiku  = @{ Name = "Claude Haiku 4.5";               InputPerM = 1.00;  OutputPerM = 5.00;  CacheReadPerM = 0.10  }
-        codex         = @{ Name = "Codex Mini (codex-mini-latest)";  InputPerM = 1.50;  OutputPerM = 6.00;  CacheReadPerM = 0.00  }
+        codex         = @{ Name = "GPT 5.3 Codex";                   InputPerM = 1.75;  OutputPerM = 14.00; CacheReadPerM = 0.175 }
         codex_gpt51   = @{ Name = "GPT-5.1 Codex";                  InputPerM = 1.25;  OutputPerM = 10.00; CacheReadPerM = 0.00  }
-        gemini        = @{ Name = "Gemini 2.5 Pro";                  InputPerM = 1.25;  OutputPerM = 10.00; CacheReadPerM = 0.125 }
+        gemini        = @{ Name = "Gemini 3.1 Pro";                  InputPerM = 2.00;  OutputPerM = 12.00; CacheReadPerM = 0.50  }
     }
 }
 
@@ -148,9 +148,9 @@ function Get-ProviderPricing {
         @{ CacheKey = "claude_opus";   LiteLLMKeys = @("claude-opus-4-6","claude-opus-4-5","claude-opus-4-1"); NamePrefix = "Claude Opus" }
         @{ CacheKey = "claude_sonnet"; LiteLLMKeys = @("claude-sonnet-4-6","claude-sonnet-4-5","claude-sonnet-4"); NamePrefix = "Claude Sonnet" }
         @{ CacheKey = "claude_haiku";  LiteLLMKeys = @("claude-haiku-4-5","claude-3-5-haiku-latest"); NamePrefix = "Claude Haiku" }
-        @{ CacheKey = "codex";         LiteLLMKeys = @("codex-mini-latest"); NamePrefix = "Codex Mini" }
+        @{ CacheKey = "codex";         LiteLLMKeys = @("gpt-5.3-codex","codex-mini-latest"); NamePrefix = "GPT 5.3 Codex" }
         @{ CacheKey = "codex_gpt51";   LiteLLMKeys = @("gpt-5.1-codex","gpt-5-codex"); NamePrefix = "GPT Codex" }
-        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-2.5-pro","gemini-2.5-pro-preview-03-25"); NamePrefix = "Gemini 2.5 Pro" }
+        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3.1 Pro" }
     )
 
     try {
@@ -915,7 +915,7 @@ Write-Host "    Claude Pro:      `$20/mo  (limited messages)"
 Write-Host "    Claude Max:      `$100-200/mo (higher limits)"
 Write-Host "    ChatGPT Plus:    `$20/mo  (includes Codex CLI)"
 Write-Host "    ChatGPT Pro:     `$200/mo (unlimited GPT-4/Codex)"
-Write-Host "    Gemini Advanced: `$20/mo  (Gemini 2.5 Pro access)"
+Write-Host "    Gemini Advanced: `$20/mo  (Gemini 3.1 Pro access)"
 Write-Host ""
 Write-Host "  If your project needs $($result.TotalIterations) iterations, subscription"
 Write-Host "  cost depends on how many iterations fit within monthly limits."

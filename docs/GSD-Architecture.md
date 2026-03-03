@@ -837,9 +837,9 @@ Pricing is fetched from the [LiteLLM open-source pricing database](https://githu
 | Claude Sonnet 4.6 | $3.00 | $15.00 | Blueprint, verify (default) |
 | Claude Opus 4.6 | $5.00 | $25.00 | Blueprint, verify (premium) |
 | Claude Haiku 4.5 | $1.00 | $5.00 | Blueprint, verify (economy) |
-| Codex Mini | $1.50 | $6.00 | Code generation (build/execute) |
+| GPT 5.3 Codex | $1.75 | $14.00 | Code generation (build/execute) |
 | GPT-5.1 Codex | $1.25 | $10.00 | Code generation (alternative) |
-| Gemini 2.5 Pro | $1.25 | $10.00 | Research, spec-fix |
+| Gemini 3.1 Pro | $2.00 | $12.00 | Research, spec-fix |
 
 ### Pricing Cache
 
