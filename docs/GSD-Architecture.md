@@ -32,6 +32,7 @@ After running install-gsd-all.ps1, the engine creates:
   scripts\
     convergence-loop.ps1        # 5-phase convergence engine
     gsd-profile-functions.ps1   # PowerShell profile (gsd-* commands)
+  pricing-cache.json              # Cached LLM pricing data (auto-updated)
   VERSION                       # Installed version stamp
 ```
 
@@ -386,6 +387,65 @@ Stored at %USERPROFILE%\.gsd-global\config\global-config.json:
 ```
 
 Set ntfy_topic to "auto" for per-project auto-detection, or a specific string to use one topic for all projects.
+
+## Token Cost Calculator
+
+The engine includes a token cost calculator (`token-cost-calculator.ps1`) that estimates equivalent API costs for completing a project to 100%, even when using subscriptions. This enables accurate client billing and project cost forecasting.
+
+### Dynamic Pricing
+
+Pricing is fetched from the [LiteLLM open-source pricing database](https://github.com/BerriAI/litellm) on GitHub, a community-maintained JSON file with accurate per-token prices for all major providers. The calculator supports 6 models across 3 providers:
+
+| Model | Input/1M | Output/1M | Used For |
+|-------|----------|-----------|----------|
+| Claude Sonnet 4.6 | $3.00 | $15.00 | Blueprint, verify (default) |
+| Claude Opus 4.6 | $5.00 | $25.00 | Blueprint, verify (premium) |
+| Claude Haiku 4.5 | $1.00 | $5.00 | Blueprint, verify (economy) |
+| Codex Mini | $1.50 | $6.00 | Code generation (build/execute) |
+| GPT-5.1 Codex | $1.25 | $10.00 | Code generation (alternative) |
+| Gemini 2.5 Pro | $1.25 | $10.00 | Research, spec-fix |
+
+### Pricing Cache
+
+Pricing is cached at `%USERPROFILE%\.gsd-global\pricing-cache.json` with three-tier freshness:
+
+| Age | Behavior |
+|-----|----------|
+| < 14 days | Fresh -- used directly |
+| 14-60 days | Aging -- auto-refresh attempted, falls back to cached |
+| > 60 days | Stale -- warning displayed, auto-refresh attempted |
+
+If all fetching fails, hardcoded fallback prices are used. The `-UpdatePricing` flag forces a fresh fetch.
+
+### Cost Estimation Model
+
+The calculator models token usage per pipeline phase:
+
+**Blueprint pipeline (3-phase per iteration):**
+- Blueprint (Claude, once) + Verify (Claude, per-iter) + Build (Codex, per-iter) + SpecFix (Gemini, ~15% of iters)
+
+**Convergence pipeline (5-phase per iteration):**
+- Blueprint (Claude, once) + Review + Research + Plan + Execute + Verify + SpecFix (~20% of iters)
+
+Context scaling adjusts to project size:
+- Blueprint context tokens: `min(100K, total_items * 200 + 5000)`
+- File map tokens: `min(30K, total_items * 50)`
+- Output per item varies by type (SQL migrations: 1K, controllers: 5K, components: 4K, etc.)
+
+Iterations are estimated from: `ceil(effectiveRemaining / (batch * efficiency)) * (1 + retryRate)`
+
+### Client Quoting
+
+The `-ClientQuote` switch generates professional cost estimates with configurable markup (5-10x recommended):
+
+- **Three-tier pricing**: Best case (0.6x markup), Expected (1x markup), Worst case (1.4x markup)
+- **Complexity tiers**: Standard (≤100 items), Complex (≤250), Enterprise (≤500), Enterprise+ (>500)
+- **Internal margin analysis**: Raw cost, markup, subscription offset, true profit/margin
+- **Quote metadata**: Reference number, date, scope, timeline, inclusions, validity period
+
+### Subscription vs API Comparison
+
+The calculator always shows a subscription cost comparison, estimating project duration at ~3 iterations/day and computing the equivalent subscription cost ($60/mo minimum for Claude Pro + ChatGPT Plus + Gemini Advanced) vs. the calculated API cost.
 
 ## Known Automation Boundaries
 

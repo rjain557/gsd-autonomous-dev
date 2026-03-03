@@ -115,6 +115,70 @@ gsd-remote
 
 Displays a QR code in the terminal. Scan it with your phone to monitor and interact with the Claude session from anywhere. Press Ctrl+C to stop the remote session.
 
+### token-cost-calculator
+
+Estimates API token costs to complete a project to 100% using the GSD pipeline. Supports auto-detection from project data or manual parameter input. Includes dynamic pricing, pipeline comparison, client quoting, and subscription cost analysis.
+
+Usage:
+
+```powershell
+# Auto-detect from project
+.\scripts\token-cost-calculator.ps1 -ProjectPath "C:\repos\my-app"
+
+# Manual estimate
+.\scripts\token-cost-calculator.ps1 -TotalItems 120 -CompletedItems 30
+
+# Pipeline comparison (blueprint vs convergence)
+.\scripts\token-cost-calculator.ps1 -TotalItems 200 -ShowComparison
+
+# Convergence with Opus pricing
+.\scripts\token-cost-calculator.ps1 -TotalItems 200 -Pipeline convergence -ClaudeModel opus
+
+# Per-iteration cost breakdown
+.\scripts\token-cost-calculator.ps1 -TotalItems 150 -Detailed
+
+# Force-update cached pricing
+.\scripts\token-cost-calculator.ps1 -UpdatePricing
+
+# Client quote with 8x markup
+.\scripts\token-cost-calculator.ps1 -TotalItems 300 -ClientQuote -Markup 8 -ClientName "Acme Corp"
+```
+
+Parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| -ProjectPath | string | (current dir) | Path to project root with .gsd\blueprint\ |
+| -TotalItems | int | 0 | Manual override: total blueprint items |
+| -CompletedItems | int | 0 | Manual override: completed items |
+| -PartialItems | int | 0 | Partial items (counted as 0.5 remaining) |
+| -BatchSize | int | 15 | Items per build iteration |
+| -Pipeline | string | "blueprint" | Pipeline type: "blueprint" or "convergence" |
+| -BatchEfficiency | double | 0.70 | Success rate per batch (0.0-1.0) |
+| -RetryRate | double | 0.15 | Fraction of iterations triggering retry |
+| -ShowComparison | switch | false | Side-by-side blueprint vs convergence comparison |
+| -ClaudeModel | string | "sonnet" | Claude model: "sonnet", "opus", or "haiku" |
+| -Detailed | switch | false | Per-iteration cost breakdown (first 10) |
+| -UpdatePricing | switch | false | Force-fetch latest pricing from LiteLLM |
+| -ClientQuote | switch | false | Generate client-facing cost estimate |
+| -Markup | double | 7.0 | Markup multiplier (used with -ClientQuote) |
+| -ClientName | string | "Client Project" | Client name for quote header |
+
+Output sections:
+
+1. **Project Summary** -- pipeline, items, health, batch/efficiency, iterations
+2. **Model Pricing** -- per-1M token costs with source and cache age
+3. **Phase-by-Phase Breakdown** -- agent, iterations, input/output tokens, cost
+4. **Cost by Agent** -- with visual bar chart
+5. **Key Metrics** -- total tokens, cost per 1% health, cost per item, cost per iteration
+6. **Historical Progression** -- adjusted estimate from actual health-history.jsonl data
+7. **Subscription Comparison** -- API cost vs subscription cost at ~3 iterations/day
+8. **Pipeline Comparison** -- side-by-side (with -ShowComparison)
+9. **Per-Iteration Detail** -- first 10 iterations (with -Detailed)
+10. **Client Quote** -- three-tier pricing, timeline, inclusions, margin analysis (with -ClientQuote)
+
+Pricing source: LiteLLM open-source database, cached at %USERPROFILE%\.gsd-global\pricing-cache.json (auto-refreshed every 14 days).
+
 ## Push Notifications
 
 ### Automatic Topic Detection
@@ -196,15 +260,15 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ### install-gsd-global.ps1 (Script 1)
 
-Creates global directory structure, convergence engine, VS Code tasks, PATH entries, global config with notification settings.
+Creates the global %USERPROFILE%\.gsd-global\ directory structure with: convergence engine (convergence-loop.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-remote.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-status, gsd-assess, gsd-remote).
 
 ### install-gsd-blueprint.ps1 (Script 2)
 
-Installs blueprint pipeline, prompt templates, agent configurations, profile functions (gsd-blueprint, gsd-init).
+Installs the blueprint pipeline (blueprint-pipeline.ps1), assessment script (assess.ps1), blueprint prompt templates, agent configurations, and profile functions (gsd-blueprint, gsd-init). Creates the blueprint/ subdirectory structure within .gsd-global.
 
 ### setup-gsd-convergence.ps1 (Script 3)
 
-Sets up convergence loop configuration and phase definitions.
+Sets up convergence loop configuration and phase definitions. Creates the .gsd/ folder structure for autonomous convergence, detects the latest Figma design version from design\figma\v##, references SDLC spec docs (Phase A through Phase E), creates the convergence-loop.ps1 orchestrator, config templates, and agent prompt files.
 
 ### patch-gsd-partial-repo.ps1 (Script 4)
 

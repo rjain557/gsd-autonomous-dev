@@ -238,6 +238,73 @@ Remove-Item -Recurse -Force bin, obj 2>$null
 Remove-Item ".gsd\logs\*.log" -Force  # Clear old iteration logs
 ```
 
+## Token Cost Calculator Issues
+
+### Pricing fetch fails / "Using hardcoded fallback pricing"
+
+The calculator fetches pricing from the LiteLLM GitHub repository. If it fails:
+
+1. **Network issue**: Verify internet connectivity and that `raw.githubusercontent.com` is not blocked by firewall
+2. **GitHub rate limit**: Wait a few minutes and retry with `-UpdatePricing`
+3. **LiteLLM repository changed**: The fallback hardcoded prices will be used. Check if the LiteLLM model_prices JSON URL has changed
+
+```powershell
+# Force-update pricing cache
+.\scripts\token-cost-calculator.ps1 -UpdatePricing
+
+# Test the URL manually
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json" -UseBasicParsing | Select-Object StatusCode
+```
+
+### "Pricing cache is stale (X days old)"
+
+The cache at %USERPROFILE%\.gsd-global\pricing-cache.json is older than 60 days. The calculator will attempt auto-refresh. If refresh fails:
+
+```powershell
+# Delete stale cache and force refresh
+Remove-Item "$env:USERPROFILE\.gsd-global\pricing-cache.json" -Force
+.\scripts\token-cost-calculator.ps1 -UpdatePricing
+```
+
+### Pricing shows wrong model names or prices
+
+The LiteLLM database model keys may have changed. The calculator tries multiple key variants per model (e.g., `claude-opus-4-6`, `claude-opus-4-5`). If a new model version is released:
+
+1. Check the current cache: `Get-Content "$env:USERPROFILE\.gsd-global\pricing-cache.json" | ConvertFrom-Json | ConvertTo-Json -Depth 5`
+2. Force refresh: `.\scripts\token-cost-calculator.ps1 -UpdatePricing`
+3. If the model key format changed in LiteLLM, update the `$modelLookups` array in `token-cost-calculator.ps1`
+
+### Blueprint.json not found / auto-detection fails
+
+The calculator's auto mode requires `.gsd\blueprint\blueprint.json` in the project. If not found:
+
+```powershell
+# Use manual parameters instead
+.\scripts\token-cost-calculator.ps1 -TotalItems 150 -CompletedItems 30
+
+# Or specify the project path explicitly
+.\scripts\token-cost-calculator.ps1 -ProjectPath "C:\repos\my-app"
+```
+
+### Client quote shows incorrect complexity tier
+
+Complexity is auto-determined by item count: Standard (<=100), Complex (<=250), Enterprise (<=500), Enterprise+ (>500). Override by adjusting the `-Markup` parameter:
+
+- Simple projects: `-Markup 5`
+- Medium projects: `-Markup 7` (default)
+- Complex/enterprise: `-Markup 10`
+
+### Cost estimate seems too low
+
+The calculator models the "happy path" and may underestimate due to:
+
+- Build errors requiring diagnosis loops (not modeled)
+- Growing input context as codebase grows
+- Health regression requiring reverts and retries
+- "Last mile" problem (80% to 100% costs more per-item than 0% to 80%)
+
+Use `-ClientQuote` with a 7-10x markup to account for these factors. The three-tier pricing (best/expected/worst) provides a range.
+
 ## Common Workflows
 
 ### Starting fresh on a project
