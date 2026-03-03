@@ -52,8 +52,13 @@ if (Get-Command Initialize-GsdNotifications -ErrorAction SilentlyContinue) {
 $repoName = Split-Path $RepoRoot -Leaf
 
 # -- Ensure dirs --
-@($GsdDir, $BpDir, "$GsdDir\logs", "$GsdDir\supervisor") | ForEach-Object {
+@($GsdDir, $BpDir, "$GsdDir\logs", "$GsdDir\supervisor", "$GsdDir\costs") | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+}
+
+# Initialize cost tracking
+if (Get-Command Initialize-CostTracking -ErrorAction SilentlyContinue) {
+    Initialize-CostTracking -GsdDir $GsdDir -Pipeline "blueprint"
 }
 
 # -- State files --
@@ -315,7 +320,26 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             -LogFile "$GsdDir\logs\iter${Iteration}-2-build.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
-            git add -A; git commit -m "blueprint: iter $Iteration (health: ${Health}%)" --no-verify 2>$null
+            # Build commit message from verify/health findings for GitHub traceability
+            $bpHealthContent = if (Test-Path $HealthFile) { (Get-Content $HealthFile -Raw).Trim() } else { "" }
+            $driftPath = Join-Path $GsdDir "health\drift-report.md"
+            $commitSubject = "blueprint: iter $Iteration (health: ${Health}%)"
+            $commitBody = ""
+            if (Test-Path $driftPath) {
+                $commitBody = (Get-Content $driftPath -Raw).Trim()
+            } elseif ($bpHealthContent) {
+                $commitBody = "Verify results:`n$bpHealthContent"
+            }
+            if ($commitBody) {
+                if ($commitBody.Length -gt 4000) { $commitBody = $commitBody.Substring(0, 4000) + "`n... (truncated)" }
+                $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+                "$commitSubject`n`n$commitBody" | Set-Content $commitMsgFile -Encoding UTF8
+                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
+                Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+            } else {
+                git add -A; git commit -m $commitSubject --no-verify 2>$null
+            }
+            git push 2>$null
             # Update file map after each iteration so agents see current structure
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
@@ -373,7 +397,20 @@ Write-Host ""; Write-Host "=====================================================
 $FinalHealth = Get-Health
 if ($FinalHealth -ge $TargetHealth) {
     Write-Host "  [PARTY] COMPLETE - ${FinalHealth}% in $Iteration iterations" -ForegroundColor Green
-    if (-not $DryRun) { git add -A; git commit -m "blueprint: COMPLETE" --no-verify 2>$null; git tag "blueprint-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null }
+    if (-not $DryRun) {
+        $bpHealthContent = if (Test-Path $HealthFile) { (Get-Content $HealthFile -Raw).Trim() } else { "" }
+        $commitSubject = "blueprint: COMPLETE at ${FinalHealth}% in $Iteration iterations"
+        if ($bpHealthContent) {
+            $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+            "$commitSubject`n`nFinal health:`n$bpHealthContent" | Set-Content $commitMsgFile -Encoding UTF8
+            git add -A; git commit -F $commitMsgFile --no-verify 2>$null
+            Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+        } else {
+            git add -A; git commit -m $commitSubject --no-verify 2>$null
+        }
+        git tag "blueprint-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null
+        git push --tags 2>$null
+    }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     Send-GsdNotification -Title "BLUEPRINT COMPLETE!" -Message "$repoName | 100% in $Iteration iterations" -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
@@ -403,6 +440,7 @@ Write-Host "=========================================================" -Foregrou
     Stop-BackgroundHeartbeat
     Stop-CommandListener
     if (Get-Command Stop-EngineStatusHeartbeat -ErrorAction SilentlyContinue) { Stop-EngineStatusHeartbeat }
+    if (Get-Command Complete-CostTrackingRun -ErrorAction SilentlyContinue) { Complete-CostTrackingRun -GsdDir $GsdDir }
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health

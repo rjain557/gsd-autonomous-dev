@@ -386,6 +386,49 @@ The file is created when the pipeline first starts. If it does not exist:
 2. **Directory was cleaned up**: If `.gsd/health/` exists but `engine-status.json` is missing, the file may have been manually deleted or the .gsd directory was partially cleaned. Re-running the pipeline will recreate it.
 3. **Old installation**: If the engine was installed before the engine-status feature was added, re-run `install-gsd-all.ps1` to update the resilience module with `Update-EngineStatus`, `Start-EngineStatusHeartbeat`, and `Stop-EngineStatusHeartbeat`.
 
+## Cost Tracking Issues
+
+### Actual costs not being tracked
+
+If `.gsd/costs/token-usage.jsonl` is not being populated:
+
+1. **Re-install**: Run `install-gsd-all.ps1` to ensure `patch-gsd-hardening.ps1` (Script 5) has deployed the cost tracking functions (`Initialize-CostTracking`, `Save-TokenUsage`, `Extract-TokensFromOutput`)
+2. **Check CLI version**: The JSON output flags require recent CLI versions. Older CLIs may not support `--output-format json` (Claude/Gemini) or `--json` (Codex). Update CLIs via `npm update -g`
+3. **JSON parse failure**: If a CLI returns unexpected JSON format, the engine silently falls back to raw output and skips cost logging for that call. Check `.gsd/logs/` for raw agent output
+
+### cost-summary.json is corrupted or out of sync
+
+Rebuild the summary from the ground-truth JSONL file:
+
+```powershell
+# In a PowerShell session with GSD loaded
+. "$env:USERPROFILE\.gsd-global\lib\modules\resilience.ps1"
+Rebuild-CostSummary -GsdDir ".gsd"
+```
+
+This reads every line from `token-usage.jsonl` and reconstructs all aggregates (by agent, by phase, runs).
+
+### -ShowActual shows no data
+
+The `-ShowActual` flag on `gsd-costs` requires `.gsd/costs/cost-summary.json` to exist. This file is created when the first pipeline run starts. If you haven't run a pipeline yet, there is no actual cost data to display.
+
+```powershell
+# Verify cost data exists
+Test-Path ".gsd\costs\cost-summary.json"
+Get-Content ".gsd\costs\cost-summary.json" | ConvertFrom-Json | Select-Object total_calls, total_cost_usd
+```
+
+### Cost data missing after pipeline abort
+
+The JSONL file is append-only, so all data up to the point of the crash is preserved. When you restart the pipeline, new cost entries are appended. The summary file is rebuilt incrementally on each new agent call.
+
+If the summary is stale (e.g., pipeline crashed between JSONL write and summary update), rebuild it:
+
+```powershell
+. "$env:USERPROFILE\.gsd-global\lib\modules\resilience.ps1"
+Rebuild-CostSummary -GsdDir ".gsd"
+```
+
 ## Spec Conflict Issues
 
 ### "BLOCKED: Critical spec conflicts detected"

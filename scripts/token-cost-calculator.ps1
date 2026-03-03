@@ -59,9 +59,17 @@
 .PARAMETER ClientName
     Client or project name for the quote header. Default: "Client Project".
 
+.PARAMETER ShowActual
+    Show actual token costs tracked from pipeline runs (reads .gsd/costs/cost-summary.json).
+    When combined with estimation, shows an estimated-vs-actual comparison table.
+
 .PARAMETER UpdatePricing
     Fetch latest pricing from provider websites and update the local cache.
     Pricing is cached at ~/.gsd-global/pricing-cache.json.
+
+.EXAMPLE
+    .\token-cost-calculator.ps1 -ShowActual
+    # Show actual costs from pipeline runs
 
 .EXAMPLE
     .\token-cost-calculator.ps1 -TotalItems 200 -Pipeline convergence -ClaudeModel opus
@@ -88,6 +96,7 @@ param(
     [switch]$ShowComparison,
     [string]$ClaudeModel = "sonnet",
     [switch]$Detailed,
+    [switch]$ShowActual,
     [switch]$UpdatePricing,
     [switch]$ClientQuote,
     [double]$Markup = 7.0,
@@ -1045,10 +1054,159 @@ if ($ClientQuote) {
     Write-Host ""
 }
 
+# ============================================================================
+# ACTUAL COST TRACKING
+# ============================================================================
+
+if ($ShowActual) {
+    # Resolve project path for cost data
+    $actualProjectPath = if ($ProjectPath) { $ProjectPath } else { (Get-Location).Path }
+    $costSummaryPath = Join-Path $actualProjectPath ".gsd\costs\cost-summary.json"
+
+    if (Test-Path $costSummaryPath) {
+        try {
+            $actual = Get-Content $costSummaryPath -Raw | ConvertFrom-Json
+
+            Write-Host ""
+            Write-Host "============================================================================" -ForegroundColor Magenta
+            Write-Host "  ACTUAL TOKEN COSTS (from pipeline runs)" -ForegroundColor Magenta
+            Write-Host "============================================================================" -ForegroundColor Magenta
+            Write-Host ""
+            Write-Host "  SUMMARY" -ForegroundColor White
+            Write-Host "  -----------------------------------------------"
+            Write-Host ("  Total agent calls:    {0}" -f $actual.total_calls)
+            Write-Host ("  Total cost:           `${0:N4}" -f $actual.total_cost_usd) -ForegroundColor Green
+            if ($actual.total_tokens) {
+                $totalTokens = [long]$actual.total_tokens.input + [long]$actual.total_tokens.output
+                Write-Host ("  Total tokens:         {0:N0} ({1:N0} in / {2:N0} out)" -f $totalTokens, $actual.total_tokens.input, $actual.total_tokens.output)
+                if ($actual.total_tokens.cached -gt 0) {
+                    Write-Host ("  Cached tokens:        {0:N0}" -f $actual.total_tokens.cached)
+                }
+            }
+            Write-Host ("  First run:            {0}" -f $actual.project_start)
+            Write-Host ("  Last updated:         {0}" -f $actual.last_updated)
+            Write-Host ""
+
+            # Cost by agent with bar chart
+            if ($actual.by_agent) {
+                Write-Host "  ACTUAL COST BY AGENT" -ForegroundColor White
+                Write-Host "  -----------------------------------------------"
+                $agents = @($actual.by_agent.PSObject.Properties)
+                $maxCost = ($agents | ForEach-Object { [double]$_.Value.cost_usd } | Measure-Object -Maximum).Maximum
+                if ($maxCost -eq 0) { $maxCost = 1 }
+
+                foreach ($agentProp in $agents) {
+                    $agentName = $agentProp.Name
+                    $agentData = $agentProp.Value
+                    $cost = [double]$agentData.cost_usd
+                    $pct = if ($actual.total_cost_usd -gt 0) { ($cost / $actual.total_cost_usd) * 100 } else { 0 }
+                    $barLen = [math]::Max(1, [math]::Floor(($cost / $maxCost) * 25))
+                    $bar = "#" * $barLen
+                    $label = "{0,-8} `${1:N4}  {2,5:N1}%  {3}" -f $agentName, $cost, $pct, $bar
+                    Write-Host "  $label"
+                    if ($agentData.tokens) {
+                        Write-Host ("            In: {0:N0}  |  Out: {1:N0}  |  Calls: {2}" -f `
+                            $agentData.tokens.input, $agentData.tokens.output, $agentData.calls) -ForegroundColor DarkGray
+                    }
+                }
+                Write-Host ""
+            }
+
+            # Cost by phase
+            if ($actual.by_phase) {
+                Write-Host "  ACTUAL COST BY PHASE" -ForegroundColor White
+                Write-Host "  -----------------------------------------------"
+                $phases = @($actual.by_phase.PSObject.Properties)
+                foreach ($phaseProp in $phases) {
+                    $phaseName = $phaseProp.Name
+                    $phaseData = $phaseProp.Value
+                    $cost = [double]$phaseData.cost_usd
+                    $pct = if ($actual.total_cost_usd -gt 0) { ($cost / $actual.total_cost_usd) * 100 } else { 0 }
+                    Write-Host ("  {0,-16} `${1:N4}  ({2:N1}%)  [{3} calls]" -f $phaseName, $cost, $pct, $phaseData.calls)
+                }
+                Write-Host ""
+            }
+
+            # Run history
+            if ($actual.runs -and $actual.runs.Count -gt 0) {
+                Write-Host "  RUN HISTORY" -ForegroundColor White
+                Write-Host "  -----------------------------------------------"
+                for ($r = 0; $r -lt $actual.runs.Count; $r++) {
+                    $run = $actual.runs[$r]
+                    $endStr = if ($run.ended) { $run.ended.Substring(0, 19) } else { "(running)" }
+                    $startStr = if ($run.started) { $run.started.Substring(0, 19) } else { "?" }
+                    Write-Host ("  Run {0}: {1} -> {2}  |  {3} calls  |  `${4:N4}" -f ($r + 1), $startStr, $endStr, $run.calls, $run.cost_usd)
+                }
+                Write-Host ""
+            }
+
+            # Estimated vs actual comparison (if estimates are available)
+            if ($result -and $result.TotalCost -gt 0) {
+                Write-Host "  ESTIMATED VS ACTUAL" -ForegroundColor Yellow
+                Write-Host "  -----------------------------------------------"
+                $estTotal = $result.TotalCost
+                $actTotal = [double]$actual.total_cost_usd
+                $variance = if ($estTotal -gt 0) { (($actTotal - $estTotal) / $estTotal) * 100 } else { 0 }
+                $varStr = if ($variance -ge 0) { "+{0:N1}%" -f $variance } else { "{0:N1}%" -f $variance }
+                Write-Host ("  {0,-20} {1,12} {2,12} {3,10}" -f "", "Estimated", "Actual", "Variance") -ForegroundColor DarkGray
+                Write-Host ("  {0,-20} `${1,10:N4} `${2,10:N4} {3,10}" -f "Total cost", $estTotal, $actTotal, $varStr)
+
+                # Per-agent comparison
+                if ($result.Costs -and $actual.by_agent) {
+                    foreach ($agentName in @("claude", "codex", "gemini")) {
+                        $estCost = if ($result.Costs.$agentName) { [double]$result.Costs.$agentName } else { 0 }
+                        $actCost = 0
+                        if ($actual.by_agent.PSObject.Properties[$agentName]) {
+                            $actCost = [double]$actual.by_agent.$agentName.cost_usd
+                        }
+                        if ($estCost -gt 0 -or $actCost -gt 0) {
+                            $v = if ($estCost -gt 0) { (($actCost - $estCost) / $estCost) * 100 } else { 0 }
+                            $vs = if ($v -ge 0) { "+{0:N1}%" -f $v } else { "{0:N1}%" -f $v }
+                            Write-Host ("  {0,-20} `${1,10:N4} `${2,10:N4} {3,10}" -f $agentName, $estCost, $actCost, $vs)
+                        }
+                    }
+                }
+                Write-Host ""
+
+                # Actual cost efficiency
+                Write-Host "  ACTUAL COST EFFICIENCY" -ForegroundColor White
+                Write-Host "  -----------------------------------------------"
+                if ($actual.total_calls -gt 0) {
+                    Write-Host ("  `$/agent call:     `${0:N4}" -f ($actTotal / $actual.total_calls))
+                }
+
+                # Estimate remaining cost at actual rate
+                $healthPath = Join-Path $actualProjectPath ".gsd\health\health-current.json"
+                if (Test-Path $healthPath) {
+                    try {
+                        $health = Get-Content $healthPath -Raw | ConvertFrom-Json
+                        $currentHealth = [double]$health.health_score
+                        if ($currentHealth -gt 0 -and $currentHealth -lt 100) {
+                            $costPerPct = $actTotal / $currentHealth
+                            $remaining = (100 - $currentHealth) * $costPerPct
+                            Write-Host ("  `$/1%% health:      `${0:N4}" -f $costPerPct)
+                            Write-Host ("  Remaining est:    ~`${0:N2} to reach 100%% (at actual rate)" -f $remaining) -ForegroundColor Yellow
+                        }
+                    } catch { }
+                }
+                Write-Host ""
+            }
+        } catch {
+            Write-Host "  [!!] Error reading cost data: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    } else {
+        Write-Host ""
+        Write-Host "  No actual cost data found at: $costSummaryPath" -ForegroundColor DarkYellow
+        Write-Host "  Run a pipeline (gsd-converge or gsd-blueprint) to start tracking costs." -ForegroundColor DarkGray
+        Write-Host ""
+    }
+}
+
 Write-Host "============================================================================" -ForegroundColor Cyan
 Write-Host "  Pricing source: $pricingSource" -ForegroundColor DarkGray
 Write-Host "  Run -UpdatePricing to fetch latest prices from provider websites." -ForegroundColor DarkGray
 Write-Host "  Run -ShowComparison for blueprint vs convergence cost comparison." -ForegroundColor DarkGray
+Write-Host "  Run -ShowActual to see actual costs from pipeline runs." -ForegroundColor DarkGray
 Write-Host "  Run -Detailed for per-iteration breakdown." -ForegroundColor DarkGray
 Write-Host "  Run -ClaudeModel opus|haiku to compare Claude model costs." -ForegroundColor DarkGray
 Write-Host "  Run -ClientQuote -Markup 7 -ClientName 'Acme' for client estimate." -ForegroundColor DarkGray

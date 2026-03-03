@@ -162,7 +162,7 @@ After installation, the engine creates:
 
 ### Using Blueprint Pipeline (new projects)
 
-Best for building a project from specifications (greenfield development).
+Best for building a project from specifications (greenfield development). Actual API token costs are automatically tracked in `.gsd/costs/` from the first run.
 
 ```powershell
 cd C:\path\to\your\repo
@@ -182,7 +182,7 @@ gsd-blueprint
 
 ### Using Convergence Pipeline (existing projects)
 
-Best for fixing and improving existing codebases against specifications.
+Best for fixing and improving existing codebases against specifications. Actual API token costs are automatically tracked in `.gsd/costs/` from the first run.
 
 ```powershell
 cd C:\path\to\your\repo
@@ -195,7 +195,7 @@ gsd-assess
 gsd-converge
 ```
 
-### Estimating Costs Before Starting
+### Estimating and Tracking Costs
 
 ```powershell
 # Quick estimate from blueprint
@@ -206,7 +206,12 @@ gsd-costs -TotalItems 150 -Pipeline blueprint
 
 # Full comparison of both pipelines
 gsd-costs -TotalItems 150 -ShowComparison
+
+# After running a pipeline, view actual costs vs estimates
+gsd-costs -ShowActual
 ```
+
+Actual costs are tracked automatically from the first pipeline run. Use `-ShowActual` at any time to see actual costs, breakdown by agent and phase, run history, and an estimated vs actual comparison table.
 
 ## Mobile Monitoring Setup
 

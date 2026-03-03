@@ -72,6 +72,9 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
   spec-conflicts\
     conflicts-to-resolve.json   # Detected spec contradictions
     resolution-summary.md       # Auto-resolution results
+  costs\
+    token-usage.jsonl             # Actual token costs per agent call (append-only)
+    cost-summary.json             # Rolling cost totals by agent, phase, run
   logs\
     errors.jsonl                # Categorized errors (JSONL)
     iter{N}-{phase}.log         # Per-iteration agent output
@@ -705,6 +708,69 @@ The `-ClientQuote` switch generates professional cost estimates with configurabl
 ### Subscription vs API Comparison
 
 The calculator always shows a subscription cost comparison, estimating project duration at ~3 iterations/day and computing the equivalent subscription cost ($60/mo minimum for Claude Pro + ChatGPT Plus + Gemini Advanced) vs. the calculated API cost.
+
+## Token Cost Tracking
+
+The engine tracks actual API token costs across all agent calls, persisting across aborts and restarts. This provides real cost data from first run to project completion and enables comparison against the token cost estimator.
+
+### How It Works
+
+All three CLIs are invoked with JSON output flags to capture token usage:
+- **Claude**: `--output-format json` returns `total_cost_usd`, `result` text, `duration_ms`, `num_turns`
+- **Codex**: `--json` returns JSONL with `turn.completed` events containing `usage.{input_tokens, output_tokens, cached_input_tokens}`
+- **Gemini**: `--output-format json` returns `stats.{prompt_tokens, response_tokens, cached_tokens}`
+
+Every agent call (including retries and fallbacks) is logged to `.gsd/costs/token-usage.jsonl` with a rolling summary maintained in `.gsd/costs/cost-summary.json`. If JSON parsing fails for any CLI call, the engine silently falls back to raw text output -- cost tracking never blocks the pipeline.
+
+### Data Files
+
+| File | Format | Purpose |
+|------|--------|---------|
+| `.gsd/costs/token-usage.jsonl` | Append-only JSONL | Ground truth: one line per agent call |
+| `.gsd/costs/cost-summary.json` | JSON (rewritten) | Rolling totals by agent, phase, and run |
+
+The JSONL file survives crashes (append-only). The summary file can always be rebuilt from JSONL if corrupted via `Rebuild-CostSummary`.
+
+### Cost Data Per Agent Call
+
+Each JSONL record captures:
+
+| Field | Description |
+|-------|-------------|
+| timestamp | ISO 8601 timestamp |
+| pipeline | "converge" or "blueprint" |
+| iteration | Current iteration number |
+| phase | Pipeline phase (e.g., "code-review", "execute") |
+| agent | "claude", "codex", or "gemini" |
+| batch_size | Number of items in the batch |
+| success | Whether the call succeeded |
+| is_fallback | Whether this was a fallback agent call |
+| tokens | `{ input, output, cached }` token counts |
+| cost_usd | Actual cost (from CLI or calculated from token counts) |
+| duration_seconds | Wall-clock time for the call |
+| num_turns | Number of agent turns (Claude only) |
+
+### Estimated vs Actual Comparison
+
+Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and actual costs:
+
+```
+  ESTIMATED VS ACTUAL
+  -----------------------------------------------
+                    Estimated     Actual     Variance
+  Total cost        $15.20       $12.45     -18.1%
+  Claude            $8.50        $7.20      -15.3%
+  Codex             $5.00        $3.90      -22.0%
+  Gemini            $1.70        $1.35      -20.6%
+```
+
+### Safety Design
+
+- All JSON parsing is wrapped in try/catch -- parse failure falls back to raw output
+- `Save-TokenUsage` is wrapped in try/catch -- tracking failure never blocks the pipeline
+- JSONL is append-only (survives crashes mid-write)
+- Summary can be rebuilt from JSONL via `Rebuild-CostSummary` if corrupted
+- Existing error detection (quota, rate limit, auth keywords) works on extracted text content
 
 ## Known Automation Boundaries
 

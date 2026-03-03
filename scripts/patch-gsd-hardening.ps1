@@ -666,7 +666,7 @@ function Invoke-AgentFallback {
     <#
     .SYNOPSIS
         Attempts to run the same prompt with a fallback agent.
-        Returns: @{ Success; Output; ExitCode }
+        Returns: @{ Success; Output; ExitCode; TokenData }
     #>
     param(
         [string]$FallbackAgent,
@@ -677,17 +677,39 @@ function Invoke-AgentFallback {
 
     $fbOutput = $null
     $fbExit = 1
+    $fbTokenData = $null
 
     try {
         if ($FallbackAgent -eq "codex") {
-            $fbOutput = $Prompt | codex exec --full-auto - 2>&1
+            $rawOutput = $Prompt | codex exec --full-auto --json - 2>&1
             $fbExit = $LASTEXITCODE
+            $parsed = Extract-TokensFromOutput -Agent "codex" -RawOutput ($rawOutput -join "`n")
+            if ($parsed -and $parsed.TextOutput) {
+                $fbOutput = $parsed.TextOutput -split "`n"
+                $fbTokenData = $parsed
+            } else {
+                $fbOutput = $rawOutput
+            }
         } elseif ($FallbackAgent -eq "claude") {
-            $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
+            $rawOutput = claude -p $Prompt --allowedTools $AllowedTools --output-format json 2>&1
             $fbExit = $LASTEXITCODE
+            $parsed = Extract-TokensFromOutput -Agent "claude" -RawOutput ($rawOutput -join "`n")
+            if ($parsed -and $parsed.TextOutput) {
+                $fbOutput = $parsed.TextOutput -split "`n"
+                $fbTokenData = $parsed
+            } else {
+                $fbOutput = $rawOutput
+            }
         } elseif ($FallbackAgent -eq "gemini") {
-            $fbOutput = $Prompt | gemini --approval-mode plan 2>&1
+            $rawOutput = $Prompt | gemini --approval-mode plan --output-format json 2>&1
             $fbExit = $LASTEXITCODE
+            $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
+            if ($parsed -and $parsed.TextOutput) {
+                $fbOutput = $parsed.TextOutput -split "`n"
+                $fbTokenData = $parsed
+            } else {
+                $fbOutput = $rawOutput
+            }
         }
 
         if ($LogFile -and $fbOutput) {
@@ -701,6 +723,7 @@ function Invoke-AgentFallback {
         Success = ($fbExit -eq 0 -and $fbOutput -and $fbOutput.Count -gt 0)
         Output = $fbOutput
         ExitCode = $fbExit
+        TokenData = $fbTokenData
     }
 }
 
@@ -753,19 +776,49 @@ function Invoke-WithRetry {
         try {
             $exitCode = 0
             $output = $null
+            $tokenData = $null
+            $callStart = Get-Date
 
             if ($Agent -eq "claude") {
-                $output = claude -p $effectivePrompt --allowedTools $AllowedTools 2>&1
+                # Use --output-format json to capture token usage + cost data
+                $rawOutput = claude -p $effectivePrompt --allowedTools $AllowedTools --output-format json 2>&1
                 $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "claude" -RawOutput ($rawOutput -join "`n")
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = $rawOutput  # Fallback: preserve current behavior
+                }
             } elseif ($Agent -eq "codex") {
-                # Pass prompt via stdin to avoid Windows CLI length limits
-                $output = $effectivePrompt | codex exec --full-auto - 2>&1
+                # Pass prompt via stdin, use --json to capture token usage
+                $rawOutput = $effectivePrompt | codex exec --full-auto --json - 2>&1
                 $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "codex" -RawOutput ($rawOutput -join "`n")
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = $rawOutput
+                }
             } elseif ($Agent -eq "gemini") {
                 # Gemini CLI: --approval-mode plan (read-only) or --yolo (write)
                 $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-                $output = $effectivePrompt | gemini @geminiArgs 2>&1
+                $rawOutput = $effectivePrompt | gemini @geminiArgs --output-format json 2>&1
                 $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = $rawOutput
+                }
+            }
+
+            # Calculate call duration from wall clock if not in JSON data
+            $callDuration = [int]((Get-Date) - $callStart).TotalSeconds
+            if ($tokenData -and $tokenData.DurationMs -eq 0) {
+                $tokenData.DurationMs = $callDuration * 1000
             }
 
             if ($LogFile) { $output | Out-File -FilePath $LogFile -Encoding UTF8 -Append }
@@ -847,6 +900,17 @@ function Invoke-WithRetry {
                             Test-AgentBoundaries -Agent $recovery.FallbackAgent `
                                 -RepoRoot (Get-Location).Path -GsdDir $GsdDir -Pipeline "any" `
                                 -BaselineDirty $baselineDirty | Out-Null
+
+                            # Save fallback token usage
+                            if ($fb.TokenData -and $GsdDir) {
+                                try {
+                                    $pipelineType = if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
+                                    Save-TokenUsage -GsdDir $GsdDir -Agent $recovery.FallbackAgent -Phase $Phase `
+                                        -Iteration $i -Pipeline $pipelineType -BatchSize $CurrentBatchSize `
+                                        -Success $true -IsFallback $true -TokenData $fb.TokenData
+                                } catch { }
+                            }
+
                             return $result
                         } else {
                             Write-Host "    [!!]  Fallback to $($recovery.FallbackAgent) also failed (exit $($fb.ExitCode))" -ForegroundColor DarkYellow
@@ -885,6 +949,16 @@ function Invoke-WithRetry {
                     -RepoRoot (Get-Location).Path -GsdDir $GsdDir -Pipeline "any" `
                     -BaselineDirty $baselineDirty | Out-Null
 
+                # -- Save token usage on success --
+                if ($tokenData -and $GsdDir) {
+                    try {
+                        $pipelineType = if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
+                        Save-TokenUsage -GsdDir $GsdDir -Agent $Agent -Phase $Phase `
+                            -Iteration $i -Pipeline $pipelineType -BatchSize $CurrentBatchSize `
+                            -Success $true -TokenData $tokenData
+                    } catch { }
+                }
+
                 return $result
             }
 
@@ -900,6 +974,17 @@ function Invoke-WithRetry {
     }
 
     if (-not $result.Error) { $result.Error = "All $MaxAttempts attempts failed" }
+
+    # Save token usage on failure (last attempt's data if available)
+    if ($tokenData -and $GsdDir) {
+        try {
+            $pipelineType = if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
+            Save-TokenUsage -GsdDir $GsdDir -Agent $Agent -Phase $Phase `
+                -Iteration $MaxAttempts -Pipeline $pipelineType -BatchSize $CurrentBatchSize `
+                -Success $false -TokenData $tokenData
+        } catch { }
+    }
+
     # Engine status: record last error from retry exhaustion
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
         Update-EngineStatus -GsdDir $GsdDir -State "running" -LastError $result.Error
@@ -1535,6 +1620,478 @@ function Stop-EngineStatusHeartbeat {
         Remove-Job -Job $script:ENGINE_STATUS_JOB -Force -ErrorAction SilentlyContinue
         $script:ENGINE_STATUS_JOB = $null
     }
+}
+
+# ===========================================
+# 13. TOKEN COST TRACKING
+# ===========================================
+
+function Extract-TokensFromOutput {
+    <#
+    .SYNOPSIS
+        Parses JSON output from an agent CLI to extract token usage and text content.
+        Returns $null if no token data found (graceful degradation).
+    #>
+    param(
+        [string]$Agent,
+        [string]$RawOutput
+    )
+
+    if (-not $RawOutput) { return $null }
+
+    try {
+        if ($Agent -eq "claude") {
+            # Claude --output-format json returns a JSON array of messages.
+            # The last entry (type="result") has: total_cost_usd, result, duration_ms, num_turns
+            $jsonText = $RawOutput.Trim()
+
+            # Handle JSON array (multiple entries) or single object
+            $entries = $null
+            if ($jsonText.StartsWith("[")) {
+                $entries = $jsonText | ConvertFrom-Json -ErrorAction Stop
+            } else {
+                $entries = @($jsonText | ConvertFrom-Json -ErrorAction Stop)
+            }
+
+            # Find the result entry
+            $resultEntry = $entries | Where-Object { $_.type -eq "result" } | Select-Object -Last 1
+            if (-not $resultEntry) { return $null }
+
+            $textOutput = if ($resultEntry.result) { $resultEntry.result } else { "" }
+            $costUsd = if ($null -ne $resultEntry.total_cost_usd) { [double]$resultEntry.total_cost_usd } else { 0 }
+            $durationMs = if ($null -ne $resultEntry.duration_ms) { [int]$resultEntry.duration_ms } else { 0 }
+            $numTurns = if ($null -ne $resultEntry.num_turns) { [int]$resultEntry.num_turns } else { 0 }
+
+            # Extract token counts from usage if available, otherwise estimate from cost
+            $inputTokens = 0; $outputTokens = 0; $cachedTokens = 0
+            if ($resultEntry.usage) {
+                $inputTokens = [int]($resultEntry.usage.input_tokens ?? 0)
+                $outputTokens = [int]($resultEntry.usage.output_tokens ?? 0)
+                $cachedTokens = [int]($resultEntry.usage.cache_read_input_tokens ?? 0)
+            }
+
+            return @{
+                Tokens = @{ input = $inputTokens; output = $outputTokens; cached = $cachedTokens }
+                CostUsd = $costUsd
+                TextOutput = $textOutput
+                DurationMs = $durationMs
+                NumTurns = $numTurns
+            }
+        }
+        elseif ($Agent -eq "codex") {
+            # Codex --json returns JSONL events. Find turn.completed for usage data.
+            $lines = $RawOutput -split "`n"
+            $totalInput = 0; $totalOutput = 0; $totalCached = 0
+            $textParts = @()
+            $hasUsage = $false
+
+            foreach ($line in $lines) {
+                $trimmed = $line.Trim()
+                if (-not $trimmed -or -not $trimmed.StartsWith("{")) {
+                    if ($trimmed) { $textParts += $trimmed }
+                    continue
+                }
+                try {
+                    $evt = $trimmed | ConvertFrom-Json -ErrorAction Stop
+
+                    # Accumulate token usage from turn.completed events
+                    if ($evt.type -eq "turn.completed" -and $evt.usage) {
+                        $hasUsage = $true
+                        $totalInput += [int]($evt.usage.input_tokens ?? 0)
+                        $totalOutput += [int]($evt.usage.output_tokens ?? 0)
+                        $totalCached += [int]($evt.usage.cached_input_tokens ?? 0)
+                    }
+
+                    # Extract text content from message events
+                    if ($evt.type -eq "message" -and $evt.content) {
+                        $textParts += $evt.content
+                    } elseif ($evt.type -eq "item.created" -and $evt.item -and $evt.item.content) {
+                        $textParts += $evt.item.content
+                    }
+                } catch {
+                    # Non-JSON line, keep as text
+                    $textParts += $trimmed
+                }
+            }
+
+            if (-not $hasUsage) { return $null }
+
+            # Calculate cost from tokens using pricing
+            $pricing = Get-TokenPrice -Agent "codex"
+            $costUsd = ($totalInput / 1000000.0) * $pricing.InputPerM + ($totalOutput / 1000000.0) * $pricing.OutputPerM
+
+            return @{
+                Tokens = @{ input = $totalInput; output = $totalOutput; cached = $totalCached }
+                CostUsd = [math]::Round($costUsd, 6)
+                TextOutput = ($textParts -join "`n")
+                DurationMs = 0
+                NumTurns = 0
+            }
+        }
+        elseif ($Agent -eq "gemini") {
+            # Gemini --output-format json returns JSON with stats section
+            $jsonText = $RawOutput.Trim()
+            $parsed = $null
+
+            if ($jsonText.StartsWith("[")) {
+                $entries = $jsonText | ConvertFrom-Json -ErrorAction Stop
+                $parsed = $entries | Select-Object -Last 1
+            } else {
+                $parsed = $jsonText | ConvertFrom-Json -ErrorAction Stop
+            }
+
+            if (-not $parsed) { return $null }
+
+            $textOutput = ""
+            if ($parsed.response) { $textOutput = $parsed.response }
+            elseif ($parsed.result) { $textOutput = $parsed.result }
+
+            $inputTokens = 0; $outputTokens = 0; $cachedTokens = 0
+            if ($parsed.stats) {
+                $inputTokens = [int]($parsed.stats.prompt_tokens ?? $parsed.stats.input_tokens ?? 0)
+                $outputTokens = [int]($parsed.stats.response_tokens ?? $parsed.stats.output_tokens ?? 0)
+                $cachedTokens = [int]($parsed.stats.cached_tokens ?? 0)
+            } elseif ($parsed.usage) {
+                $inputTokens = [int]($parsed.usage.prompt_tokens ?? $parsed.usage.input_tokens ?? 0)
+                $outputTokens = [int]($parsed.usage.completion_tokens ?? $parsed.usage.output_tokens ?? 0)
+                $cachedTokens = [int]($parsed.usage.cached_tokens ?? 0)
+            }
+
+            if ($inputTokens -eq 0 -and $outputTokens -eq 0) { return $null }
+
+            $pricing = Get-TokenPrice -Agent "gemini"
+            $costUsd = ($inputTokens / 1000000.0) * $pricing.InputPerM + ($outputTokens / 1000000.0) * $pricing.OutputPerM
+
+            return @{
+                Tokens = @{ input = $inputTokens; output = $outputTokens; cached = $cachedTokens }
+                CostUsd = [math]::Round($costUsd, 6)
+                TextOutput = $textOutput
+                DurationMs = 0
+                NumTurns = 0
+            }
+        }
+    } catch {
+        # Any parse failure -> return null, caller uses raw output
+        return $null
+    }
+
+    return $null
+}
+
+function Get-TokenPrice {
+    <#
+    .SYNOPSIS
+        Returns pricing for a given agent from pricing-cache.json.
+        Falls back to hardcoded prices if cache unavailable.
+    #>
+    param(
+        [string]$Agent
+    )
+
+    $fallback = @{
+        claude = @{ InputPerM = 3.00; OutputPerM = 15.00; CacheReadPerM = 0.30; ModelKey = "claude_sonnet" }
+        codex  = @{ InputPerM = 1.50; OutputPerM = 6.00;  CacheReadPerM = 0.00; ModelKey = "codex" }
+        gemini = @{ InputPerM = 1.25; OutputPerM = 10.00; CacheReadPerM = 0.125; ModelKey = "gemini" }
+    }
+
+    $modelKey = switch ($Agent) {
+        "claude" { "claude_sonnet" }
+        "codex"  { "codex" }
+        "gemini" { "gemini" }
+        default  { $Agent }
+    }
+
+    try {
+        $cachePath = Join-Path $env:USERPROFILE ".gsd-global\pricing-cache.json"
+        if (Test-Path $cachePath) {
+            $cache = Get-Content $cachePath -Raw | ConvertFrom-Json
+            if ($cache.models -and $cache.models.$modelKey) {
+                $m = $cache.models.$modelKey
+                return @{
+                    InputPerM = [double]$m.InputPerM
+                    OutputPerM = [double]$m.OutputPerM
+                    CacheReadPerM = [double]($m.CacheReadPerM ?? 0)
+                    ModelKey = $modelKey
+                }
+            }
+        }
+    } catch { }
+
+    return $fallback[$Agent] ?? $fallback["claude"]
+}
+
+function Initialize-CostTracking {
+    <#
+    .SYNOPSIS
+        Creates .gsd/costs/ directory and records a new run start.
+        Idempotent -- safe to call on every pipeline start.
+    #>
+    param(
+        [string]$GsdDir,
+        [string]$Pipeline = "converge"
+    )
+
+    try {
+        $costsDir = Join-Path $GsdDir "costs"
+        if (-not (Test-Path $costsDir)) {
+            New-Item -ItemType Directory -Path $costsDir -Force | Out-Null
+        }
+
+        $summaryPath = Join-Path $costsDir "cost-summary.json"
+        $now = (Get-Date).ToUniversalTime().ToString("o")
+
+        if (Test-Path $summaryPath) {
+            # Add a new run entry
+            $summary = Get-Content $summaryPath -Raw | ConvertFrom-Json
+            $runs = @($summary.runs)
+            # Close the previous run if it has no end time
+            for ($r = 0; $r -lt $runs.Count; $r++) {
+                if (-not $runs[$r].ended) {
+                    $runs[$r].ended = $now
+                }
+            }
+            $runs += @{ started = $now; ended = $null; calls = 0; cost_usd = 0 }
+            $summary.runs = $runs
+            $summary | ConvertTo-Json -Depth 5 | Set-Content $summaryPath -Encoding UTF8
+        } else {
+            # Create initial summary
+            $summary = @{
+                project_start = $now
+                last_updated = $now
+                total_calls = 0
+                total_cost_usd = 0
+                total_tokens = @{ input = 0; output = 0; cached = 0 }
+                by_agent = @{}
+                by_phase = @{}
+                runs = @(
+                    @{ started = $now; ended = $null; calls = 0; cost_usd = 0 }
+                )
+            }
+            $summary | ConvertTo-Json -Depth 5 | Set-Content $summaryPath -Encoding UTF8
+        }
+
+        Write-Host "  Cost tracking: .gsd\costs\ (token-usage.jsonl)" -ForegroundColor DarkGray
+    } catch {
+        # Cost tracking init should never block the pipeline
+    }
+}
+
+function Save-TokenUsage {
+    <#
+    .SYNOPSIS
+        Appends a token usage record to .gsd/costs/token-usage.jsonl
+        and updates the rolling cost-summary.json.
+    #>
+    param(
+        [string]$GsdDir,
+        [string]$Agent,
+        [string]$Phase,
+        [int]$Iteration = 0,
+        [string]$Pipeline = "converge",
+        [int]$BatchSize = 0,
+        [bool]$Success = $false,
+        [bool]$IsFallback = $false,
+        [hashtable]$TokenData    # Output from Extract-TokensFromOutput
+    )
+
+    try {
+        $costsDir = Join-Path $GsdDir "costs"
+        if (-not (Test-Path $costsDir)) {
+            New-Item -ItemType Directory -Path $costsDir -Force | Out-Null
+        }
+
+        $entry = @{
+            timestamp = (Get-Date).ToUniversalTime().ToString("o")
+            pipeline = $Pipeline
+            iteration = $Iteration
+            phase = $Phase
+            agent = $Agent
+            batch_size = $BatchSize
+            success = $Success
+            is_fallback = $IsFallback
+            tokens = $TokenData.Tokens
+            cost_usd = $TokenData.CostUsd
+            duration_seconds = if ($TokenData.DurationMs -gt 0) { [math]::Round($TokenData.DurationMs / 1000.0) } else { 0 }
+            num_turns = $TokenData.NumTurns
+        }
+
+        # Append to JSONL (append-only, crash-safe)
+        $jsonLine = $entry | ConvertTo-Json -Depth 4 -Compress
+        Add-Content -Path (Join-Path $costsDir "token-usage.jsonl") -Value $jsonLine -Encoding UTF8
+
+        # Update rolling summary
+        Update-CostSummary -GsdDir $GsdDir -UsageEntry $entry
+    } catch {
+        # Token tracking must NEVER fail the pipeline
+    }
+}
+
+function Update-CostSummary {
+    <#
+    .SYNOPSIS
+        Incremental merge-on-write update to cost-summary.json.
+        If summary is missing or corrupt, rebuilds from token-usage.jsonl.
+    #>
+    param(
+        [string]$GsdDir,
+        [hashtable]$UsageEntry
+    )
+
+    try {
+        $summaryPath = Join-Path $GsdDir "costs\cost-summary.json"
+        $summary = $null
+
+        if (Test-Path $summaryPath) {
+            try {
+                $summary = Get-Content $summaryPath -Raw | ConvertFrom-Json
+            } catch {
+                # Corrupt -- rebuild
+                $summary = Rebuild-CostSummary -GsdDir $GsdDir
+            }
+        }
+
+        if (-not $summary) {
+            $summary = Rebuild-CostSummary -GsdDir $GsdDir
+        }
+
+        # Increment totals
+        $summary.total_calls = [int]$summary.total_calls + 1
+        $summary.total_cost_usd = [math]::Round([double]$summary.total_cost_usd + $UsageEntry.cost_usd, 6)
+        $summary.last_updated = (Get-Date).ToUniversalTime().ToString("o")
+
+        # Update total tokens
+        if (-not $summary.total_tokens) { $summary.total_tokens = @{ input = 0; output = 0; cached = 0 } }
+        $summary.total_tokens.input = [long]$summary.total_tokens.input + [long]$UsageEntry.tokens.input
+        $summary.total_tokens.output = [long]$summary.total_tokens.output + [long]$UsageEntry.tokens.output
+        $summary.total_tokens.cached = [long]$summary.total_tokens.cached + [long]$UsageEntry.tokens.cached
+
+        # Update by_agent
+        if (-not $summary.by_agent) { $summary.by_agent = @{} }
+        $agentKey = $UsageEntry.agent
+        if (-not $summary.by_agent.$agentKey) {
+            $summary.by_agent.$agentKey = @{ calls = 0; cost_usd = 0; tokens = @{ input = 0; output = 0; cached = 0 } }
+        }
+        $a = $summary.by_agent.$agentKey
+        $a.calls = [int]$a.calls + 1
+        $a.cost_usd = [math]::Round([double]$a.cost_usd + $UsageEntry.cost_usd, 6)
+        $a.tokens.input = [long]$a.tokens.input + [long]$UsageEntry.tokens.input
+        $a.tokens.output = [long]$a.tokens.output + [long]$UsageEntry.tokens.output
+        $a.tokens.cached = [long]$a.tokens.cached + [long]$UsageEntry.tokens.cached
+
+        # Update by_phase
+        if (-not $summary.by_phase) { $summary.by_phase = @{} }
+        $phaseKey = $UsageEntry.phase
+        if (-not $summary.by_phase.$phaseKey) {
+            $summary.by_phase.$phaseKey = @{ calls = 0; cost_usd = 0 }
+        }
+        $p = $summary.by_phase.$phaseKey
+        $p.calls = [int]$p.calls + 1
+        $p.cost_usd = [math]::Round([double]$p.cost_usd + $UsageEntry.cost_usd, 6)
+
+        # Update current run
+        $runs = @($summary.runs)
+        if ($runs.Count -gt 0) {
+            $currentRun = $runs[$runs.Count - 1]
+            $currentRun.calls = [int]$currentRun.calls + 1
+            $currentRun.cost_usd = [math]::Round([double]$currentRun.cost_usd + $UsageEntry.cost_usd, 6)
+        }
+
+        $summary | ConvertTo-Json -Depth 5 | Set-Content $summaryPath -Encoding UTF8
+    } catch {
+        # Summary update failure is non-fatal -- JSONL has the ground truth
+    }
+}
+
+function Rebuild-CostSummary {
+    <#
+    .SYNOPSIS
+        Rebuilds cost-summary.json from scratch by reading all token-usage.jsonl entries.
+        Used for corruption recovery.
+    #>
+    param([string]$GsdDir)
+
+    $summary = @{
+        project_start = (Get-Date).ToUniversalTime().ToString("o")
+        last_updated = (Get-Date).ToUniversalTime().ToString("o")
+        total_calls = 0
+        total_cost_usd = 0
+        total_tokens = @{ input = 0; output = 0; cached = 0 }
+        by_agent = @{}
+        by_phase = @{}
+        runs = @()
+    }
+
+    $jsonlPath = Join-Path $GsdDir "costs\token-usage.jsonl"
+    if (Test-Path $jsonlPath) {
+        $lines = Get-Content $jsonlPath -Encoding UTF8
+        foreach ($line in $lines) {
+            if (-not $line.Trim()) { continue }
+            try {
+                $entry = $line | ConvertFrom-Json
+                $summary.total_calls++
+                $summary.total_cost_usd = [math]::Round($summary.total_cost_usd + [double]$entry.cost_usd, 6)
+
+                if ($entry.tokens) {
+                    $summary.total_tokens.input += [long]$entry.tokens.input
+                    $summary.total_tokens.output += [long]$entry.tokens.output
+                    $summary.total_tokens.cached += [long]$entry.tokens.cached
+                }
+
+                # by_agent
+                $ak = $entry.agent
+                if (-not $summary.by_agent[$ak]) {
+                    $summary.by_agent[$ak] = @{ calls = 0; cost_usd = 0; tokens = @{ input = 0; output = 0; cached = 0 } }
+                }
+                $summary.by_agent[$ak].calls++
+                $summary.by_agent[$ak].cost_usd = [math]::Round($summary.by_agent[$ak].cost_usd + [double]$entry.cost_usd, 6)
+                if ($entry.tokens) {
+                    $summary.by_agent[$ak].tokens.input += [long]$entry.tokens.input
+                    $summary.by_agent[$ak].tokens.output += [long]$entry.tokens.output
+                    $summary.by_agent[$ak].tokens.cached += [long]$entry.tokens.cached
+                }
+
+                # by_phase
+                $pk = $entry.phase
+                if (-not $summary.by_phase[$pk]) {
+                    $summary.by_phase[$pk] = @{ calls = 0; cost_usd = 0 }
+                }
+                $summary.by_phase[$pk].calls++
+                $summary.by_phase[$pk].cost_usd = [math]::Round($summary.by_phase[$pk].cost_usd + [double]$entry.cost_usd, 6)
+
+                # Track first entry timestamp as project_start
+                if ($summary.total_calls -eq 1 -and $entry.timestamp) {
+                    $summary.project_start = $entry.timestamp
+                }
+            } catch { }
+        }
+    }
+
+    $summaryPath = Join-Path $GsdDir "costs\cost-summary.json"
+    $summary | ConvertTo-Json -Depth 5 | Set-Content $summaryPath -Encoding UTF8
+
+    return $summary
+}
+
+function Complete-CostTrackingRun {
+    <#
+    .SYNOPSIS
+        Marks the current run as ended in cost-summary.json.
+        Called from the pipeline's finally block.
+    #>
+    param([string]$GsdDir)
+
+    try {
+        $summaryPath = Join-Path $GsdDir "costs\cost-summary.json"
+        if (Test-Path $summaryPath) {
+            $summary = Get-Content $summaryPath -Raw | ConvertFrom-Json
+            $runs = @($summary.runs)
+            if ($runs.Count -gt 0 -and -not $runs[$runs.Count - 1].ended) {
+                $runs[$runs.Count - 1].ended = (Get-Date).ToUniversalTime().ToString("o")
+                $summary.runs = $runs
+                $summary | ConvertTo-Json -Depth 5 | Set-Content $summaryPath -Encoding UTF8
+            }
+        }
+    } catch { }
 }
 
 Write-Host "  Hardening modules loaded." -ForegroundColor DarkGray

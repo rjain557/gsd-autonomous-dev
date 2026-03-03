@@ -173,6 +173,7 @@ Parameters:
 | -ClientQuote | switch | false | Generate client-facing cost estimate |
 | -Markup | double | 7.0 | Markup multiplier (used with -ClientQuote) |
 | -ClientName | string | "Client Project" | Client name for quote header |
+| -ShowActual | switch | false | Display actual tracked costs and estimated vs actual comparison |
 
 Output sections:
 
@@ -186,6 +187,8 @@ Output sections:
 8. **Pipeline Comparison** -- side-by-side (with -ShowComparison)
 9. **Per-Iteration Detail** -- first 10 iterations (with -Detailed)
 10. **Client Quote** -- three-tier pricing, timeline, inclusions, margin analysis (with -ClientQuote)
+
+11. **Actual Cost Tracking** -- actual costs by agent, phase, run history, estimated vs actual comparison (with -ShowActual)
 
 Pricing source: LiteLLM open-source database, cached at %USERPROFILE%\.gsd-global\pricing-cache.json (auto-refreshed every 14 days).
 
@@ -290,7 +293,7 @@ Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-C
 
 ### patch-gsd-hardening.ps1 (Script 5)
 
-Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Start-BackgroundHeartbeat, Stop-BackgroundHeartbeat, Start-CommandListener, Stop-CommandListener, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError, Update-EngineStatus, Start-EngineStatusHeartbeat, Stop-EngineStatusHeartbeat.
+Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Start-BackgroundHeartbeat, Stop-BackgroundHeartbeat, Start-CommandListener, Stop-CommandListener, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError, Update-EngineStatus, Start-EngineStatusHeartbeat, Stop-EngineStatusHeartbeat, Initialize-CostTracking, Get-TokenPrice, Extract-TokensFromOutput, Save-TokenUsage, Update-CostSummary, Rebuild-CostSummary, Complete-CostTrackingRun.
 
 ### patch-gsd-figma-make.ps1 (Script 6)
 
@@ -537,6 +540,94 @@ Batch: {batch_size} | Elapsed: {elapsed}m
 ```
 
 The job is started alongside `Start-BackgroundHeartbeat` after the "Pipeline Started" notification and stopped in the `finally` block, ensuring cleanup even on crashes.
+
+### Initialize-CostTracking
+
+Creates `.gsd/costs/` directory, initializes empty `cost-summary.json` if missing, and records a new run start in the `runs` array. Called automatically when the pipeline starts.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory |
+| -Pipeline | "converge" or "blueprint" |
+
+### Get-TokenPrice
+
+Reads pricing from `~/.gsd-global/pricing-cache.json` for a given agent. Falls back to hardcoded prices if cache is missing or unreadable.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -Agent | "claude", "codex", or "gemini" |
+
+Returns: `@{ InputPerM; OutputPerM; CacheReadPerM; ModelKey }`
+
+### Extract-TokensFromOutput
+
+Parses JSON output from CLI agent calls to extract token counts, cost, text output, and duration. Agent-specific parsing:
+- **Claude**: Parses JSON array, finds `type="result"` entry with `total_cost_usd`, `result`, `duration_ms`, `num_turns`
+- **Codex**: Parses JSONL lines, finds `turn.completed` events, sums `usage.{input_tokens, output_tokens, cached_input_tokens}`
+- **Gemini**: Parses JSON, extracts `stats.{prompt_tokens, response_tokens, cached_tokens}` and `response` text
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -Agent | "claude", "codex", or "gemini" |
+| -RawOutput | Raw string output from the CLI call |
+
+Returns: `@{ Tokens; CostUsd; TextOutput; DurationMs; NumTurns }` or `$null` on parse failure.
+
+### Save-TokenUsage
+
+Appends a JSONL record to `token-usage.jsonl` and calls `Update-CostSummary`. Wrapped in try/catch -- tracking failure never blocks the pipeline.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory |
+| -Agent | "claude", "codex", or "gemini" |
+| -Phase | Pipeline phase name |
+| -Iteration | Current iteration number |
+| -Pipeline | "converge" or "blueprint" |
+| -BatchSize | Current batch size |
+| -Success | Whether the call succeeded |
+| -IsFallback | Whether this was a fallback agent call |
+| -TokenData | Hashtable from Extract-TokensFromOutput |
+
+### Update-CostSummary
+
+Incremental merge-on-write update to `cost-summary.json`. Reads existing summary, adds new usage entry totals, writes back. Same merge-on-write pattern as `Update-EngineStatus`.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory |
+| -UsageEntry | Hashtable with the usage data to merge |
+
+### Rebuild-CostSummary
+
+Full rebuild of `cost-summary.json` from `token-usage.jsonl`. Use when the summary is corrupted or out of sync. Reads every JSONL line and reconstructs all aggregates from scratch.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory |
+
+### Complete-CostTrackingRun
+
+Marks the current run as ended in `cost-summary.json` by setting the `ended` timestamp on the last entry in the `runs` array. Called in the pipeline's `finally` block.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory |
 
 ### Wait-ForQuotaReset
 

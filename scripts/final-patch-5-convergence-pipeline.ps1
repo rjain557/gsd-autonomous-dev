@@ -43,8 +43,13 @@ $repoName = Split-Path $RepoRoot -Leaf
 
 # Ensure dirs
 @($GsdDir, "$GsdDir\health", "$GsdDir\code-review", "$GsdDir\research",
-  "$GsdDir\generation-queue", "$GsdDir\agent-handoff", "$GsdDir\specs", "$GsdDir\logs", "$GsdDir\supervisor") | ForEach-Object {
+  "$GsdDir\generation-queue", "$GsdDir\agent-handoff", "$GsdDir\specs", "$GsdDir\logs", "$GsdDir\supervisor", "$GsdDir\costs") | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+}
+
+# Initialize cost tracking
+if (Get-Command Initialize-CostTracking -ErrorAction SilentlyContinue) {
+    Initialize-CostTracking -GsdDir $GsdDir -Pipeline "converge"
 }
 
 $HealthFile = Join-Path $GsdDir "health\health-current.json"
@@ -309,7 +314,20 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             -LogFile "$GsdDir\logs\iter${Iteration}-4.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
-            git add -A; git commit -m "gsd: iter $Iteration (health: ${Health}%)" --no-verify 2>$null
+            # Build commit message from code review findings for GitHub traceability
+            $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
+            $commitSubject = "gsd: iter $Iteration (health: ${Health}%)"
+            if (Test-Path $reviewPath) {
+                $reviewText = (Get-Content $reviewPath -Raw).Trim()
+                if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
+                $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+                "$commitSubject`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
+                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
+                Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+            } else {
+                git add -A; git commit -m $commitSubject --no-verify 2>$null
+            }
+            git push 2>$null
             # Update file map after each iteration
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
@@ -373,7 +391,22 @@ Write-Host ""; Write-Host "=====================================================
 $FinalHealth = Get-Health
 if ($FinalHealth -ge $TargetHealth) {
     Write-Host "  [PARTY] CONVERGED - ${FinalHealth}% in $Iteration iterations" -ForegroundColor Green
-    if (-not $DryRun) { git add -A; git commit -m "gsd: CONVERGED" --no-verify 2>$null; git tag "gsd-converged-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null }
+    if (-not $DryRun) {
+        $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
+        $commitSubject = "gsd: CONVERGED at ${FinalHealth}% in $Iteration iterations"
+        if (Test-Path $reviewPath) {
+            $reviewText = (Get-Content $reviewPath -Raw).Trim()
+            if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
+            $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+            "$commitSubject`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
+            git add -A; git commit -F $commitMsgFile --no-verify 2>$null
+            Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+        } else {
+            git add -A; git commit -m $commitSubject --no-verify 2>$null
+        }
+        git tag "gsd-converged-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null
+        git push --tags 2>$null
+    }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     Send-GsdNotification -Title "CONVERGED!" -Message "$repoName | 100% in $Iteration iterations" -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
@@ -392,6 +425,7 @@ Write-Host "=========================================================" -Foregrou
     Stop-BackgroundHeartbeat
     Stop-CommandListener
     if (Get-Command Stop-EngineStatusHeartbeat -ErrorAction SilentlyContinue) { Stop-EngineStatusHeartbeat }
+    if (Get-Command Complete-CostTrackingRun -ErrorAction SilentlyContinue) { Complete-CostTrackingRun -GsdDir $GsdDir }
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health
