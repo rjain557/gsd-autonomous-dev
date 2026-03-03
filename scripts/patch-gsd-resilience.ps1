@@ -74,6 +74,7 @@ $script:BATCH_REDUCTION_FACTOR = 0.5
 $script:MIN_BATCH_SIZE = 2
 $script:BUILD_TIMEOUT_SECONDS = 300
 $script:AGENT_TIMEOUT_SECONDS = 600
+$script:AGENT_WATCHDOG_MINUTES = 30     # Kill hung agent after this many minutes
 $script:LOCK_STALE_MINUTES = 120
 
 # ===========================================
@@ -398,27 +399,108 @@ function Invoke-WithRetry {
 
         try {
             $exitCode = 0
-            if ($Agent -eq "claude") {
-                $output = claude -p $effectivePrompt --allowedTools $AllowedTools 2>&1
-                $exitCode = $LASTEXITCODE
-            } elseif ($Agent -eq "codex") {
-                # Pass prompt via stdin to avoid Windows CLI length limits
-                $output = $effectivePrompt | codex exec --full-auto - 2>&1
-                $exitCode = $LASTEXITCODE
-            } elseif ($Agent -eq "gemini") {
-                # Gemini CLI: --sandbox (read-only) or --approval-mode yolo (write)
-                $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-                $output = $effectivePrompt | gemini @geminiArgs 2>&1
-                $exitCode = $LASTEXITCODE
+            $wasTimedOut = $false
+            $watchdogMs = $script:AGENT_WATCHDOG_MINUTES * 60 * 1000
+
+            # Write prompt to temp file for watchdog-wrapped process execution
+            $promptTempFile = [System.IO.Path]::GetTempFileName()
+            $outputTempFile = [System.IO.Path]::GetTempFileName()
+            $wrapperScript = [System.IO.Path]::GetTempFileName() + ".ps1"
+            Set-Content -Path $promptTempFile -Value $effectivePrompt -Encoding UTF8
+
+            try {
+                # Build a wrapper script that runs the agent and captures output
+                # This avoids command-line length limits and handles piping reliably
+                if ($Agent -eq "claude") {
+                    $wrapperContent = @"
+`$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
+`$output = claude -p `$prompt --allowedTools $AllowedTools 2>&1
+`$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
+exit `$LASTEXITCODE
+"@
+                } elseif ($Agent -eq "codex") {
+                    $wrapperContent = @"
+`$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
+`$output = `$prompt | codex exec --full-auto - 2>&1
+`$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
+exit `$LASTEXITCODE
+"@
+                } elseif ($Agent -eq "gemini") {
+                    $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) -join ' '
+                    $wrapperContent = @"
+`$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
+`$output = `$prompt | gemini $geminiArgs 2>&1
+`$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
+exit `$LASTEXITCODE
+"@
+                }
+
+                Set-Content -Path $wrapperScript -Value $wrapperContent -Encoding UTF8
+
+                # Launch as a separate process with watchdog timeout
+                $proc = Start-Process -FilePath "powershell.exe" `
+                    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$wrapperScript`"" `
+                    -NoNewWindow -PassThru
+
+                # Watchdog: wait with timeout
+                $completed = $proc.WaitForExit($watchdogMs)
+
+                if (-not $completed) {
+                    # Agent hung - kill it and all child processes
+                    $wasTimedOut = $true
+                    $procId = $proc.Id
+                    Write-Host "    [TIMEOUT] $Agent hung after $($script:AGENT_WATCHDOG_MINUTES)m - killing process tree..." -ForegroundColor Red
+
+                    # Kill child processes first (the actual agent CLI), then the wrapper
+                    try {
+                        Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $procId } | ForEach-Object {
+                            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch {}
+                    try { $proc.Kill() } catch {}
+                    $exitCode = -1
+
+                    # Send timeout notification
+                    if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+                        $repoName = Split-Path (Get-Location).Path -Leaf
+                        Send-GsdNotification -Title "Agent Timeout: $Agent" `
+                            -Message "$repoName | $Phase killed after $($script:AGENT_WATCHDOG_MINUTES)m | Iter $i - retrying..." `
+                            -Tags "skull" -Priority "high"
+                    }
+
+                    # Log the timeout
+                    $errorEntry = @{
+                        type = "watchdog_timeout"
+                        agent = $Agent
+                        phase = $Phase
+                        attempt = $i
+                        timeout_minutes = $script:AGENT_WATCHDOG_MINUTES
+                        timestamp = (Get-Date -Format "o")
+                    } | ConvertTo-Json -Compress
+                    Add-Content -Path (Join-Path $GsdDir "logs\errors.jsonl") -Value $errorEntry -Encoding UTF8
+                } else {
+                    $exitCode = $proc.ExitCode
+                }
+
+                # Read captured output
+                if (Test-Path $outputTempFile) {
+                    $output = Get-Content $outputTempFile -Raw -ErrorAction SilentlyContinue
+                    if ($output) { $output = $output -split "`n" }
+                }
+            } finally {
+                # Clean up temp files
+                Remove-Item $promptTempFile -Force -ErrorAction SilentlyContinue
+                Remove-Item $outputTempFile -Force -ErrorAction SilentlyContinue
+                Remove-Item $wrapperScript -Force -ErrorAction SilentlyContinue
             }
 
             # Write log
-            $output | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+            if ($output) { $output | Out-File -FilePath $LogFile -Encoding UTF8 -Append }
 
             # Check for common failure patterns in output
-            $outputText = $output -join "`n"
+            $outputText = if ($output) { $output -join "`n" } else { "" }
             $isTokenError = $outputText -match "(token limit|rate limit|context.*(window|length)|too long|exceeded.*limit|max.*tokens)"
-            $isTimeout = $outputText -match "(timeout|timed out|ETIMEDOUT|connection.*reset)"
+            $isTimeout = $wasTimedOut -or ($outputText -match "(timeout|timed out|ETIMEDOUT|connection.*reset)")
             $isAuthError = $outputText -match "(unauthorized|auth.*fail|invalid.*key|401|403)"
             $isCrash = ($exitCode -ne 0) -or ($null -eq $output) -or ($output.Count -eq 0)
 
@@ -426,6 +508,18 @@ function Invoke-WithRetry {
                 $result.Error = "AUTH_ERROR: Agent authentication failed"
                 Write-Host "    [XX] Auth error - cannot retry. Check API keys." -ForegroundColor Red
                 break
+            }
+
+            # Watchdog timeout -> reduce batch and retry (agent was likely stuck on too-large prompt)
+            if ($wasTimedOut -and $i -lt $MaxAttempts) {
+                $CurrentBatchSize = [math]::Max(
+                    $script:MIN_BATCH_SIZE,
+                    [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR)
+                )
+                $result.FinalBatchSize = $CurrentBatchSize
+                Write-Host "    [!!]  Watchdog killed $Agent after $($script:AGENT_WATCHDOG_MINUTES)m -> batch $CurrentBatchSize. Retrying..." -ForegroundColor DarkYellow
+                Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
+                continue
             }
 
             if ($isCrash -and $i -lt $MaxAttempts) {

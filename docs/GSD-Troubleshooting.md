@@ -158,6 +158,37 @@ To force a specific topic, either:
 - Use `-NtfyTopic "fixed-topic"` on every run
 - Set ntfy_topic in %USERPROFILE%\.gsd-global\config\global-config.json to your preferred topic string
 
+### No heartbeat notifications during long runs
+
+Heartbeat notifications fire every 10+ minutes during active agent phases. If you're not seeing them:
+
+1. **Check elapsed time**: Heartbeats only fire after 10 minutes since the last notification. If iterations complete in under 10 minutes, you'll see iteration-complete notifications instead.
+2. **Verify installation**: Re-run `install-gsd-all.ps1` to ensure `Send-HeartbeatIfDue` is deployed.
+3. **Check subscription**: Heartbeats use the same ntfy topic as other notifications -- verify you're subscribed.
+
+To adjust heartbeat frequency, modify `$HeartbeatMinutes` in the `Send-HeartbeatIfDue` calls within convergence-loop.ps1 or blueprint-pipeline.ps1.
+
+### Too many heartbeat notifications
+
+Heartbeats are low-priority with hourglass emoji, distinct from iteration-complete (default priority, chart emoji). In the ntfy app, you can:
+- Filter by priority to hide low-priority heartbeats
+- Mute heartbeats while keeping high-priority alerts (converged, stalled, timeout)
+
+### "Agent Timeout" notification / watchdog killed agent
+
+The watchdog timer (default: 30 minutes) killed a hung agent process. This means:
+
+1. **The agent CLI froze**: It didn't produce output or exit within 30 minutes
+2. **Auto-recovery in progress**: The engine halves the batch size and retries automatically
+3. **Check logs**: Review `.gsd/logs/errors.jsonl` for `watchdog_timeout` entries
+
+If this happens repeatedly for the same phase:
+- The prompt may be too large -- reduce `-BatchSize` manually
+- The agent's API may be experiencing issues -- check the agent's status page
+- Network may be intermittent -- check connectivity
+
+To adjust the timeout, modify `$script:AGENT_WATCHDOG_MINUTES` in resilience.ps1 (default 30).
+
 ### Notifications disabled / no ntfy output at startup
 
 If you see no "ntfy topic" line at startup, notifications are not initialized. This happens when:

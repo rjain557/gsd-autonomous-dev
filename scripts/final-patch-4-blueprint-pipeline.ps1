@@ -184,6 +184,7 @@ try {
 $needsBlueprint = (-not (Has-Blueprint)) -and (-not $BuildOnly) -and (-not $VerifyOnly)
 
 if ($needsBlueprint) {
+    Send-HeartbeatIfDue -Phase "blueprint-gen" -Iteration 0 -Health 0 -RepoName $repoName
     Write-Host "* PHASE 1: BLUEPRINT (Claude Code)" -ForegroundColor Blue
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "blueprint" -Iteration 0 -Phase "blueprint" -Health 0 -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt $BlueprintPromptPath 0 0
@@ -219,6 +220,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # VERIFY (storyboard-aware if available)
+    Send-HeartbeatIfDue -Phase "verify" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  [SEARCH] CLAUDE -> verify$(if ($hasStoryboards) {' + storyboard'})" -ForegroundColor Cyan
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "blueprint" -Iteration $Iteration -Phase "verify" -Health $Health -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt $VerifyPromptPath $Iteration $Health
@@ -245,6 +247,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # BUILD (Figma Make aware)
+    Send-HeartbeatIfDue -Phase "build" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  [WRENCH] CODEX -> build (batch: $CurrentBatchSize)" -ForegroundColor Magenta
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "blueprint" -Iteration $Iteration -Phase "build" -Health $Health -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt $BuildPromptPath $Iteration $Health
@@ -285,6 +288,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     Send-GsdNotification -Title "Blueprint Iter $Iteration" `
         -Message "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize" `
         -Tags "chart_with_upwards_trend"
+    $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
 }
 

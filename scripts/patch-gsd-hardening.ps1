@@ -1135,6 +1135,30 @@ function Send-GsdNotification {
     }
 }
 
+function Send-HeartbeatIfDue {
+    <#
+    .SYNOPSIS
+        Sends a low-priority "still working" notification if 10+ minutes have passed
+        since the last notification. Call before each agent phase for automatic heartbeats.
+    #>
+    param(
+        [string]$Phase,
+        [int]$Iteration,
+        [double]$Health,
+        [string]$RepoName,
+        [int]$HeartbeatMinutes = 10
+    )
+    if (-not $script:LAST_NOTIFY_TIME) { $script:LAST_NOTIFY_TIME = Get-Date }
+    $elapsed = (Get-Date) - $script:LAST_NOTIFY_TIME
+    if ($elapsed.TotalMinutes -ge $HeartbeatMinutes) {
+        $mins = [math]::Floor($elapsed.TotalMinutes)
+        Send-GsdNotification -Title "Working: $Phase" `
+            -Message "$RepoName | Iter $Iteration | Health: ${Health}% | ${mins}m elapsed" `
+            -Tags "hourglass_flowing_sand" -Priority "low"
+        $script:LAST_NOTIFY_TIME = Get-Date
+    }
+}
+
 function Initialize-GsdNotifications {
     <#
     .SYNOPSIS
@@ -1144,6 +1168,9 @@ function Initialize-GsdNotifications {
         3. Auto-detected: gsd-{username}-{reponame}
     #>
     param([string]$GsdGlobalDir, [string]$OverrideTopic = $null)
+
+    # Initialize heartbeat timer
+    $script:LAST_NOTIFY_TIME = Get-Date
 
     if ($OverrideTopic) {
         $script:NTFY_TOPIC = $OverrideTopic

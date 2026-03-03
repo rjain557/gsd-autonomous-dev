@@ -171,6 +171,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # 1. CODE REVIEW (Claude)
+    Send-HeartbeatIfDue -Phase "code-review" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  [SEARCH] CLAUDE -> code-review" -ForegroundColor Cyan
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "code-review" -Health $Health -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
@@ -190,6 +191,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     # 2. RESEARCH (Gemini --sandbox, read-only - saves Claude/Codex quota)
     if (-not $SkipResearch) {
+        Send-HeartbeatIfDue -Phase "research" -Iteration $Iteration -Health $Health -RepoName $repoName
         Write-Host "  GEMINI -> research (sandbox)" -ForegroundColor Magenta
         if (-not (Test-Path "$GsdDir\research")) { New-Item -ItemType Directory -Path "$GsdDir\research" -Force | Out-Null }
         # Try Gemini first; fall back to Codex if gemini CLI not available
@@ -218,6 +220,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # 3. PLAN (Claude)
+    Send-HeartbeatIfDue -Phase "plan" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  CLAUDE -> plan" -ForegroundColor Cyan
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "plan" -Health $Health -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
@@ -234,6 +237,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # 4. EXECUTE (Codex)
+    Send-HeartbeatIfDue -Phase "execute" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  [WRENCH] CODEX -> execute (batch: $CurrentBatchSize)" -ForegroundColor Magenta
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
@@ -272,6 +276,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     Send-GsdNotification -Title "Iter $Iteration Complete" `
         -Message "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize" `
         -Tags "chart_with_upwards_trend"
+    $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
 }
 

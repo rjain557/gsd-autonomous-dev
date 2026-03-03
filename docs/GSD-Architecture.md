@@ -191,9 +191,21 @@ Prevents agents from writing outside their allowed scope:
 - Gemini (spec-fix) can ONLY modify docs/ and .gsd/spec-conflicts/ (never source code)
 - Auto-reverts boundary violations with git checkout
 
+### Watchdog Timeout
+
+Agent CLI processes are monitored with a configurable watchdog timer (default: 30 minutes). If an agent hangs (e.g., stuck on an oversized prompt or API deadlock), the watchdog:
+
+1. Kills the hung process and all child processes
+2. Sends a high-priority push notification ("Agent Timeout: claude")
+3. Logs a `watchdog_timeout` entry to errors.jsonl
+4. Halves the batch size (smaller prompt = less likely to hang)
+5. Retries the phase with the reduced batch
+
+The watchdog is configured via `$script:AGENT_WATCHDOG_MINUTES` in resilience.ps1 (default 30). Each agent call runs in an isolated child process, so killing it does not affect the parent pipeline.
+
 ### Structured Error Logging
 
-All errors logged to .gsd/logs/errors.jsonl with categories: quota, network, disk, corrupt_json, boundary_violation, agent_crash, health_regression, spec_conflict. Each entry includes timestamp, phase, iteration, message, and resolution.
+All errors logged to .gsd/logs/errors.jsonl with categories: quota, network, disk, corrupt_json, boundary_violation, agent_crash, health_regression, spec_conflict, watchdog_timeout. Each entry includes timestamp, phase, iteration, message, and resolution.
 
 ## Push Notifications (ntfy.sh)
 
@@ -231,10 +243,16 @@ The topic is resolved in this order:
 | Event | Title | Priority | Tags |
 |-------|-------|----------|------|
 | Pipeline start | "GSD Converge Started" / "GSD Blueprint Started" | low | rocket |
+| Heartbeat | "Working: {phase}" | low | hourglass_flowing_sand |
+| Agent timeout | "Agent Timeout: {agent}" | high | skull |
 | Iteration complete | "Iter N Complete" / "Blueprint Iter N" | default | chart_with_upwards_trend |
 | Converged / Complete | "CONVERGED!" / "BLUEPRINT COMPLETE!" | high | tada, white_check_mark |
 | Stalled | "STALLED" / "BLUEPRINT STALLED" | high | warning |
 | Max iterations | "MAX ITERATIONS" / "Blueprint Max Iterations" | high | warning |
+
+Heartbeat notifications fire every 10+ minutes during long-running phases. They report the current phase, iteration, health score, and elapsed time since the last notification. This lets you know the pipeline is still working even when a single agent call takes 20+ minutes. The timer resets after each iteration-complete notification.
+
+Agent timeout notifications fire when the watchdog kills a hung agent process (default: 30 minutes). These are high-priority alerts that indicate a retry is in progress.
 
 ### Mobile Setup
 

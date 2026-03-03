@@ -62,8 +62,8 @@ This runs all 14 install/patch scripts in dependency order:
 | 4 | setup-gsd-convergence.ps1 | Convergence loop config, phase definitions |
 | 5 | install-gsd-keybindings.ps1 | VS Code keyboard shortcuts |
 | 6 | patch-gsd-partial-repo.ps1 | gsd-assess command, file map generation |
-| 7 | patch-gsd-resilience.ps1 | Resilience module (retry, checkpoint, lock) |
-| 8 | patch-gsd-hardening.ps1 | Hardening (quota, network, boundary, notifications) |
+| 7 | patch-gsd-resilience.ps1 | Resilience module (retry, checkpoint, lock, watchdog timeout) |
+| 8 | patch-gsd-hardening.ps1 | Hardening (quota, network, boundary, notifications, heartbeat) |
 | 9 | patch-gsd-figma-make.ps1 | Interface detection, _analysis/_stubs discovery |
 | 10 | final-patch-1-spec-check.ps1 | Spec consistency checker |
 | 11 | final-patch-2-sql-cli.ps1 | SQL validation, CLI version checks |

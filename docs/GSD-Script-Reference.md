@@ -281,11 +281,11 @@ Installs gsd-assess command, assessment prompts, file map generation, -MapOnly f
 
 ### patch-gsd-resilience.ps1 (Script 5)
 
-Installs resilience.ps1 module: Invoke-WithRetry, Save-Checkpoint, Restore-Checkpoint, New-Lock, Remove-Lock, Save-GsdSnapshot, Invoke-AdaptiveBatch.
+Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-Checkpoint, Restore-Checkpoint, New-Lock, Remove-Lock, Save-GsdSnapshot, Invoke-AdaptiveBatch. Agent calls run in isolated child processes with a 30-minute watchdog that kills hung agents and retries.
 
 ### patch-gsd-hardening.ps1 (Script 6)
 
-Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError.
+Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError.
 
 ### patch-gsd-figma-make.ps1 (Script 7)
 
@@ -323,7 +323,7 @@ Adds spec conflict auto-resolution via Gemini agent (`--approval-mode yolo`). In
 
 ### Invoke-WithRetry
 
-Calls an AI agent with retry logic, batch reduction, and quota-aware backoff.
+Calls an AI agent with retry logic, batch reduction, watchdog timeout, and quota-aware backoff. Each agent call runs in an isolated child process with a configurable watchdog timer (default: 30 minutes). If the agent hangs, the watchdog kills the process tree, halves the batch, sends a notification, and retries.
 
 Parameters:
 
@@ -333,9 +333,11 @@ Parameters:
 | -Prompt | The prompt text |
 | -Phase | Phase name for logging |
 | -LogFile | Path to log file |
-| -CurrentBatchSize | Starting batch size (halves on each retry) |
+| -CurrentBatchSize | Starting batch size (halves on each retry or watchdog timeout) |
 | -GsdDir | Path to .gsd directory |
 | -GeminiMode | "--sandbox" (read-only, default) or "--approval-mode yolo" (write) |
+
+Watchdog timeout: controlled by `$script:AGENT_WATCHDOG_MINUTES` (default 30). On timeout, logs a `watchdog_timeout` entry to errors.jsonl and sends a high-priority push notification.
 
 ### Update-FileMap
 
@@ -414,7 +416,23 @@ Parameters:
 
 ### Initialize-GsdNotifications
 
-Sets up ntfy topic at pipeline startup. Resolves topic from: override parameter > global config > auto-detection.
+Sets up ntfy topic at pipeline startup. Resolves topic from: override parameter > global config > auto-detection. Also initializes the heartbeat timer (`$script:LAST_NOTIFY_TIME`).
+
+### Send-HeartbeatIfDue
+
+Sends a low-priority heartbeat notification if 10+ minutes have elapsed since the last notification. Called before each agent phase to let users know the pipeline is still working.
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -Phase | (required) | Current phase name (e.g., "code-review", "build") |
+| -Iteration | (required) | Current iteration number |
+| -Health | (required) | Current health score |
+| -RepoName | (required) | Repository name for notification body |
+| -HeartbeatMinutes | 10 | Minimum minutes between heartbeat notifications |
+
+Notification format: Title "Working: {phase}", body "{repo} | Iter {n} | Health: {x}% | {m}m elapsed". Uses hourglass_flowing_sand emoji tag.
 
 ### Invoke-SpecConsistencyCheck
 
