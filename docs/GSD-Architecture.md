@@ -15,6 +15,7 @@ After running install-gsd-all.ps1, the engine creates:
   bin\                          # CLI wrappers
     gsd-converge.cmd            # Convergence loop launcher
     gsd-remote.cmd              # Remote monitoring launcher
+    gsd-costs.cmd               # Token cost calculator
   config\
     global-config.json          # Global settings (notifications, patterns, phases)
   lib\modules\
@@ -32,6 +33,7 @@ After running install-gsd-all.ps1, the engine creates:
   scripts\
     convergence-loop.ps1        # 5-phase convergence engine
     gsd-profile-functions.ps1   # PowerShell profile (gsd-* commands)
+    token-cost-calculator.ps1   # Token cost estimator (gsd-costs)
   pricing-cache.json              # Cached LLM pricing data (auto-updated)
   VERSION                       # Installed version stamp
 ```
@@ -390,7 +392,7 @@ Set ntfy_topic to "auto" for per-project auto-detection, or a specific string to
 
 ## Token Cost Calculator
 
-The engine includes a token cost calculator (`token-cost-calculator.ps1`) that estimates equivalent API costs for completing a project to 100%, even when using subscriptions. This enables accurate client billing and project cost forecasting.
+The engine includes a token cost calculator available as the `gsd-costs` command (installed globally by `install-gsd-global.ps1`). It estimates equivalent API costs for completing a project to 100%, even when using subscriptions. This enables accurate client billing and project cost forecasting.
 
 ### Dynamic Pricing
 

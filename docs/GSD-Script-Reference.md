@@ -265,7 +265,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ### install-gsd-global.ps1 (Script 1)
 
-Creates the global %USERPROFILE%\.gsd-global\ directory structure with: convergence engine (convergence-loop.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-remote.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-status, gsd-assess, gsd-remote).
+Creates the global %USERPROFILE%\.gsd-global\ directory structure with: convergence engine (convergence-loop.ps1), token cost calculator (token-cost-calculator.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-remote.cmd, gsd-costs.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-costs, gsd-status, gsd-assess, gsd-remote).
 
 ### install-gsd-blueprint.ps1 (Script 2)
 
