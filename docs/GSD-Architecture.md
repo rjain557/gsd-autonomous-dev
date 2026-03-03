@@ -99,7 +99,7 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
 
 1. PRE-FLIGHT: CLI version check, network test, disk space, spec consistency
 2. REVIEW: Claude reviews code, identifies issues, scores health
-3. RESEARCH: Gemini (sandbox mode) researches patterns; falls back to Codex if unavailable
+3. RESEARCH: Gemini (plan mode, read-only) researches patterns; falls back to Codex if unavailable
 4. PLAN: Claude creates fix plan with prioritized batch
 5. EXECUTE: Codex makes code changes
 6. VERIFY: Claude re-scores health, commits if improved
@@ -118,7 +118,7 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
 | Phase | Agent | Mode | Why |
 |-------|-------|------|-----|
 | Review | Claude | `--allowedTools Read,Write,Bash` | Better at architectural analysis |
-| Research | **Gemini** | `--sandbox` (read-only) | Saves Claude/Codex quota; falls back to Codex |
+| Research | **Gemini** | `--approval-mode plan` (read-only) | Saves Claude/Codex quota; falls back to Codex |
 | Plan | Claude | `--allowedTools Read,Write,Bash` | Better at strategic planning |
 | Execute | Codex | `--full-auto` | Faster at bulk code generation |
 | Verify | Claude | `--allowedTools Read,Write,Bash` | Better at spec compliance checking |
@@ -197,7 +197,7 @@ Per-iteration disk checks requiring 0.5 GB minimum free space. Auto-cleanup of n
 Prevents agents from writing outside their allowed scope:
 - Claude can ONLY write to .gsd/ (never source code)
 - Codex can ONLY write source code (never .gsd/health, .gsd/code-review, .gsd/generation-queue)
-- Gemini (research/sandbox) must NOT modify ANY files (read-only mode)
+- Gemini (research/plan mode) must NOT modify ANY files (read-only mode)
 - Gemini (spec-fix) can ONLY modify docs/ and .gsd/spec-conflicts/ (never source code)
 - Auto-reverts boundary violations with git checkout
 
@@ -324,12 +324,15 @@ The topic is resolved in this order:
 
 | Event | Title | Priority | Tags |
 |-------|-------|----------|------|
-| Pipeline start | "GSD Converge Started" / "GSD Blueprint Started" | low | rocket |
+| Pipeline start | "GSD Converge Started" / "GSD Blueprint Started" | default | rocket |
 | Heartbeat | "Working: {phase}" | low | hourglass_flowing_sand |
 | Agent timeout | "Agent Timeout: {agent}" | high | skull |
 | Iteration complete | "Iter N Complete" / "Blueprint Iter N" | default | chart_with_upwards_trend |
+| No progress (stall) | "Iter N: No Progress" | default | hourglass |
+| Execute/build failed | "Iter N: Execute Failed" / "Iter N: Build Failed" | default | warning |
+| Regression reverted | "Iter N: Regression Reverted" | high | warning |
 | Converged / Complete | "CONVERGED!" / "BLUEPRINT COMPLETE!" | high | tada, white_check_mark |
-| Stalled | "STALLED" / "BLUEPRINT STALLED" | high | warning |
+| Stalled (threshold) | "STALLED" / "BLUEPRINT STALLED" | high | warning |
 | Max iterations | "MAX ITERATIONS" / "Blueprint Max Iterations" | high | warning |
 | Supervisor active | "Supervisor Active" | low | robot_face |
 | Supervisor diagnosis | "Supervisor: {root_cause}" | default | mag |
@@ -338,7 +341,21 @@ The topic is resolved in this order:
 | Supervisor recovered | "Supervisor: RECOVERED at {health}%" | high | white_check_mark |
 | Supervisor escalation | "Supervisor: NEEDS HUMAN - see escalation-report.md" | urgent | sos |
 
-Heartbeat notifications fire every 10+ minutes during long-running phases. They report the current phase, iteration, health score, and elapsed time since the last notification. This lets you know the pipeline is still working even when a single agent call takes 20+ minutes. The timer resets after each iteration-complete notification.
+#### Background Heartbeat
+
+A background PowerShell job runs independently of the main pipeline, sending progress notifications every 10 minutes even while a single agent call is executing. This solves the problem of long-running agent calls (15-30+ minutes) blocking all notification output.
+
+The background heartbeat:
+- Starts automatically when the pipeline starts
+- Reads current state from `.gsd-checkpoint.json` (phase, iteration, health)
+- Sends an ntfy notification every 10 minutes with total elapsed time
+- Stops automatically when the pipeline exits (including crashes, via the `finally` block)
+
+Example notification during a long code-review call:
+```
+Title: Working: code-review
+Body:  patient-portal | Iter 1 | Health: 45% | 20m total
+```
 
 Agent timeout notifications fire when the watchdog kills a hung agent process (default: 30 minutes). These are high-priority alerts that indicate a retry is in progress.
 

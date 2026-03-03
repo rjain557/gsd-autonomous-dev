@@ -30,7 +30,7 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 | ntfy_topic | string | "auto" | Set to "auto" for per-project auto-detection (gsd-{username}-{reponame}), or a specific string to use one topic for all projects |
 | notify_on | string[] | (all events) | Events that trigger push notifications |
 
-Notification events: `iteration_complete`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`
+Notification events: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`
 
 #### patterns
 
