@@ -24,7 +24,9 @@
 
 ### CLI Authentication
 
-Each CLI must be authenticated before first use:
+Each CLI must be authenticated before first use. There are two methods:
+
+**Method 1: Interactive Login (default)**
 
 ```powershell
 # Claude Code
@@ -34,8 +36,30 @@ claude    # Follow interactive auth flow
 codex     # Follow interactive auth flow
 
 # Gemini (optional -- uses Google OAuth, opens browser)
-gemini    # Follow interactive OAuth flow (no API key needed)
+gemini    # Follow interactive OAuth flow
 ```
+
+**Method 2: API Keys (recommended for autonomous pipelines)**
+
+API keys bypass interactive rate limits and allow higher throughput. The installer prompts for API keys during setup (Step 0), or you can configure them separately:
+
+```powershell
+# Interactive setup (prompts for each key)
+powershell -ExecutionPolicy Bypass -File scripts/setup-gsd-api-keys.ps1
+
+# Check current key status
+powershell -ExecutionPolicy Bypass -File scripts/setup-gsd-api-keys.ps1 -Show
+```
+
+API keys are stored as persistent User-level environment variables (never committed to git):
+
+| Environment Variable | CLI | Get Key From |
+|---------------------|-----|-------------|
+| ANTHROPIC_API_KEY | Claude Code | https://console.anthropic.com/settings/keys |
+| OPENAI_API_KEY | Codex | https://platform.openai.com/api-keys |
+| GOOGLE_API_KEY | Gemini | https://aistudio.google.com/apikey |
+
+You can use either method (or both). API keys take priority when set. See the setup-gsd-api-keys.ps1 section in the Script Reference for full details.
 
 ## Quick Start
 
@@ -52,11 +76,11 @@ cd gsd-autonomous-dev
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-This runs all 14 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check:
+This runs all 14 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
 
 | Order | Script | What It Installs |
 |-------|--------|-----------------|
-| 1 | install-gsd-global.ps1 | Global directory, engine, config, profile, gsd-costs |
+| 1 | install-gsd-global.ps1 | API key setup (Step 0), global directory, engine, config, profile, gsd-costs |
 | 2 | install-gsd-blueprint.ps1 | Blueprint pipeline, assess script, prompts |
 | 3 | patch-gsd-partial-repo.ps1 | gsd-assess command, file map generation |
 | 4 | patch-gsd-resilience.ps1 | Resilience module (retry, checkpoint, lock, watchdog timeout) |
@@ -72,8 +96,12 @@ This runs all 14 install/patch scripts in dependency order. The installer also r
 | 14 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
 
 Optional standalone scripts (not run by installer):
+- **setup-gsd-api-keys.ps1** -- manage API key environment variables (set, show, clear)
 - **setup-gsd-convergence.ps1** -- per-project convergence config (run manually if needed)
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
+- **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
+
+The repository contains 20 scripts total: 1 master installer, 1 pre-flight check, 14 core install/patch scripts, and 4 standalone utilities.
 
 ### Step 3: Restart Terminal
 
@@ -217,6 +245,9 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.gsd-global"
 
 # Remove profile entries (manual -- edit $PROFILE and remove gsd-related lines)
 notepad $PROFILE
+
+# Remove API key environment variables (optional)
+powershell -ExecutionPolicy Bypass -File scripts/setup-gsd-api-keys.ps1 -Clear
 ```
 
 Per-project data is stored in each repo's .gsd/ folder. Delete it to remove project state:

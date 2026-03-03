@@ -433,12 +433,36 @@ Error categories: `quota`, `network`, `disk`, `corrupt_json`, `boundary_violatio
 
 ## Environment Variables
 
+### API Key Variables
+
+Set during installation (Step 0 of `install-gsd-global.ps1`) or via `setup-gsd-api-keys.ps1`. Stored as persistent User-level environment variables (Windows registry). API keys bypass interactive rate limits for higher throughput.
+
+| Variable | Used By | Expected Prefix | Key Source |
+|----------|---------|----------------|-----------|
+| ANTHROPIC_API_KEY | Claude Code CLI | sk-ant- | https://console.anthropic.com/settings/keys |
+| OPENAI_API_KEY | Codex CLI | sk- | https://platform.openai.com/api-keys |
+| GOOGLE_API_KEY | Gemini CLI | AIza | https://aistudio.google.com/apikey |
+
+Manage API keys:
+
+```powershell
+# Show current status
+.\scripts\setup-gsd-api-keys.ps1 -Show
+
+# Update keys interactively
+.\scripts\setup-gsd-api-keys.ps1
+
+# Remove all keys
+.\scripts\setup-gsd-api-keys.ps1 -Clear
+```
+
+### System Variables
+
 | Variable | Used By | Description |
 |----------|---------|-------------|
 | USERPROFILE | All scripts | Home directory for .gsd-global |
 | USERNAME | Notifications | Auto-generates ntfy topic |
 | PATH | CLI wrappers | Must include .gsd-global\bin |
-| GEMINI_API_KEY | Gemini CLI | Alternative to OAuth authentication (optional) |
 
 ## VS Code Integration
 

@@ -52,6 +52,51 @@ gemini    # first run authenticates
 
 The installer is idempotent. Re-run install-gsd-all.ps1 to pick up where it left off. It will skip already-installed components and retry failed ones.
 
+## API Key Issues
+
+### API keys not being used by agents
+
+If you set API keys but agents still use interactive auth:
+
+1. **Restart your terminal**: API keys set via `setup-gsd-api-keys.ps1` are stored as User-level environment variables. New terminal sessions pick them up automatically, but existing sessions need a restart.
+2. **Verify keys are set**: Run `.\scripts\setup-gsd-api-keys.ps1 -Show` to see current status.
+3. **Check variable names**: The exact names must be ANTHROPIC_API_KEY, OPENAI_API_KEY, and GOOGLE_API_KEY (all uppercase with underscores).
+
+```powershell
+# Quick verify in current session
+$env:ANTHROPIC_API_KEY
+$env:OPENAI_API_KEY
+$env:GOOGLE_API_KEY
+```
+
+### "Expected key to start with 'sk-ant-'" warning
+
+The prefix validation is advisory only. If you are certain the key is correct, the script will set it anyway. Key prefix formats may change when providers update their API key format.
+
+### Updating or rotating API keys
+
+Re-run the setup script to update keys. It shows current values (masked) and lets you enter new ones:
+
+```powershell
+.\scripts\setup-gsd-api-keys.ps1
+```
+
+Or pass keys directly for non-interactive update:
+
+```powershell
+.\scripts\setup-gsd-api-keys.ps1 -AnthropicKey "sk-ant-new-key..."
+```
+
+### Removing API keys
+
+To remove all API key environment variables and revert to interactive auth:
+
+```powershell
+.\scripts\setup-gsd-api-keys.ps1 -Clear
+```
+
+Restart your terminal for the removal to take effect in new processes.
+
 ## Runtime Issues
 
 ### "Another GSD process is running (lock file age: X min)"
@@ -363,12 +408,15 @@ If -AutoResolve cannot resolve after 2 attempts:
 ### Gemini CLI not responding / authentication failure
 
 Gemini CLI supports two auth methods:
-- **Google OAuth** (recommended): Uses your Google account subscription. Run `gemini` interactively once to trigger browser-based OAuth login. No API key needed.
-- **API key**: Set `GEMINI_API_KEY` environment variable, or configure in `~/.gemini/settings.json`
+- **Google OAuth**: Uses your Google account subscription. Run `gemini` interactively once to trigger browser-based OAuth login.
+- **API key** (recommended for pipelines): Set the `GOOGLE_API_KEY` environment variable via `setup-gsd-api-keys.ps1` or during installation (Step 0).
 
 ```powershell
 # First-time setup (OAuth - opens browser)
 gemini
+
+# Or set API key (recommended for autonomous pipelines)
+.\scripts\setup-gsd-api-keys.ps1 -GoogleKey "AIza..."
 
 # Verify it works
 "Say READY" | gemini --approval-mode plan 2>&1

@@ -144,6 +144,20 @@ Each agent draws from an independent API quota pool. This means:
 - Gemini handles the "unlimited reading" work that previously burned through Codex quota
 - Overall throughput increases because agents can work without competing for the same quota
 
+### API Key Authentication
+
+Each agent CLI supports two authentication methods: interactive login (OAuth) and API key environment variables. API keys bypass interactive rate limits and enable higher throughput for autonomous pipelines.
+
+| Environment Variable | CLI | Expected Prefix | Purpose |
+|---------------------|-----|----------------|---------|
+| ANTHROPIC_API_KEY | Claude Code | sk-ant- | Review, plan, verify, blueprint phases |
+| OPENAI_API_KEY | Codex | sk- | Execute, build phases |
+| GOOGLE_API_KEY | Gemini | AIza | Research, spec-fix phases |
+
+API keys are configured during installation (Step 0 of `install-gsd-global.ps1`) or via the standalone `setup-gsd-api-keys.ps1` script. Keys are stored as persistent User-level environment variables (Windows registry), never committed to git.
+
+If API keys are not set, agents fall back to interactive OAuth authentication (which may have lower rate limits).
+
 ### Gemini Fallback
 
 If the Gemini CLI (`gemini`) is not installed, the engine automatically falls back to Codex for research and spec-fix phases. Install Gemini CLI to get the full benefit of three-model optimization:
@@ -717,7 +731,7 @@ The calculator always shows a subscription cost comparison, estimating project d
 
 - Contradictory specs without -AutoResolve (e.g., "use Dapper" vs "use EF")
 - Figma .fig files unreadable (export to PNG/SVG/JSON, fill figma-mapping.md)
-- Auth/API key expired (re-authenticate CLI)
+- Auth/API key expired (re-authenticate CLI or update keys via `setup-gsd-api-keys.ps1`)
 - Fundamental architecture wrong (manual correction needed)
 - Code compiles but logically wrong (review storyboards + unit tests)
 - Quota exhausted for more than 24 hours (wait for billing cycle)

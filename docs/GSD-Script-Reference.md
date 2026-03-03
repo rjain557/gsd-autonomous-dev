@@ -239,7 +239,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs all 14 scripts in dependency order. Idempotent (safe to re-run for updates).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 14 core scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 20 scripts total (1 master installer + 1 pre-flight + 14 core + 4 standalone utilities).
 
 Usage:
 
@@ -272,7 +272,9 @@ The master installer (`install-gsd-all.ps1`) runs these 14 scripts in order. Eac
 
 ### install-gsd-global.ps1 (Script 1)
 
-Creates the global `%USERPROFILE%\.gsd-global\` directory structure with: convergence engine (convergence-loop.ps1), token cost calculator (token-cost-calculator.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-blueprint.cmd, gsd-status.cmd, gsd-remote.cmd, gsd-costs.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-costs, gsd-status, gsd-assess, gsd-remote).
+**Step 0 -- API Key Setup**: Before creating the directory structure, prompts the user to enter API keys for all three providers (Anthropic, OpenAI, Google). If all keys are already configured as User-level environment variables, this step is automatically skipped with a green status display. Only missing keys are prompted. Keys are stored as persistent User-level environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY) and are immediately available in the current session.
+
+**Step 1+**: Creates the global `%USERPROFILE%\.gsd-global\` directory structure with: convergence engine (convergence-loop.ps1), token cost calculator (token-cost-calculator.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-blueprint.cmd, gsd-status.cmd, gsd-remote.cmd, gsd-costs.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-costs, gsd-status, gsd-assess, gsd-remote).
 
 ### install-gsd-blueprint.ps1 (Script 2)
 
@@ -330,8 +332,55 @@ Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-c
 
 These are NOT run by the installer but can be run manually:
 
+- **setup-gsd-api-keys.ps1** -- Manages API key environment variables for all three providers. See below for full usage.
 - **setup-gsd-convergence.ps1** -- Per-project convergence config setup. Detects latest Figma design version, references SDLC specs (Phase A-E), creates per-project .gsd/ folder structure.
 - **install-gsd-keybindings.ps1** -- Adds VS Code keyboard shortcuts (Ctrl+Shift+G chord prefix).
+- **token-cost-calculator.ps1** -- Token cost estimator script (also installed globally as `gsd-costs` by install-gsd-global.ps1).
+
+### setup-gsd-api-keys.ps1
+
+Manages API key environment variables for the three AI agents used by the GSD engine. Keys are stored as persistent User-level environment variables (Windows registry), never committed to git.
+
+Usage:
+
+```powershell
+# Interactive mode -- prompts for each key
+.\scripts\setup-gsd-api-keys.ps1
+
+# Pass keys directly (non-interactive)
+.\scripts\setup-gsd-api-keys.ps1 -AnthropicKey "sk-ant-..." -OpenAIKey "sk-..." -GoogleKey "AIza..."
+
+# Show current key status (masked)
+.\scripts\setup-gsd-api-keys.ps1 -Show
+
+# Remove all API key environment variables
+.\scripts\setup-gsd-api-keys.ps1 -Clear
+```
+
+Parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| -AnthropicKey | string | Anthropic API key for Claude Code (starts with sk-ant-) |
+| -OpenAIKey | string | OpenAI API key for Codex (starts with sk-) |
+| -GoogleKey | string | Google API key for Gemini (starts with AIza) |
+| -Show | switch | Display current key status (masked) without changing anything |
+| -Clear | switch | Remove all GSD API key environment variables |
+
+Environment variables managed:
+
+| Variable | CLI | Expected Prefix | Key Source |
+|----------|-----|----------------|-----------|
+| ANTHROPIC_API_KEY | Claude Code | sk-ant- | https://console.anthropic.com/settings/keys |
+| OPENAI_API_KEY | Codex | sk- | https://platform.openai.com/api-keys |
+| GOOGLE_API_KEY | Gemini | AIza | https://aistudio.google.com/apikey |
+
+Notes:
+- Keys persist across terminal sessions (stored in Windows registry at User level)
+- In interactive mode, press Enter to skip a key (keeps existing value)
+- Prefix validation warns but does not block (in case key format changes)
+- Keys are set at both User level (persistent) and Process level (immediate availability)
+- Run this script once per machine. Re-run to update keys. The installer (install-gsd-global.ps1) also includes API key setup as Step 0.
 
 ## Key Functions (in supervisor.ps1)
 
