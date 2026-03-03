@@ -1,23 +1,23 @@
-<#
+﻿<#
 .SYNOPSIS
-    GSD Resilience Hardening — Token Tracking, Auth Detection, Quota Recovery
+    GSD Resilience Hardening -- Token Tracking, Auth Detection, Quota Recovery
     Run AFTER patch-gsd-parallel-execute.ps1.
 
 .DESCRIPTION
     Fixes four resilience gaps in the autonomous operation pipeline:
 
-    P1: Token costs only tracked on success — adds per-attempt tracking for
+    P1: Token costs only tracked on success -- adds per-attempt tracking for
         quota, auth, and crash failures + probe cost tracking + cost estimation
         when agents return error text instead of JSON.
 
-    P2: Auth regex misclassifies 403 rate limits — removes 403 from auth
+    P2: Auth regex misclassifies 403 rate limits -- removes 403 from auth
         detection, adds rate-limit exclusion guard, routes Gemini 403
         (Resource Exhausted) to proper quota backoff.
 
-    P3: No cumulative quota wait cap — adds 2-hour total wait cap across
+    P3: No cumulative quota wait cap -- adds 2-hour total wait cap across
         all retries so the pipeline doesn't sleep for 14+ hours.
 
-    P4: No agent rotation on quota exhaustion — after 3 consecutive quota
+    P4: No agent rotation on quota exhaustion -- after 3 consecutive quota
         failures on the same agent, automatically rotates to a different
         agent from the pool (codex/claude/gemini).
 
@@ -54,7 +54,7 @@ if (-not (Test-Path $resiliencePath)) {
 
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Cyan
-Write-Host "  GSD Resilience Hardening — Token Tracking, Auth, Quota" -ForegroundColor Cyan
+Write-Host "  GSD Resilience Hardening -- Token Tracking, Auth, Quota" -ForegroundColor Cyan
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -66,7 +66,7 @@ $content = Get-Content $resiliencePath -Raw
 $changeCount = 0
 
 # ========================================================
-# Fix 2A: Auth regex in watchdog path — remove 403, add exclusion
+# Fix 2A: Auth regex in watchdog path -- remove 403, add exclusion
 # ========================================================
 
 Write-Host "[FIX 2A] Fixing auth regex in watchdog path (remove 403)..." -ForegroundColor Yellow
@@ -86,7 +86,7 @@ if ($content.Contains($oldAuthWatchdog)) {
 }
 
 # ========================================================
-# Fix 2B: Auth regex in Invoke-WithRetry — remove 403, add exclusion
+# Fix 2B: Auth regex in Invoke-WithRetry -- remove 403, add exclusion
 # ========================================================
 
 Write-Host "[FIX 2B] Fixing auth regex in Invoke-WithRetry (remove 403)..." -ForegroundColor Yellow
@@ -362,7 +362,7 @@ $newQuotaHandler = @'
                     $i--
                     continue
                 } else {
-                    # Quota didn't reset — try rotating agent before giving up
+                    # Quota didn't reset -- try rotating agent before giving up
                     $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent quota didn't reset. Trying $rotatedAgent" -ForegroundColor Yellow
@@ -498,7 +498,7 @@ Write-Host "[FIX 1B/4A] Appending new functions (token estimation, agent rotatio
 $newFunctions = @'
 
 # ===============================================================
-# GSD RESILIENCE HARDENING — appended to resilience.ps1
+# GSD RESILIENCE HARDENING -- appended to resilience.ps1
 # Token Tracking, Auth Detection, Quota Recovery
 # ===============================================================
 
@@ -544,7 +544,7 @@ function Get-NextAvailableAgent {
         [string]$GsdDir
     )
 
-    # Agent pool — order matters (preference order)
+    # Agent pool -- order matters (preference order)
     $pool = @("claude", "codex", "gemini")
 
     # Read cooldown state

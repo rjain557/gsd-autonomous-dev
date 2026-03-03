@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    GSD LLM Council — Multi-Agent Review Gate
+    GSD LLM Council - Multi-Agent Review Gate
     Run AFTER patch-gsd-final-validation.ps1.
 
 .DESCRIPTION
@@ -43,7 +43,7 @@ if (-not (Test-Path "$GsdGlobalDir\lib\modules\resilience.ps1")) {
 
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Cyan
-Write-Host "  GSD LLM Council — Multi-Agent Review Gate" -ForegroundColor Cyan
+Write-Host "  GSD LLM Council - Multi-Agent Review Gate" -ForegroundColor Cyan
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -199,7 +199,7 @@ function Invoke-LlmCouncil {
             $phaseName = "council-post-spec-fix"
         }
         default {
-            # "convergence" — full 3-agent review
+            # "convergence" -- full 3-agent review
             $agents = @(
                 @{ Name = "claude"; Template = "claude-review.md"; Mode = ""; AllowedTools = "Read,Glob,Grep" }
                 @{ Name = "codex";  Template = "codex-review.md";  Mode = ""; AllowedTools = "" }
@@ -216,7 +216,7 @@ function Invoke-LlmCouncil {
     foreach ($agent in $agents) {
         $templatePath = Join-Path $promptDir $agent.Template
         if (-not (Test-Path $templatePath)) {
-            Write-Host "    [WARN] Missing template: $templatePath — skipping $($agent.Name)" -ForegroundColor DarkYellow
+            Write-Host "    [WARN] Missing template: $templatePath -- skipping $($agent.Name)" -ForegroundColor DarkYellow
             $reviews[$agent.Name] = @{ Success = $false; Output = "Template not found" }
             continue
         }
@@ -252,7 +252,7 @@ function Invoke-LlmCouncil {
     # Count successful reviews
     $successCount = ($reviews.Values | Where-Object { $_.Success }).Count
     if ($successCount -lt 2) {
-        Write-Host "  [SCALES] Only $successCount/3 reviews succeeded — auto-approving (insufficient quorum)" -ForegroundColor DarkYellow
+        Write-Host "  [SCALES] Only $successCount/3 reviews succeeded -- auto-approving (insufficient quorum)" -ForegroundColor DarkYellow
         $fallbackResult = @{
             Approved = $true
             Findings = @{
@@ -329,7 +329,7 @@ function Invoke-LlmCouncil {
                     if ($parsed.strengths) { $findings.strengths = @($parsed.strengths) }
                     if ($parsed.reason) { $findings.reason = $parsed.reason }
                 } catch {
-                    Write-Host "    [WARN] Could not parse synthesis JSON — defaulting to approved" -ForegroundColor DarkYellow
+                    Write-Host "    [WARN] Could not parse synthesis JSON -- defaulting to approved" -ForegroundColor DarkYellow
                 }
             }
 
@@ -340,7 +340,7 @@ function Invoke-LlmCouncil {
             }
         }
     } else {
-        Write-Host "  [SCALES] Synthesis failed — auto-approving" -ForegroundColor DarkYellow
+        Write-Host "  [SCALES] Synthesis failed -- auto-approving" -ForegroundColor DarkYellow
         $findings.reason = "Synthesis agent failed; auto-approved"
     }
 
@@ -349,7 +349,7 @@ function Invoke-LlmCouncil {
 
     # Write council-findings.md (readable report)
     $report = @()
-    $report += "# LLM Council Review ($CouncilType) — Iteration $Iteration"
+    $report += "# LLM Council Review ($CouncilType) -- Iteration $Iteration"
     $report += ""
     $report += "| Field | Value |"
     $report += "|-------|-------|"
@@ -445,9 +445,9 @@ Write-Host "[SCALES] Writing council prompt templates..." -ForegroundColor Yello
 
 # Claude review template
 @'
-# LLM Council Review — Architecture & Compliance (Claude)
+# LLM Council Review -- Architecture & Compliance (Claude)
 
-You are 1 of 3 independent reviewers in a multi-agent council. Be HONEST — do not rubber-stamp.
+You are 1 of 3 independent reviewers in a multi-agent council. Be HONEST -- do not rubber-stamp.
 
 ## Context
 - Health: {{HEALTH}}% | Iteration: {{ITERATION}}
@@ -486,9 +486,9 @@ Rules:
 
 # Codex review template
 @'
-# LLM Council Review — Implementation Quality (Codex)
+# LLM Council Review -- Implementation Quality (Codex)
 
-You are 1 of 3 independent reviewers in a multi-agent council. Be HONEST — do not rubber-stamp.
+You are 1 of 3 independent reviewers in a multi-agent council. Be HONEST -- do not rubber-stamp.
 
 ## Context
 - Health: {{HEALTH}}% | Iteration: {{ITERATION}}
@@ -528,9 +528,9 @@ Rules:
 
 # Gemini review template
 @'
-# LLM Council Review — Requirements & Spec Alignment (Gemini)
+# LLM Council Review -- Requirements & Spec Alignment (Gemini)
 
-You are 1 of 3 independent reviewers in a multi-agent council. Be HONEST — do not rubber-stamp.
+You are 1 of 3 independent reviewers in a multi-agent council. Be HONEST -- do not rubber-stamp.
 
 ## Context
 - Health: {{HEALTH}}% | Iteration: {{ITERATION}}
@@ -544,7 +544,7 @@ You are 1 of 3 independent reviewers in a multi-agent council. Be HONEST — do 
 4. Source code (verify requirements are truly satisfied)
 
 ## Review Focus
-1. **Requirements Coverage**: Cross-check each "satisfied" requirement against actual code — is it truly complete?
+1. **Requirements Coverage**: Cross-check each "satisfied" requirement against actual code -- is it truly complete?
 2. **Spec Alignment**: Do implementations match what specs describe? Any misinterpretations?
 3. **UI/UX Coverage**: Are all user-facing flows implemented? Form validations, error states, loading states?
 4. **Data Flow Completeness**: Does data flow correctly from UI → API → DB → response?
@@ -572,7 +572,7 @@ Rules:
 
 # Synthesis template
 @'
-# LLM Council Synthesis — Final Verdict
+# LLM Council Synthesis -- Final Verdict
 
 You are the JUDGE synthesizing 3 independent agent reviews into a single verdict.
 
@@ -593,7 +593,7 @@ You are the JUDGE synthesizing 3 independent agent reviews into a single verdict
 - If ANY agent votes "block" with confidence > 70: verdict is BLOCKED
 - If 2+ agents vote "concern" with similar issues: verdict is BLOCKED
 - If all agents vote "approve" or only minor concerns: verdict is APPROVED
-- When in doubt, BLOCK — it's cheaper to fix now than after handoff
+- When in doubt, BLOCK -- it's cheaper to fix now than after handoff
 
 ## Output Format (max 3000 tokens)
 Return ONLY a JSON object:
@@ -760,7 +760,7 @@ JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...],
 @'
 # Council: Stall Diagnosis (Claude)
 
-The pipeline has STALLED — health is not improving. Diagnose why.
+The pipeline has STALLED -- health is not improving. Diagnose why.
 
 ## Context
 - Health: {{HEALTH}}% | Iteration: {{ITERATION}}
@@ -780,7 +780,7 @@ JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...],
 @'
 # Council: Stall Diagnosis (Codex)
 
-The pipeline has STALLED — health is not improving. Analyze the code.
+The pipeline has STALLED -- health is not improving. Analyze the code.
 
 ## Context
 - Health: {{HEALTH}}% | Iteration: {{ITERATION}}
@@ -800,7 +800,7 @@ JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...],
 @'
 # Council: Stall Diagnosis (Gemini)
 
-The pipeline has STALLED — health is not improving. Analyze specs vs reality.
+The pipeline has STALLED -- health is not improving. Analyze specs vs reality.
 
 ## Context
 - Health: {{HEALTH}}% | Iteration: {{ITERATION}}
