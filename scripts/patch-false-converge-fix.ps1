@@ -1,11 +1,11 @@
-<#
+﻿<#
 .SYNOPSIS
     Patch: Fix false "converged" exit + orphaned profile code
 
-    Fix 1: convergence-loop.ps1 — $TargetHealth/$StallCount initialized BEFORE try block
+    Fix 1: convergence-loop.ps1 -- $TargetHealth/$StallCount initialized BEFORE try block
            so the finally block never sees $null (coerced to 0), preventing false convergence.
 
-    Fix 2: gsd-profile-functions.ps1 — Remove orphaned statements outside function bodies
+    Fix 2: gsd-profile-functions.ps1 -- Remove orphaned statements outside function bodies
            (leftover from old gsd-converge and gsd-blueprint refactors).
 #>
 param([string]$UserHome = $env:USERPROFILE)

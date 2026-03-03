@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Parallel Sub-Task Execution - Splits execute batch into independent sub-tasks dispatched in parallel.
     Fixes GAP: Large batches (6+ tasks, 100K+ tokens) cause quota exhaustion, partial results, or timeouts.
@@ -284,7 +284,7 @@ function Invoke-ParallelExecute {
             $stLogFile = $st.LogFile
             $stReqId   = $st.ReqId
 
-            # Start-Job runs in a separate process — pass all needed vars
+            # Start-Job runs in a separate process -- pass all needed vars
             $job = Start-Job -Name $jobName -ScriptBlock {
                 param($Agent, $Prompt, $LogFile, $ReqId, $GlobalDir, $GsdDir, $SubtaskTimeout)
 
@@ -427,7 +427,7 @@ if (Test-Path $convergenceFile) {
                 $after = $loopContent.Substring($endIdx)
 
                 $newExecuteBlock = @'
-    # 4. EXECUTE — Parallel sub-task or monolithic fallback
+    # 4. EXECUTE -- Parallel sub-task or monolithic fallback
     Send-HeartbeatIfDue -Phase "execute" -Iteration $Iteration -Health $Health -RepoName $repoName
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
 
@@ -501,7 +501,7 @@ if (Test-Path $convergenceFile) {
                 $script:LAST_NOTIFY_TIME = Get-Date
             }
         } else {
-            # All sub-tasks failed — try monolithic fallback if configured
+            # All sub-tasks failed -- try monolithic fallback if configured
             if ($agentMapCfg.execute_parallel.fallback_to_sequential) {
                 Write-Host "  [FALLBACK] All parallel sub-tasks failed. Trying monolithic execute..." -ForegroundColor Yellow
                 $fallback = $true

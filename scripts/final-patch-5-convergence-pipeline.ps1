@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Final Integration Sub-Patch 5/6: Convergence Pipeline - Fully Integrated
     Fixes GAP 13: Multi-interface, Figma Make context, spec check, disk per-iter
@@ -276,7 +276,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Write-Host "  [SCALES] Post-research council..." -ForegroundColor DarkCyan
         $prResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "post-research"
         if (-not $prResult.Approved) {
-            Write-Host "  [SCALES] Research concerns noted — plan phase will address them" -ForegroundColor DarkYellow
+            Write-Host "  [SCALES] Research concerns noted -- plan phase will address them" -ForegroundColor DarkYellow
         }
     }
 
@@ -319,11 +319,11 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Write-Host "  [SCALES] Pre-execute council..." -ForegroundColor DarkCyan
         $peResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "pre-execute"
         if (-not $peResult.Approved) {
-            Write-Host "  [SCALES] Plan concerns noted — executing with caution" -ForegroundColor DarkYellow
+            Write-Host "  [SCALES] Plan concerns noted -- executing with caution" -ForegroundColor DarkYellow
         }
     }
 
-    # 4. EXECUTE — Parallel sub-task or monolithic fallback
+    # 4. EXECUTE -- Parallel sub-task or monolithic fallback
     Send-HeartbeatIfDue -Phase "execute" -Iteration $Iteration -Health $Health -RepoName $repoName
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
 
@@ -397,7 +397,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
                 $script:LAST_NOTIFY_TIME = Get-Date
             }
         } else {
-            # All sub-tasks failed — try monolithic fallback if configured
+            # All sub-tasks failed -- try monolithic fallback if configured
             if ($agentMapCfg.execute_parallel.fallback_to_sequential) {
                 Write-Host "  [FALLBACK] All parallel sub-tasks failed. Trying monolithic execute..." -ForegroundColor Yellow
                 $fallback = $true
@@ -512,7 +512,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     Write-Host ""; Start-Sleep -Seconds 2
 }
 
-    # ── LLM COUNCIL GATE — runs when health reaches 100%, before validation ──
+    # ── LLM COUNCIL GATE -- runs when health reaches 100%, before validation ──
     $FinalHealth = Get-Health
     $validationFailed = $false
     if ($FinalHealth -ge $TargetHealth -and -not $DryRun -and $CouncilAttempts -lt $MaxCouncilAttempts) {
@@ -525,7 +525,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             }
             $councilResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $FinalHealth -Pipeline $Pipeline
             if (-not $councilResult.Approved) {
-                Write-Host "  [SCALES] Council BLOCKED — $($councilResult.Findings.concerns.Count) concern(s)" -ForegroundColor Yellow
+                Write-Host "  [SCALES] Council BLOCKED -- $($councilResult.Findings.concerns.Count) concern(s)" -ForegroundColor Yellow
                 foreach ($c in $councilResult.Findings.concerns) { Write-Host "    - $c" -ForegroundColor DarkYellow }
                 # Reset health to 99% so loop re-enters
                 $healthObj = Get-Content $HealthFile -Raw | ConvertFrom-Json
@@ -541,7 +541,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             } else {
                 Write-Host "  [SCALES] Council APPROVED (confidence: $($councilResult.Findings.confidence)%)" -ForegroundColor Green
                 Send-GsdNotification -Title "Council Approved" `
-                    -Message "$repoName | Confidence: $($councilResult.Findings.confidence)% — proceeding to validation" `
+                    -Message "$repoName | Confidence: $($councilResult.Findings.confidence)% -- proceeding to validation" `
                     -Tags "white_check_mark"
                 $script:LAST_NOTIFY_TIME = Get-Date
             }
