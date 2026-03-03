@@ -317,7 +317,7 @@ Installs final assess.ps1 with Show-InterfaceSummary, Update-FileMap, -MapOnly, 
 
 ### final-patch-7-spec-resolve.ps1 (Script 14)
 
-Adds spec conflict auto-resolution via Gemini agent (`--approval-mode yolo`). Installs Invoke-SpecConflictResolution function and wires -AutoResolve flag into both pipelines. Falls back to Codex if Gemini CLI is not available.
+Adds spec conflict auto-resolution via Gemini agent (`--yolo`). Installs Invoke-SpecConflictResolution function and wires -AutoResolve flag into both pipelines. Falls back to Codex if Gemini CLI is not available.
 
 ## Key Functions (in resilience.ps1)
 
@@ -335,7 +335,7 @@ Parameters:
 | -LogFile | Path to log file |
 | -CurrentBatchSize | Starting batch size (halves on each retry or watchdog timeout) |
 | -GsdDir | Path to .gsd directory |
-| -GeminiMode | "--sandbox" (read-only, default) or "--approval-mode yolo" (write) |
+| -GeminiMode | "--sandbox" (read-only, default) or "--yolo" (write) |
 
 Watchdog timeout: controlled by `$script:AGENT_WATCHDOG_MINUTES` (default 30). On timeout, logs a `watchdog_timeout` entry to errors.jsonl and sends a high-priority push notification.
 
@@ -440,7 +440,7 @@ Scans specification documents for contradictions. Blocks critical conflicts unle
 
 ### Invoke-SpecConflictResolution
 
-Uses Gemini (--approval-mode yolo) to auto-resolve spec contradictions based on authoritative source priority. Falls back to Codex if Gemini is unavailable. Max 2 attempts per conflict.
+Uses Gemini (--yolo) to auto-resolve spec contradictions based on authoritative source priority. Falls back to Codex if Gemini is unavailable. Max 2 attempts per conflict.
 
 ## VS Code Integration
 

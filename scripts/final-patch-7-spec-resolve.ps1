@@ -2,7 +2,7 @@
 .SYNOPSIS
     Final Integration Sub-Patch 7: Spec Conflict Auto-Resolution
     Adds Gemini-powered auto-resolution of spec contradictions detected by the spec auditor.
-    Uses Gemini (--approval-mode yolo) to save Claude/Codex quota for code generation.
+    Uses Gemini (--yolo) to save Claude/Codex quota for code generation.
     New flag: -AutoResolve on gsd-blueprint and gsd-converge
 #>
 param([string]$UserHome = $env:USERPROFILE)
@@ -176,7 +176,7 @@ function Invoke-SpecConflictResolution {
         $result = Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "spec-conflict-resolution" `
             -LogFile "$GsdDir\logs\spec-conflict-resolution.log" `
             -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
-            -GeminiMode "--approval-mode yolo"
+            -GeminiMode "--yolo"
 
         if (-not $result.Success) {
             Write-Host "    [!!]  Resolution agent failed" -ForegroundColor DarkYellow

@@ -132,7 +132,7 @@ $agentMap = @{
         }
         "spec-fix" = @{
             agent = "gemini"
-            mode = "--approval-mode yolo"
+            mode = "--yolo"
             reason = "Resolves spec contradictions. Gemini saves Claude/Codex quota for code generation."
             estimated_output_tokens = "2000-5000"
             inputs = @("spec-conflicts/conflicts-to-resolve.json", "spec-consistency-report.json", "docs/")

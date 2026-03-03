@@ -112,7 +112,7 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
 | Plan | Claude | `--allowedTools Read,Write,Bash` | Better at strategic planning |
 | Execute | Codex | `--full-auto` | Faster at bulk code generation |
 | Verify | Claude | `--allowedTools Read,Write,Bash` | Better at spec compliance checking |
-| Spec-Fix | **Gemini** | `--approval-mode yolo` (write) | Saves Claude/Codex quota for code gen |
+| Spec-Fix | **Gemini** | `--yolo` (write) | Saves Claude/Codex quota for code gen |
 | Blueprint | Claude | `--allowedTools Read,Write,Bash` | Better at spec-to-manifest generation |
 | Build | Codex | `--full-auto` | Faster at code generation from specs |
 
@@ -283,7 +283,7 @@ Critical conflicts block the pipeline and require human intervention or the -Aut
 
 ### Spec Conflict Auto-Resolution
 
-With the -AutoResolve flag, the engine uses Gemini (`--approval-mode yolo`) to automatically resolve spec contradictions, saving Claude/Codex quota for code generation. The resolution process:
+With the -AutoResolve flag, the engine uses Gemini (`--yolo`) to automatically resolve spec contradictions, saving Claude/Codex quota for code generation. The resolution process:
 
 1. Reads conflicts from .gsd/spec-conflicts/conflicts-to-resolve.json
 2. Applies authoritative source priority (see table above)

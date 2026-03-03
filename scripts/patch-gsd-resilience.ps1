@@ -379,7 +379,7 @@ function Invoke-WithRetry {
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
         [string]$AllowedTools = "Read,Write,Bash,mcp__*",
-        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--approval-mode yolo" (write)
+        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--yolo" (write)
     )
 
     $result = @{

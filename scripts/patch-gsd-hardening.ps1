@@ -430,7 +430,7 @@ function Test-AgentBoundaries {
     }
 
     if ($Agent -eq "gemini-spec-fix") {
-        # Gemini spec-fix (--approval-mode yolo) may ONLY modify docs\ and .gsd\spec-conflicts\
+        # Gemini spec-fix (--yolo) may ONLY modify docs\ and .gsd\spec-conflicts\
         $agentChanged | ForEach-Object {
             if ($_ -notmatch "^docs[\\/]" -and $_ -notmatch "^\.gsd[\\/]spec-conflicts" -and $_ -notmatch "_analysis[\\/]") {
                 $violations += $_
@@ -722,7 +722,7 @@ function Invoke-WithRetry {
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
         [string]$AllowedTools = "Read,Write,Bash,mcp__*",
-        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--approval-mode yolo" (write)
+        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--yolo" (write)
     )
 
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }
@@ -762,7 +762,7 @@ function Invoke-WithRetry {
                 $output = $effectivePrompt | codex exec --full-auto - 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "gemini") {
-                # Gemini CLI: --sandbox (read-only) or --approval-mode yolo (write)
+                # Gemini CLI: --sandbox (read-only) or --yolo (write)
                 $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
                 $output = $effectivePrompt | gemini @geminiArgs 2>&1
                 $exitCode = $LASTEXITCODE
