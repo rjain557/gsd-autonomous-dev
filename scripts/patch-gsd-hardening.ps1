@@ -1073,6 +1073,7 @@ function Update-FileMap {
 # ===========================================
 
 $script:NTFY_TOPIC = $null  # Set via auto-detect, global-config.json, or -NtfyTopic param
+$script:LISTENER_JOB = $null  # Background command listener job
 
 function Get-GsdNtfyTopic {
     <#
@@ -1264,6 +1265,112 @@ function Stop-BackgroundHeartbeat {
         Stop-Job -Job $script:HEARTBEAT_JOB -ErrorAction SilentlyContinue
         Remove-Job -Job $script:HEARTBEAT_JOB -Force -ErrorAction SilentlyContinue
         $script:HEARTBEAT_JOB = $null
+    }
+}
+
+# ===========================================
+# 11. NTFY COMMAND LISTENER (progress on demand)
+# ===========================================
+
+function Start-CommandListener {
+    <#
+    .SYNOPSIS
+        Starts a background job that polls ntfy for "progress" commands and responds
+        with current pipeline status. Only recognizes the exact word "progress".
+        Mirrors Start-BackgroundHeartbeat pattern.
+    #>
+    param(
+        [string]$GsdDir,
+        [string]$NtfyTopic,
+        [string]$Pipeline,
+        [string]$RepoName,
+        [int]$PollIntervalSeconds = 15
+    )
+
+    if (-not $NtfyTopic) { return }
+
+    # Stop any existing listener job
+    Stop-CommandListener
+
+    $startTime = Get-Date -Format "o"
+
+    $script:LISTENER_JOB = Start-Job -ScriptBlock {
+        param($GsdDir, $Topic, $Pipeline, $RepoName, $PollInterval, $StartTime)
+        $pipelineStart = [datetime]::Parse($StartTime)
+        $sinceSeconds = $PollInterval + 5  # slight overlap to not miss messages
+
+        while ($true) {
+            Start-Sleep -Seconds $PollInterval
+            try {
+                $uri = "https://ntfy.sh/$Topic/json?poll=1&since=${sinceSeconds}s"
+                $raw = Invoke-WebRequest -Uri $uri -TimeoutSec 10 -UseBasicParsing -ErrorAction SilentlyContinue
+                if (-not $raw -or -not $raw.Content) { continue }
+
+                $lines = $raw.Content -split "`n" | Where-Object { $_.Trim() }
+                foreach ($line in $lines) {
+                    try {
+                        $msg = $line | ConvertFrom-Json
+                        if ($msg.event -ne "message") { continue }
+                        $text = ($msg.message -as [string]).Trim().ToLower()
+                        if ($text -ne "progress") { continue }
+
+                        # Gather progress from local files
+                        $checkpointPath = Join-Path $GsdDir ".gsd-checkpoint.json"
+                        $phase = $Pipeline; $iter = "?"; $health = "?"; $batch = "?"
+
+                        if (Test-Path $checkpointPath) {
+                            $cp = Get-Content $checkpointPath -Raw | ConvertFrom-Json
+                            $phase = $cp.phase; $iter = $cp.iteration
+                            $health = "$($cp.health)%"; $batch = $cp.batch_size
+                        }
+
+                        $items = "N/A"
+                        if ($Pipeline -eq "converge") {
+                            $hPath = Join-Path $GsdDir "health\health-current.json"
+                            if (Test-Path $hPath) {
+                                $h = Get-Content $hPath -Raw | ConvertFrom-Json
+                                $items = "$($h.satisfied) done / $($h.partial) partial / $($h.not_started) todo (of $($h.total_requirements))"
+                            }
+                        } else {
+                            $hPath = Join-Path $GsdDir "blueprint\health.json"
+                            if (Test-Path $hPath) {
+                                $h = Get-Content $hPath -Raw | ConvertFrom-Json
+                                $items = "$($h.completed)/$($h.total) | Tier: $($h.current_tier_name)"
+                            }
+                        }
+
+                        $totalElapsed = [math]::Floor(((Get-Date) - $pipelineStart).TotalMinutes)
+                        $body = "[GSD-STATUS] Progress Report`n$RepoName | $Pipeline pipeline`nHealth: $health | Iter: $iter | Phase: $phase`nItems: $items`nBatch: $batch | Elapsed: ${totalElapsed}m"
+
+                        $headers = @{
+                            "Title"    = "[GSD-STATUS] $RepoName"
+                            "Priority" = "default"
+                            "Tags"     = "bar_chart"
+                        }
+                        Invoke-RestMethod -Uri "https://ntfy.sh/$Topic" -Method Post `
+                            -Body $body -Headers $headers -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+                    } catch {
+                        # Individual message parse failure - skip it
+                    }
+                }
+            } catch {
+                # Never let listener failure kill the loop
+            }
+        }
+    } -ArgumentList $GsdDir, $NtfyTopic, $Pipeline, $RepoName, $PollIntervalSeconds, $startTime
+
+    Write-Host "  Listener: polls every ${PollIntervalSeconds}s for commands (background)" -ForegroundColor DarkGray
+}
+
+function Stop-CommandListener {
+    <#
+    .SYNOPSIS
+        Stops the background command listener job if running.
+    #>
+    if ($script:LISTENER_JOB) {
+        Stop-Job -Job $script:LISTENER_JOB -ErrorAction SilentlyContinue
+        Remove-Job -Job $script:LISTENER_JOB -Force -ErrorAction SilentlyContinue
+        $script:LISTENER_JOB = $null
     }
 }
 

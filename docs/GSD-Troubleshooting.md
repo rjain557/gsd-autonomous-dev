@@ -160,13 +160,17 @@ To force a specific topic, either:
 
 ### No heartbeat notifications during long runs
 
-Heartbeat notifications fire every 10+ minutes during active agent phases. If you're not seeing them:
+The engine uses two heartbeat mechanisms:
+- **Background heartbeat job**: An independent PowerShell background job sends notifications every 10 minutes, even while an agent call is blocking the main thread. This is the primary heartbeat source.
+- **Phase-transition heartbeat**: `Send-HeartbeatIfDue` fires between agent phases as a secondary check.
 
-1. **Check elapsed time**: Heartbeats only fire after 10 minutes since the last notification. If iterations complete in under 10 minutes, you'll see iteration-complete notifications instead.
-2. **Verify installation**: Re-run `install-gsd-all.ps1` to ensure `Send-HeartbeatIfDue` is deployed.
+If you're not seeing heartbeats:
+
+1. **Check elapsed time**: Heartbeats only fire after 10 minutes since the pipeline started. If iterations complete in under 10 minutes, you'll see iteration-complete notifications instead.
+2. **Verify installation**: Re-run `install-gsd-all.ps1` to ensure `Start-BackgroundHeartbeat` is deployed.
 3. **Check subscription**: Heartbeats use the same ntfy topic as other notifications -- verify you're subscribed.
 
-To adjust heartbeat frequency, modify `$HeartbeatMinutes` in the `Send-HeartbeatIfDue` calls within convergence-loop.ps1 or blueprint-pipeline.ps1.
+The background heartbeat reads current state from `.gsd/.gsd-checkpoint.json` and reports total elapsed time. To adjust the interval, modify the `-IntervalMinutes` parameter in the `Start-BackgroundHeartbeat` call within the pipeline scripts.
 
 ### Too many heartbeat notifications
 
@@ -194,6 +198,23 @@ To adjust the timeout, modify `$script:AGENT_WATCHDOG_MINUTES` in resilience.ps1
 If you see no "ntfy topic" line at startup, notifications are not initialized. This happens when:
 1. The resilience.ps1 module was not patched with notification functions (re-run install-gsd-all.ps1)
 2. The global-config.json is missing or has invalid JSON
+
+### "progress" command not getting a response
+
+If you post "progress" to the ntfy topic and don't receive a `[GSD-STATUS]` response:
+
+1. **Pipeline not running**: The command listener only runs while the pipeline is active. If the pipeline has exited (converged, stalled, or crashed), there is nothing listening for commands.
+2. **Exact word required**: The listener only responds to the exact word "progress" (case-insensitive). Extra spaces, punctuation, or other text will be ignored.
+3. **Topic mismatch**: Ensure you are posting to the exact same ntfy topic the pipeline is subscribed to. Check the topic printed at startup: `ntfy topic (auto): gsd-rjain-projectname`
+4. **Reinstall**: If the command listener was not deployed, re-run `install-gsd-all.ps1` to ensure `Start-CommandListener` is available.
+
+### Getting unsolicited [GSD-STATUS] responses
+
+If you see `[GSD-STATUS]` messages you did not request, someone else (or another tool) is posting "progress" to your ntfy topic. Since ntfy topics are public by default:
+
+1. **Use a unique topic**: Ensure your ntfy topic is not easily guessable. The auto-generated `gsd-{username}-{reponame}` format is usually unique enough.
+2. **Check other sessions**: If you have multiple terminals running the same project, each pipeline has its own listener -- a single "progress" post will trigger responses from all of them.
+3. **Feedback loop exclusion**: The listener ignores any message starting with `[GSD-STATUS]`, so it will not respond to its own output. If you are seeing repeated responses, another pipeline instance is likely running.
 
 ## Supervisor Issues
 
@@ -417,6 +438,40 @@ The calculator models the "happy path" and may underestimate due to:
 - "Last mile" problem (80% to 100% costs more per-item than 0% to 80%)
 
 Use `-ClientQuote` with a 7-10x markup to account for these factors. The three-tier pricing (best/expected/worst) provides a range.
+
+## Remote Monitoring Issues
+
+### gsd-remote not connecting / QR code not scanning
+
+The `gsd-remote` command launches a Claude remote session and displays a QR code for phone access. If it fails:
+
+1. **Claude CLI not authenticated**: Run `claude` interactively first to ensure authentication is active
+2. **QR code unreadable**: Increase terminal font size or zoom in. The QR code requires a minimum display size.
+3. **Phone can't connect after scanning**: Ensure your phone has internet access and is not on a VPN that blocks the connection
+4. **Session disconnects**: The remote session stays active only while the terminal is open. Press Ctrl+C to stop cleanly.
+
+### gsd-remote vs ntfy notifications
+
+`gsd-remote` gives interactive access to a Claude session, while ntfy provides passive push notifications. For overnight monitoring, ntfy is recommended since it doesn't require keeping a terminal session open.
+
+## Blueprint Pipeline Stalls
+
+### Blueprint stall at high percentage (90%+)
+
+The "last mile" problem -- the final items are often the most complex (cross-cutting concerns, integration points). Options:
+
+1. **Reduce batch size**: `gsd-blueprint -BatchSize 3 -BuildOnly` to focus on fewer items per cycle
+2. **Check remaining items**: Review `.gsd/blueprint/blueprint.json` for items still at "pending" or "partial"
+3. **Use convergence**: Switch to `gsd-converge` which handles iterative fix-and-verify better for the remaining gaps
+
+### Blueprint produces manifest but build fails repeatedly
+
+The build phase (Codex) may struggle with complex items. Options:
+
+1. **Resume build only**: `gsd-blueprint -BuildOnly` skips regenerating the manifest
+2. **Verify only**: `gsd-blueprint -VerifyOnly` re-scores without building (useful after manual fixes)
+3. **Check build logs**: Review `.gsd/logs/iter{N}-*.log` for the specific build errors
+4. **Switch to convergence**: After blueprint gets to 60-80%, `gsd-converge` can fix remaining issues
 
 ## Common Workflows
 

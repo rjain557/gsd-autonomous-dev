@@ -107,6 +107,10 @@ Send-GsdNotification -Title "GSD Converge Started" `
 Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
     -Pipeline "converge" -RepoName $repoName -IntervalMinutes 10
 
+# Start background command listener (responds to "progress" commands via ntfy)
+Start-CommandListener -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
+    -Pipeline "converge" -RepoName $repoName -PollIntervalSeconds 15
+
 # Prompt resolver with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
     $text = Get-Content $templatePath -Raw
@@ -332,8 +336,9 @@ if ($FinalHealth -ge $TargetHealth) {
 Write-Host "=========================================================" -ForegroundColor Green
 
 } finally {
-    # Stop background heartbeat
+    # Stop background heartbeat and command listener
     Stop-BackgroundHeartbeat
+    Stop-CommandListener
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health

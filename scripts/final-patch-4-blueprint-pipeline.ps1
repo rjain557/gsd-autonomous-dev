@@ -146,6 +146,10 @@ Send-GsdNotification -Title "GSD Blueprint Started" `
 Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
     -Pipeline "blueprint" -RepoName $repoName -IntervalMinutes 10
 
+# Start background command listener (responds to "progress" commands via ntfy)
+Start-CommandListener -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
+    -Pipeline "blueprint" -RepoName $repoName -PollIntervalSeconds 15
+
 # Helper to resolve prompts with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
     $text = Get-Content $templatePath -Raw
@@ -357,8 +361,9 @@ if (Test-Path $HealthLog) {
 Write-Host "=========================================================" -ForegroundColor Blue
 
 } finally {
-    # Stop background heartbeat
+    # Stop background heartbeat and command listener
     Stop-BackgroundHeartbeat
+    Stop-CommandListener
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health

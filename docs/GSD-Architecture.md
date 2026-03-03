@@ -12,8 +12,10 @@ After running install-gsd-all.ps1, the engine creates:
 
 ```
 %USERPROFILE%\.gsd-global\
-  bin\                          # CLI wrappers
+  bin\                          # CLI wrappers (added to PATH)
     gsd-converge.cmd            # Convergence loop launcher
+    gsd-blueprint.cmd           # Blueprint pipeline launcher
+    gsd-status.cmd              # Health status dashboard
     gsd-remote.cmd              # Remote monitoring launcher
     gsd-costs.cmd               # Token cost calculator
   config\
@@ -29,9 +31,11 @@ After running install-gsd-all.ps1, the engine creates:
   blueprint\
     scripts\
       blueprint-pipeline.ps1    # Blueprint generation + build loop
+      supervisor-blueprint.ps1  # Supervisor wrapper for blueprint
       assess.ps1                # Assessment script (gsd-assess)
   scripts\
     convergence-loop.ps1        # 5-phase convergence engine
+    supervisor-converge.ps1     # Supervisor wrapper for convergence
     gsd-profile-functions.ps1   # PowerShell profile (gsd-* commands)
     token-cost-calculator.ps1   # Token cost estimator (gsd-costs)
   pricing-cache.json              # Cached LLM pricing data (auto-updated)
@@ -81,7 +85,7 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
     prompt-hints.md               # Extra instructions from supervisor
     agent-override.json           # Agent reassignment (e.g., {"execute": "claude"})
     escalation-report.md          # Full report when all strategies exhausted
-  checkpoint.json               # Crash recovery state
+  .gsd-checkpoint.json          # Crash recovery state (also read by background heartbeat)
   .gsd-lock                     # Prevents concurrent runs
 ```
 
@@ -156,7 +160,7 @@ Failed agent calls retry 3 times. Each retry halves the batch size (15 -> 7 -> 3
 
 ### Checkpoint Recovery
 
-After each successful phase, state is saved to checkpoint.json. On restart, the engine resumes from the last checkpoint. Stores iteration number, phase, health score, and batch size.
+After each successful phase, state is saved to .gsd-checkpoint.json. On restart, the engine resumes from the last checkpoint. Stores pipeline, iteration number, phase, health score, batch size, status, and process ID.
 
 ### Lock File
 
@@ -340,6 +344,7 @@ The topic is resolved in this order:
 | Supervisor restarting | "Supervisor: Restarting in new terminal" | default | rocket |
 | Supervisor recovered | "Supervisor: RECOVERED at {health}%" | high | white_check_mark |
 | Supervisor escalation | "Supervisor: NEEDS HUMAN - see escalation-report.md" | urgent | sos |
+| Progress response | "[GSD-STATUS] Progress Report" | default | bar_chart |
 
 #### Background Heartbeat
 
@@ -358,6 +363,27 @@ Body:  patient-portal | Iter 1 | Health: 45% | 20m total
 ```
 
 Agent timeout notifications fire when the watchdog kills a hung agent process (default: 30 minutes). These are high-priority alerts that indicate a retry is in progress.
+
+#### Command Listener
+
+A background PowerShell job polls the ntfy topic every 15 seconds for user commands. When a user posts the exact word "progress" (case-insensitive) to the ntfy topic, the listener reads the checkpoint and health files and responds with a formatted progress report posted back to the same topic.
+
+Only the word "progress" is recognized -- everything else is silently ignored. Responses are prefixed with `[GSD-STATUS]` to avoid feedback loops (the listener ignores any message starting with this prefix).
+
+Example response posted back to the ntfy topic:
+```
+[GSD-STATUS] Progress Report
+patient-portal | converge pipeline
+Health: 72% | Iter: 5 | Phase: execute
+Items: 25 done / 8 partial / 7 todo (of 40)
+Batch: 8 | Elapsed: 45m
+```
+
+The command listener:
+- Starts automatically when the pipeline starts (alongside the background heartbeat)
+- Polls the ntfy topic every 15 seconds for new messages
+- Only responds to the exact word "progress" (case-insensitive)
+- Stops automatically when the pipeline exits (including crashes, via the `finally` block)
 
 ### Mobile Setup
 

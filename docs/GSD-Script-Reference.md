@@ -41,6 +41,7 @@ Parameters:
 | -SkipResearch | false | Skip Gemini/Codex research phase (saves tokens) |
 | -SkipSpecCheck | false | Skip spec consistency check before starting |
 | -AutoResolve | false | Auto-resolve spec conflicts via Gemini (falls back to Codex) |
+| -BatchSize | 8 | Items per execute cycle (adaptive: shrinks on failure, grows on success) |
 | -MaxIterations | 20 | Maximum convergence iterations |
 | -StallThreshold | 3 | Stop after N iterations with no improvement |
 | -ThrottleSeconds | 30 | Delay between agent calls to prevent quota exhaustion |
@@ -267,65 +268,70 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
+The master installer (`install-gsd-all.ps1`) runs these 14 scripts in order. Each is idempotent and safe to re-run.
+
 ### install-gsd-global.ps1 (Script 1)
 
-Creates the global %USERPROFILE%\.gsd-global\ directory structure with: convergence engine (convergence-loop.ps1), token cost calculator (token-cost-calculator.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-remote.cmd, gsd-costs.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-costs, gsd-status, gsd-assess, gsd-remote).
+Creates the global `%USERPROFILE%\.gsd-global\` directory structure with: convergence engine (convergence-loop.ps1), token cost calculator (token-cost-calculator.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-blueprint.cmd, gsd-status.cmd, gsd-remote.cmd, gsd-costs.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-costs, gsd-status, gsd-assess, gsd-remote).
 
 ### install-gsd-blueprint.ps1 (Script 2)
 
 Installs the blueprint pipeline (blueprint-pipeline.ps1), assessment script (assess.ps1), blueprint prompt templates, agent configurations, and profile functions (gsd-blueprint, gsd-init). Creates the blueprint/ subdirectory structure within .gsd-global.
 
-### setup-gsd-convergence.ps1 (Script 3)
-
-Sets up convergence loop configuration and phase definitions. Creates the .gsd/ folder structure for autonomous convergence, detects the latest Figma design version from design\figma\v##, references SDLC spec docs (Phase A through Phase E), creates the convergence-loop.ps1 orchestrator, config templates, and agent prompt files.
-
-### patch-gsd-partial-repo.ps1 (Script 4)
+### patch-gsd-partial-repo.ps1 (Script 3)
 
 Installs gsd-assess command, assessment prompts, file map generation, -MapOnly flag.
 
-### patch-gsd-resilience.ps1 (Script 5)
+### patch-gsd-resilience.ps1 (Script 4)
 
-Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-Checkpoint, Restore-Checkpoint, New-Lock, Remove-Lock, Save-GsdSnapshot, Invoke-AdaptiveBatch. Agent calls run in isolated child processes with a 30-minute watchdog that kills hung agents and retries.
+Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-Checkpoint, Restore-Checkpoint, New-Lock, Remove-Lock, Save-GsdSnapshot, Invoke-AdaptiveBatch, Get-FailureDiagnosis, Invoke-AgentFallback. Agent calls run in isolated child processes with a 30-minute watchdog that kills hung agents and retries.
 
-### patch-gsd-hardening.ps1 (Script 6)
+### patch-gsd-hardening.ps1 (Script 5)
 
-Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError.
+Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Start-BackgroundHeartbeat, Stop-BackgroundHeartbeat, Start-CommandListener, Stop-CommandListener, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError.
 
-### patch-gsd-figma-make.ps1 (Script 7)
+### patch-gsd-figma-make.ps1 (Script 6)
 
 Installs interfaces.ps1 module: Find-ProjectInterfaces, Initialize-ProjectInterfaces, Show-InterfaceSummary, Get-InterfaceContext. Recursive design folder discovery, _analysis/_stubs auto-discovery, folder inventory.
 
-### final-patch-1-spec-check.ps1 (Script 8)
+### final-patch-1-spec-check.ps1 (Script 7)
 
 Adds Invoke-SpecConsistencyCheck to resilience.ps1. Pre-checks specs for conflicts before pipeline runs. Detects: data_type, api_contract, navigation, business_rule, design_system, database, missing_ref conflicts.
 
-### final-patch-2-sql-cli.ps1 (Script 9)
+### final-patch-2-sql-cli.ps1 (Script 8)
 
 Adds Test-SqlSyntaxWithSqlcmd, Test-SqlFiles, and Test-CliVersions to resilience.ps1. SQL pattern validation and CLI version compatibility checks.
 
-### final-patch-3-storyboard-verify.ps1 (Script 10)
+### final-patch-3-storyboard-verify.ps1 (Script 9)
 
 Installs storyboard-aware verification prompt for Claude. Traces data paths end-to-end through all layers.
 
-### final-patch-4-blueprint-pipeline.ps1 (Script 11)
+### final-patch-4-blueprint-pipeline.ps1 (Script 10)
 
-Final blueprint pipeline with file map updates, prompt injection, push notifications, throttling, spec check integration.
+Final blueprint pipeline with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, and adaptive batch sizing.
 
-### final-patch-5-convergence-pipeline.ps1 (Script 12)
+### final-patch-5-convergence-pipeline.ps1 (Script 11)
 
-Final convergence loop with file map updates, prompt injection, push notifications, throttling, spec check integration.
+Final convergence loop with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, and adaptive batch sizing.
 
-### final-patch-6-assess-limitations.ps1 (Script 13)
+### final-patch-6-assess-limitations.ps1 (Script 12)
 
 Installs final assess.ps1 with Show-InterfaceSummary, Update-FileMap, -MapOnly, known limitations documentation.
 
-### final-patch-7-spec-resolve.ps1 (Script 14)
+### final-patch-7-spec-resolve.ps1 (Script 13)
 
 Adds spec conflict auto-resolution via Gemini agent (`--yolo`). Installs Invoke-SpecConflictResolution function and wires -AutoResolve flag into both pipelines. Falls back to Codex if Gemini CLI is not available.
 
-### patch-gsd-supervisor.ps1 (Script 15)
+### patch-gsd-supervisor.ps1 (Script 14)
 
 Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-converge.ps1 and supervisor-blueprint.ps1 wrappers, profile function updates (adds -SupervisorAttempts and -NoSupervisor params to gsd-converge and gsd-blueprint). Creates `~/.gsd-global/supervisor/` for cross-project pattern memory.
+
+### Optional standalone scripts
+
+These are NOT run by the installer but can be run manually:
+
+- **setup-gsd-convergence.ps1** -- Per-project convergence config setup. Detects latest Figma design version, references SDLC specs (Phase A-E), creates per-project .gsd/ folder structure.
+- **install-gsd-keybindings.ps1** -- Adds VS Code keyboard shortcuts (Ctrl+Shift+G chord prefix).
 
 ## Key Functions (in supervisor.ps1)
 
@@ -423,6 +429,30 @@ Parameters (Start):
 
 The job is started after the "Pipeline Started" notification and stopped in the `finally` block, ensuring cleanup even on crashes.
 
+### Start-CommandListener / Stop-CommandListener
+
+Manages a background PowerShell job that polls the ntfy topic every 15 seconds for user commands. When a user posts the exact word "progress" (case-insensitive), the listener reads checkpoint and health files and responds with a formatted progress report posted back to the same topic. All other messages are ignored. Responses are prefixed with `[GSD-STATUS]` to avoid feedback loops.
+
+Parameters (Start):
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory (reads .gsd-checkpoint.json and health-current.json) |
+| -NtfyTopic | The ntfy.sh topic to poll and post responses to |
+| -Pipeline | "converge" or "blueprint" |
+| -RepoName | Repository display name |
+
+Response format posted back to the ntfy topic:
+```
+[GSD-STATUS] Progress Report
+{RepoName} | {pipeline} pipeline
+Health: {health}% | Iter: {iteration} | Phase: {phase}
+Items: {satisfied} done / {partial} partial / {not_started} todo (of {total})
+Batch: {batch_size} | Elapsed: {elapsed}m
+```
+
+The job is started alongside `Start-BackgroundHeartbeat` after the "Pipeline Started" notification and stopped in the `finally` block, ensuring cleanup even on crashes.
+
 ### Wait-ForQuotaReset
 
 Sleeps with adaptive backoff when quota is exhausted. Starts at 5 minutes, doubles each cycle up to 60-minute cap. Max 24 cycles (24 hours).
@@ -504,6 +534,20 @@ Parameters:
 | -HeartbeatMinutes | 10 | Minimum minutes between heartbeat notifications |
 
 Notification format: Title "Working: {phase}", body "{repo} | Iter {n} | Health: {x}% | {m}m elapsed". Uses hourglass_flowing_sand emoji tag.
+
+### Get-FailureDiagnosis
+
+Analyzes agent failure output to determine root cause and recommend recovery action. Returns a diagnosis object with the failure reason, recommended action (retry, fallback, or escalate), and optional fallback agent.
+
+Gemini-specific diagnostics: sandbox/plan-mode restriction, model unavailable, prompt too large, server error, auth failure. Codex-specific: working directory issues, prompt format errors. Claude-specific: tool permission errors.
+
+### Invoke-AgentFallback
+
+Attempts to run the same prompt with an alternative agent when the primary agent fails. Fallback chain: codex -> claude, claude -> codex, gemini -> codex. Returns success/failure and output.
+
+### Local-ResolvePrompt
+
+Pipeline-internal function that resolves prompt templates before sending to agents. Replaces template variables ({{ITERATION}}, {{HEALTH}}, {{GSD_DIR}}, {{REPO_ROOT}}, {{BATCH_SIZE}}, {{INTERFACE_CONTEXT}}) and appends supervisor error context and prompt hints when present.
 
 ### Invoke-SpecConsistencyCheck
 
