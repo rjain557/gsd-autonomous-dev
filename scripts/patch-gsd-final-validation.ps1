@@ -762,6 +762,58 @@ function New-DeveloperHandoff {
         }
     }
 
+    # ===== LLM COUNCIL REVIEW =====
+    $councilPath = Join-Path $GsdDir "health\council-review.json"
+    if (Test-Path $councilPath) {
+        try {
+            $council = Get-Content $councilPath -Raw | ConvertFrom-Json
+            $md += "## LLM Council Review"
+            $md += ""
+            $md += "| Field | Value |"
+            $md += "|-------|-------|"
+            $md += "| Verdict | $(if ($council.approved) { 'APPROVED' } else { 'BLOCKED' }) |"
+            $md += "| Confidence | $($council.confidence)% |"
+            $md += ""
+
+            if ($council.votes) {
+                $md += "### Agent Votes"
+                $md += ""
+                $md += "| Agent | Vote |"
+                $md += "|-------|------|"
+                $council.votes.PSObject.Properties | ForEach-Object {
+                    $md += "| $($_.Name) | $($_.Value) |"
+                }
+                $md += ""
+            }
+
+            if ($council.strengths -and $council.strengths.Count -gt 0) {
+                $md += "### Strengths"
+                $md += ""
+                foreach ($s in $council.strengths) { $md += "- $s" }
+                $md += ""
+            }
+
+            if ($council.concerns -and $council.concerns.Count -gt 0) {
+                $md += "### Concerns"
+                $md += ""
+                foreach ($c in $council.concerns) { $md += "- $c" }
+                $md += ""
+            }
+
+            if ($council.reason) {
+                $md += "### Reasoning"
+                $md += ""
+                $md += $council.reason
+                $md += ""
+            }
+        } catch {
+            $md += "## LLM Council Review"
+            $md += ""
+            $md += "*Could not parse council data.*"
+            $md += ""
+        }
+    }
+
     # ===== COST SUMMARY =====
     $costPath = Join-Path $GsdDir "costs\cost-summary.json"
     if (Test-Path $costPath) {

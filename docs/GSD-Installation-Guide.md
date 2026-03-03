@@ -103,7 +103,7 @@ Optional standalone scripts (not run by installer):
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
 - **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
 
-The repository contains 22 scripts total: 1 master installer, 1 pre-flight check, 16 scripts run by installer (15 core patches + 1 bug fix), and 4 standalone utilities.
+The repository contains 24 scripts total: 1 master installer, 1 pre-flight check, 18 scripts run by installer (17 core patches + 1 bug fix), and 4 standalone utilities.
 
 ### Step 3: Restart Terminal
 

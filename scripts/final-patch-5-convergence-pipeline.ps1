@@ -144,6 +144,11 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     if (Test-Path $hintPath) {
         $resolved += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw)
     }
+    # Council: inject feedback from previous council review
+    $councilFeedbackPath = Join-Path $GsdDir "supervisor\council-feedback.md"
+    if (Test-Path $councilFeedbackPath) {
+        $resolved += "`n`n" + (Get-Content $councilFeedbackPath -Raw)
+    }
     return $resolved
 }
 
@@ -194,6 +199,7 @@ if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
 
 # Main loop
 $ValidationAttempts = 0; $MaxValidationAttempts = 3; $validationResult = $null
+$CouncilAttempts = 0; $MaxCouncilAttempts = 2; $councilResult = $null
 
 do {
 
@@ -265,6 +271,15 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         }
     }
 
+    # ── POST-RESEARCH COUNCIL (validate research before planning) ──
+    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+        Write-Host "  [SCALES] Post-research council..." -ForegroundColor DarkCyan
+        $prResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "post-research"
+        if (-not $prResult.Approved) {
+            Write-Host "  [SCALES] Research concerns noted — plan phase will address them" -ForegroundColor DarkYellow
+        }
+    }
+
     # Throttle between phases
     if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
@@ -297,6 +312,15 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
         Start-Sleep -Seconds $ThrottleSeconds
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
+    }
+
+    # ── PRE-EXECUTE COUNCIL (validate plan before code generation) ──
+    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+        Write-Host "  [SCALES] Pre-execute council..." -ForegroundColor DarkCyan
+        $peResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "pre-execute"
+        if (-not $peResult.Approved) {
+            Write-Host "  [SCALES] Plan concerns noted — executing with caution" -ForegroundColor DarkYellow
+        }
     }
 
     # 4. EXECUTE — Parallel sub-task or monolithic fallback
@@ -466,24 +490,65 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
                 Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $NewHealth -LastError "Stalled: $StallCount consecutive iterations with no progress"
             }
-            Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read .gsd\health\*, .gsd\logs\errors.jsonl. Diagnose. Write .gsd\health\stall-diagnosis.md." `
-                -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
+            # Multi-agent stall diagnosis via council
+            if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
+                Write-Host "  [SCALES] Multi-agent stall diagnosis..." -ForegroundColor DarkCyan
+                Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $NewHealth -Pipeline $Pipeline -CouncilType "stall-diagnosis" | Out-Null
+            } else {
+                Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read .gsd\health\*, .gsd\logs\errors.jsonl. Diagnose. Write .gsd\health\stall-diagnosis.md." `
+                    -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
+            }
             break
         }
     } else { $StallCount = 0; if ($CurrentBatchSize -lt $BatchSize) { $CurrentBatchSize = [math]::Min($BatchSize, $CurrentBatchSize + 1) } }
 
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
-    Send-GsdNotification -Title "Iter $Iteration Complete" `
-        -Message "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize" `
-        -Tags "chart_with_upwards_trend"
+    $iterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir } else { "" }
+    $iterMsg = "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize"
+    if ($iterCostLine) { $iterMsg += "`n$iterCostLine" }
+    Send-GsdNotification -Title "Iter $Iteration Complete" -Message $iterMsg -Tags "chart_with_upwards_trend"
     $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
 }
 
-    # Final validation gate - runs when health reaches 100%
+    # ── LLM COUNCIL GATE — runs when health reaches 100%, before validation ──
     $FinalHealth = Get-Health
     $validationFailed = $false
+    if ($FinalHealth -ge $TargetHealth -and -not $DryRun -and $CouncilAttempts -lt $MaxCouncilAttempts) {
+        if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
+            $CouncilAttempts++
+            Write-Host ""
+            Write-Host "  [SCALES] LLM Council review (attempt $CouncilAttempts/$MaxCouncilAttempts)..." -ForegroundColor Cyan
+            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "council-review" -Agent "council" -Iteration $Iteration -HealthScore $FinalHealth
+            }
+            $councilResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $FinalHealth -Pipeline $Pipeline
+            if (-not $councilResult.Approved) {
+                Write-Host "  [SCALES] Council BLOCKED — $($councilResult.Findings.concerns.Count) concern(s)" -ForegroundColor Yellow
+                foreach ($c in $councilResult.Findings.concerns) { Write-Host "    - $c" -ForegroundColor DarkYellow }
+                # Reset health to 99% so loop re-enters
+                $healthObj = Get-Content $HealthFile -Raw | ConvertFrom-Json
+                $healthObj.health_score = 99
+                $healthObj | ConvertTo-Json | Set-Content $HealthFile -Encoding UTF8
+                $Health = 99; $FinalHealth = 99
+                $validationFailed = $true
+                Send-GsdNotification -Title "Council Blocked (attempt $CouncilAttempts/$MaxCouncilAttempts)" `
+                    -Message "$repoName | $($councilResult.Findings.concerns.Count) concerns to address" `
+                    -Tags "warning" -Priority "high"
+                $script:LAST_NOTIFY_TIME = Get-Date
+                continue  # Re-enter do-while loop
+            } else {
+                Write-Host "  [SCALES] Council APPROVED (confidence: $($councilResult.Findings.confidence)%)" -ForegroundColor Green
+                Send-GsdNotification -Title "Council Approved" `
+                    -Message "$repoName | Confidence: $($councilResult.Findings.confidence)% — proceeding to validation" `
+                    -Tags "white_check_mark"
+                $script:LAST_NOTIFY_TIME = Get-Date
+            }
+        }
+    }
+
+    # Final validation gate - runs when health reaches 100%
     if ($FinalHealth -ge $TargetHealth -and -not $DryRun -and $ValidationAttempts -lt $MaxValidationAttempts) {
         if (Get-Command Invoke-FinalValidation -ErrorAction SilentlyContinue) {
             $ValidationAttempts++
@@ -544,15 +609,24 @@ if ($FinalHealth -ge $TargetHealth) {
         git push --tags 2>$null
     }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
-    Send-GsdNotification -Title "CONVERGED!" -Message "$repoName | 100% in $Iteration iterations" -Tags "tada,white_check_mark" -Priority "high"
+    $finalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
+    $convergedMsg = "$repoName | 100% in $Iteration iterations"
+    if ($finalCostLine) { $convergedMsg += "`n$finalCostLine" }
+    Send-GsdNotification -Title "CONVERGED!" -Message $convergedMsg -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
     Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
-    Send-GsdNotification -Title "STALLED" -Message "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations. Check stall-diagnosis.md" -Tags "warning" -Priority "high"
+    $stalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
+    $stalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
+    if ($stalledCostLine) { $stalledMsg += "`n$stalledCostLine" }
+    Send-GsdNotification -Title "STALLED" -Message $stalledMsg -Tags "warning" -Priority "high"
 } else {
     Write-Host "  [!!]  MAX ITERATIONS at ${FinalHealth}%" -ForegroundColor Yellow
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
-    Send-GsdNotification -Title "MAX ITERATIONS" -Message "$repoName | ${FinalHealth}% after $Iteration iterations" -Tags "warning" -Priority "high"
+    $maxIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
+    $maxIterMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
+    if ($maxIterCostLine) { $maxIterMsg += "`n$maxIterCostLine" }
+    Send-GsdNotification -Title "MAX ITERATIONS" -Message $maxIterMsg -Tags "warning" -Priority "high"
 }
 Write-Host "=========================================================" -ForegroundColor Green
 

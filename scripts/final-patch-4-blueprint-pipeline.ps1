@@ -238,6 +238,30 @@ if ($needsBlueprint) {
         }
     } else { Write-Host "  [DRY RUN] claude -> blueprint" -ForegroundColor DarkYellow }
 
+    # ── POST-BLUEPRINT COUNCIL (validate blueprint before building) ──
+    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+        Write-Host "  [SCALES] Post-blueprint council review..." -ForegroundColor Cyan
+        $bpCouncil = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration 0 -Health 0 -Pipeline "blueprint" -CouncilType "post-blueprint"
+        if (-not $bpCouncil.Approved) {
+            Write-Host "  [SCALES] Blueprint concerns: $($bpCouncil.Findings.concerns.Count) issue(s)" -ForegroundColor Yellow
+            foreach ($c in $bpCouncil.Findings.concerns) { Write-Host "    - $c" -ForegroundColor DarkYellow }
+            Write-Host "  [SCALES] Regenerating blueprint to address concerns..." -ForegroundColor Cyan
+            # Write council feedback for blueprint regeneration
+            $feedbackPath = Join-Path $GsdDir "supervisor\council-feedback.md"
+            $feedback = "## Blueprint Council Feedback`n`n"
+            foreach ($c in $bpCouncil.Findings.concerns) { $feedback += "- $c`n" }
+            $feedback += "`nAddress these concerns in the regenerated blueprint."
+            $feedback | Set-Content $feedbackPath -Encoding UTF8
+            # Re-run blueprint with feedback injected
+            $prompt = Local-ResolvePrompt $BlueprintPromptPath 0 0
+            Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "blueprint" `
+                -LogFile "$GsdDir\logs\phase1-blueprint-regen.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+            Remove-Item $feedbackPath -ErrorAction SilentlyContinue
+        } else {
+            Write-Host "  [SCALES] Blueprint APPROVED (confidence: $($bpCouncil.Findings.confidence)%)" -ForegroundColor Green
+        }
+    }
+
     if ($BlueprintOnly) { Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir; return }
 }
 
@@ -377,8 +401,13 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             }
             $diagFiles = ".gsd\blueprint\*, .gsd\logs\errors.jsonl"
             if ($hasStoryboards) { $diagFiles += ", storyboard-issues.md" }
-            Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read $diagFiles. Diagnose. Write .gsd\blueprint\stall-diagnosis.md." `
-                -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
+            if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
+                Write-Host "  [SCALES] Multi-agent stall diagnosis..." -ForegroundColor DarkCyan
+                Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $NewHealth -Pipeline "blueprint" -CouncilType "stall-diagnosis" | Out-Null
+            } else {
+                Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read $diagFiles. Diagnose. Write .gsd\blueprint\stall-diagnosis.md." `
+                    -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
+            }
             break
         }
     } else {
@@ -388,9 +417,10 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
-    Send-GsdNotification -Title "Blueprint Iter $Iteration" `
-        -Message "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize" `
-        -Tags "chart_with_upwards_trend"
+    $bpIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir } else { "" }
+    $bpIterMsg = "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize"
+    if ($bpIterCostLine) { $bpIterMsg += "`n$bpIterCostLine" }
+    Send-GsdNotification -Title "Blueprint Iter $Iteration" -Message $bpIterMsg -Tags "chart_with_upwards_trend"
     $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
 }
@@ -456,15 +486,24 @@ if ($FinalHealth -ge $TargetHealth) {
         git push --tags 2>$null
     }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
-    Send-GsdNotification -Title "BLUEPRINT COMPLETE!" -Message "$repoName | 100% in $Iteration iterations" -Tags "tada,white_check_mark" -Priority "high"
+    $bpFinalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
+    $bpCompleteMsg = "$repoName | 100% in $Iteration iterations"
+    if ($bpFinalCostLine) { $bpCompleteMsg += "`n$bpFinalCostLine" }
+    Send-GsdNotification -Title "BLUEPRINT COMPLETE!" -Message $bpCompleteMsg -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
     Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
-    Send-GsdNotification -Title "BLUEPRINT STALLED" -Message "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations" -Tags "warning" -Priority "high"
+    $bpStalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
+    $bpStalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
+    if ($bpStalledCostLine) { $bpStalledMsg += "`n$bpStalledCostLine" }
+    Send-GsdNotification -Title "BLUEPRINT STALLED" -Message $bpStalledMsg -Tags "warning" -Priority "high"
 } else {
     Write-Host "  [!!]  $(if ($VerifyOnly){'VERIFY DONE'}else{'MAX ITERATIONS'}) at ${FinalHealth}%" -ForegroundColor Yellow
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
-    Send-GsdNotification -Title "Blueprint Max Iterations" -Message "$repoName | ${FinalHealth}% after $Iteration iterations" -Tags "warning" -Priority "high"
+    $bpMaxCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
+    $bpMaxMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
+    if ($bpMaxCostLine) { $bpMaxMsg += "`n$bpMaxCostLine" }
+    Send-GsdNotification -Title "Blueprint Max Iterations" -Message $bpMaxMsg -Tags "warning" -Priority "high"
 }
 
 if (Test-Path $HealthLog) {

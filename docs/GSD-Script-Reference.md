@@ -242,7 +242,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 16 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 22 scripts total (1 master installer + 1 pre-flight + 16 run by installer + 4 standalone utilities).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 18 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 24 scripts total (1 master installer + 1 pre-flight + 18 run by installer + 4 standalone utilities).
 
 Usage:
 
@@ -286,7 +286,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
-The master installer (`install-gsd-all.ps1`) runs these 17 scripts in order. Each is idempotent and safe to re-run.
+The master installer (`install-gsd-all.ps1`) runs these 18 scripts in order. Each is idempotent and safe to re-run.
 
 ### install-gsd-global.ps1 (Script 1)
 
@@ -314,47 +314,62 @@ Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailabilit
 
 Adds final validation gate and developer handoff report to resilience.ps1. Installs `Invoke-FinalValidation` (7-check quality gate at 100% health) and `New-DeveloperHandoff` (10-section developer handoff markdown generator). Hard failures reset health to 99% so the loop auto-fixes; warnings are included in the handoff report. Generates `developer-handoff.md` at pipeline exit with build commands, database setup, requirements status, cost summary, and known issues.
 
-### patch-gsd-figma-make.ps1 (Script 7)
+### patch-gsd-council.ps1 (Script 7)
+
+Adds `Invoke-LlmCouncil` to resilience.ps1 and creates 14 council prompt templates (6 types x 2 agent templates + synthesis variants). Multi-stage LLM Council system providing cross-validation at 6 points across both pipelines:
+
+| Council Type | Pipeline | Agents | Behavior |
+|-------------|----------|--------|----------|
+| convergence | Both | Claude + Codex + Gemini | Blocking: resets health to 99% if blocked |
+| post-research | Convergence | Claude + Codex | Non-blocking: injects feedback into plan phase |
+| pre-execute | Convergence | Claude + Gemini | Non-blocking: injects feedback into execute phase |
+| post-blueprint | Blueprint | Claude + Codex + Gemini | Blocking: regenerates manifest if blocked |
+| stall-diagnosis | Both | Claude + Codex + Gemini | Diagnostic: replaces single-agent stall analysis |
+| post-spec-fix | Both | Claude + Codex | Blocking: retries spec resolution if blocked |
+
+Max 2 convergence council attempts per run. Outputs: `.gsd/health/council-review.json`, `.gsd/code-review/council-findings.md`. Council findings are included in the developer handoff report.
+
+### patch-gsd-figma-make.ps1 (Script 8)
 
 Installs interfaces.ps1 module: Find-ProjectInterfaces, Initialize-ProjectInterfaces, Show-InterfaceSummary, Get-InterfaceContext. Recursive design folder discovery, _analysis/_stubs auto-discovery, folder inventory.
 
-### final-patch-1-spec-check.ps1 (Script 8)
+### final-patch-1-spec-check.ps1 (Script 9)
 
 Adds Invoke-SpecConsistencyCheck to resilience.ps1. Pre-checks specs for conflicts before pipeline runs. Detects: data_type, api_contract, navigation, business_rule, design_system, database, missing_ref conflicts.
 
-### final-patch-2-sql-cli.ps1 (Script 9)
+### final-patch-2-sql-cli.ps1 (Script 10)
 
 Adds Test-SqlSyntaxWithSqlcmd, Test-SqlFiles, and Test-CliVersions to resilience.ps1. SQL pattern validation and CLI version compatibility checks.
 
-### final-patch-3-storyboard-verify.ps1 (Script 10)
+### final-patch-3-storyboard-verify.ps1 (Script 11)
 
 Installs storyboard-aware verification prompt for Claude. Traces data paths end-to-end through all layers.
 
-### final-patch-4-blueprint-pipeline.ps1 (Script 11)
+### final-patch-4-blueprint-pipeline.ps1 (Script 12)
 
 Final blueprint pipeline with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, final validation gate, developer handoff generation, and git commit traceability (review text in commit messages with auto-push).
 
-### final-patch-5-convergence-pipeline.ps1 (Script 12)
+### final-patch-5-convergence-pipeline.ps1 (Script 13)
 
 Final convergence loop with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, parallel sub-task execution (when enabled), final validation gate, developer handoff generation, and git commit traceability (code review text in commit messages with auto-push).
 
-### final-patch-6-assess-limitations.ps1 (Script 13)
+### final-patch-6-assess-limitations.ps1 (Script 14)
 
 Installs final assess.ps1 with Show-InterfaceSummary, Update-FileMap, -MapOnly, known limitations documentation.
 
-### final-patch-7-spec-resolve.ps1 (Script 14)
+### final-patch-7-spec-resolve.ps1 (Script 15)
 
 Adds spec conflict auto-resolution via Gemini agent (`--yolo`). Installs Invoke-SpecConflictResolution function and wires -AutoResolve flag into both pipelines. Falls back to Codex if Gemini CLI is not available.
 
-### patch-gsd-supervisor.ps1 (Script 15)
+### patch-gsd-supervisor.ps1 (Script 16)
 
 Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-converge.ps1 and supervisor-blueprint.ps1 wrappers, profile function updates (adds -SupervisorAttempts and -NoSupervisor params to gsd-converge and gsd-blueprint). Creates `~/.gsd-global/supervisor/` for cross-project pattern memory.
 
-### patch-false-converge-fix.ps1 (Script 16)
+### patch-false-converge-fix.ps1 (Script 17)
 
 One-time bug fix: fixes false "converged" exit when StallCount/TargetHealth/Iteration variables are null in the finally block (moves initialization before try block), and removes orphaned profile code statements outside function bodies. Idempotent.
 
-### patch-gsd-parallel-execute.ps1 (Script 17)
+### patch-gsd-parallel-execute.ps1 (Script 18)
 
 Installs parallel sub-task execution for the execute phase. Adds `execute_parallel` config to agent-map.json, creates `execute-subtask.md` prompt template, adds `Invoke-ParallelExecute` function to resilience.ps1, and updates convergence-loop.ps1 with parallel-aware dispatch. Splits the batch into independent sub-tasks dispatched round-robin across codex/claude/gemini in concurrent waves. Partial success commits completed work; total failure falls back to monolithic single-agent call. Disable by setting `execute_parallel.enabled` to `false` in agent-map.json.
 
@@ -774,7 +789,7 @@ Attempts to run the same prompt with an alternative agent when the primary agent
 
 ### Local-ResolvePrompt
 
-Pipeline-internal function that resolves prompt templates before sending to agents. Replaces template variables ({{ITERATION}}, {{HEALTH}}, {{GSD_DIR}}, {{REPO_ROOT}}, {{BATCH_SIZE}}, {{INTERFACE_CONTEXT}}) and appends supervisor error context and prompt hints when present.
+Pipeline-internal function that resolves prompt templates before sending to agents. Replaces template variables ({{ITERATION}}, {{HEALTH}}, {{GSD_DIR}}, {{REPO_ROOT}}, {{BATCH_SIZE}}, {{INTERFACE_CONTEXT}}) and appends supervisor error context, prompt hints, and council feedback when present.
 
 ### Invoke-FinalValidation
 
@@ -822,6 +837,28 @@ Parameters:
 Returns: path to the generated `developer-handoff.md` file.
 
 Report sections: Header, Quick Start (auto-detected build commands), Database Setup (SQL files + connection strings), Environment Configuration (appsettings + .env files), Project Structure (file tree), Requirements Status (grouped table), Validation Results, Known Issues (drift report + recent errors), Health Progression (ASCII bar chart), Cost Summary (by agent and phase).
+
+### Invoke-LlmCouncil
+
+Multi-agent council review with 6 council types. Runs 2-3 agents in parallel for independent reviews, then Claude synthesizes a consensus verdict.
+
+Parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| -RepoRoot | string | (required) | Repository root path |
+| -GsdDir | string | (required) | Path to .gsd directory |
+| -Iteration | int | 0 | Current iteration number |
+| -Health | double | 0 | Current health score |
+| -Pipeline | string | "converge" | Pipeline type: "converge" or "blueprint" |
+| -CouncilType | string | "convergence" | Council type: "convergence", "post-research", "pre-execute", "post-blueprint", "stall-diagnosis", "post-spec-fix" |
+
+Returns: `@{ Approved=$bool; Findings=@{approved, confidence, votes, concerns, strengths}; Report=string }`
+
+Output files:
+- `.gsd/health/council-review.json` -- structured verdict with per-agent votes
+- `.gsd/code-review/council-findings.md` -- human-readable council report
+- `.gsd/supervisor/council-feedback.md` -- injected into next iteration prompts (if blocked)
 
 ### Invoke-SpecConsistencyCheck
 

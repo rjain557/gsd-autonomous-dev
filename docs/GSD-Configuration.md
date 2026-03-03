@@ -19,7 +19,12 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
     "api": "Contract-first, API-first",
     "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"]
   },
-  "phase_order": ["code-review", "create-phases", "research", "plan", "execute"]
+  "phase_order": ["code-review", "create-phases", "research", "plan", "execute"],
+  "council": {
+    "enabled": true,
+    "max_attempts": 2,
+    "consensus_threshold": 0.66
+  }
 }
 ```
 
@@ -47,6 +52,27 @@ Project technology patterns enforced by all pipelines. These are injected into a
 #### phase_order
 
 Defines the convergence loop phase sequence. Each phase maps to a specific agent and prompt template.
+
+#### council
+
+LLM Council configuration. The council provides multi-agent cross-validation at 6 stages across both pipelines: convergence (100% health gate), post-research, pre-execute, post-blueprint, stall-diagnosis, and post-spec-fix.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | bool | true | Enable/disable all council reviews |
+| max_attempts | int | 2 | Max convergence council runs per pipeline (prevents infinite looping) |
+| consensus_threshold | float | 0.66 | Fraction of agents that must agree to approve (2/3) |
+
+Council types and their behavior:
+
+| Type | Pipeline | Blocking | Agents |
+|------|----------|----------|--------|
+| convergence | Both | Yes (resets health to 99%) | Claude + Codex + Gemini |
+| post-research | Convergence | No (feedback only) | Claude + Codex |
+| pre-execute | Convergence | No (feedback only) | Claude + Gemini |
+| post-blueprint | Blueprint | Yes (regenerates manifest) | Claude + Codex + Gemini |
+| stall-diagnosis | Both | N/A (diagnostic) | Claude + Codex + Gemini |
+| post-spec-fix | Both | Yes (retries resolution) | Claude + Codex |
 
 ## Pricing Cache
 

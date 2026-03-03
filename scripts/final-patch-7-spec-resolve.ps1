@@ -194,6 +194,27 @@ function Invoke-SpecConflictResolution {
 
         if ($recheck.Passed) {
             Write-Host "    [OK] All conflicts resolved after $attempt attempt(s)!" -ForegroundColor Green
+
+            # ── POST-SPEC-FIX COUNCIL ──
+            # Validate Gemini's spec resolution via multi-agent review before declaring success
+            if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
+                Write-Host "    [SCALES] Post-spec-fix council review..." -ForegroundColor DarkCyan
+                $councilResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir `
+                    -Iteration $attempt -Health 0 -Pipeline "spec-fix" -CouncilType "post-spec-fix"
+                if (-not $councilResult.Approved) {
+                    $concernCount = if ($councilResult.Findings.concerns) { $councilResult.Findings.concerns.Count } else { 0 }
+                    Write-Host "    [SCALES] Council found $concernCount concern(s) in spec resolution" -ForegroundColor Yellow
+                    # If council blocks, treat as unresolved so next attempt picks up feedback
+                    if ($attempt -lt $MaxResolveAttempts) {
+                        Write-Host "    Retrying with council feedback..." -ForegroundColor DarkYellow
+                        $Conflicts = @()  # Re-check will find any remaining issues
+                        continue
+                    }
+                } else {
+                    Write-Host "    [SCALES] Council approved spec resolution" -ForegroundColor Green
+                }
+            }
+
             return @{ Resolved = $true; Attempts = $attempt }
         }
 

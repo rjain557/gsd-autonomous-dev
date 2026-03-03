@@ -1235,6 +1235,46 @@ function Send-GsdNotification {
     }
 }
 
+function Get-CostNotificationText {
+    <#
+    .SYNOPSIS
+        Reads cost-summary.json and returns a compact one-line cost string for ntfy notifications.
+        Returns empty string if cost tracking is not available.
+    #>
+    param(
+        [string]$GsdDir,
+        [switch]$Detailed   # Include per-agent breakdown
+    )
+    try {
+        $summaryPath = Join-Path $GsdDir "costs\cost-summary.json"
+        if (-not (Test-Path $summaryPath)) { return "" }
+        $s = Get-Content $summaryPath -Raw | ConvertFrom-Json
+        $totalCost = [math]::Round([double]$s.total_cost_usd, 2)
+        if ($totalCost -le 0) { return "" }
+
+        $totalTokensK = [math]::Round(([long]$s.total_tokens.input + [long]$s.total_tokens.output) / 1000, 0)
+        $runCost = 0
+        $runs = @($s.runs)
+        if ($runs.Count -gt 0) {
+            $runCost = [math]::Round([double]$runs[$runs.Count - 1].cost_usd, 2)
+        }
+
+        $line = "Cost: `$$runCost run / `$$totalCost total | ${totalTokensK}K tok"
+
+        if ($Detailed -and $s.by_agent) {
+            $parts = @()
+            foreach ($agent in @("claude","codex","gemini")) {
+                if ($s.by_agent.$agent) {
+                    $ac = [math]::Round([double]$s.by_agent.$agent.cost_usd, 2)
+                    if ($ac -gt 0) { $parts += "$agent `$$ac" }
+                }
+            }
+            if ($parts.Count -gt 0) { $line += " (" + ($parts -join ", ") + ")" }
+        }
+        return $line
+    } catch { return "" }
+}
+
 function Send-HeartbeatIfDue {
     <#
     .SYNOPSIS
@@ -1246,15 +1286,20 @@ function Send-HeartbeatIfDue {
         [int]$Iteration,
         [double]$Health,
         [string]$RepoName,
+        [string]$GsdDir,
         [int]$HeartbeatMinutes = 10
     )
     if (-not $script:LAST_NOTIFY_TIME) { $script:LAST_NOTIFY_TIME = Get-Date }
     $elapsed = (Get-Date) - $script:LAST_NOTIFY_TIME
     if ($elapsed.TotalMinutes -ge $HeartbeatMinutes) {
         $mins = [math]::Floor($elapsed.TotalMinutes)
+        $msg = "$RepoName | Iter $Iteration | Health: ${Health}% | ${mins}m elapsed"
+        if ($GsdDir) {
+            $costLine = Get-CostNotificationText -GsdDir $GsdDir
+            if ($costLine) { $msg += "`n$costLine" }
+        }
         Send-GsdNotification -Title "Working: $Phase" `
-            -Message "$RepoName | Iter $Iteration | Health: ${Health}% | ${mins}m elapsed" `
-            -Tags "hourglass_flowing_sand" -Priority "low"
+            -Message $msg -Tags "hourglass_flowing_sand" -Priority "low"
         $script:LAST_NOTIFY_TIME = Get-Date
     }
 }
@@ -1318,8 +1363,10 @@ function Start-BackgroundHeartbeat {
     $checkpointPath = Join-Path $GsdDir ".gsd-checkpoint.json"
     $startTime = Get-Date -Format "o"
 
+    $costSummaryPath = Join-Path $GsdDir "costs\cost-summary.json"
+
     $script:HEARTBEAT_JOB = Start-Job -ScriptBlock {
-        param($CheckpointPath, $Topic, $Pipeline, $RepoName, $Interval, $StartTime)
+        param($CheckpointPath, $Topic, $Pipeline, $RepoName, $Interval, $StartTime, $CostPath)
         $pipelineStart = [datetime]::Parse($StartTime)
         while ($true) {
             Start-Sleep -Seconds ($Interval * 60)
@@ -1339,6 +1386,19 @@ function Start-BackgroundHeartbeat {
                 $title = "Working: $phase"
                 $body = "$RepoName | Iter $iter | Health: $health | ${totalElapsed}m total"
 
+                # Append cost info from cost-summary.json
+                if ($CostPath -and (Test-Path $CostPath)) {
+                    try {
+                        $cs = Get-Content $CostPath -Raw | ConvertFrom-Json
+                        $tc = [math]::Round([double]$cs.total_cost_usd, 2)
+                        if ($tc -gt 0) {
+                            $tokK = [math]::Round(([long]$cs.total_tokens.input + [long]$cs.total_tokens.output) / 1000, 0)
+                            $rc = 0; $runs = @($cs.runs); if ($runs.Count -gt 0) { $rc = [math]::Round([double]$runs[$runs.Count - 1].cost_usd, 2) }
+                            $body += "`nCost: `$$rc run / `$$tc total | ${tokK}K tok"
+                        }
+                    } catch {}
+                }
+
                 $headers = @{
                     "Title"    = $title
                     "Priority" = "low"
@@ -1350,7 +1410,7 @@ function Start-BackgroundHeartbeat {
                 # Never let notification failure kill the heartbeat loop
             }
         }
-    } -ArgumentList $checkpointPath, $NtfyTopic, $Pipeline, $RepoName, $IntervalMinutes, $startTime
+    } -ArgumentList $checkpointPath, $NtfyTopic, $Pipeline, $RepoName, $IntervalMinutes, $startTime, $costSummaryPath
 
     Write-Host "  Heartbeat: every ${IntervalMinutes}m (background)" -ForegroundColor DarkGray
 }
@@ -1440,6 +1500,29 @@ function Start-CommandListener {
 
                         $totalElapsed = [math]::Floor(((Get-Date) - $pipelineStart).TotalMinutes)
                         $body = "[GSD-STATUS] Progress Report`n$RepoName | $Pipeline pipeline`nHealth: $health | Iter: $iter | Phase: $phase`nItems: $items`nBatch: $batch | Elapsed: ${totalElapsed}m"
+
+                        # Append cost breakdown
+                        $costPath = Join-Path $GsdDir "costs\cost-summary.json"
+                        if (Test-Path $costPath) {
+                            try {
+                                $cs = Get-Content $costPath -Raw | ConvertFrom-Json
+                                $tc = [math]::Round([double]$cs.total_cost_usd, 2)
+                                if ($tc -gt 0) {
+                                    $tokK = [math]::Round(([long]$cs.total_tokens.input + [long]$cs.total_tokens.output) / 1000, 0)
+                                    $rc = 0; $runs = @($cs.runs); if ($runs.Count -gt 0) { $rc = [math]::Round([double]$runs[$runs.Count - 1].cost_usd, 2) }
+                                    $body += "`nCost: `$$rc run / `$$tc total | ${tokK}K tok"
+                                    # Per-agent breakdown
+                                    $agentParts = @()
+                                    foreach ($ag in @("claude","codex","gemini")) {
+                                        if ($cs.by_agent.$ag) {
+                                            $ac = [math]::Round([double]$cs.by_agent.$ag.cost_usd, 2)
+                                            if ($ac -gt 0) { $agentParts += "$ag `$$ac" }
+                                        }
+                                    }
+                                    if ($agentParts.Count -gt 0) { $body += " (" + ($agentParts -join ", ") + ")" }
+                                }
+                            } catch {}
+                        }
 
                         $headers = @{
                             "Title"    = "[GSD-STATUS] $RepoName"

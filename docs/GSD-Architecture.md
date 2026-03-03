@@ -28,6 +28,7 @@ After running install-gsd-all.ps1, the engine creates:
     claude\                     # Claude Code prompt templates (review, plan, verify)
     codex\                      # Codex prompt templates (execute, research fallback)
     gemini\                     # Gemini prompt templates (research, spec-fix)
+    council\                    # Council prompt templates (14 templates: 6 types x 2 + synthesis variants)
   blueprint\
     scripts\
       blueprint-pipeline.ps1    # Blueprint generation + build loop
@@ -112,18 +113,25 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 1. PRE-FLIGHT: CLI version check, network test, disk space, spec consistency
 2. REVIEW: Claude reviews code, identifies issues, scores health
 3. RESEARCH: Gemini (plan mode, read-only) researches patterns; falls back to Codex if unavailable
-4. PLAN: Claude creates fix plan with prioritized batch
-5. EXECUTE: Codex makes code changes (parallel sub-tasks when enabled)
-6. VERIFY: Claude re-scores health, commits if improved
-7. POST-ITERATION: File map update, checkpoint save, notification
+4. POST-RESEARCH COUNCIL: 2-agent review of research findings (Claude + Codex)
+5. PLAN: Claude creates fix plan with prioritized batch
+6. PRE-EXECUTE COUNCIL: 2-agent review of execution plan (Claude + Gemini)
+7. EXECUTE: Codex makes code changes (parallel sub-tasks when enabled)
+8. VERIFY: Claude re-scores health, commits if improved
+9. POST-ITERATION: File map update, checkpoint save, notification
+10. STALL DIAGNOSIS COUNCIL: 3-agent collaborative diagnosis if health stalls
+11. CONVERGENCE COUNCIL (at 100% health): 3 agents independently review, Claude synthesizes verdict
+12. FINAL VALIDATION: Build, test, SQL, audit checks (hard failures reset to 99%)
 
 ### gsd-blueprint
 
 1. PRE-FLIGHT: CLI version check, network test, disk space, spec consistency
 2. GENERATE: Claude creates blueprint manifest from _analysis/ specs
-3. BUILD: Codex generates code for each blueprint item (adaptive batch)
-4. VERIFY: Claude verifies against specs with storyboard tracing, scores health
-5. Repeat until 100% or stalled
+3. POST-BLUEPRINT COUNCIL: 3-agent review of manifest completeness and feasibility
+4. BUILD: Codex generates code for each blueprint item (adaptive batch)
+5. VERIFY: Claude verifies against specs with storyboard tracing, scores health
+6. STALL DIAGNOSIS COUNCIL: 3-agent collaborative diagnosis if health stalls
+7. Repeat until 100% or stalled
 
 ## Agent Assignment (Three-Model Strategy)
 
@@ -134,6 +142,8 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 | Plan | Claude | `--allowedTools Read,Write,Bash` | Better at strategic planning |
 | Execute | Codex (or parallel pool) | `--full-auto` | Faster at bulk code generation; parallel mode round-robins across agents |
 | Verify | Claude | `--allowedTools Read,Write,Bash` | Better at spec compliance checking |
+| Council Review | Claude + Codex + **Gemini** | Independent parallel reviews | 3-agent cross-validation at 100% health |
+| Council Synthesize | Claude | Reads all 3 reviews | Produces consensus verdict (approve/block) |
 | Spec-Fix | **Gemini** | `--yolo` (write) | Saves Claude/Codex quota for code gen |
 | Blueprint | Claude | `--allowedTools Read,Write,Bash` | Better at spec-to-manifest generation |
 | Build | Codex | `--full-auto` | Faster at code generation from specs |
@@ -854,11 +864,54 @@ Stored at %USERPROFILE%\.gsd-global\config\global-config.json:
     "api": "Contract-first, API-first",
     "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"]
   },
-  "phase_order": ["code-review", "create-phases", "research", "plan", "execute"]
+  "phase_order": ["code-review", "create-phases", "research", "plan", "execute"],
+  "council": {
+    "enabled": true,
+    "max_attempts": 2,
+    "consensus_threshold": 0.66
+  }
 }
 ```
 
 Set ntfy_topic to "auto" for per-project auto-detection, or a specific string to use one topic for all projects.
+
+### LLM Council (Multi-Stage)
+
+The LLM Council provides multi-agent cross-validation at 6 stages across both pipelines. Each council type uses 2-3 agents reviewing independently, then Claude synthesizes a consensus verdict.
+
+#### Council Types
+
+| Type | Trigger | Agents | Action on Block |
+|------|---------|--------|-----------------|
+| **convergence** | Health reaches 100% | Claude + Codex + Gemini | Health reset to 99%, feedback injected |
+| **post-research** | After Gemini research phase | Claude + Codex | Feedback injected into plan phase prompts |
+| **pre-execute** | Before Codex execute phase | Claude + Gemini | Feedback injected into execute prompts |
+| **post-blueprint** | After blueprint manifest generated | Claude + Codex + Gemini | Blueprint regenerated with feedback |
+| **stall-diagnosis** | Health stalls (no progress) | Claude + Codex + Gemini | Root cause analysis replaces single-agent diagnosis |
+| **post-spec-fix** | After Gemini resolves spec conflicts | Claude + Codex | Retry spec resolution with feedback |
+
+#### Agent Review Focus Areas
+
+| Agent | Focus Area |
+|-------|-----------|
+| Claude | Architecture, security/compliance (HIPAA, SOC2, PCI, GDPR), maintainability |
+| Codex | Implementation completeness, error handling, stored procedure patterns, edge cases |
+| Gemini | Requirements coverage, spec alignment, UI/UX flows, integration gaps |
+
+Claude synthesizes all reviews into a consensus verdict (approve/block). Non-blocking councils (post-research, pre-execute) inject feedback without stopping the pipeline. Blocking councils (convergence, post-blueprint) can force a retry.
+
+#### Council Cost per Run
+
+| Council Type | Agents | Est. Output Tokens | Est. Cost |
+|-------------|--------|-------------------|-----------|
+| convergence (3+synthesis) | 3 | ~9,000 | ~$0.43 |
+| post-research (2+synthesis) | 2 | ~6,000 | ~$0.25 |
+| pre-execute (2+synthesis) | 2 | ~6,000 | ~$0.25 |
+| post-blueprint (3+synthesis) | 3 | ~9,000 | ~$0.43 |
+| stall-diagnosis (3+synthesis) | 3 | ~9,000 | ~$0.43 |
+| post-spec-fix (2+synthesis) | 2 | ~6,000 | ~$0.25 |
+
+Max 2 convergence council attempts per pipeline run. Findings are included in the developer handoff report.
 
 ## Token Cost Calculator
 

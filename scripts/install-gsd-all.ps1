@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 17 scripts in correct order.
+    GSD Master Installer - Runs ALL 18 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -16,7 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GSD_VERSION = "1.3.0"
+$GSD_VERSION = "1.4.0"
 $GSD_DATE = "2026-03-03"
 
 # Run prerequisites check first if the script exists
@@ -73,6 +73,7 @@ $scripts = @(
     @{ File="patch-gsd-resilience.ps1";              Desc="Self-Healing (retry, checkpoint, lock, rollback)" }
     @{ File="patch-gsd-hardening.ps1";               Desc="Full Autonomous (quota sleep, network poll, JSON backup)" }
     @{ File="patch-gsd-final-validation.ps1";        Desc="Final Validation Gate + Developer Handoff Report" }
+    @{ File="patch-gsd-council.ps1";                 Desc="LLM Council (multi-agent review gate at 100% health)" }
     @{ File="patch-gsd-figma-make.ps1";              Desc="Figma Make Integration (multi-interface, _analysis/)" }
     @{ File="final-patch-1-spec-check.ps1";          Desc="Spec Consistency Pre-Check" }
     @{ File="final-patch-2-sql-cli.ps1";             Desc="SQL + CLI Enhancements" }
@@ -89,7 +90,7 @@ $scripts = @(
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 17 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 18 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 
