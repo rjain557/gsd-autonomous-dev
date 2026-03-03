@@ -37,6 +37,8 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 
 Notification events: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `progress_response`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`, `validation_failed`, `validation_passed`
 
+All notification types that include status information (heartbeat, iteration_complete, converged, stalled, max_iterations, progress_response) also include running token cost data read from `.gsd/costs/cost-summary.json`. Terminal notifications (converged, stalled, max_iterations) and progress responses include a per-agent cost breakdown.
+
 #### patterns
 
 Project technology patterns enforced by all pipelines. These are injected into agent prompts to ensure consistent technology choices.

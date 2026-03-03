@@ -413,15 +413,15 @@ The topic is resolved in this order:
 | Event | Title | Priority | Tags |
 |-------|-------|----------|------|
 | Pipeline start | "GSD Converge Started" / "GSD Blueprint Started" | default | rocket |
-| Heartbeat | "Working: {phase}" | low | hourglass_flowing_sand |
+| Heartbeat | "Working: {phase}" (+ cost) | low | hourglass_flowing_sand |
 | Agent timeout | "Agent Timeout: {agent}" | high | skull |
-| Iteration complete | "Iter N Complete" / "Blueprint Iter N" | default | chart_with_upwards_trend |
+| Iteration complete | "Iter N Complete" / "Blueprint Iter N" (+ cost) | default | chart_with_upwards_trend |
 | No progress (stall) | "Iter N: No Progress" | default | hourglass |
 | Execute/build failed | "Iter N: Execute Failed" / "Iter N: Build Failed" | default | warning |
 | Regression reverted | "Iter N: Regression Reverted" | high | warning |
-| Converged / Complete | "CONVERGED!" / "BLUEPRINT COMPLETE!" | high | tada, white_check_mark |
-| Stalled (threshold) | "STALLED" / "BLUEPRINT STALLED" | high | warning |
-| Max iterations | "MAX ITERATIONS" / "Blueprint Max Iterations" | high | warning |
+| Converged / Complete | "CONVERGED!" / "BLUEPRINT COMPLETE!" (+ detailed cost) | high | tada, white_check_mark |
+| Stalled (threshold) | "STALLED" / "BLUEPRINT STALLED" (+ detailed cost) | high | warning |
+| Max iterations | "MAX ITERATIONS" / "Blueprint Max Iterations" (+ detailed cost) | high | warning |
 | Supervisor active | "Supervisor Active" | low | robot_face |
 | Supervisor diagnosis | "Supervisor: {root_cause}" | default | mag |
 | Supervisor fix applied | "Supervisor: Fixed - {description}" | default | wrench |
@@ -430,7 +430,7 @@ The topic is resolved in this order:
 | Supervisor escalation | "Supervisor: NEEDS HUMAN - see escalation-report.md" | urgent | sos |
 | Validation failed | "Validation Failed (N/3)" | high | warning |
 | Validation passed | "Validation Passed" | default | white_check_mark |
-| Progress response | "[GSD-STATUS] Progress Report" | default | bar_chart |
+| Progress response | "[GSD-STATUS] Progress Report" (+ detailed cost) | default | bar_chart |
 
 #### Background Heartbeat
 
@@ -446,6 +446,7 @@ Example notification during a long code-review call:
 ```
 Title: Working: code-review
 Body:  patient-portal | Iter 1 | Health: 45% | 20m total
+       Cost: $1.24 run / $3.18 total | 412K tok
 ```
 
 Agent timeout notifications fire when the watchdog kills a hung agent process (default: 30 minutes). These are high-priority alerts that indicate a retry is in progress.
@@ -463,6 +464,7 @@ patient-portal | converge pipeline
 Health: 72% | Iter: 5 | Phase: execute
 Items: 25 done / 8 partial / 7 todo (of 40)
 Batch: 8 | Elapsed: 45m
+Cost: $2.87 run / $4.52 total | 623K tok (claude $2.91, codex $0.84, gemini $0.77)
 ```
 
 The command listener:

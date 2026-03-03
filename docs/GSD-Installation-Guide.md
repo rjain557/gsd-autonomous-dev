@@ -76,7 +76,7 @@ cd gsd-autonomous-dev
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-This runs all 16 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
+This runs all 19 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
 
 | Order | Script | What It Installs |
 |-------|--------|-----------------|
@@ -96,6 +96,9 @@ This runs all 16 install/patch scripts in dependency order. The installer also r
 | 14 | final-patch-7-spec-resolve.ps1 | Spec conflict auto-resolution via Gemini |
 | 15 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
 | 16 | patch-false-converge-fix.ps1 | Fix false convergence exit + orphaned profile code |
+| 17 | patch-gsd-council.ps1 | LLM Council (multi-agent review gate at 100% health) |
+| 18 | patch-gsd-parallel-execute.ps1 | Parallel sub-task execution (split batch, round-robin agents) |
+| 19 | patch-gsd-resilience-hardening.ps1 | Resilience hardening (token tracking, auth fix, quota cap, agent rotation) |
 
 Optional standalone scripts (not run by installer):
 - **setup-gsd-api-keys.ps1** -- manage API key environment variables (set, show, clear)
@@ -103,7 +106,7 @@ Optional standalone scripts (not run by installer):
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
 - **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
 
-The repository contains 24 scripts total: 1 master installer, 1 pre-flight check, 18 scripts run by installer (17 core patches + 1 bug fix), and 4 standalone utilities.
+The repository contains 25 scripts total: 1 master installer, 1 pre-flight check, 19 scripts run by installer (17 core patches + 1 bug fix + 1 resilience hardening), and 4 standalone utilities.
 
 ### Step 3: Restart Terminal
 

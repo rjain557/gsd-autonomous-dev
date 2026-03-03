@@ -215,11 +215,11 @@ If you're not seeing heartbeats:
 2. **Verify installation**: Re-run `install-gsd-all.ps1` to ensure `Start-BackgroundHeartbeat` is deployed.
 3. **Check subscription**: Heartbeats use the same ntfy topic as other notifications -- verify you're subscribed.
 
-The background heartbeat reads current state from `.gsd/.gsd-checkpoint.json` and reports total elapsed time. To adjust the interval, modify the `-IntervalMinutes` parameter in the `Start-BackgroundHeartbeat` call within the pipeline scripts.
+The background heartbeat reads current state from `.gsd/.gsd-checkpoint.json` and reports total elapsed time, plus running cost data from `.gsd/costs/cost-summary.json` (current run cost, total cost, total tokens). To adjust the interval, modify the `-IntervalMinutes` parameter in the `Start-BackgroundHeartbeat` call within the pipeline scripts.
 
 ### Too many heartbeat notifications
 
-Heartbeats are low-priority with hourglass emoji, distinct from iteration-complete (default priority, chart emoji). In the ntfy app, you can:
+Heartbeats are low-priority with hourglass emoji and include running cost data. Iteration-complete notifications use default priority with chart emoji and also include cost data. Terminal notifications (converged/stalled/max) include a detailed per-agent cost breakdown. In the ntfy app, you can:
 - Filter by priority to hide low-priority heartbeats
 - Mute heartbeats while keeping high-priority alerts (converged, stalled, timeout)
 

@@ -242,7 +242,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 18 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 24 scripts total (1 master installer + 1 pre-flight + 18 run by installer + 4 standalone utilities).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 19 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 25 scripts total (1 master installer + 1 pre-flight + 19 run by installer + 4 standalone utilities).
 
 Usage:
 
@@ -372,6 +372,10 @@ One-time bug fix: fixes false "converged" exit when StallCount/TargetHealth/Iter
 ### patch-gsd-parallel-execute.ps1 (Script 18)
 
 Installs parallel sub-task execution for the execute phase. Adds `execute_parallel` config to agent-map.json, creates `execute-subtask.md` prompt template, adds `Invoke-ParallelExecute` function to resilience.ps1, and updates convergence-loop.ps1 with parallel-aware dispatch. Splits the batch into independent sub-tasks dispatched round-robin across codex/claude/gemini in concurrent waves. Partial success commits completed work; total failure falls back to monolithic single-agent call. Disable by setting `execute_parallel.enabled` to `false` in agent-map.json.
+
+### patch-gsd-resilience-hardening.ps1 (Script 19)
+
+Resilience hardening patch fixing four gaps: (P1) tracks token costs on ALL attempts (success, failure, quota probes) with cost estimation when agents return error text instead of JSON; (P2) fixes auth regex that misclassified Gemini 403 rate limits as auth failures, routing them to proper quota backoff; (P3) adds 2-hour cumulative quota wait cap to prevent 14+ hour sleep loops; (P4) adds automatic agent rotation after 3 consecutive quota failures on the same agent (e.g., codex exhausted -> switch to claude). New functions: `New-EstimatedTokenData`, `Get-NextAvailableAgent`, `Set-AgentCooldown`. New constants: `QUOTA_CUMULATIVE_MAX_MINUTES` (120), `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` (3). Creates `.gsd/supervisor/agent-cooldowns.json` at runtime.
 
 ### Optional standalone scripts
 
@@ -533,7 +537,7 @@ Returns: path to file-map.json
 
 ### Start-BackgroundHeartbeat / Stop-BackgroundHeartbeat
 
-Manages a background PowerShell job that sends ntfy progress notifications every 10 minutes, independent of the main pipeline execution. This ensures heartbeat notifications are sent even during long-running agent calls (which block the main thread for 15-30+ minutes).
+Manages a background PowerShell job that sends ntfy progress notifications every 10 minutes, independent of the main pipeline execution. This ensures heartbeat notifications are sent even during long-running agent calls (which block the main thread for 15-30+ minutes). Each heartbeat includes running cost data (current run cost, total cost, total tokens) read from `.gsd/costs/cost-summary.json`.
 
 Parameters (Start):
 
@@ -603,6 +607,7 @@ Response format posted back to the ntfy topic:
 Health: {health}% | Iter: {iteration} | Phase: {phase}
 Items: {satisfied} done / {partial} partial / {not_started} todo (of {total})
 Batch: {batch_size} | Elapsed: {elapsed}m
+Cost: ${run_cost} run / ${total_cost} total | {tokens}K tok ({agent} ${cost}, ...)
 ```
 
 The job is started alongside `Start-BackgroundHeartbeat` after the "Pipeline Started" notification and stopped in the `finally` block, ensuring cleanup even on crashes.
@@ -773,9 +778,24 @@ Parameters:
 | -Iteration | (required) | Current iteration number |
 | -Health | (required) | Current health score |
 | -RepoName | (required) | Repository name for notification body |
+| -GsdDir | (optional) | Path to .gsd directory (enables cost data in notification) |
 | -HeartbeatMinutes | 10 | Minimum minutes between heartbeat notifications |
 
-Notification format: Title "Working: {phase}", body "{repo} | Iter {n} | Health: {x}% | {m}m elapsed". Uses hourglass_flowing_sand emoji tag.
+Notification format: Title "Working: {phase}", body "{repo} | Iter {n} | Health: {x}% | {m}m elapsed\nCost: ${run} run / ${total} total | {n}K tok". Uses hourglass_flowing_sand emoji tag.
+
+### Get-CostNotificationText
+
+Reads `.gsd/costs/cost-summary.json` and returns a compact one-line cost string for inclusion in ntfy notifications. Returns empty string if cost tracking is not initialized or total cost is $0.
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -GsdDir | (required) | Path to .gsd directory |
+| -Detailed | (switch) | Include per-agent cost breakdown (claude, codex, gemini) |
+
+Summary format: `Cost: $1.24 run / $3.18 total | 412K tok`
+Detailed format: `Cost: $1.24 run / $3.18 total | 412K tok (claude $1.91, codex $0.64, gemini $0.63)`
 
 ### Get-FailureDiagnosis
 

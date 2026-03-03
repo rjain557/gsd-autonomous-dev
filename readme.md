@@ -13,7 +13,7 @@ The GSD Engine is a PowerShell-based autonomous development framework that uses 
 ## Quick Start
 
 ```powershell
-# Install (runs 16 scripts in dependency order)
+# Install (runs 19 scripts in dependency order)
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 
 # Restart terminal, then:
@@ -82,4 +82,4 @@ Each agent draws from an independent API quota pool, maximizing throughput. Gemi
 
 ## Scripts
 
-The repository contains 22 scripts: 1 master installer + 1 pre-flight + 16 run by installer (15 core + 1 bug fix) + 4 standalone utilities. Run `install-gsd-all.ps1` to install everything.
+The repository contains 25 scripts: 1 master installer + 1 pre-flight + 19 run by installer (17 core + 1 bug fix + 1 resilience hardening) + 4 standalone utilities. Run `install-gsd-all.ps1` to install everything.

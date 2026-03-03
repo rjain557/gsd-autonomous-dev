@@ -85,12 +85,13 @@ $scripts = @(
     @{ File="patch-gsd-supervisor.ps1";             Desc="Supervisor (self-healing recovery, error context, pattern memory)" }
     @{ File="patch-false-converge-fix.ps1";         Desc="Fix false convergence exit + orphaned profile code" }
     @{ File="patch-gsd-parallel-execute.ps1";     Desc="Parallel Sub-Task Execution (split batch, round-robin agents)" }
+    @{ File="patch-gsd-resilience-hardening.ps1"; Desc="Resilience Hardening (token tracking, auth fix, quota cap, agent rotation)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 18 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 19 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 
