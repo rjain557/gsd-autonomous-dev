@@ -30,7 +30,7 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 | ntfy_topic | string | "auto" | Set to "auto" for per-project auto-detection (gsd-{username}-{reponame}), or a specific string to use one topic for all projects |
 | notify_on | string[] | (all events) | Events that trigger push notifications |
 
-Notification events: `iteration_complete`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`
+Notification events: `iteration_complete`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`
 
 #### patterns
 
@@ -243,6 +243,97 @@ The token cost calculator uses several configurable constants defined in the scr
 | ChatGPT Pro | $200 |
 | Gemini Advanced | $20 |
 | Minimum bundle (Pro tiers) | $60/month |
+
+## Supervisor Configuration
+
+### supervisor-state.json
+
+Location: `.gsd\supervisor\supervisor-state.json`
+
+Tracks supervisor recovery attempts across pipeline restarts. Auto-managed.
+
+```json
+{
+  "pipeline": "converge",
+  "attempt": 2,
+  "max_attempts": 5,
+  "start_time": "2026-03-02T10:00:00Z",
+  "strategies_tried": [
+    {"category": "build_loop", "fix": "Added namespace constraints to prompt hints", "attempt": 1}
+  ],
+  "diagnoses": [
+    {"attempt": 1, "category": "build_loop", "root_cause": "DTO namespace mismatch"}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| pipeline | string | "converge" or "blueprint" |
+| attempt | int | Current attempt number |
+| max_attempts | int | Maximum attempts before escalation |
+| start_time | string | ISO 8601 timestamp of first attempt |
+| strategies_tried | array | List of category + fix combinations already attempted (prevents repeats) |
+| diagnoses | array | Root-cause diagnosis from each attempt |
+
+### last-run-summary.json
+
+Location: `.gsd\supervisor\last-run-summary.json`
+
+Written by the pipeline before exit so the supervisor knows what happened.
+
+```json
+{
+  "pipeline": "converge",
+  "exit_reason": "stalled",
+  "health": 65.0,
+  "iteration": 8,
+  "stall_count": 3,
+  "batch_size": 4,
+  "timestamp": "2026-03-02T12:30:00Z"
+}
+```
+
+### agent-override.json
+
+Location: `.gsd\supervisor\agent-override.json`
+
+Allows the supervisor to reassign phases to different agents.
+
+```json
+{
+  "execute": "claude",
+  "build": "gemini"
+}
+```
+
+Valid agent values: `"claude"`, `"codex"`, `"gemini"`
+
+### pattern-memory.jsonl
+
+Location: `%USERPROFILE%\.gsd-global\supervisor\pattern-memory.jsonl`
+
+Cross-project failure pattern database (append-only JSONL). Each line:
+
+```json
+{"pattern": "build_error_missing_namespace", "category": "build_loop", "fix": "Rewrite prompt-hints to specify exact namespace for DTOs", "success": true, "project": "patient-portal", "timestamp": "2026-03-02T15:00:00Z"}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| pattern | string | Short description of the failure pattern |
+| category | string | Failure category (stuck_requirements, build_loop, etc.) |
+| fix | string | Description of the fix that was applied |
+| success | boolean | Whether the fix resolved the issue |
+| project | string | Project name where this pattern was learned |
+| timestamp | string | ISO 8601 timestamp |
+
+### Supervisor Constants
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| SUPERVISOR_MAX_ATTEMPTS | 5 | Maximum recovery attempts before escalation |
+| SUPERVISOR_TIMEOUT_HOURS | 24 | Wall-clock time limit for supervisor loop |
 
 ## Environment Variables
 

@@ -41,6 +41,9 @@ if (Test-Path "$GlobalDir\lib\modules\interfaces.ps1") {
 if (Test-Path "$GlobalDir\lib\modules\interface-wrapper.ps1") {
     . "$GlobalDir\lib\modules\interface-wrapper.ps1"
 }
+if (Test-Path "$GlobalDir\lib\modules\supervisor.ps1") {
+    . "$GlobalDir\lib\modules\supervisor.ps1"
+}
 
 # Initialize push notifications
 if (Get-Command Initialize-GsdNotifications -ErrorAction SilentlyContinue) {
@@ -49,7 +52,7 @@ if (Get-Command Initialize-GsdNotifications -ErrorAction SilentlyContinue) {
 $repoName = Split-Path $RepoRoot -Leaf
 
 # -- Ensure dirs --
-@($GsdDir, $BpDir, "$GsdDir\logs") | ForEach-Object {
+@($GsdDir, $BpDir, "$GsdDir\logs", "$GsdDir\supervisor") | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 }
 
@@ -149,6 +152,15 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     if (Test-Path $fileTreePath) {
         $resolved += "`n`n## Repository File Map`nA live file map is maintained at:`n- JSON: $fileMapPath`n- Tree: $fileTreePath`nRead the tree file to understand the current repo structure. This map is updated after every iteration.`n"
     }
+    # Supervisor: inject error context and prompt hints from previous iteration
+    $errorCtxPath = Join-Path $GsdDir "supervisor\error-context.md"
+    $hintPath = Join-Path $GsdDir "supervisor\prompt-hints.md"
+    if (Test-Path $errorCtxPath) {
+        $resolved += "`n`n## Previous Iteration Errors`n" + (Get-Content $errorCtxPath -Raw)
+    }
+    if (Test-Path $hintPath) {
+        $resolved += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw)
+    }
     return $resolved
 }
 
@@ -246,13 +258,19 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Start-Sleep -Seconds $ThrottleSeconds
     }
 
-    # BUILD (Figma Make aware)
+    # BUILD (Figma Make aware, or supervisor-overridden agent)
     Send-HeartbeatIfDue -Phase "build" -Iteration $Iteration -Health $Health -RepoName $repoName
-    Write-Host "  [WRENCH] CODEX -> build (batch: $CurrentBatchSize)" -ForegroundColor Magenta
+    $buildAgent = "codex"
+    $overridePath = Join-Path $GsdDir "supervisor\agent-override.json"
+    if (Test-Path $overridePath) {
+        try { $ov = Get-Content $overridePath -Raw | ConvertFrom-Json
+              if ($ov.build) { $buildAgent = $ov.build; Write-Host "  [SUPERVISOR] Agent override: build -> $buildAgent" -ForegroundColor Yellow } } catch {}
+    }
+    Write-Host "  [WRENCH] $($buildAgent.ToUpper()) -> build (batch: $CurrentBatchSize)" -ForegroundColor Magenta
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "blueprint" -Iteration $Iteration -Phase "build" -Health $Health -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt $BuildPromptPath $Iteration $Health
     if (-not $DryRun) {
-        $result = Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "build" `
+        $result = Invoke-WithRetry -Agent $buildAgent -Prompt $prompt -Phase "build" `
             -LogFile "$GsdDir\logs\iter${Iteration}-2-build.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
@@ -319,7 +337,18 @@ if (Test-Path $HealthLog) {
 }
 Write-Host "=========================================================" -ForegroundColor Blue
 
-} finally { Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir }
+} finally {
+    # Supervisor: save terminal summary so supervisor can read exit state
+    $FinalHealth = Get-Health
+    if (Get-Command Save-TerminalSummary -ErrorAction SilentlyContinue) {
+        $exitReason = if ($FinalHealth -ge $TargetHealth) { "converged" }
+                      elseif ($StallCount -ge $StallThreshold) { "stalled" }
+                      else { "max_iterations" }
+        Save-TerminalSummary -GsdDir $GsdDir -Pipeline "blueprint" -ExitReason $exitReason `
+            -Health $FinalHealth -Iteration $Iteration -StallCount $StallCount -BatchSize $CurrentBatchSize
+    }
+    Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
+}
 '@
 
 Set-Content -Path "$BpScriptDir\blueprint-pipeline.ps1" -Value $script -Encoding UTF8

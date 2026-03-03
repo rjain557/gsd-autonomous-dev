@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 13 scripts in correct order.
+    GSD Master Installer - Runs ALL 14 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 #>
@@ -67,12 +67,13 @@ $scripts = @(
     @{ File="final-patch-5-convergence-pipeline.ps1"; Desc="Convergence Pipeline Final (all integrations)" }
     @{ File="final-patch-6-assess-limitations.ps1";  Desc="Multi-Interface Assess + Final Docs" }
     @{ File="final-patch-7-spec-resolve.ps1";       Desc="Spec Conflict Auto-Resolution (Gemini)" }
+    @{ File="patch-gsd-supervisor.ps1";             Desc="Supervisor (self-healing recovery, error context, pattern memory)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 13 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 14 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -96,7 +97,7 @@ if ($missing.Count -gt 0) {
     exit 1
 }
 
-Write-Host "  All 13 scripts found in: $scriptDir" -ForegroundColor Green
+Write-Host "  All $($scripts.Count) scripts found in: $scriptDir" -ForegroundColor Green
 Write-Host ""
 
 # Execute in order

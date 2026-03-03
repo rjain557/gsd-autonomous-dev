@@ -45,6 +45,8 @@ Parameters:
 | -StallThreshold | 3 | Stop after N iterations with no improvement |
 | -ThrottleSeconds | 30 | Delay between agent calls to prevent quota exhaustion |
 | -NtfyTopic | (auto) | Override ntfy.sh notification topic |
+| -SupervisorAttempts | 5 | Max recovery attempts by supervisor before escalation |
+| -NoSupervisor | false | Bypass supervisor wrapper (run pipeline directly) |
 
 ### gsd-blueprint
 
@@ -78,6 +80,8 @@ Parameters:
 | -BatchSize | 15 | Number of blueprint items to build per cycle |
 | -ThrottleSeconds | 30 | Delay between agent calls to prevent quota exhaustion |
 | -NtfyTopic | (auto) | Override ntfy.sh notification topic |
+| -SupervisorAttempts | 5 | Max recovery attempts by supervisor before escalation |
+| -NoSupervisor | false | Bypass supervisor wrapper (run pipeline directly) |
 
 ### gsd-status
 
@@ -234,7 +238,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs all 13 scripts in dependency order. Idempotent (safe to re-run for updates).
+Master installer. Runs all 14 scripts in dependency order. Idempotent (safe to re-run for updates).
 
 Usage:
 
@@ -318,6 +322,57 @@ Installs final assess.ps1 with Show-InterfaceSummary, Update-FileMap, -MapOnly, 
 ### final-patch-7-spec-resolve.ps1 (Script 14)
 
 Adds spec conflict auto-resolution via Gemini agent (`--yolo`). Installs Invoke-SpecConflictResolution function and wires -AutoResolve flag into both pipelines. Falls back to Codex if Gemini CLI is not available.
+
+### patch-gsd-supervisor.ps1 (Script 15)
+
+Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-converge.ps1 and supervisor-blueprint.ps1 wrappers, profile function updates (adds -SupervisorAttempts and -NoSupervisor params to gsd-converge and gsd-blueprint). Creates `~/.gsd-global/supervisor/` for cross-project pattern memory.
+
+## Key Functions (in supervisor.ps1)
+
+### Invoke-SupervisorLoop
+
+Main entry point for the supervisor recovery loop. Wraps a pipeline (converge or blueprint), monitors for failures, and applies fixes up to N attempts.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -Pipeline | "converge" or "blueprint" |
+| -GsdDir | Path to .gsd directory |
+| -MaxAttempts | Maximum recovery attempts (default 5) |
+| -PipelineParams | Hashtable of parameters to pass through to the pipeline |
+
+### Save-TerminalSummary
+
+Called by the pipeline before exit. Writes `.gsd/supervisor/last-run-summary.json` with exit reason, health, iteration, stall count, and batch size.
+
+### Get-ErrorStatistics
+
+Layer 1 (free): Parses errors.jsonl into counts by type, phase, and agent. No AI cost.
+
+### Invoke-SupervisorDiagnosis
+
+Layer 2 (1 Claude call): Claude reads all logs, matrix, stall-diagnosis, and error statistics. Outputs structured diagnosis JSON with root cause, category, failing phase, and recommended fix.
+
+### Invoke-SupervisorFix
+
+Layer 3 (1 Claude call): Based on diagnosis, Claude modifies actual project files to fix the root cause. May update error-context.md, prompt-hints.md, agent-override.json, queue-current.json, or requirements-matrix.json.
+
+### Find-KnownFix
+
+Searches pattern-memory.jsonl for a matching failure pattern. Returns the fix if found (avoids AI cost).
+
+### Save-FailurePattern
+
+After successful recovery, saves the failure pattern + fix to pattern-memory.jsonl for cross-project learning.
+
+### Start-PipelineInNewTerminal
+
+Launches the pipeline in a fresh PowerShell window with -NoSupervisor flag (prevents recursive supervisor).
+
+### New-EscalationReport
+
+Generates `.gsd/supervisor/escalation-report.md` with all diagnostic data when all strategies are exhausted.
 
 ## Key Functions (in resilience.ps1)
 

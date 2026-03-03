@@ -33,6 +33,7 @@ $GsdDir = Join-Path $RepoRoot ".gsd"
 . "$GlobalDir\lib\modules\resilience.ps1"
 if (Test-Path "$GlobalDir\lib\modules\interfaces.ps1") { . "$GlobalDir\lib\modules\interfaces.ps1" }
 if (Test-Path "$GlobalDir\lib\modules\interface-wrapper.ps1") { . "$GlobalDir\lib\modules\interface-wrapper.ps1" }
+if (Test-Path "$GlobalDir\lib\modules\supervisor.ps1") { . "$GlobalDir\lib\modules\supervisor.ps1" }
 
 # Initialize push notifications
 if (Get-Command Initialize-GsdNotifications -ErrorAction SilentlyContinue) {
@@ -42,7 +43,7 @@ $repoName = Split-Path $RepoRoot -Leaf
 
 # Ensure dirs
 @($GsdDir, "$GsdDir\health", "$GsdDir\code-review", "$GsdDir\research",
-  "$GsdDir\generation-queue", "$GsdDir\agent-handoff", "$GsdDir\specs", "$GsdDir\logs") | ForEach-Object {
+  "$GsdDir\generation-queue", "$GsdDir\agent-handoff", "$GsdDir\specs", "$GsdDir\logs", "$GsdDir\supervisor") | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 }
 
@@ -110,6 +111,15 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     $fileTreePath = Join-Path $GsdDir "file-map-tree.md"
     if (Test-Path $fileTreePath) {
         $resolved += "`n`n## Repository File Map`nA live file map is maintained at:`n- JSON: $fileMapPath`n- Tree: $fileTreePath`nRead the tree file to understand the current repo structure. This map is updated after every iteration.`n"
+    }
+    # Supervisor: inject error context and prompt hints from previous iteration
+    $errorCtxPath = Join-Path $GsdDir "supervisor\error-context.md"
+    $hintPath = Join-Path $GsdDir "supervisor\prompt-hints.md"
+    if (Test-Path $errorCtxPath) {
+        $resolved += "`n`n## Previous Iteration Errors`n" + (Get-Content $errorCtxPath -Raw)
+    }
+    if (Test-Path $hintPath) {
+        $resolved += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw)
     }
     return $resolved
 }
@@ -236,13 +246,19 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Start-Sleep -Seconds $ThrottleSeconds
     }
 
-    # 4. EXECUTE (Codex)
+    # 4. EXECUTE (Codex, or supervisor-overridden agent)
     Send-HeartbeatIfDue -Phase "execute" -Iteration $Iteration -Health $Health -RepoName $repoName
-    Write-Host "  [WRENCH] CODEX -> execute (batch: $CurrentBatchSize)" -ForegroundColor Magenta
+    $executeAgent = "codex"
+    $overridePath = Join-Path $GsdDir "supervisor\agent-override.json"
+    if (Test-Path $overridePath) {
+        try { $ov = Get-Content $overridePath -Raw | ConvertFrom-Json
+              if ($ov.execute) { $executeAgent = $ov.execute; Write-Host "  [SUPERVISOR] Agent override: execute -> $executeAgent" -ForegroundColor Yellow } } catch {}
+    }
+    Write-Host "  [WRENCH] $($executeAgent.ToUpper()) -> execute (batch: $CurrentBatchSize)" -ForegroundColor Magenta
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
     if (-not $DryRun) {
-        $result = Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "execute" `
+        $result = Invoke-WithRetry -Agent $executeAgent -Prompt $prompt -Phase "execute" `
             -LogFile "$GsdDir\logs\iter${Iteration}-4.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
@@ -296,7 +312,18 @@ if ($FinalHealth -ge $TargetHealth) {
 }
 Write-Host "=========================================================" -ForegroundColor Green
 
-} finally { Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir }
+} finally {
+    # Supervisor: save terminal summary so supervisor can read exit state
+    $FinalHealth = Get-Health
+    if (Get-Command Save-TerminalSummary -ErrorAction SilentlyContinue) {
+        $exitReason = if ($FinalHealth -ge $TargetHealth) { "converged" }
+                      elseif ($StallCount -ge $StallThreshold) { "stalled" }
+                      else { "max_iterations" }
+        Save-TerminalSummary -GsdDir $GsdDir -Pipeline "converge" -ExitReason $exitReason `
+            -Health $FinalHealth -Iteration $Iteration -StallCount $StallCount -BatchSize $CurrentBatchSize
+    }
+    Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
+}
 '@
 
 Set-Content -Path "$ScriptDir\convergence-loop.ps1" -Value $script -Encoding UTF8

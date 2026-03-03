@@ -35,6 +35,8 @@ After running install-gsd-all.ps1, the engine creates:
     gsd-profile-functions.ps1   # PowerShell profile (gsd-* commands)
     token-cost-calculator.ps1   # Token cost estimator (gsd-costs)
   pricing-cache.json              # Cached LLM pricing data (auto-updated)
+  supervisor\
+    pattern-memory.jsonl          # Cross-project failure patterns + fixes
   VERSION                       # Installed version stamp
 ```
 
@@ -71,6 +73,14 @@ When you run gsd-assess or gsd-converge in a repo, it creates:
   file-map.json                 # Machine-readable repo inventory
   file-map-tree.md              # Human-readable directory tree
   spec-consistency-report.md    # Spec conflict analysis
+  supervisor\
+    supervisor-state.json         # Supervisor attempts, strategies, diagnoses
+    last-run-summary.json         # Pipeline exit state (reason, health, iteration)
+    diagnosis-{N}.md              # Root-cause analysis for attempt N
+    error-context.md              # Injected into agent prompts (last iteration errors)
+    prompt-hints.md               # Extra instructions from supervisor
+    agent-override.json           # Agent reassignment (e.g., {"execute": "claude"})
+    escalation-report.md          # Full report when all strategies exhausted
   checkpoint.json               # Crash recovery state
   .gsd-lock                     # Prevents concurrent runs
 ```
@@ -203,6 +213,78 @@ Agent CLI processes are monitored with a configurable watchdog timer (default: 3
 
 The watchdog is configured via `$script:AGENT_WATCHDOG_MINUTES` in resilience.ps1 (default 30). Each agent call runs in an isolated child process, so killing it does not affect the parent pipeline.
 
+### Supervisor (Self-Healing Recovery)
+
+When the pipeline stalls, hits max iterations, or fails repeatedly, the supervisor acts like a senior developer: it reads logs, root-causes the actual problem, modifies prompts/specs/queue/matrix to fix it, kills the stuck pipeline, opens a new terminal, and restarts.
+
+#### Architecture
+
+```
+User runs: gsd-converge
+  -> supervisor-converge.ps1 (wrapper)
+      -> convergence-loop.ps1 (existing pipeline)
+          [runs until: converged / stalled / max-iter / error]
+      <- pipeline writes last-run-summary.json, exits
+      -> Layer 1: Get-ErrorStatistics (parse errors.jsonl - no AI cost)
+      -> Layer 2: Invoke-SupervisorDiagnosis (Claude reads logs, root-causes issue)
+      -> Layer 3: Invoke-SupervisorFix (Claude modifies prompts/queue/matrix/specs)
+      -> Stop current script, open NEW terminal, restart pipeline
+      ... (up to 5 attempts, then escalate with full report)
+```
+
+#### Three-Layer Analysis
+
+| Layer | Cost | Function | What It Does |
+|-------|------|----------|--------------|
+| 1 | Free | Pattern matching | Parse errors.jsonl statistics, find stuck requirements, analyze health trajectory |
+| 2 | 1 Claude call | Root-cause diagnosis | Claude reads all logs + matrix + stall-diagnosis, outputs structured diagnosis JSON |
+| 3 | 1 Claude call | Fix application | Claude modifies prompts/queue/matrix/specs based on diagnosis |
+
+#### Failure Categories
+
+| Category | Description | Fix Strategy |
+|----------|-------------|--------------|
+| stuck_requirements | Requirements stuck at "partial" for 3+ iterations | Decompose into sub-requirements, clarify specs |
+| agent_failures | Agent crashes or produces invalid output | Reassign to different agent, simplify prompt |
+| build_loop | Build errors repeating across iterations | Write error context into prompts, add constraints |
+| regression_loop | Health oscillating (fix one thing, break another) | Add regression guards to prompt hints |
+| phase_timeout | Agent hangs repeatedly on same phase | Reduce batch, reassign agent, simplify instructions |
+| quota_exhaustion | All retries exhausted on quota limits | Escalate (requires human intervention) |
+| spec_ambiguity | Specs are ambiguous/contradictory causing divergent output | Write clarification notes into prompt hints |
+
+#### Error Context Injection
+
+After each iteration, the supervisor writes `.gsd/supervisor/error-context.md` with details of what failed and why. This file is automatically injected into every agent prompt in the next iteration via `Local-ResolvePrompt`. Agents receive the errors, root cause, and explicit instructions to avoid repeating the same mistakes.
+
+Additionally, `.gsd/supervisor/prompt-hints.md` contains extra constraints and instructions written by the supervisor based on its diagnosis. Both files are appended to prompts for all agents (Claude review, Claude plan, Codex execute).
+
+#### Agent Override
+
+The supervisor can reassign phases to different agents by writing `.gsd/supervisor/agent-override.json`:
+
+```json
+{"execute": "claude", "build": "gemini"}
+```
+
+This overrides the default agent for that phase in the next pipeline run. Used when an agent consistently fails on a specific type of task.
+
+#### Pattern Memory (Cross-Project Learning)
+
+Successful recovery patterns are saved to `~/.gsd-global/supervisor/pattern-memory.jsonl`. When a new failure occurs, the supervisor checks this database first. If a known fix exists for a matching failure pattern, it's applied immediately without AI cost.
+
+```jsonl
+{"pattern":"build_error_missing_namespace","category":"build_loop","fix":"Rewrite prompt-hints to specify exact namespace","success":true,"project":"patient-portal","timestamp":"2026-03-02T15:00:00Z"}
+```
+
+#### Loop Control (Prevents Infinite Retries)
+
+1. **Hard budget**: Max 5 attempts (configurable via `-SupervisorAttempts`), then escalate
+2. **Strategy deduplication**: Each diagnosis category + fix is tracked; same fix never repeated
+3. **Health monotonicity**: If health drops across 3+ supervisor attempts, escalate immediately
+4. **Time budget**: 24-hour wall-clock limit
+5. **Pattern memory**: Known fixes tried first, unknown failures get AI diagnosis
+6. **Escalation is terminal**: Generates comprehensive report and sends urgent notification
+
 ### Structured Error Logging
 
 All errors logged to .gsd/logs/errors.jsonl with categories: quota, network, disk, corrupt_json, boundary_violation, agent_crash, health_regression, spec_conflict, watchdog_timeout. Each entry includes timestamp, phase, iteration, message, and resolution.
@@ -249,6 +331,12 @@ The topic is resolved in this order:
 | Converged / Complete | "CONVERGED!" / "BLUEPRINT COMPLETE!" | high | tada, white_check_mark |
 | Stalled | "STALLED" / "BLUEPRINT STALLED" | high | warning |
 | Max iterations | "MAX ITERATIONS" / "Blueprint Max Iterations" | high | warning |
+| Supervisor active | "Supervisor Active" | low | robot_face |
+| Supervisor diagnosis | "Supervisor: {root_cause}" | default | mag |
+| Supervisor fix applied | "Supervisor: Fixed - {description}" | default | wrench |
+| Supervisor restarting | "Supervisor: Restarting in new terminal" | default | rocket |
+| Supervisor recovered | "Supervisor: RECOVERED at {health}%" | high | white_check_mark |
+| Supervisor escalation | "Supervisor: NEEDS HUMAN - see escalation-report.md" | urgent | sos |
 
 Heartbeat notifications fire every 10+ minutes during long-running phases. They report the current phase, iteration, health score, and elapsed time since the last notification. This lets you know the pipeline is still working even when a single agent call takes 20+ minutes. The timer resets after each iteration-complete notification.
 
@@ -486,6 +574,7 @@ The calculator always shows a subscription cost comparison, estimating project d
 - Agent crosses boundary: auto-revert unauthorized changes
 - Stall (no progress): reduce batch, diagnose after threshold
 - Spec contradictions (with -AutoResolve): Gemini auto-resolves via authoritative sources
+- Pipeline stall/max iterations: supervisor root-causes via Claude, modifies prompts/specs/queue, restarts in new terminal (up to 5 attempts)
 
 ### Requires Human Intervention
 

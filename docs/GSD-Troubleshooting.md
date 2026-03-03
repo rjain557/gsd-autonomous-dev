@@ -195,6 +195,79 @@ If you see no "ntfy topic" line at startup, notifications are not initialized. T
 1. The resilience.ps1 module was not patched with notification functions (re-run install-gsd-all.ps1)
 2. The global-config.json is missing or has invalid JSON
 
+## Supervisor Issues
+
+### Supervisor keeps retrying the same fix
+
+The supervisor tracks every diagnosis category + fix in `supervisor-state.json` to prevent repeating the same strategy. If it appears to be repeating:
+
+1. Check `.gsd/supervisor/supervisor-state.json` for the attempts history
+2. Review `.gsd/supervisor/diagnosis-{N}.md` files to see if Claude is diagnosing different root causes each time
+3. The supervisor has built-in deduplication -- if the same category+fix combination appears twice, it skips to the next strategy
+
+To reset supervisor state and start fresh:
+
+```powershell
+Remove-Item ".gsd\supervisor\supervisor-state.json" -Force
+```
+
+### How to read escalation-report.md
+
+When the supervisor exhausts all strategies, it generates `.gsd/supervisor/escalation-report.md` with:
+
+- **Summary**: What the supervisor tried and why it failed
+- **All diagnoses**: Root-cause analysis from each attempt
+- **Error statistics**: Aggregated errors by type/phase/agent
+- **Recommended actions**: Specific human intervention steps
+
+This report is designed to give you maximum context so you can fix the issue quickly.
+
+### Resetting supervisor state
+
+To clear all supervisor data and start a fresh recovery cycle:
+
+```powershell
+Remove-Item ".gsd\supervisor\*" -Force
+```
+
+To clear just the error context (so agents start without injected errors):
+
+```powershell
+Remove-Item ".gsd\supervisor\error-context.md" -Force
+Remove-Item ".gsd\supervisor\prompt-hints.md" -Force
+```
+
+### Viewing pattern memory
+
+The supervisor stores successful recovery patterns at `~/.gsd-global/supervisor/pattern-memory.jsonl`. To view:
+
+```powershell
+Get-Content "$env:USERPROFILE\.gsd-global\supervisor\pattern-memory.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Format-Table pattern, category, fix, success, project
+```
+
+To clear pattern memory (e.g., if patterns are outdated):
+
+```powershell
+Remove-Item "$env:USERPROFILE\.gsd-global\supervisor\pattern-memory.jsonl" -Force
+```
+
+### Bypassing the supervisor
+
+If the supervisor is interfering with debugging, bypass it entirely:
+
+```powershell
+gsd-converge -NoSupervisor       # Run pipeline directly
+gsd-blueprint -NoSupervisor      # Run pipeline directly
+```
+
+### "Supervisor: NEEDS HUMAN" notification
+
+This means the supervisor exhausted all recovery attempts (default 5). Read `.gsd/supervisor/escalation-report.md` for the full analysis. Common causes:
+
+1. **Quota exhaustion**: All AI providers are rate-limited. Wait for billing cycle reset.
+2. **Fundamental spec issues**: Specs are contradictory in a way that can't be auto-fixed. Review and correct the source specs.
+3. **Architecture mismatch**: The existing codebase structure conflicts with spec requirements. Manual refactoring needed.
+
 ## Spec Conflict Issues
 
 ### "BLOCKED: Critical spec conflicts detected"
