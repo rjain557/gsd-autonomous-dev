@@ -299,26 +299,118 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
-    # 4. EXECUTE (Codex, or supervisor-overridden agent)
+    # 4. EXECUTE — Parallel sub-task or monolithic fallback
     Send-HeartbeatIfDue -Phase "execute" -Iteration $Iteration -Health $Health -RepoName $repoName
-    $executeAgent = "codex"
-    $overridePath = Join-Path $GsdDir "supervisor\agent-override.json"
-    if (Test-Path $overridePath) {
-        try { $ov = Get-Content $overridePath -Raw | ConvertFrom-Json
-              if ($ov.execute) { $executeAgent = $ov.execute; Write-Host "  [SUPERVISOR] Agent override: execute -> $executeAgent" -ForegroundColor Yellow } } catch {}
-    }
-    Write-Host "  [WRENCH] $($executeAgent.ToUpper()) -> execute (batch: $CurrentBatchSize)" -ForegroundColor Magenta
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
-    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-        Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "execute" -Agent $executeAgent -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize
+
+    # Check if parallel execution is enabled
+    $useParallel = $false
+    $fallback = $false
+    $agentMapPath = Join-Path $GlobalDir "config\agent-map.json"
+    if (Test-Path $agentMapPath) {
+        try {
+            $agentMapCfg = Get-Content $agentMapPath -Raw | ConvertFrom-Json
+            if ($agentMapCfg.execute_parallel -and $agentMapCfg.execute_parallel.enabled) {
+                $useParallel = $true
+            }
+        } catch {}
     }
-    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
-    if (-not $DryRun) {
+
+    if ($useParallel -and (Get-Command Invoke-ParallelExecute -ErrorAction SilentlyContinue)) {
+        # ── PARALLEL PATH ──
+        $subtaskTemplate = Join-Path $GlobalDir "prompts\codex\execute-subtask.md"
+        if (-not (Test-Path $subtaskTemplate)) {
+            Write-Host "  [WARN] execute-subtask.md not found, falling back to monolithic" -ForegroundColor Yellow
+            $useParallel = $false
+        }
+    }
+
+    if ($useParallel -and -not $DryRun) {
+        Write-Host "  [WRENCH] PARALLEL EXECUTE (batch: $CurrentBatchSize)" -ForegroundColor Magenta
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "execute" -Agent "parallel" -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize
+        }
+
+        $result = Invoke-ParallelExecute -GsdDir $GsdDir -GlobalDir $GlobalDir `
+            -Iteration $Iteration -Health $Health `
+            -PromptTemplatePath $subtaskTemplate `
+            -CurrentBatchSize $CurrentBatchSize `
+            -LogFilePrefix "$GsdDir\logs\iter${Iteration}-4" `
+            -InterfaceContext $InterfaceContext
+
+        if ($result.Success -or $result.PartialSuccess) {
+            $CurrentBatchSize = $result.FinalBatchSize
+
+            # Commit completed work
+            $commitSubject = "gsd: iter $Iteration (health: ${Health}%)"
+            if ($result.PartialSuccess) {
+                $commitSubject += " [partial: $($result.Completed.Count)/$($result.Completed.Count + $result.Failed.Count)]"
+            }
+            $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
+            if (Test-Path $reviewPath) {
+                $reviewText = (Get-Content $reviewPath -Raw).Trim()
+                if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
+                $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+                "$commitSubject`n`nCompleted: $($result.Completed -join ', ')`nFailed: $($result.Failed -join ', ')`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
+                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
+                Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+            } else {
+                git add -A; git commit -m $commitSubject --no-verify 2>$null
+            }
+            git push 2>$null
+
+            if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+                $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
+            }
+            Invoke-BuildValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -AutoFix | Out-Null
+
+            # If partial success, log failed sub-tasks for next iteration
+            if ($result.PartialSuccess) {
+                Write-Host "  [PARTIAL] $($result.Failed.Count) sub-tasks need retry next iteration" -ForegroundColor Yellow
+                Send-GsdNotification -Title "Iter ${Iteration}: Partial Execute" `
+                    -Message "$repoName | OK: $($result.Completed -join ',') | FAIL: $($result.Failed -join ',')" `
+                    -Tags "warning" -Priority "default"
+                $script:LAST_NOTIFY_TIME = Get-Date
+            }
+        } else {
+            # All sub-tasks failed — try monolithic fallback if configured
+            if ($agentMapCfg.execute_parallel.fallback_to_sequential) {
+                Write-Host "  [FALLBACK] All parallel sub-tasks failed. Trying monolithic execute..." -ForegroundColor Yellow
+                $fallback = $true
+            }
+
+            if (-not $fallback) {
+                $CurrentBatchSize = $result.FinalBatchSize; $StallCount++; $errorsThisIter++
+                if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                    Update-EngineStatus -GsdDir $GsdDir -State "running" -ErrorsThisIteration $errorsThisIter -LastError "Parallel execute failed: $($result.Error)"
+                }
+                Send-GsdNotification -Title "Iter ${Iteration}: Execute Failed" `
+                    -Message "$repoName | Health: ${Health}% | All sub-tasks failed" `
+                    -Tags "warning" -Priority "default"
+                $script:LAST_NOTIFY_TIME = Get-Date
+                continue
+            }
+            # $fallback = $true falls through to monolithic path below
+        }
+    }
+
+    # ── MONOLITHIC PATH (original behavior, also used as fallback) ──
+    if ((-not $useParallel -or $fallback) -and -not $DryRun) {
+        $executeAgent = "codex"
+        $overridePath = Join-Path $GsdDir "supervisor\agent-override.json"
+        if (Test-Path $overridePath) {
+            try { $ov = Get-Content $overridePath -Raw | ConvertFrom-Json
+                  if ($ov.execute) { $executeAgent = $ov.execute; Write-Host "  [SUPERVISOR] Agent override: execute -> $executeAgent" -ForegroundColor Yellow } } catch {}
+        }
+        Write-Host "  [WRENCH] $($executeAgent.ToUpper()) -> execute (batch: $CurrentBatchSize)" -ForegroundColor Magenta
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "execute" -Agent $executeAgent -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize
+        }
+        $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
         $result = Invoke-WithRetry -Agent $executeAgent -Prompt $prompt -Phase "execute" `
             -LogFile "$GsdDir\logs\iter${Iteration}-4.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
-            # Build commit message from code review findings for GitHub traceability
             $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
             $commitSubject = "gsd: iter $Iteration (health: ${Health}%)"
             if (Test-Path $reviewPath) {
@@ -332,7 +424,6 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
                 git add -A; git commit -m $commitSubject --no-verify 2>$null
             }
             git push 2>$null
-            # Update file map after each iteration
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
             }

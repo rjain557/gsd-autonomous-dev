@@ -113,7 +113,7 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 2. REVIEW: Claude reviews code, identifies issues, scores health
 3. RESEARCH: Gemini (plan mode, read-only) researches patterns; falls back to Codex if unavailable
 4. PLAN: Claude creates fix plan with prioritized batch
-5. EXECUTE: Codex makes code changes
+5. EXECUTE: Codex makes code changes (parallel sub-tasks when enabled)
 6. VERIFY: Claude re-scores health, commits if improved
 7. POST-ITERATION: File map update, checkpoint save, notification
 
@@ -132,7 +132,7 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 | Review | Claude | `--allowedTools Read,Write,Bash` | Better at architectural analysis |
 | Research | **Gemini** | `--approval-mode plan` (read-only) | Saves Claude/Codex quota; falls back to Codex |
 | Plan | Claude | `--allowedTools Read,Write,Bash` | Better at strategic planning |
-| Execute | Codex | `--full-auto` | Faster at bulk code generation |
+| Execute | Codex (or parallel pool) | `--full-auto` | Faster at bulk code generation; parallel mode round-robins across agents |
 | Verify | Claude | `--allowedTools Read,Write,Bash` | Better at spec compliance checking |
 | Spec-Fix | **Gemini** | `--yolo` (write) | Saves Claude/Codex quota for code gen |
 | Blueprint | Claude | `--allowedTools Read,Write,Bash` | Better at spec-to-manifest generation |
@@ -173,6 +173,42 @@ If the Gemini CLI (`gemini`) is not installed, the engine automatically falls ba
 npm install -g @google/gemini-cli
 gemini    # first run authenticates
 ```
+
+## Parallel Sub-Task Execution
+
+When `execute_parallel.enabled` is `true` in `agent-map.json`, the execute phase splits the batch into independent sub-tasks instead of sending the entire batch as a single monolithic prompt.
+
+### How It Works
+
+1. **Decompose**: Each item in `queue-current.json.batch[]` becomes a standalone sub-task
+2. **Assign agents**: Sub-tasks are distributed across the agent pool (default: codex, claude, gemini) using round-robin or all-same strategy
+3. **Dispatch in waves**: Up to `max_concurrent` sub-tasks run simultaneously as PowerShell background jobs, each calling `Invoke-WithRetry` with `MaxAttempts: 2`
+4. **Wave cooldown**: 10-second pause between concurrent waves prevents burst quota triggers
+5. **Aggregate results**: Success (all passed), PartialSuccess (some passed), or AllFailed
+
+### Partial Success Handling
+
+When some sub-tasks succeed and others fail:
+- Completed work is committed and pushed immediately
+- Failed sub-task req_ids are logged for the next iteration to retry
+- Commit message includes `[partial: N/M]` annotation
+
+### Fallback to Monolithic
+
+If all sub-tasks fail and `fallback_to_sequential` is `true`, the engine falls through to the original single-agent monolithic execute path. Set `execute_parallel.enabled` to `false` for instant rollback to pre-parallel behavior.
+
+### Configuration
+
+Located in `agent-map.json` under the `execute_parallel` key:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | bool | true | Master switch; false = monolithic behavior |
+| max_concurrent | int | 3 | Max parallel agent jobs per wave |
+| agent_pool | string[] | ["codex","claude","gemini"] | Agents to rotate through |
+| strategy | string | "round-robin" | "round-robin" or "all-same" |
+| fallback_to_sequential | bool | true | Fall back to monolithic if all sub-tasks fail |
+| subtask_timeout_minutes | int | 30 | Per-subtask watchdog timeout |
 
 ## Resilience Features
 

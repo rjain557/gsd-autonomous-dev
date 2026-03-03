@@ -286,7 +286,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
-The master installer (`install-gsd-all.ps1`) runs these 16 scripts in order. Each is idempotent and safe to re-run.
+The master installer (`install-gsd-all.ps1`) runs these 17 scripts in order. Each is idempotent and safe to re-run.
 
 ### install-gsd-global.ps1 (Script 1)
 
@@ -336,7 +336,7 @@ Final blueprint pipeline with file map updates, prompt injection (via Local-Reso
 
 ### final-patch-5-convergence-pipeline.ps1 (Script 12)
 
-Final convergence loop with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, final validation gate, developer handoff generation, and git commit traceability (code review text in commit messages with auto-push).
+Final convergence loop with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, parallel sub-task execution (when enabled), final validation gate, developer handoff generation, and git commit traceability (code review text in commit messages with auto-push).
 
 ### final-patch-6-assess-limitations.ps1 (Script 13)
 
@@ -353,6 +353,10 @@ Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-c
 ### patch-false-converge-fix.ps1 (Script 16)
 
 One-time bug fix: fixes false "converged" exit when StallCount/TargetHealth/Iteration variables are null in the finally block (moves initialization before try block), and removes orphaned profile code statements outside function bodies. Idempotent.
+
+### patch-gsd-parallel-execute.ps1 (Script 17)
+
+Installs parallel sub-task execution for the execute phase. Adds `execute_parallel` config to agent-map.json, creates `execute-subtask.md` prompt template, adds `Invoke-ParallelExecute` function to resilience.ps1, and updates convergence-loop.ps1 with parallel-aware dispatch. Splits the batch into independent sub-tasks dispatched round-robin across codex/claude/gemini in concurrent waves. Partial success commits completed work; total failure falls back to monolithic single-agent call. Disable by setting `execute_parallel.enabled` to `false` in agent-map.json.
 
 ### Optional standalone scripts
 
@@ -474,6 +478,30 @@ Parameters:
 | -GeminiMode | "--approval-mode plan" (read-only, default) or "--yolo" (write) |
 
 Watchdog timeout: controlled by `$script:AGENT_WATCHDOG_MINUTES` (default 30). On timeout, logs a `watchdog_timeout` entry to errors.jsonl and sends a high-priority push notification.
+
+### Invoke-ParallelExecute
+
+Splits the execute batch into independent sub-tasks and dispatches them in parallel using PowerShell background jobs. Each sub-task gets its own agent (round-robin), prompt (from execute-subtask.md template), and log file. Sub-tasks run in waves of `max_concurrent`, with 10-second cooldown between waves.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -GsdDir | Path to .gsd directory |
+| -GlobalDir | Path to .gsd-global directory |
+| -Iteration | Current iteration number |
+| -Health | Current health score |
+| -PromptTemplatePath | Path to execute-subtask.md template |
+| -CurrentBatchSize | Current batch size (returned unchanged) |
+| -LogFilePrefix | Log file prefix (e.g., ".gsd\logs\iter3-4") |
+| -InterfaceContext | Multi-interface context string |
+| -DryRun | If set, prints dispatch plan without executing |
+
+Returns: `@{ Success, PartialSuccess, FinalBatchSize, Completed, Failed, Error }`
+
+- `Success = $true` when all sub-tasks complete
+- `PartialSuccess = $true` when some but not all succeed
+- `Completed` and `Failed` contain arrays of req_id strings
 
 ### Update-FileMap
 

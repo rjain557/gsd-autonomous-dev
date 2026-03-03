@@ -633,6 +633,31 @@ gsd-converge -ThrottleSeconds 10    # Faster but higher quota risk
 gsd-converge -ThrottleSeconds 0     # No delay (maximum speed, may hit quota)
 ```
 
+### Parallel sub-tasks failing / partial success
+
+When parallel execution is enabled and some sub-tasks fail:
+
+1. **Partial success is normal**: Completed work is committed immediately; failed req_ids retry next iteration
+2. **Check per-subtask logs**: Each sub-task writes to `.gsd/logs/iter{N}-4-sub{M}.log`
+3. **Check errors.jsonl**: Failed sub-tasks log `subtask_failed` entries with the req_id and error
+4. **Reduce concurrency**: Set `max_concurrent` to 1 in agent-map.json for sequential round-robin (easier to debug)
+5. **Disable parallel entirely**: Set `execute_parallel.enabled` to `false` to revert to monolithic single-agent execute
+
+```powershell
+# Diagnose: check which sub-tasks failed
+Get-Content ".gsd\logs\errors.jsonl" | ConvertFrom-Json | Where-Object { $_.category -eq "subtask_failed" }
+
+# Reduce concurrency to sequential round-robin
+# Edit %USERPROFILE%\.gsd-global\config\agent-map.json:
+#   "max_concurrent": 1
+
+# Disable parallel entirely (instant rollback)
+# Edit %USERPROFILE%\.gsd-global\config\agent-map.json:
+#   "enabled": false
+```
+
+If all sub-tasks fail and `fallback_to_sequential` is `true`, the engine automatically falls back to the original monolithic execute path. If the monolithic path also fails, batch reduction and stall handling proceed as normal.
+
 ### Hitting quota limits frequently
 
 Increase throttle delay and reduce scope:

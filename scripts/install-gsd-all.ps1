@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 16 scripts in correct order.
+    GSD Master Installer - Runs ALL 17 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -83,12 +83,13 @@ $scripts = @(
     @{ File="final-patch-7-spec-resolve.ps1";       Desc="Spec Conflict Auto-Resolution (Gemini)" }
     @{ File="patch-gsd-supervisor.ps1";             Desc="Supervisor (self-healing recovery, error context, pattern memory)" }
     @{ File="patch-false-converge-fix.ps1";         Desc="Fix false convergence exit + orphaned profile code" }
+    @{ File="patch-gsd-parallel-execute.ps1";     Desc="Parallel Sub-Task Execution (split batch, round-robin agents)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 16 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 17 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

@@ -470,6 +470,36 @@ Written by the pipeline before exit so the supervisor knows what happened.
 }
 ```
 
+### agent-map.json (execute_parallel)
+
+Location: `%USERPROFILE%\.gsd-global\config\agent-map.json`
+
+The `execute_parallel` key controls parallel sub-task execution during the execute phase.
+
+```json
+{
+  "execute_parallel": {
+    "enabled": true,
+    "max_concurrent": 3,
+    "agent_pool": ["codex", "claude", "gemini"],
+    "strategy": "round-robin",
+    "fallback_to_sequential": true,
+    "subtask_timeout_minutes": 30
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | bool | true | Master switch. `false` = original monolithic behavior |
+| max_concurrent | int | 3 | Max parallel agent jobs per wave. Set to 1 for sequential round-robin |
+| agent_pool | string[] | ["codex","claude","gemini"] | Agents to rotate through. Order = priority |
+| strategy | string | "round-robin" | `"round-robin"` rotates agents across sub-tasks; `"all-same"` uses first agent for all |
+| fallback_to_sequential | bool | true | If all parallel sub-tasks fail, fall back to monolithic single-agent call |
+| subtask_timeout_minutes | int | 30 | Per-subtask watchdog timeout in minutes |
+
+To disable parallel execution entirely, set `enabled` to `false`. The monolithic path is preserved as-is.
+
 ### agent-override.json
 
 Location: `.gsd\supervisor\agent-override.json`
