@@ -20,6 +20,7 @@ $script = @'
 param(
     [int]$MaxIterations = 30, [int]$StallThreshold = 3, [int]$BatchSize = 15,
     [int]$ThrottleSeconds = 30,
+    [string]$NtfyTopic = "",
     [switch]$DryRun, [switch]$BlueprintOnly, [switch]$BuildOnly, [switch]$VerifyOnly,
     [switch]$SkipSpecCheck, [switch]$AutoResolve
 )
@@ -40,6 +41,12 @@ if (Test-Path "$GlobalDir\lib\modules\interfaces.ps1") {
 if (Test-Path "$GlobalDir\lib\modules\interface-wrapper.ps1") {
     . "$GlobalDir\lib\modules\interface-wrapper.ps1"
 }
+
+# Initialize push notifications
+if (Get-Command Initialize-GsdNotifications -ErrorAction SilentlyContinue) {
+    Initialize-GsdNotifications -GsdGlobalDir $GlobalDir -OverrideTopic $NtfyTopic
+}
+$repoName = Split-Path $RepoRoot -Leaf
 
 # -- Ensure dirs --
 @($GsdDir, $BpDir, "$GsdDir\logs") | ForEach-Object {
@@ -124,8 +131,13 @@ if ($checkpoint -and $checkpoint.pipeline -eq "blueprint" -and -not $BlueprintOn
 
 Write-Host "  Health:    ${Health}% -> 100% | Batch: $CurrentBatchSize (adaptive)" -ForegroundColor White
 if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle:  ${ThrottleSeconds}s between agent calls (prevents quota exhaustion)" -ForegroundColor DarkGray }
+if ($script:NTFY_TOPIC) { Write-Host "  Notify:    ntfy.sh/$($script:NTFY_TOPIC)" -ForegroundColor DarkGray }
 if ($DryRun) { Write-Host "  MODE:      DRY RUN" -ForegroundColor Yellow }
 Write-Host ""
+
+Send-GsdNotification -Title "GSD Blueprint Started" `
+    -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize" `
+    -Tags "rocket" -Priority "low"
 
 # Helper to resolve prompts with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
@@ -270,6 +282,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
+    Send-GsdNotification -Title "Blueprint Iter $Iteration" `
+        -Message "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize" `
+        -Tags "chart_with_upwards_trend"
     Write-Host ""; Start-Sleep -Seconds 2
 }
 
@@ -279,8 +294,14 @@ $FinalHealth = Get-Health
 if ($FinalHealth -ge $TargetHealth) {
     Write-Host "  [PARTY] COMPLETE - ${FinalHealth}% in $Iteration iterations" -ForegroundColor Green
     if (-not $DryRun) { git add -A; git commit -m "blueprint: COMPLETE" --no-verify 2>$null; git tag "blueprint-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null }
-} elseif ($StallCount -ge $StallThreshold) { Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
-} else { Write-Host "  [!!]  $(if ($VerifyOnly){'VERIFY DONE'}else{'MAX ITERATIONS'}) at ${FinalHealth}%" -ForegroundColor Yellow }
+    Send-GsdNotification -Title "BLUEPRINT COMPLETE!" -Message "$repoName | 100% in $Iteration iterations" -Tags "tada,white_check_mark" -Priority "high"
+} elseif ($StallCount -ge $StallThreshold) {
+    Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
+    Send-GsdNotification -Title "BLUEPRINT STALLED" -Message "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations" -Tags "warning" -Priority "high"
+} else {
+    Write-Host "  [!!]  $(if ($VerifyOnly){'VERIFY DONE'}else{'MAX ITERATIONS'}) at ${FinalHealth}%" -ForegroundColor Yellow
+    Send-GsdNotification -Title "Blueprint Max Iterations" -Message "$repoName | ${FinalHealth}% after $Iteration iterations" -Tags "warning" -Priority "high"
+}
 
 if (Test-Path $HealthLog) {
     $entries = Get-Content $HealthLog -ErrorAction SilentlyContinue | ForEach-Object { try { $_ | ConvertFrom-Json } catch {} }

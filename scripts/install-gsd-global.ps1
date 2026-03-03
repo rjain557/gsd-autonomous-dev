@@ -178,6 +178,10 @@ $globalConfig = @{
     }
     project_gsd_dir = ".gsd"
     phase_order = @("code-review", "create-phases", "research", "plan", "execute")
+    notifications = @{
+        ntfy_topic = "gsd-rjain-technijian"
+        notify_on = @("iteration_complete", "converged", "stalled", "quota_exhausted", "error")
+    }
 } | ConvertTo-Json -Depth 4
 
 Set-Content -Path "$GsdGlobalDir\config\global-config.json" -Value $globalConfig -Encoding UTF8
@@ -949,21 +953,43 @@ powershell -ExecutionPolicy Bypass -File "%USERPROFILE%\.gsd-global\scripts\conv
 Set-Content -Path "$scriptsOnPath\gsd-converge.cmd" -Value $wrapperCmd -Encoding ASCII
 Write-Host "   [OK] bin\gsd-converge.cmd" -ForegroundColor DarkGreen
 
+$remoteCmd = @"
+@echo off
+claude remote-control %*
+"@
+Set-Content -Path "$scriptsOnPath\gsd-remote.cmd" -Value $remoteCmd -Encoding ASCII
+Write-Host "   [OK] bin\gsd-remote.cmd" -ForegroundColor DarkGreen
+
 # Create PowerShell function in profile
 $wrapperPs1 = @"
 function gsd-converge {
-    param([switch]`$DryRun, [switch]`$SkipInit, [switch]`$SkipResearch, [switch]`$AutoResolve, [int]`$MaxIterations = 20, [int]`$StallThreshold = 3)
-    `$params = @{ MaxIterations = `$MaxIterations; StallThreshold = `$StallThreshold }
+    param(
+        [switch]`$DryRun, [switch]`$SkipInit, [switch]`$SkipResearch, [switch]`$SkipSpecCheck,
+        [switch]`$AutoResolve, [int]`$MaxIterations = 20, [int]`$StallThreshold = 3,
+        [int]`$ThrottleSeconds = 30, [string]`$NtfyTopic = ""
+    )
+    `$params = @{ MaxIterations = `$MaxIterations; StallThreshold = `$StallThreshold; ThrottleSeconds = `$ThrottleSeconds }
     if (`$DryRun) { `$params.DryRun = `$true }
     if (`$SkipInit) { `$params.SkipInit = `$true }
     if (`$SkipResearch) { `$params.SkipResearch = `$true }
+    if (`$SkipSpecCheck) { `$params.SkipSpecCheck = `$true }
     if (`$AutoResolve) { `$params.AutoResolve = `$true }
+    if (`$NtfyTopic) { `$params.NtfyTopic = `$NtfyTopic }
     & "`$env:USERPROFILE\.gsd-global\scripts\convergence-loop.ps1" @params
 }
 
 function gsd-init {
     Write-Host "Initializing .gsd\ for current project..." -ForegroundColor Yellow
     & "`$env:USERPROFILE\.gsd-global\scripts\convergence-loop.ps1" -MaxIterations 0
+}
+
+function gsd-remote {
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "  GSD Remote Control" -ForegroundColor Cyan
+    Write-Host "  Scan the QR code with your phone to monitor from anywhere" -ForegroundColor DarkGray
+    Write-Host "  Press Ctrl+C to stop remote session" -ForegroundColor DarkGray
+    Write-Host "" -ForegroundColor Cyan
+    claude remote-control
 }
 "@
 

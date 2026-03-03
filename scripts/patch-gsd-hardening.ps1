@@ -848,6 +848,61 @@ function Update-FileMap {
     return $mapPath
 }
 
+# ===========================================
+# 10. PUSH NOTIFICATIONS (ntfy.sh)
+# ===========================================
+
+$script:NTFY_TOPIC = $null  # Set via global-config.json or -NtfyTopic param
+
+function Send-GsdNotification {
+    <#
+    .SYNOPSIS
+        Sends a push notification via ntfy.sh. Silent fail if not configured.
+    #>
+    param(
+        [string]$Title,
+        [string]$Message,
+        [string]$Priority = "default",   # min, low, default, high, urgent
+        [string]$Tags = "",              # emoji shortcodes: white_check_mark, warning, x, rocket
+        [string]$Topic = $null
+    )
+
+    $effectiveTopic = if ($Topic) { $Topic } else { $script:NTFY_TOPIC }
+    if (-not $effectiveTopic) { return }
+
+    try {
+        $headers = @{ "Title" = $Title; "Priority" = $Priority }
+        if ($Tags) { $headers["Tags"] = $Tags }
+        Invoke-RestMethod -Uri "https://ntfy.sh/$effectiveTopic" -Method Post `
+            -Body $Message -Headers $headers -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+        # Notification failure should never block the pipeline
+    }
+}
+
+function Initialize-GsdNotifications {
+    <#
+    .SYNOPSIS
+        Loads ntfy topic from global config. Call once at pipeline startup.
+    #>
+    param([string]$GsdGlobalDir, [string]$OverrideTopic = $null)
+
+    if ($OverrideTopic) {
+        $script:NTFY_TOPIC = $OverrideTopic
+        return
+    }
+
+    $configPath = Join-Path $GsdGlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if ($config.notifications -and $config.notifications.ntfy_topic) {
+                $script:NTFY_TOPIC = $config.notifications.ntfy_topic
+            }
+        } catch { }
+    }
+}
+
 Write-Host "  Hardening modules loaded." -ForegroundColor DarkGray
 '@
 

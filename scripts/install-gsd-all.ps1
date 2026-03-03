@@ -141,4 +141,5 @@ Write-Host "    gsd-assess       Analyze existing codebase" -ForegroundColor Cya
 Write-Host "    gsd-blueprint    Spec + Figma to Code" -ForegroundColor Cyan
 Write-Host "    gsd-converge     5-phase maintenance loop" -ForegroundColor Cyan
 Write-Host "    gsd-status       Health dashboard" -ForegroundColor Cyan
+Write-Host "    gsd-remote       Remote monitor (QR code for phone)" -ForegroundColor Cyan
 Write-Host ""

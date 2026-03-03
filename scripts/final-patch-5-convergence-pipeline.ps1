@@ -18,6 +18,7 @@ $script = @'
 param(
     [int]$MaxIterations = 20, [int]$StallThreshold = 3, [int]$BatchSize = 8,
     [int]$ThrottleSeconds = 30,
+    [string]$NtfyTopic = "",
     [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck,
     [switch]$AutoResolve
 )
@@ -32,6 +33,12 @@ $GsdDir = Join-Path $RepoRoot ".gsd"
 . "$GlobalDir\lib\modules\resilience.ps1"
 if (Test-Path "$GlobalDir\lib\modules\interfaces.ps1") { . "$GlobalDir\lib\modules\interfaces.ps1" }
 if (Test-Path "$GlobalDir\lib\modules\interface-wrapper.ps1") { . "$GlobalDir\lib\modules\interface-wrapper.ps1" }
+
+# Initialize push notifications
+if (Get-Command Initialize-GsdNotifications -ErrorAction SilentlyContinue) {
+    Initialize-GsdNotifications -GsdGlobalDir $GlobalDir -OverrideTopic $NtfyTopic
+}
+$repoName = Split-Path $RepoRoot -Leaf
 
 # Ensure dirs
 @($GsdDir, "$GsdDir\health", "$GsdDir\code-review", "$GsdDir\research",
@@ -88,7 +95,12 @@ if ($checkpoint -and $checkpoint.pipeline -eq "converge") {
 
 Write-Host "  Health: ${Health}% -> 100% | Batch: $CurrentBatchSize | Interfaces: $($Interfaces.Count)" -ForegroundColor White
 if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle: ${ThrottleSeconds}s between agent calls (prevents quota exhaustion)" -ForegroundColor DarkGray }
+if ($script:NTFY_TOPIC) { Write-Host "  Notify:   ntfy.sh/$($script:NTFY_TOPIC)" -ForegroundColor DarkGray }
 Write-Host ""
+
+Send-GsdNotification -Title "GSD Converge Started" `
+    -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize | Throttle: ${ThrottleSeconds}s" `
+    -Tags "rocket" -Priority "low"
 
 # Prompt resolver with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
@@ -245,6 +257,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
+    Send-GsdNotification -Title "Iter $Iteration Complete" `
+        -Message "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize" `
+        -Tags "chart_with_upwards_trend"
     Write-Host ""; Start-Sleep -Seconds 2
 }
 
@@ -254,8 +269,14 @@ $FinalHealth = Get-Health
 if ($FinalHealth -ge $TargetHealth) {
     Write-Host "  [PARTY] CONVERGED - ${FinalHealth}% in $Iteration iterations" -ForegroundColor Green
     if (-not $DryRun) { git add -A; git commit -m "gsd: CONVERGED" --no-verify 2>$null; git tag "gsd-converged-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null }
-} elseif ($StallCount -ge $StallThreshold) { Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
-} else { Write-Host "  [!!]  MAX ITERATIONS at ${FinalHealth}%" -ForegroundColor Yellow }
+    Send-GsdNotification -Title "CONVERGED!" -Message "$repoName | 100% in $Iteration iterations" -Tags "tada,white_check_mark" -Priority "high"
+} elseif ($StallCount -ge $StallThreshold) {
+    Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
+    Send-GsdNotification -Title "STALLED" -Message "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations. Check stall-diagnosis.md" -Tags "warning" -Priority "high"
+} else {
+    Write-Host "  [!!]  MAX ITERATIONS at ${FinalHealth}%" -ForegroundColor Yellow
+    Send-GsdNotification -Title "MAX ITERATIONS" -Message "$repoName | ${FinalHealth}% after $Iteration iterations" -Tags "warning" -Priority "high"
+}
 Write-Host "=========================================================" -ForegroundColor Green
 
 } finally { Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir }
