@@ -115,33 +115,38 @@ gsd-remote
 
 Displays a QR code in the terminal. Scan it with your phone to monitor and interact with the Claude session from anywhere. Press Ctrl+C to stop the remote session.
 
-### token-cost-calculator
+### gsd-costs
 
 Estimates API token costs to complete a project to 100% using the GSD pipeline. Supports auto-detection from project data or manual parameter input. Includes dynamic pricing, pipeline comparison, client quoting, and subscription cost analysis.
+
+Installed globally as `gsd-costs` command (available after terminal restart). Also available as `token-cost-calculator.ps1` in the scripts folder.
 
 Usage:
 
 ```powershell
-# Auto-detect from project
-.\scripts\token-cost-calculator.ps1 -ProjectPath "C:\repos\my-app"
+# Auto-detect from current project
+gsd-costs
+
+# Auto-detect from specific project
+gsd-costs -ProjectPath "C:\repos\my-app"
 
 # Manual estimate
-.\scripts\token-cost-calculator.ps1 -TotalItems 120 -CompletedItems 30
+gsd-costs -TotalItems 120 -CompletedItems 30
 
 # Pipeline comparison (blueprint vs convergence)
-.\scripts\token-cost-calculator.ps1 -TotalItems 200 -ShowComparison
+gsd-costs -TotalItems 200 -ShowComparison
 
 # Convergence with Opus pricing
-.\scripts\token-cost-calculator.ps1 -TotalItems 200 -Pipeline convergence -ClaudeModel opus
+gsd-costs -TotalItems 200 -Pipeline convergence -ClaudeModel opus
 
 # Per-iteration cost breakdown
-.\scripts\token-cost-calculator.ps1 -TotalItems 150 -Detailed
+gsd-costs -TotalItems 150 -Detailed
 
 # Force-update cached pricing
-.\scripts\token-cost-calculator.ps1 -UpdatePricing
+gsd-costs -UpdatePricing
 
 # Client quote with 8x markup
-.\scripts\token-cost-calculator.ps1 -TotalItems 300 -ClientQuote -Markup 8 -ClientName "Acme Corp"
+gsd-costs -TotalItems 300 -ClientQuote -Markup 8 -ClientName "Acme Corp"
 ```
 
 Parameters:

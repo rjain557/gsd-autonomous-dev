@@ -1049,6 +1049,22 @@ claude remote-control %*
 Set-Content -Path "$scriptsOnPath\gsd-remote.cmd" -Value $remoteCmd -Encoding ASCII
 Write-Host "   [OK] bin\gsd-remote.cmd" -ForegroundColor DarkGreen
 
+$costsCmd = @"
+@echo off
+powershell -ExecutionPolicy Bypass -File "%USERPROFILE%\.gsd-global\scripts\token-cost-calculator.ps1" %*
+"@
+Set-Content -Path "$scriptsOnPath\gsd-costs.cmd" -Value $costsCmd -Encoding ASCII
+Write-Host "   [OK] bin\gsd-costs.cmd" -ForegroundColor DarkGreen
+
+# Copy token-cost-calculator.ps1 to global scripts
+$calcSource = Join-Path (Split-Path $MyInvocation.MyCommand.Path) "token-cost-calculator.ps1"
+if (Test-Path $calcSource) {
+    Copy-Item -Path $calcSource -Destination "$GsdGlobalDir\scripts\token-cost-calculator.ps1" -Force
+    Write-Host "   [OK] scripts\token-cost-calculator.ps1" -ForegroundColor DarkGreen
+} else {
+    Write-Host "   [!!]  token-cost-calculator.ps1 not found in source dir" -ForegroundColor DarkYellow
+}
+
 # Create PowerShell function in profile
 $wrapperPs1 = @"
 function gsd-converge {
@@ -1079,6 +1095,35 @@ function gsd-remote {
     Write-Host "  Press Ctrl+C to stop remote session" -ForegroundColor DarkGray
     Write-Host "" -ForegroundColor Cyan
     claude remote-control
+}
+
+function gsd-costs {
+    param(
+        [string]`$ProjectPath = "",
+        [int]`$TotalItems = 0, [int]`$CompletedItems = 0, [int]`$PartialItems = 0,
+        [int]`$BatchSize = 15, [string]`$Pipeline = "blueprint",
+        [double]`$BatchEfficiency = 0.70, [double]`$RetryRate = 0.15,
+        [switch]`$ShowComparison, [string]`$ClaudeModel = "sonnet",
+        [switch]`$Detailed, [switch]`$UpdatePricing,
+        [switch]`$ClientQuote, [double]`$Markup = 7.0, [string]`$ClientName = "Client Project"
+    )
+    `$params = @{}
+    if (`$ProjectPath) { `$params.ProjectPath = `$ProjectPath }
+    if (`$TotalItems -gt 0) { `$params.TotalItems = `$TotalItems }
+    if (`$CompletedItems -gt 0) { `$params.CompletedItems = `$CompletedItems }
+    if (`$PartialItems -gt 0) { `$params.PartialItems = `$PartialItems }
+    `$params.BatchSize = `$BatchSize
+    `$params.Pipeline = `$Pipeline
+    `$params.BatchEfficiency = `$BatchEfficiency
+    `$params.RetryRate = `$RetryRate
+    `$params.ClaudeModel = `$ClaudeModel
+    if (`$ShowComparison) { `$params.ShowComparison = `$true }
+    if (`$Detailed) { `$params.Detailed = `$true }
+    if (`$UpdatePricing) { `$params.UpdatePricing = `$true }
+    if (`$ClientQuote) { `$params.ClientQuote = `$true }
+    if (`$Markup -ne 7.0) { `$params.Markup = `$Markup }
+    if (`$ClientName -ne "Client Project") { `$params.ClientName = `$ClientName }
+    & "`$env:USERPROFILE\.gsd-global\scripts\token-cost-calculator.ps1" @params
 }
 "@
 
@@ -1296,6 +1341,7 @@ Write-Host "    Engine:       ~\.gsd-global\" -ForegroundColor White
 Write-Host "    Claude Code:  ~\.claude\CLAUDE.md" -ForegroundColor White
 Write-Host "    Codex:        ~\.codex\instructions.md" -ForegroundColor White
 Write-Host "    Command:      gsd-converge (after terminal restart)" -ForegroundColor White
+Write-Host "    Command:      gsd-costs (token cost calculator)" -ForegroundColor White
 Write-Host ""
 Write-Host "  AGENT ASSIGNMENT:" -ForegroundColor Yellow
 Write-Host "    Claude Code:  code-review, create-phases, plan  (~11K tokens/iter)" -ForegroundColor Cyan
@@ -1311,6 +1357,8 @@ Write-Host "    gsd-converge -DryRun            # preview only" -ForegroundColor
 Write-Host "    gsd-converge -MaxIterations 5   # limit rounds" -ForegroundColor Cyan
 Write-Host "    gsd-converge -SkipResearch      # faster loops" -ForegroundColor Cyan
 Write-Host "    gsd-init                        # just init .gsd\" -ForegroundColor Cyan
+Write-Host "    gsd-costs                       # token cost estimate" -ForegroundColor Cyan
+Write-Host "    gsd-costs -ClientQuote           # client cost quote" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  From VS Code (any project):" -ForegroundColor White
 Write-Host "    Ctrl+Shift+P -> 'Run Task' -> 'GSD: Convergence Loop'" -ForegroundColor Cyan

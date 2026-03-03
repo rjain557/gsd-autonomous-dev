@@ -250,7 +250,7 @@ The calculator fetches pricing from the LiteLLM GitHub repository. If it fails:
 
 ```powershell
 # Force-update pricing cache
-.\scripts\token-cost-calculator.ps1 -UpdatePricing
+gsd-costs -UpdatePricing
 
 # Test the URL manually
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json" -UseBasicParsing | Select-Object StatusCode
@@ -263,7 +263,7 @@ The cache at %USERPROFILE%\.gsd-global\pricing-cache.json is older than 60 days.
 ```powershell
 # Delete stale cache and force refresh
 Remove-Item "$env:USERPROFILE\.gsd-global\pricing-cache.json" -Force
-.\scripts\token-cost-calculator.ps1 -UpdatePricing
+gsd-costs -UpdatePricing
 ```
 
 ### Pricing shows wrong model names or prices
@@ -271,7 +271,7 @@ Remove-Item "$env:USERPROFILE\.gsd-global\pricing-cache.json" -Force
 The LiteLLM database model keys may have changed. The calculator tries multiple key variants per model (e.g., `claude-opus-4-6`, `claude-opus-4-5`). If a new model version is released:
 
 1. Check the current cache: `Get-Content "$env:USERPROFILE\.gsd-global\pricing-cache.json" | ConvertFrom-Json | ConvertTo-Json -Depth 5`
-2. Force refresh: `.\scripts\token-cost-calculator.ps1 -UpdatePricing`
+2. Force refresh: `gsd-costs -UpdatePricing`
 3. If the model key format changed in LiteLLM, update the `$modelLookups` array in `token-cost-calculator.ps1`
 
 ### Blueprint.json not found / auto-detection fails
@@ -280,10 +280,10 @@ The calculator's auto mode requires `.gsd\blueprint\blueprint.json` in the proje
 
 ```powershell
 # Use manual parameters instead
-.\scripts\token-cost-calculator.ps1 -TotalItems 150 -CompletedItems 30
+gsd-costs -TotalItems 150 -CompletedItems 30
 
 # Or specify the project path explicitly
-.\scripts\token-cost-calculator.ps1 -ProjectPath "C:\repos\my-app"
+gsd-costs -ProjectPath "C:\repos\my-app"
 ```
 
 ### Client quote shows incorrect complexity tier

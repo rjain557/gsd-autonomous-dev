@@ -113,6 +113,7 @@ After installation, the engine creates:
   scripts\
     convergence-loop.ps1        # 5-phase convergence engine
     gsd-profile-functions.ps1   # PowerShell profile functions
+    token-cost-calculator.ps1   # Token cost estimator
   pricing-cache.json            # Cached LLM pricing data
   VERSION                       # Installed version stamp
 ```
@@ -158,13 +159,13 @@ gsd-converge
 
 ```powershell
 # Quick estimate from blueprint
-.\scripts\token-cost-calculator.ps1 -ProjectPath "C:\repos\my-app"
+gsd-costs -ProjectPath "C:\repos\my-app"
 
 # Manual estimate for a new project
-.\scripts\token-cost-calculator.ps1 -TotalItems 150 -Pipeline blueprint
+gsd-costs -TotalItems 150 -Pipeline blueprint
 
 # Full comparison of both pipelines
-.\scripts\token-cost-calculator.ps1 -TotalItems 150 -ShowComparison
+gsd-costs -TotalItems 150 -ShowComparison
 ```
 
 ## Mobile Monitoring Setup
