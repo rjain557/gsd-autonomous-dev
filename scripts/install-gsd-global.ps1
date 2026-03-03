@@ -66,6 +66,81 @@ Write-Host "    Codex:       $CodexDir" -ForegroundColor White
 Write-Host ""
 
 # ========================================================
+# STEP 0: API Key Setup
+# ========================================================
+
+Write-Host "--- API Key Setup ---" -ForegroundColor Yellow
+Write-Host ""
+
+$apiKeys = @(
+    @{ Var = "ANTHROPIC_API_KEY"; CLI = "Claude Code"; Prefix = "sk-ant-"; URL = "https://console.anthropic.com/settings/keys" },
+    @{ Var = "OPENAI_API_KEY";    CLI = "Codex";       Prefix = "sk-";     URL = "https://platform.openai.com/api-keys" },
+    @{ Var = "GOOGLE_API_KEY";    CLI = "Gemini";      Prefix = "AIza";    URL = "https://aistudio.google.com/apikey" }
+)
+
+# Check if all keys are already set
+$missingKeys = @()
+foreach ($k in $apiKeys) {
+    $val = [System.Environment]::GetEnvironmentVariable($k.Var, "User")
+    if (-not $val) { $missingKeys += $k }
+}
+
+if ($missingKeys.Count -eq 0) {
+    # All keys already configured - skip setup
+    Write-Host "  All API keys already configured:" -ForegroundColor Green
+    foreach ($k in $apiKeys) {
+        $val = [System.Environment]::GetEnvironmentVariable($k.Var, "User")
+        $masked = $val.Substring(0, [math]::Min(7, $val.Length)) + "****"
+        Write-Host "    [OK] $($k.CLI.PadRight(12)) $($k.Var) = $masked" -ForegroundColor Green
+    }
+    Write-Host ""
+    Write-Host "  To update keys later: .\scripts\setup-gsd-api-keys.ps1" -ForegroundColor DarkGray
+    Write-Host ""
+} else {
+    # One or more keys missing - prompt for those
+    Write-Host "  API keys let the agents bypass interactive rate limits." -ForegroundColor White
+    Write-Host "  Keys are stored as User-level environment variables (never in git)." -ForegroundColor White
+    Write-Host "  Press Enter to skip any key (will use interactive auth instead)." -ForegroundColor DarkGray
+    Write-Host ""
+
+    foreach ($k in $apiKeys) {
+        $current = [System.Environment]::GetEnvironmentVariable($k.Var, "User")
+
+        if ($current) {
+            $masked = $current.Substring(0, [math]::Min(7, $current.Length)) + "****"
+            Write-Host "  [OK] $($k.CLI): already set ($masked)" -ForegroundColor Green
+            # Also ensure it's in the current process
+            [System.Environment]::SetEnvironmentVariable($k.Var, $current, "Process")
+            Write-Host ""
+            continue
+        }
+
+        Write-Host "  $($k.CLI): $($k.Var) = (not set)" -ForegroundColor DarkYellow
+        Write-Host "    Get key: $($k.URL)" -ForegroundColor DarkGray
+        Write-Host "  Enter $($k.CLI) API key: " -NoNewline -ForegroundColor White
+        $keyInput = Read-Host
+
+        if ($keyInput -and $keyInput.Trim()) {
+            $keyInput = $keyInput.Trim()
+            if ($k.Prefix -and -not $keyInput.StartsWith($k.Prefix)) {
+                Write-Host "    [!!] Warning: Expected prefix '$($k.Prefix)' - setting anyway" -ForegroundColor Yellow
+            }
+            [System.Environment]::SetEnvironmentVariable($k.Var, $keyInput, "User")
+            [System.Environment]::SetEnvironmentVariable($k.Var, $keyInput, "Process")
+            $showMasked = $keyInput.Substring(0, [math]::Min(7, $keyInput.Length)) + "****"
+            Write-Host "    [OK] Set $($k.Var) = $showMasked" -ForegroundColor Green
+        } else {
+            Write-Host "    [--] Skipped (will use interactive auth)" -ForegroundColor DarkGray
+        }
+        Write-Host ""
+    }
+
+    Write-Host "  API key setup complete." -ForegroundColor Green
+    Write-Host "  To update keys later: .\scripts\setup-gsd-api-keys.ps1" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+# ========================================================
 # STEP 1: Create directory structure
 # ========================================================
 
