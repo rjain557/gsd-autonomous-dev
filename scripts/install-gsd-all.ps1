@@ -31,12 +31,22 @@ if (Test-Path $prereqScript) {
 
     $hasClaude = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
     $hasCodex = $null -ne (Get-Command codex -ErrorAction SilentlyContinue)
+    $hasGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
 
     if (-not $hasClaude -or -not $hasCodex) {
         Write-Host ""
         Write-Host "  Claude Code or Codex CLI not found." -ForegroundColor Yellow
         Write-Host "  Run:  powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1" -ForegroundColor Yellow
         Write-Host "  The engine will install but won't function until both CLIs are available." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
+    if (-not $hasGemini) {
+        Write-Host ""
+        Write-Host "  Gemini CLI not found (optional - used for research + spec-fix)." -ForegroundColor DarkYellow
+        Write-Host "  Install:  npm install -g @google/gemini-cli" -ForegroundColor Yellow
+        Write-Host "  Then:     gemini  (first run authenticates)" -ForegroundColor Yellow
+        Write-Host "  Without Gemini, research/spec-fix will fall back to Codex." -ForegroundColor DarkGray
         Write-Host ""
     }
 
@@ -56,7 +66,7 @@ $scripts = @(
     @{ File="final-patch-4-blueprint-pipeline.ps1";  Desc="Blueprint Pipeline Final (all integrations)" }
     @{ File="final-patch-5-convergence-pipeline.ps1"; Desc="Convergence Pipeline Final (all integrations)" }
     @{ File="final-patch-6-assess-limitations.ps1";  Desc="Multi-Interface Assess + Final Docs" }
-    @{ File="final-patch-7-spec-resolve.ps1";       Desc="Spec Conflict Auto-Resolution (Codex)" }
+    @{ File="final-patch-7-spec-resolve.ps1";       Desc="Spec Conflict Auto-Resolution (Gemini)" }
 )
 
 Write-Host ""

@@ -1,280 +1,372 @@
-\# GSD Script Reference
+# GSD Script Reference
 
+## Commands (available after install)
 
-
-\## Commands (available after install)
-
-
-
-\### gsd-assess
+### gsd-assess
 
 Scans codebase, detects interfaces, generates file map, runs Claude assessment.
 
+Usage:
 
+```powershell
+gsd-assess              # Full assessment
+gsd-assess -MapOnly     # Regenerate file map without Claude assessment
+gsd-assess -DryRun      # Preview without executing
+```
+
+Output: .gsd\assessment\ folder with inventories and work classification.
+
+### gsd-converge
+
+Runs 5-phase convergence loop to fix existing code issues. Uses three agents: Claude (review, plan, verify), Gemini (research), and Codex (execute).
 
 Usage:
 
-&nbsp; gsd-assess              # Full assessment
-
-&nbsp; gsd-assess -MapOnly     # Regenerate file map without Claude assessment
-
-&nbsp; gsd-assess -DryRun      # Preview without executing
-
-
-
-Output: .gsd\\assessment\\ folder with inventories and work classification
-
-
-
-\### gsd-converge
-
-Runs 5-phase convergence loop to fix existing code issues.
-
-
-
-Usage:
-
-&nbsp; gsd-converge                  # Full convergence
-
-&nbsp; gsd-converge -SkipResearch    # Skip Codex research phase (saves tokens)
-
-&nbsp; gsd-converge -DryRun          # Preview without executing
-
-&nbsp; gsd-converge -MaxIterations 5 # Limit iterations
-
-
+```powershell
+gsd-converge                          # Full convergence
+gsd-converge -SkipResearch            # Skip Gemini/Codex research phase (saves tokens)
+gsd-converge -DryRun                  # Preview without executing
+gsd-converge -MaxIterations 5         # Limit iterations
+gsd-converge -ThrottleSeconds 60      # 60s delay between phases
+gsd-converge -AutoResolve             # Auto-fix spec conflicts via Gemini
+gsd-converge -NtfyTopic "my-topic"    # Override notification topic
+```
 
 Parameters:
 
-&nbsp; -SkipInit          Skip requirements check
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -DryRun | false | Preview mode, no agent calls or code changes |
+| -SkipInit | false | Skip initial requirements check, use existing matrix |
+| -SkipResearch | false | Skip Gemini/Codex research phase (saves tokens) |
+| -SkipSpecCheck | false | Skip spec consistency check before starting |
+| -AutoResolve | false | Auto-resolve spec conflicts via Gemini (falls back to Codex) |
+| -MaxIterations | 20 | Maximum convergence iterations |
+| -StallThreshold | 3 | Stop after N iterations with no improvement |
+| -ThrottleSeconds | 30 | Delay between agent calls to prevent quota exhaustion |
+| -NtfyTopic | (auto) | Override ntfy.sh notification topic |
 
-&nbsp; -SkipResearch      Skip Codex research phase
+### gsd-blueprint
 
-&nbsp; -DryRun            Preview mode
-
-&nbsp; -MaxIterations N   Max iterations (default: 20)
-
-&nbsp; -StallThreshold N  Stop after N iterations with no improvement (default: 3)
-
-
-
-\### gsd-blueprint
-
-Generates code from specifications via blueprint manifest.
-
-
+Generates code from specifications via blueprint manifest. Uses Claude (blueprint, verify), Codex (build), and Gemini (spec-fix when -AutoResolve).
 
 Usage:
 
-&nbsp; gsd-blueprint                 # Full pipeline
+```powershell
+gsd-blueprint                         # Full pipeline
+gsd-blueprint -BlueprintOnly          # Generate manifest only, no build
+gsd-blueprint -BuildOnly              # Resume build from existing manifest
+gsd-blueprint -VerifyOnly             # Re-score without generating
+gsd-blueprint -DryRun                 # Preview
+gsd-blueprint -BatchSize 10           # Build 10 items per cycle
+gsd-blueprint -AutoResolve            # Auto-fix spec conflicts via Gemini
+gsd-blueprint -NtfyTopic "my-topic"   # Override notification topic
+```
 
-&nbsp; gsd-blueprint -BlueprintOnly  # Generate manifest only, no build
+Parameters:
 
-&nbsp; gsd-blueprint -BuildOnly      # Resume build from existing manifest
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -DryRun | false | Preview mode |
+| -BlueprintOnly | false | Generate manifest only, skip build and verify |
+| -BuildOnly | false | Resume building from existing manifest |
+| -VerifyOnly | false | Re-verify and re-score without generating code |
+| -SkipSpecCheck | false | Skip spec consistency check before starting |
+| -AutoResolve | false | Auto-resolve spec conflicts via Gemini (falls back to Codex) |
+| -MaxIterations | 30 | Maximum build/verify iterations |
+| -StallThreshold | 3 | Stop after N iterations with no improvement |
+| -BatchSize | 15 | Number of blueprint items to build per cycle |
+| -ThrottleSeconds | 30 | Delay between agent calls to prevent quota exhaustion |
+| -NtfyTopic | (auto) | Override ntfy.sh notification topic |
 
-&nbsp; gsd-blueprint -VerifyOnly     # Re-score without generating
-
-&nbsp; gsd-blueprint -DryRun         # Preview
-
-
-
-\### gsd-status
+### gsd-status
 
 Displays health dashboard for current project.
 
+Usage:
 
+```powershell
+gsd-status
+```
+
+Shows: current health score, iteration progress, batch sizes, throttling status, convergence/blueprint progress.
+
+### gsd-init
+
+Initializes the .gsd\ folder structure for the current project without running any iterations.
 
 Usage:
 
-&nbsp; gsd-status
+```powershell
+gsd-init
+```
 
+This creates the .gsd\ directory with config files, health templates, and log folders. Equivalent to running gsd-converge -MaxIterations 0.
 
+### gsd-remote
 
-\## Installation Scripts
-
-
-
-\### install-gsd-all.ps1
-
-Master installer. Runs all 12 scripts in dependency order. Idempotent (safe to re-run for updates).
-
-
+Launches Claude remote control for phone-based monitoring via QR code.
 
 Usage:
 
-&nbsp; powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
+```powershell
+gsd-remote
+```
 
+Displays a QR code in the terminal. Scan it with your phone to monitor and interact with the Claude session from anywhere. Press Ctrl+C to stop the remote session.
 
+## Push Notifications
 
-Creates %USERPROFILE%\\.gsd-global\\ with all engine files and adds gsd-\* commands to PowerShell profile.
+### Automatic Topic Detection
 
+When you run gsd-converge or gsd-blueprint, the engine auto-generates a unique ntfy.sh topic:
 
+```
+gsd-{username}-{reponame}
+```
 
-\### install-gsd-prerequisites.ps1
+The topic prints at startup:
+
+```
+  ntfy topic (auto): gsd-rjain-patient-portal
+```
+
+Subscribe to this topic in the ntfy app on your phone to receive real-time pipeline notifications.
+
+### Per-Project Isolation
+
+Each project gets its own topic, so running multiple projects simultaneously sends notifications to separate channels:
+
+```
+Project A: gsd-rjain-patient-portal
+Project B: gsd-rjain-billing-api
+Project C: gsd-rjain-admin-dashboard
+```
+
+### Topic Override
+
+Override the auto-detected topic using any of these methods:
+
+1. **Per-run**: `gsd-converge -NtfyTopic "my-custom-topic"`
+2. **Global config**: Set ntfy_topic in %USERPROFILE%\.gsd-global\config\global-config.json to a specific topic string
+3. **Auto (default)**: Set ntfy_topic to "auto" or leave it unset
+
+### Topic Sanitization
+
+Special characters in usernames and repo names are automatically handled:
+- Dots, underscores, spaces become hyphens
+- All characters lowercased
+- Consecutive hyphens collapsed
+- Leading/trailing hyphens removed
+
+Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
+
+## Installation Scripts
+
+### install-gsd-all.ps1
+
+Master installer. Runs all 13 scripts in dependency order. Idempotent (safe to re-run for updates).
+
+Usage:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
+```
+
+Creates %USERPROFILE%\.gsd-global\ with all engine files and adds gsd-* commands to PowerShell profile.
+
+### install-gsd-prerequisites.ps1
 
 Checks all required tools and installs missing ones via winget/npm.
 
-
-
 Usage:
 
-&nbsp; powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1
+```powershell
+powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1
+powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1 -VerifyOnly
+```
 
-&nbsp; powershell -ExecutionPolicy Bypass -File install-gsd-prerequisites.ps1 -VerifyOnly
+Required CLIs: claude, codex, dotnet, node, npm. Optional: gemini (for three-model optimization), sqlcmd (for SQL validation).
 
-
-
-\### install-gsd-keybindings.ps1
+### install-gsd-keybindings.ps1
 
 Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
+## Core Scripts (executed by installer)
 
+### install-gsd-global.ps1 (Script 1)
 
-\## Core Scripts (executed by installer)
+Creates global directory structure, convergence engine, VS Code tasks, PATH entries, global config with notification settings.
 
+### install-gsd-blueprint.ps1 (Script 2)
 
+Installs blueprint pipeline, prompt templates, agent configurations, profile functions (gsd-blueprint, gsd-init).
 
-\### install-gsd-global.ps1 (Script 1)
-
-Creates global directory structure, convergence engine, VS Code tasks, PATH entries.
-
-
-
-\### install-gsd-blueprint.ps1 (Script 2)
-
-Installs blueprint pipeline, prompt templates, agent configurations, profile functions.
-
-
-
-\### setup-gsd-convergence.ps1 (Script 3)
+### setup-gsd-convergence.ps1 (Script 3)
 
 Sets up convergence loop configuration and phase definitions.
 
-
-
-\### patch-gsd-partial-repo.ps1 (Script 4)
+### patch-gsd-partial-repo.ps1 (Script 4)
 
 Installs gsd-assess command, assessment prompts, file map generation, -MapOnly flag.
 
-
-
-\### patch-gsd-resilience.ps1 (Script 5)
+### patch-gsd-resilience.ps1 (Script 5)
 
 Installs resilience.ps1 module: Invoke-WithRetry, Save-Checkpoint, Restore-Checkpoint, New-Lock, Remove-Lock, Save-GsdSnapshot, Invoke-AdaptiveBatch.
 
+### patch-gsd-hardening.ps1 (Script 6)
 
+Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError.
 
-\### patch-gsd-hardening.ps1 (Script 6)
+### patch-gsd-figma-make.ps1 (Script 7)
 
-Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap.
+Installs interfaces.ps1 module: Find-ProjectInterfaces, Initialize-ProjectInterfaces, Show-InterfaceSummary, Get-InterfaceContext. Recursive design folder discovery, _analysis/_stubs auto-discovery, folder inventory.
 
+### final-patch-1-spec-check.ps1 (Script 8)
 
+Adds Invoke-SpecConsistencyCheck to resilience.ps1. Pre-checks specs for conflicts before pipeline runs. Detects: data_type, api_contract, navigation, business_rule, design_system, database, missing_ref conflicts.
 
-\### patch-gsd-figma-make.ps1 (Script 7)
+### final-patch-2-sql-cli.ps1 (Script 9)
 
-Installs interfaces.ps1 module: Find-ProjectInterfaces, Initialize-ProjectInterfaces, Show-InterfaceSummary, Get-InterfaceContext. Recursive design folder discovery, \_analysis/\_stubs auto-discovery, folder inventory.
+Adds Test-SqlSyntaxWithSqlcmd, Test-SqlFiles, and Test-CliVersions to resilience.ps1. SQL pattern validation and CLI version compatibility checks.
 
+### final-patch-3-storyboard-verify.ps1 (Script 10)
 
+Installs storyboard-aware verification prompt for Claude. Traces data paths end-to-end through all layers.
 
-\### final-patch-1-spec-check.ps1 (Script 8)
+### final-patch-4-blueprint-pipeline.ps1 (Script 11)
 
-Adds Invoke-SpecConsistencyCheck to resilience.ps1. Pre-checks specs for conflicts before pipeline runs.
+Final blueprint pipeline with file map updates, prompt injection, push notifications, throttling, spec check integration.
 
+### final-patch-5-convergence-pipeline.ps1 (Script 12)
 
+Final convergence loop with file map updates, prompt injection, push notifications, throttling, spec check integration.
 
-\### final-patch-2-sql-cli.ps1 (Script 9)
+### final-patch-6-assess-limitations.ps1 (Script 13)
 
-Adds Test-SqlSyntaxWithSqlcmd and Get-CliVersions to resilience.ps1.
+Installs final assess.ps1 with Show-InterfaceSummary, Update-FileMap, -MapOnly, known limitations documentation.
 
+### final-patch-7-spec-resolve.ps1 (Script 14)
 
+Adds spec conflict auto-resolution via Gemini agent (`--approval-mode yolo`). Installs Invoke-SpecConflictResolution function and wires -AutoResolve flag into both pipelines. Falls back to Codex if Gemini CLI is not available.
 
-\### final-patch-3-storyboard-verify.ps1 (Script 10)
+## Key Functions (in resilience.ps1)
 
-Installs storyboard-aware verification prompt for Claude.
+### Invoke-WithRetry
 
-
-
-\### final-patch-4-blueprint-pipeline.ps1 (Script 11)
-
-Wires file map updates and prompt injection into blueprint pipeline.
-
-
-
-\### final-patch-5-convergence-pipeline.ps1 (Script 12)
-
-Wires file map updates and prompt injection into convergence loop.
-
-
-
-\### final-patch-6-assess-limitations.ps1 (Script 13)
-
-Installs final assess.ps1 with Show-InterfaceSummary, Update-FileMap, -MapOnly, known limitations doc.
-
-
-
-\## Key Functions (in resilience.ps1)
-
-
-
-\### Invoke-WithRetry
-
-Calls an AI agent with retry logic and batch reduction.
-
-
+Calls an AI agent with retry logic, batch reduction, and quota-aware backoff.
 
 Parameters:
 
-&nbsp; -Agent        "claude" or "codex"
+| Parameter | Description |
+|-----------|-------------|
+| -Agent | "claude", "codex", or "gemini" |
+| -Prompt | The prompt text |
+| -Phase | Phase name for logging |
+| -LogFile | Path to log file |
+| -CurrentBatchSize | Starting batch size (halves on each retry) |
+| -GsdDir | Path to .gsd directory |
+| -GeminiMode | "--sandbox" (read-only, default) or "--approval-mode yolo" (write) |
 
-&nbsp; -Prompt       The prompt text
-
-&nbsp; -Phase        Phase name for logging
-
-&nbsp; -LogFile      Path to log file
-
-&nbsp; -CurrentBatchSize  Starting batch size
-
-&nbsp; -GsdDir       Path to .gsd directory
-
-
-
-\### Update-FileMap
+### Update-FileMap
 
 Generates file-map.json and file-map-tree.md for the repo.
 
-
-
 Parameters:
 
-&nbsp; -Root     Repo root path
-
-&nbsp; -GsdPath  Path to .gsd directory
-
-
+| Parameter | Description |
+|-----------|-------------|
+| -Root | Repo root path |
+| -GsdPath | Path to .gsd directory |
 
 Returns: path to file-map.json
 
+### Wait-ForQuotaReset
 
+Sleeps with adaptive backoff when quota is exhausted. Starts at 5 minutes, doubles each cycle up to 60-minute cap. Max 24 cycles (24 hours).
 
-\### Wait-ForQuotaReset
+### Test-NetworkAvailability
 
-Sleeps in 60-minute increments when quota is exhausted. Max 24 cycles.
+Tests network via claude -p "PING" --max-turns 1. Polls every 30s when offline. Max wait: 1 hour.
 
+### Save-Checkpoint / Restore-Checkpoint
 
+Saves and restores pipeline state (iteration, phase, health, batch_size) for crash recovery.
 
-\### Test-NetworkAvailability
-
-Tests network via claude -p "PING" --max-turns 1. Polls every 30s when offline.
-
-
-
-\### Save-Checkpoint / Restore-Checkpoint
-
-Saves and restores convergence state for crash recovery.
-
-
-
-\### Save-GsdSnapshot
+### Save-GsdSnapshot
 
 Creates git stash or commit as rollback point before destructive operations.
 
+### Test-HealthRegression
+
+Detects health drops >5% after an iteration. Auto-reverts to pre-iteration state.
+
+### Test-AgentBoundaries
+
+Validates that agent output stays within allowed write scope. Auto-reverts boundary violations.
+
+### Test-JsonFile
+
+Validates JSON file integrity. Auto-restores from .last-good backup on corruption.
+
+### Test-DiskSpace
+
+Checks for minimum 0.5 GB free space. Auto-cleans caches when low.
+
+### Test-CliVersions
+
+Validates claude, codex, gemini, dotnet, node, npm, sqlcmd versions and compatibility.
+
+### Test-SqlFiles / Test-SqlSyntaxWithSqlcmd
+
+SQL pattern validation (no string concat, TRY/CATCH required, audit columns) and sqlcmd syntax checking.
+
+### Write-GsdError
+
+Structured error logging to errors.jsonl with category, phase, iteration, message, and resolution.
+
+### Get-GsdNtfyTopic
+
+Auto-generates ntfy topic from $env:USERNAME + git repo name. Sanitizes to lowercase alphanumeric with hyphens.
+
+### Send-GsdNotification
+
+Sends push notification via ntfy.sh. Silent fail if not configured.
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -Title | (required) | Notification title |
+| -Message | (required) | Notification body |
+| -Priority | "default" | min, low, default, high, urgent |
+| -Tags | "" | Emoji shortcodes (e.g., "rocket", "warning", "tada") |
+| -Topic | (auto) | Override topic for this notification |
+
+### Initialize-GsdNotifications
+
+Sets up ntfy topic at pipeline startup. Resolves topic from: override parameter > global config > auto-detection.
+
+### Invoke-SpecConsistencyCheck
+
+Scans specification documents for contradictions. Blocks critical conflicts unless -AutoResolve is set.
+
+### Invoke-SpecConflictResolution
+
+Uses Gemini (--approval-mode yolo) to auto-resolve spec contradictions based on authoritative source priority. Falls back to Codex if Gemini is unavailable. Max 2 attempts per conflict.
+
+## VS Code Integration
+
+After installation, two tasks are available via Ctrl+Shift+P -> "Run Task":
+
+- **GSD: Convergence Loop** - runs gsd-converge
+- **GSD: Blueprint Pipeline** - runs gsd-blueprint
+
+Keyboard shortcuts (if install-gsd-keybindings.ps1 was run):
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+Shift+G, C | Run convergence loop |
+| Ctrl+Shift+G, B | Run blueprint pipeline |
+| Ctrl+Shift+G, A | Run assessment |
+| Ctrl+Shift+G, S | Show status dashboard |

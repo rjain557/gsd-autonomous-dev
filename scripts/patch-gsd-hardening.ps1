@@ -222,6 +222,8 @@ function Wait-ForQuotaReset {
             try {
                 if ($Agent -eq "codex") {
                     $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
+                } elseif ($Agent -eq "gemini") {
+                    $testOutput = "Reply with just the word READY" | gemini --sandbox 2>&1
                 } else {
                     $testOutput = claude -p "Reply with just the word READY" 2>&1
                 }
@@ -354,7 +356,7 @@ function Test-AgentBoundaries {
         Compares against a baseline of pre-existing dirty files to avoid false positives.
     #>
     param(
-        [string]$Agent,       # "claude" or "codex"
+        [string]$Agent,       # "claude", "codex", "gemini", "gemini-research", or "gemini-spec-fix"
         [string]$RepoRoot,
         [string]$GsdDir,
         [string]$Pipeline,
@@ -416,6 +418,32 @@ function Test-AgentBoundaries {
         }
     }
 
+    if ($Agent -eq "gemini-research" -or $Agent -eq "gemini") {
+        # Gemini research (--sandbox) should NOT modify ANY files
+        if ($agentChanged -and @($agentChanged).Count -gt 0) {
+            $violations = @($agentChanged)
+            Write-Host "    [!!]  Gemini (research/sandbox) modified files (boundary violation):" -ForegroundColor DarkYellow
+            $violations | Select-Object -First 5 | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkYellow }
+            $violations | ForEach-Object { git -C $RepoRoot checkout HEAD -- $_ 2>$null }
+            return $false
+        }
+    }
+
+    if ($Agent -eq "gemini-spec-fix") {
+        # Gemini spec-fix (--approval-mode yolo) may ONLY modify docs\ and .gsd\spec-conflicts\
+        $agentChanged | ForEach-Object {
+            if ($_ -notmatch "^docs[\\/]" -and $_ -notmatch "^\.gsd[\\/]spec-conflicts" -and $_ -notmatch "_analysis[\\/]") {
+                $violations += $_
+            }
+        }
+        if ($violations.Count -gt 0) {
+            Write-Host "    [!!]  Gemini (spec-fix) modified files outside docs/spec-conflicts (boundary violation):" -ForegroundColor DarkYellow
+            $violations | Select-Object -First 5 | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkYellow }
+            $violations | ForEach-Object { git -C $RepoRoot checkout HEAD -- $_ 2>$null }
+            return $false
+        }
+    }
+
     return $true
 }
 
@@ -444,6 +472,14 @@ function Test-CliVersions {
     } catch {
         Write-Host "    [XX] codex CLI not responding" -ForegroundColor Red
         return $false
+    }
+
+    # Gemini (optional - used for research and spec-fix)
+    try {
+        $geminiVer = gemini --version 2>&1
+        Write-Host "    [OK] gemini: $($geminiVer | Select-Object -First 1)" -ForegroundColor DarkGreen
+    } catch {
+        Write-Host "    [!!]  gemini CLI not found (research/spec-fix will fall back to codex)" -ForegroundColor DarkYellow
     }
 
     # dotnet (optional but recommended)
@@ -548,7 +584,7 @@ $script:OriginalInvokeWithRetry = ${function:Invoke-WithRetry}
 
 function Invoke-WithRetry {
     param(
-        [string]$Agent,
+        [string]$Agent,           # "claude", "codex", or "gemini"
         [string]$Prompt,
         [string]$Phase,
         [string]$LogFile,
@@ -556,7 +592,8 @@ function Invoke-WithRetry {
         [int]$MaxAttempts = $script:RETRY_MAX,
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
-        [string]$AllowedTools = "Read,Write,Bash,mcp__*"
+        [string]$AllowedTools = "Read,Write,Bash,mcp__*",
+        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--approval-mode yolo" (write)
     )
 
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }
@@ -594,6 +631,11 @@ function Invoke-WithRetry {
             } elseif ($Agent -eq "codex") {
                 # Pass prompt via stdin to avoid Windows CLI length limits
                 $output = $effectivePrompt | codex exec --full-auto - 2>&1
+                $exitCode = $LASTEXITCODE
+            } elseif ($Agent -eq "gemini") {
+                # Gemini CLI: --sandbox (read-only) or --approval-mode yolo (write)
+                $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+                $output = $effectivePrompt | gemini @geminiArgs 2>&1
                 $exitCode = $LASTEXITCODE
             }
 
@@ -651,7 +693,16 @@ function Invoke-WithRetry {
                 ) | Out-Null
 
                 # -- Post-check: boundary enforcement (with baseline to avoid false positives) --
-                Test-AgentBoundaries -Agent $(if ($Agent -eq "claude") { "claude" } else { "codex" }) `
+                $boundaryAgent = switch ($Agent) {
+                    "claude" { "claude" }
+                    "codex"  { "codex" }
+                    "gemini" {
+                        # Map gemini mode to boundary role
+                        if ($GeminiMode -match "yolo") { "gemini-spec-fix" } else { "gemini-research" }
+                    }
+                    default  { $Agent }
+                }
+                Test-AgentBoundaries -Agent $boundaryAgent `
                     -RepoRoot (Get-Location).Path -GsdDir $GsdDir -Pipeline "any" `
                     -BaselineDirty $baselineDirty | Out-Null
 
@@ -852,7 +903,42 @@ function Update-FileMap {
 # 10. PUSH NOTIFICATIONS (ntfy.sh)
 # ===========================================
 
-$script:NTFY_TOPIC = $null  # Set via global-config.json or -NtfyTopic param
+$script:NTFY_TOPIC = $null  # Set via auto-detect, global-config.json, or -NtfyTopic param
+
+function Get-GsdNtfyTopic {
+    <#
+    .SYNOPSIS
+        Auto-generates an ntfy topic from username + repo name.
+        Pattern: gsd-{username}-{reponame} (lowercased, sanitized)
+    #>
+    # Get username from environment
+    $user = $env:USERNAME
+    if (-not $user) { $user = $env:USER }        # Linux/macOS fallback
+    if (-not $user) { $user = "unknown" }
+
+    # Get repo name from git remote or folder name
+    $repoName = $null
+    try {
+        $remoteUrl = git config --get remote.origin.url 2>$null
+        if ($remoteUrl) {
+            # Extract repo name from URL (handles both HTTPS and SSH)
+            # e.g., https://github.com/user/my-repo.git -> my-repo
+            # e.g., git@github.com:user/my-repo.git -> my-repo
+            $repoName = ($remoteUrl -replace '\.git$', '') -replace '.*/|.*:', '' | Split-Path -Leaf
+        }
+    } catch { }
+
+    # Fallback to current directory name
+    if (-not $repoName) {
+        $repoName = (Get-Item .).Name
+    }
+
+    # Sanitize: lowercase, replace non-alphanumeric with hyphens, collapse multiples
+    $user = ($user.ToLower() -replace '[^a-z0-9]', '-') -replace '-+', '-' -replace '^-|-$', ''
+    $repoName = ($repoName.ToLower() -replace '[^a-z0-9]', '-') -replace '-+', '-' -replace '^-|-$', ''
+
+    return "gsd-$user-$repoName"
+}
 
 function Send-GsdNotification {
     <#
@@ -883,24 +969,35 @@ function Send-GsdNotification {
 function Initialize-GsdNotifications {
     <#
     .SYNOPSIS
-        Loads ntfy topic from global config. Call once at pipeline startup.
+        Sets up ntfy topic for push notifications. Priority order:
+        1. Explicit -NtfyTopic parameter override
+        2. ntfy_topic from global-config.json (if not "auto")
+        3. Auto-detected: gsd-{username}-{reponame}
     #>
     param([string]$GsdGlobalDir, [string]$OverrideTopic = $null)
 
     if ($OverrideTopic) {
         $script:NTFY_TOPIC = $OverrideTopic
+        Write-Host "  ntfy topic (override): $($script:NTFY_TOPIC)" -ForegroundColor DarkGray
         return
     }
 
+    # Check global config for explicit topic
     $configPath = Join-Path $GsdGlobalDir "config\global-config.json"
     if (Test-Path $configPath) {
         try {
             $config = Get-Content $configPath -Raw | ConvertFrom-Json
-            if ($config.notifications -and $config.notifications.ntfy_topic) {
+            if ($config.notifications -and $config.notifications.ntfy_topic -and $config.notifications.ntfy_topic -ne "auto") {
                 $script:NTFY_TOPIC = $config.notifications.ntfy_topic
+                Write-Host "  ntfy topic (config): $($script:NTFY_TOPIC)" -ForegroundColor DarkGray
+                return
             }
         } catch { }
     }
+
+    # Auto-detect from username + repo name
+    $script:NTFY_TOPIC = Get-GsdNtfyTopic
+    Write-Host "  ntfy topic (auto): $($script:NTFY_TOPIC)" -ForegroundColor DarkGray
 }
 
 Write-Host "  Hardening modules loaded." -ForegroundColor DarkGray

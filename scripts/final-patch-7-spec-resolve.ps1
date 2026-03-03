@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
     Final Integration Sub-Patch 7: Spec Conflict Auto-Resolution
-    Adds Codex-powered auto-resolution of spec contradictions detected by the spec auditor.
+    Adds Gemini-powered auto-resolution of spec contradictions detected by the spec auditor.
+    Uses Gemini (--approval-mode yolo) to save Claude/Codex quota for code generation.
     New flag: -AutoResolve on gsd-blueprint and gsd-converge
 #>
 param([string]$UserHome = $env:USERPROFILE)
@@ -9,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $GlobalDir = Join-Path $UserHome ".gsd-global"
 $LibFile = Join-Path $GlobalDir "lib\modules\resilience.ps1"
-$PromptDir = Join-Path $GlobalDir "prompts\codex"
+$PromptDir = Join-Path $GlobalDir "prompts\gemini"
 
 if (-not (Test-Path $LibFile)) {
     Write-Host "Run prior patches first." -ForegroundColor Red; exit 1
@@ -22,7 +23,7 @@ Write-Host "[WRENCH] Sub-patch 7: Spec conflict auto-resolution..." -ForegroundC
 # ========================================
 
 $promptContent = @'
-# GSD Spec Conflict Resolution - Codex Phase
+# GSD Spec Conflict Resolution - Gemini Phase
 
 You are a SPEC RESOLVER. Fix contradictions found in specification documents
 so the autonomous pipeline can proceed without blocking.
@@ -84,7 +85,7 @@ Attempt: {{ATTEMPT}} | Date: (current date)
 ```
 
 Append a single line to: {{GSD_DIR}}\spec-conflicts\resolution-log.jsonl
-{"agent":"codex","action":"resolve-conflicts","attempt":{{ATTEMPT}},"conflicts_resolved":N,"conflicts_skipped":N,"files_modified":["file1","file2"],"timestamp":"(ISO 8601)"}
+{"agent":"gemini","action":"resolve-conflicts","attempt":{{ATTEMPT}},"conflicts_resolved":N,"conflicts_skipped":N,"files_modified":["file1","file2"],"timestamp":"(ISO 8601)"}
 
 ## Boundaries - STRICTLY ENFORCED
 - ONLY modify files in: docs\, and interface _analysis\ directories
@@ -97,8 +98,9 @@ Append a single line to: {{GSD_DIR}}\spec-conflicts\resolution-log.jsonl
 Be thorough but fast. Fix every conflict you can. Under 3000 tokens output.
 '@
 
+if (-not (Test-Path $PromptDir)) { New-Item -ItemType Directory -Path $PromptDir -Force | Out-Null }
 Set-Content -Path (Join-Path $PromptDir "resolve-spec-conflicts.md") -Value $promptContent -Encoding UTF8
-Write-Host "   [OK] prompts\codex\resolve-spec-conflicts.md" -ForegroundColor DarkGreen
+Write-Host "   [OK] prompts\gemini\resolve-spec-conflicts.md" -ForegroundColor DarkGreen
 
 # ========================================
 # 2. Add Invoke-SpecConflictResolution to resilience.ps1
@@ -107,7 +109,8 @@ Write-Host "   [OK] prompts\codex\resolve-spec-conflicts.md" -ForegroundColor Da
 $code = @'
 
 # ===============================================================
-# SPEC CONFLICT AUTO-RESOLUTION - Codex resolves contradictions
+# SPEC CONFLICT AUTO-RESOLUTION - Gemini resolves contradictions
+# (saves Claude/Codex quota for code generation)
 # ===============================================================
 
 function Invoke-SpecConflictResolution {
@@ -122,7 +125,7 @@ function Invoke-SpecConflictResolution {
     )
 
     $totalConflicts = $Conflicts.Count
-    Write-Host "  [WRENCH] Auto-resolving $totalConflicts spec conflict(s) via Codex..." -ForegroundColor Cyan
+    Write-Host "  [WRENCH] Auto-resolving $totalConflicts spec conflict(s) via Gemini..." -ForegroundColor Cyan
 
     # Create spec-conflicts directory
     $conflictsDir = Join-Path $GsdDir "spec-conflicts"
@@ -139,7 +142,7 @@ function Invoke-SpecConflictResolution {
     }
 
     # Load prompt template
-    $promptTemplatePath = Join-Path $env:USERPROFILE ".gsd-global\prompts\codex\resolve-spec-conflicts.md"
+    $promptTemplatePath = Join-Path $env:USERPROFILE ".gsd-global\prompts\gemini\resolve-spec-conflicts.md"
     if (-not (Test-Path $promptTemplatePath)) {
         Write-Host "    [XX] Prompt template not found: $promptTemplatePath" -ForegroundColor Red
         return @{ Resolved = $false; Attempts = 0 }
@@ -169,16 +172,17 @@ function Invoke-SpecConflictResolution {
             return @{ Resolved = $false; Attempts = $attempt }
         }
 
-        # Spawn Codex agent via Invoke-WithRetry
-        $result = Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "spec-conflict-resolution" `
+        # Spawn Gemini agent via Invoke-WithRetry (saves Claude/Codex quota)
+        $result = Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "spec-conflict-resolution" `
             -LogFile "$GsdDir\logs\spec-conflict-resolution.log" `
-            -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2
+            -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
+            -GeminiMode "--approval-mode yolo"
 
         if (-not $result.Success) {
             Write-Host "    [!!]  Resolution agent failed" -ForegroundColor DarkYellow
             if (Get-Command Write-GsdError -ErrorAction SilentlyContinue) {
                 Write-GsdError -GsdDir $GsdDir -Category "agent_crash" -Phase "spec-conflict-resolution" `
-                    -Iteration $attempt -Message "Codex spec resolution failed" -Resolution "Manual fix required"
+                    -Iteration $attempt -Message "Gemini spec resolution failed" -Resolution "Manual fix required"
             }
             return @{ Resolved = $false; Attempts = $attempt }
         }

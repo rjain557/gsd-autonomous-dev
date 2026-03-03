@@ -95,6 +95,7 @@ function Test-PreFlight {
     $tools = @(
         @{ Name="claude"; Cmd="claude --version" },
         @{ Name="codex"; Cmd="codex --version" },
+        @{ Name="gemini"; Cmd="gemini --version" },
         @{ Name="git"; Cmd="git --version" }
     )
     foreach ($tool in $tools) {
@@ -102,8 +103,13 @@ function Test-PreFlight {
             $null = Invoke-Expression $tool.Cmd 2>&1
             Write-Host "    [OK] $($tool.Name) available" -ForegroundColor DarkGreen
         } catch {
-            $errors += "$($tool.Name) CLI not found in PATH"
-            Write-Host "    [XX] $($tool.Name) not found" -ForegroundColor Red
+            if ($tool.Name -eq "gemini") {
+                $warnings += "gemini CLI not found - research/spec-fix will fall back to codex"
+                Write-Host "    [!!]  $($tool.Name) not found (optional)" -ForegroundColor DarkYellow
+            } else {
+                $errors += "$($tool.Name) CLI not found in PATH"
+                Write-Host "    [XX] $($tool.Name) not found" -ForegroundColor Red
+            }
         }
     }
 
@@ -273,7 +279,7 @@ function Clear-Checkpoint {
 
 function Invoke-WithRetry {
     param(
-        [string]$Agent,           # "claude" or "codex"
+        [string]$Agent,           # "claude", "codex", or "gemini"
         [string]$Prompt,
         [string]$Phase,
         [string]$LogFile,
@@ -281,7 +287,8 @@ function Invoke-WithRetry {
         [int]$MaxAttempts = $script:RETRY_MAX,
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
-        [string]$AllowedTools = "Read,Write,Bash,mcp__*"
+        [string]$AllowedTools = "Read,Write,Bash,mcp__*",
+        [string]$GeminiMode = "--sandbox"   # "--sandbox" (read-only) or "--approval-mode yolo" (write)
     )
 
     $result = @{
@@ -307,6 +314,11 @@ function Invoke-WithRetry {
             } elseif ($Agent -eq "codex") {
                 # Pass prompt via stdin to avoid Windows CLI length limits
                 $output = $effectivePrompt | codex exec --full-auto - 2>&1
+                $exitCode = $LASTEXITCODE
+            } elseif ($Agent -eq "gemini") {
+                # Gemini CLI: --sandbox (read-only) or --approval-mode yolo (write)
+                $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+                $output = $effectivePrompt | gemini @geminiArgs 2>&1
                 $exitCode = $LASTEXITCODE
             }
 

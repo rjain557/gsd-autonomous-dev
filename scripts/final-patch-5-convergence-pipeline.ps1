@@ -188,14 +188,26 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Start-Sleep -Seconds $ThrottleSeconds
     }
 
-    # 2. RESEARCH (Codex - optional)
+    # 2. RESEARCH (Gemini --sandbox, read-only - saves Claude/Codex quota)
     if (-not $SkipResearch) {
-        Write-Host "  CODEX -> research" -ForegroundColor Magenta
+        Write-Host "  GEMINI -> research (sandbox)" -ForegroundColor Magenta
         if (-not (Test-Path "$GsdDir\research")) { New-Item -ItemType Directory -Path "$GsdDir\research" -Force | Out-Null }
-        $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
-        if (-not $DryRun) {
-            Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "research" `
-                -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+        # Try Gemini first; fall back to Codex if gemini CLI not available
+        $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
+        if ($useGemini) {
+            $prompt = Local-ResolvePrompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
+            if (-not $DryRun) {
+                Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "research" `
+                    -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+                    -GeminiMode "--sandbox" | Out-Null
+            }
+        } else {
+            Write-Host "    (gemini not found, falling back to codex)" -ForegroundColor DarkYellow
+            $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
+            if (-not $DryRun) {
+                Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "research" `
+                    -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+            }
         }
     }
 

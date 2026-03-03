@@ -14,20 +14,23 @@
     Or from VS Code:             Ctrl+Shift+P -> "Run Task" -> "GSD: Convergence Loop"
 
 .NOTES
-    Agent Assignment Strategy (Token-Optimized):
+    Agent Assignment Strategy (Three-Model Optimized):
 
     +---------------------+--------------+-------------------------------------+
     | GSD Phase           | Agent        | Why                                 |
     +---------------------+--------------+-------------------------------------+
     | /gsd:code-review    | CLAUDE CODE  | Short output, judgment-heavy        |
     | /gsd:create-phases  | CLAUDE CODE  | Architecture decisions, small JSON  |
-    | /gsd:research       | CODEX        | Long reads, web search, many files  |
+    | /gsd:research       | GEMINI       | Read-only sandbox, saves quota      |
     | /gsd:plan           | CLAUDE CODE  | Prioritization, dependency graph    |
     | /gsd:execute        | CODEX        | Bulk code generation, high tokens   |
+    | /gsd:spec-fix       | GEMINI       | Resolve spec contradictions         |
+    | /gsd:verify         | CLAUDE CODE  | Binary check, update statuses       |
     +---------------------+--------------+-------------------------------------+
 
-    Claude Code handles: review, create-phases, plan (3 short-output phases)
-    Codex handles:       research, execute (2 long-output phases)
+    Claude Code handles: review, create-phases, plan, verify (reasoning phases)
+    Codex handles:       execute (code generation phase)
+    Gemini handles:      research, spec-fix (saves Claude/Codex quota)
 
 .USAGE
     # Install globally (one time)
@@ -75,6 +78,7 @@ $directories = @(
     "$GsdGlobalDir\prompts",
     "$GsdGlobalDir\prompts\claude",
     "$GsdGlobalDir\prompts\codex",
+    "$GsdGlobalDir\prompts\gemini",
     "$GsdGlobalDir\config",
     "$GsdGlobalDir\templates",
     "$GsdGlobalDir\templates\project-gsd",
@@ -101,8 +105,8 @@ Write-Host "Creating agent assignment configuration..." -ForegroundColor Yellow
 
 $agentMap = @{
     version = "1.0.0"
-    strategy = "token-optimized"
-    description = "Claude Code for short-output thinking. Codex for long-output execution."
+    strategy = "three-model-optimized"
+    description = "Claude for reasoning (review/plan/verify). Codex for code execution. Gemini for research + spec-fix (saves Claude/Codex quota)."
     phases = [ordered]@{
         "code-review" = @{
             agent = "claude-code"
@@ -119,11 +123,20 @@ $agentMap = @{
             outputs = @("requirements-matrix.json (full build)", "phase dependency graph", "figma-mapping.md")
         }
         "research" = @{
-            agent = "codex"
-            reason = "Reads many files, searches patterns, explores codebase and docs. High input token consumption. Can run unlimited."
+            agent = "gemini"
+            mode = "--sandbox"
+            reason = "Reads many files, searches patterns, explores codebase and docs. Gemini saves Claude/Codex quota. Falls back to Codex if unavailable."
             estimated_output_tokens = "5000-15000"
             inputs = @("requirements-matrix.json", "specs", "figma designs", "existing code", "external references")
             outputs = @("research-findings.md", "pattern-analysis.md", "dependency-map.json", "tech-decisions.md")
+        }
+        "spec-fix" = @{
+            agent = "gemini"
+            mode = "--approval-mode yolo"
+            reason = "Resolves spec contradictions. Gemini saves Claude/Codex quota for code generation."
+            estimated_output_tokens = "2000-5000"
+            inputs = @("spec-conflicts/conflicts-to-resolve.json", "spec-consistency-report.json", "docs/")
+            outputs = @("spec-conflicts/resolution-summary.md", "updated docs files")
         }
         "plan" = @{
             agent = "claude-code"
@@ -142,10 +155,12 @@ $agentMap = @{
     }
     token_budget_summary = @{
         claude_code_per_iteration = "6500-15000 tokens (review + create-phases + plan)"
-        codex_per_iteration = "20000-115000+ tokens (research + execute)"
+        codex_per_iteration = "15000-100000+ tokens (execute only)"
+        gemini_per_iteration = "5000-15000 tokens (research + spec-fix)"
         claude_code_monthly_estimate = "~150K-300K tokens for 20 iterations"
-        codex_monthly_estimate = "unlimited (full-auto mode)"
-        optimization = "Claude Code stays well under $200/mo cap. Codex does the heavy lifting."
+        codex_monthly_estimate = "unlimited (full-auto mode, execute only)"
+        gemini_monthly_estimate = "unlimited (Gemini Ultra plan)"
+        optimization = "Three-model strategy: Claude thinks, Codex codes, Gemini researches. Each uses independent quota."
     }
 } | ConvertTo-Json -Depth 5
 
@@ -179,7 +194,7 @@ $globalConfig = @{
     project_gsd_dir = ".gsd"
     phase_order = @("code-review", "create-phases", "research", "plan", "execute")
     notifications = @{
-        ntfy_topic = "gsd-rjain-technijian"
+        ntfy_topic = "auto"
         notify_on = @("iteration_complete", "converged", "stalled", "quota_exhausted", "error")
     }
 } | ConvertTo-Json -Depth 4
@@ -380,7 +395,70 @@ for code generation. You have UNLIMITED tokens - be thorough.
 '@
 
 Set-Content -Path "$GsdGlobalDir\prompts\codex\research.md" -Value $codexResearch -Encoding UTF8
-Write-Host "   [OK] prompts\codex\research.md" -ForegroundColor DarkGreen
+Write-Host "   [OK] prompts\codex\research.md (fallback)" -ForegroundColor DarkGreen
+
+# -- Gemini: Research (primary - saves Claude/Codex quota) --
+$geminiResearch = @'
+# GSD Research - Gemini Phase (sandbox / read-only)
+
+You are the RESEARCHER. Deeply analyze the codebase, specs, and designs to prepare
+for code generation. Be thorough - your findings drive the next planning + execution phases.
+
+## Context
+- Iteration: {{ITERATION}}
+- Health: {{HEALTH}}%
+- Project .gsd dir: {{GSD_DIR}}
+- Repo root: {{REPO_ROOT}}
+{{INTERFACE_CONTEXT}}
+
+## Read (read ALL of these thoroughly)
+1. {{GSD_DIR}}\health\requirements-matrix.json - every requirement and its status
+2. docs\ - ALL SDLC specification documents (Phase A through E), read every file completely
+3. Existing source code - scan the full codebase structure and key files
+4. {{GSD_DIR}}\specs\figma-mapping.md - current component mappings
+5. {{GSD_DIR}}\specs\sdlc-reference.md - doc index
+
+## Do
+1. ANALYZE the current codebase:
+   - What patterns are in use?
+   - What frameworks, libraries, dependencies exist?
+   - What's the folder structure?
+   - What's already implemented vs gaps?
+
+2. ANALYZE specs vs reality:
+   - For each not_started requirement, what exactly needs to be built?
+   - What are the data models needed?
+   - What API contracts are specified?
+   - What stored procedures need to exist?
+
+3. BUILD dependency map:
+   - Which requirements depend on which?
+   - What order should things be built?
+   - What shared utilities/types are needed first?
+
+4. IDENTIFY patterns and decisions:
+   - Authentication approach
+   - State management
+   - Routing structure
+   - Error handling patterns
+   - Compliance implementation specifics
+
+## Write
+1. {{GSD_DIR}}\research\research-findings.md - comprehensive analysis
+2. {{GSD_DIR}}\research\dependency-map.json - requirement dependency graph
+3. {{GSD_DIR}}\research\pattern-analysis.md - detected and recommended patterns
+4. {{GSD_DIR}}\research\tech-decisions.md - technical decisions and rationale
+5. UPDATE {{GSD_DIR}}\specs\figma-mapping.md with any new component mappings found
+
+## Boundaries
+- DO NOT modify source code in this phase
+- DO NOT modify health/ or code-review/ files
+- ONLY write to {{GSD_DIR}}\research\ and update specs\figma-mapping.md
+- Under 5000 tokens output. Use tables and bullets, not prose.
+'@
+
+Set-Content -Path "$GsdGlobalDir\prompts\gemini\research.md" -Value $geminiResearch -Encoding UTF8
+Write-Host "   [OK] prompts\gemini\research.md (primary)" -ForegroundColor DarkGreen
 
 # -- Codex: Execute --
 $codexExecute = @'
@@ -818,22 +896,33 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         Start-Sleep -Seconds $ThrottleSeconds
     }
 
-    # == 2. RESEARCH (Codex) - optional ==
+    # == 2. RESEARCH (Gemini --sandbox, falls back to Codex) - optional ==
     if (-not $SkipResearch) {
-        Write-Host "[$Iteration] CODEX -> research" -ForegroundColor Magenta
-        Log-Handoff "codex" "research" $Iteration $Health
-
         # Ensure research dir exists
         $researchDir = Join-Path $GsdDir "research"
         if (-not (Test-Path $researchDir)) { New-Item -ItemType Directory -Path $researchDir -Force | Out-Null }
 
-        $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
-
-        if (-not $DryRun) {
-            $prompt | codex exec --full-auto - 2>&1 |
-                Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
+        $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
+        if ($useGemini) {
+            Write-Host "[$Iteration] GEMINI -> research (sandbox)" -ForegroundColor Magenta
+            Log-Handoff "gemini" "research" $Iteration $Health
+            $prompt = Resolve-Prompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
+            if (-not $DryRun) {
+                $prompt | gemini --sandbox 2>&1 |
+                    Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
+            } else {
+                Write-Host "   [DRY RUN] gemini -> research" -ForegroundColor DarkYellow
+            }
         } else {
-            Write-Host "   [DRY RUN] codex -> research" -ForegroundColor DarkYellow
+            Write-Host "[$Iteration] CODEX -> research (gemini not found)" -ForegroundColor Magenta
+            Log-Handoff "codex" "research" $Iteration $Health
+            $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
+            if (-not $DryRun) {
+                $prompt | codex exec --full-auto - 2>&1 |
+                    Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
+            } else {
+                Write-Host "   [DRY RUN] codex -> research" -ForegroundColor DarkYellow
+            }
         }
     } else {
         Write-Host "[>>]  [$Iteration] Skipping research phase" -ForegroundColor DarkGray
