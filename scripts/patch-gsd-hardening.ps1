@@ -576,10 +576,139 @@ function Test-SqlFiles {
 }
 
 # ===========================================
-# 8. ENHANCED INVOKE-WITHRETRY (quota-aware)
+# 8. FAILURE DIAGNOSIS + AGENT FALLBACK
 # ===========================================
 
-# Override the original Invoke-WithRetry with quota + network awareness
+function Get-FailureDiagnosis {
+    <#
+    .SYNOPSIS
+        Analyzes agent failure output to diagnose root cause and recommend recovery action.
+        Returns: @{ Diagnosis; Action (retry|fallback|fail); FallbackAgent; FallbackMode }
+    #>
+    param(
+        [string]$Agent,
+        [int]$ExitCode,
+        [string]$OutputText,
+        [string]$Phase
+    )
+
+    $diagnosis = ""
+    $action = "retry"
+    $fallbackAgent = $null
+    $fallbackMode = $null
+
+    # -- Gemini-specific diagnostics --
+    if ($Agent -eq "gemini") {
+        if ($OutputText -match "sandbox.*restrict|not.*allow|permission.*denied|read.only") {
+            $diagnosis = "Gemini sandbox blocked a write operation"
+        } elseif ($OutputText -match "model.*not.*found|model.*unavail|invalid.*model|unsupported.*model") {
+            $diagnosis = "Gemini model unavailable"
+        } elseif ($OutputText -match "too.*large|input.*limit|prompt.*too|content.*length") {
+            $diagnosis = "Prompt too large for Gemini context"
+        } elseif ($OutputText -match "internal.*error|server.*error|50[0-9]") {
+            $diagnosis = "Gemini server error (transient)"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "Gemini produced no output (CLI crash or argument error)"
+        } else {
+            $diagnosis = "Gemini exit code $ExitCode"
+        }
+
+        # Gemini can fall back to codex for any phase
+        $action = "fallback"
+        $fallbackAgent = "codex"
+        $fallbackMode = "exec --full-auto -"
+    }
+
+    # -- Codex-specific diagnostics --
+    elseif ($Agent -eq "codex") {
+        if ($OutputText -match "loop.*detect|iteration.*limit|max.*turns") {
+            $diagnosis = "Codex hit loop/iteration limit"
+        } elseif ($OutputText -match "internal.*error|server.*error|50[0-9]") {
+            $diagnosis = "Codex server error (transient)"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "Codex produced no output"
+        } else {
+            $diagnosis = "Codex exit code $ExitCode"
+        }
+        # Codex can fall back to claude for read-only phases
+        if ($Phase -match "research|review|verify|plan") {
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        }
+    }
+
+    # -- Claude-specific diagnostics --
+    elseif ($Agent -eq "claude") {
+        if ($OutputText -match "max.*turns|turn.*limit") {
+            $diagnosis = "Claude hit max turns limit"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "Claude produced no output"
+        } else {
+            $diagnosis = "Claude exit code $ExitCode"
+        }
+        # Claude has no fallback - it's the most capable agent
+        $action = "retry"
+    }
+
+    else {
+        $diagnosis = "Unknown agent '$Agent' exit code $ExitCode"
+    }
+
+    return @{
+        Diagnosis = $diagnosis
+        Action = $action
+        FallbackAgent = $fallbackAgent
+        FallbackMode = $fallbackMode
+    }
+}
+
+function Invoke-AgentFallback {
+    <#
+    .SYNOPSIS
+        Attempts to run the same prompt with a fallback agent.
+        Returns: @{ Success; Output; ExitCode }
+    #>
+    param(
+        [string]$FallbackAgent,
+        [string]$Prompt,
+        [string]$AllowedTools = "Read,Write,Bash,mcp__*",
+        [string]$LogFile
+    )
+
+    $fbOutput = $null
+    $fbExit = 1
+
+    try {
+        if ($FallbackAgent -eq "codex") {
+            $fbOutput = $Prompt | codex exec --full-auto - 2>&1
+            $fbExit = $LASTEXITCODE
+        } elseif ($FallbackAgent -eq "claude") {
+            $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
+            $fbExit = $LASTEXITCODE
+        } elseif ($FallbackAgent -eq "gemini") {
+            $fbOutput = $Prompt | gemini --sandbox 2>&1
+            $fbExit = $LASTEXITCODE
+        }
+
+        if ($LogFile -and $fbOutput) {
+            $fbOutput | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        }
+    } catch {
+        $fbExit = 1
+    }
+
+    return @{
+        Success = ($fbExit -eq 0 -and $fbOutput -and $fbOutput.Count -gt 0)
+        Output = $fbOutput
+        ExitCode = $fbExit
+    }
+}
+
+# ===========================================
+# 9. ENHANCED INVOKE-WITHRETRY (quota-aware + self-healing)
+# ===========================================
+
+# Override the original Invoke-WithRetry with quota + network + diagnosis awareness
 $script:OriginalInvokeWithRetry = ${function:Invoke-WithRetry}
 
 function Invoke-WithRetry {
@@ -672,13 +801,54 @@ function Invoke-WithRetry {
             $isTimeout = $outputText -match "(timeout|timed out|ETIMEDOUT|connection.*reset)"
             $isCrash = ($exitCode -ne 0) -or (-not $output) -or ($output.Count -eq 0)
 
-            if ($isTokenError -or ($isCrash -and $i -lt $MaxAttempts)) {
-                $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR))
-                $result.FinalBatchSize = $CurrentBatchSize
-                $reason = if ($isTokenError) { "token limit" } elseif ($isTimeout) { "timeout" } else { "exit code $exitCode" }
-                Write-Host "    [!!]  $reason -> batch $CurrentBatchSize. Retry in $($script:RETRY_DELAY_SECONDS)s..." -ForegroundColor DarkYellow
-                Write-GsdError -GsdDir $GsdDir -Category "agent_crash" -Phase $Phase -Iteration $i `
-                    -Message "$Agent $reason" -Resolution "Batch reduced to $CurrentBatchSize"
+            if ($isCrash -and $i -lt $MaxAttempts) {
+                if ($isTokenError) {
+                    # Token/context limit -> reduce batch size (smaller batch = fewer tokens)
+                    $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR))
+                    $result.FinalBatchSize = $CurrentBatchSize
+                    $reason = "token limit"
+                    Write-Host "    [!!]  $reason -> batch $CurrentBatchSize. Retry in $($script:RETRY_DELAY_SECONDS)s..." -ForegroundColor DarkYellow
+                    Write-GsdError -GsdDir $GsdDir -Category "agent_crash" -Phase $Phase -Iteration $i `
+                        -Message "$Agent $reason" -Resolution "Batch reduced to $CurrentBatchSize"
+                } else {
+                    # Non-token failure -> diagnose root cause and attempt fallback
+                    $reason = if ($isTimeout) { "timeout" } else { "exit code $exitCode" }
+                    $recovery = Get-FailureDiagnosis -Agent $Agent -ExitCode $exitCode `
+                        -OutputText $outputText -Phase $Phase
+                    Write-Host "    [!!]  $reason - $($recovery.Diagnosis)" -ForegroundColor DarkYellow
+
+                    # Attempt fallback to alternative agent
+                    if ($recovery.Action -eq "fallback" -and $recovery.FallbackAgent) {
+                        Write-Host "    [SYNC] Falling back: $Agent -> $($recovery.FallbackAgent)..." -ForegroundColor Yellow
+                        $fb = Invoke-AgentFallback -FallbackAgent $recovery.FallbackAgent `
+                            -Prompt $effectivePrompt -AllowedTools $AllowedTools -LogFile $LogFile
+
+                        if ($fb.Success) {
+                            Write-Host "    [OK] Fallback to $($recovery.FallbackAgent) succeeded" -ForegroundColor Green
+                            Write-GsdError -GsdDir $GsdDir -Category "fallback_success" -Phase $Phase -Iteration $i `
+                                -Message "$Agent failed ($($recovery.Diagnosis)), $($recovery.FallbackAgent) succeeded" `
+                                -Resolution "Completed via fallback agent"
+                            $result.Success = $true
+                            $result.FinalBatchSize = $CurrentBatchSize
+
+                            # Post-checks still apply
+                            Invoke-ValidateAllState -GsdDir $GsdDir -Pipeline $(
+                                if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
+                            ) | Out-Null
+                            Test-AgentBoundaries -Agent $recovery.FallbackAgent `
+                                -RepoRoot (Get-Location).Path -GsdDir $GsdDir -Pipeline "any" `
+                                -BaselineDirty $baselineDirty | Out-Null
+                            return $result
+                        } else {
+                            Write-Host "    [!!]  Fallback to $($recovery.FallbackAgent) also failed (exit $($fb.ExitCode))" -ForegroundColor DarkYellow
+                        }
+                    }
+
+                    Write-Host "    Retry $($i+1)/$MaxAttempts in $($script:RETRY_DELAY_SECONDS)s (batch unchanged: $CurrentBatchSize)..." -ForegroundColor DarkYellow
+                    Write-GsdError -GsdDir $GsdDir -Category "agent_crash" -Phase $Phase -Iteration $i `
+                        -Message "$Agent $reason ($($recovery.Diagnosis))" `
+                        -Resolution "Retrying at same batch $CurrentBatchSize"
+                }
                 Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
                 continue
             }
@@ -714,8 +884,7 @@ function Invoke-WithRetry {
             Write-Host "    [XX] Exception: $($_.Exception.Message)" -ForegroundColor Red
 
             if ($i -lt $MaxAttempts) {
-                $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR))
-                $result.FinalBatchSize = $CurrentBatchSize
+                # Don't reduce batch for exceptions - retry at same size
                 Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
             }
         }
@@ -1035,7 +1204,8 @@ $limitations = @"
 ## Fully Automated (no intervention needed)
 | Scenario | How It's Handled |
 |---|---|
-| Agent CLI crash | Retry 3x with 50% batch reduction each time |
+| Agent CLI crash | Diagnose failure, fallback to alt agent, retry 3x at same batch |
+| Agent exit code error | Diagnose root cause, auto-fallback (Gemini->Codex, Codex->Claude) |
 | Token/context limit hit | Reduce batch size, retry |
 | Rate limit (per-minute) | Sleep 2 minutes, retry |
 | Monthly quota exhausted | Sleep 1 hour, test, repeat up to 24 hours |

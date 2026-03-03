@@ -277,6 +277,96 @@ function Clear-Checkpoint {
 # RETRY WITH ADAPTIVE BATCH REDUCTION
 # ===========================================
 
+# -- Failure diagnosis + agent fallback --
+
+function Get-FailureDiagnosis {
+    param(
+        [string]$Agent,
+        [int]$ExitCode,
+        [string]$OutputText,
+        [string]$Phase
+    )
+
+    $diagnosis = ""
+    $action = "retry"
+    $fallbackAgent = $null
+    $fallbackMode = $null
+
+    if ($Agent -eq "gemini") {
+        if ($OutputText -match "sandbox.*restrict|not.*allow|permission.*denied|read.only") {
+            $diagnosis = "Gemini sandbox blocked a write operation"
+        } elseif ($OutputText -match "model.*not.*found|model.*unavail|invalid.*model") {
+            $diagnosis = "Gemini model unavailable"
+        } elseif ($OutputText -match "too.*large|input.*limit|prompt.*too|content.*length") {
+            $diagnosis = "Prompt too large for Gemini context"
+        } elseif ($OutputText -match "internal.*error|server.*error|50[0-9]") {
+            $diagnosis = "Gemini server error (transient)"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "Gemini produced no output (CLI crash or argument error)"
+        } else {
+            $diagnosis = "Gemini exit code $ExitCode"
+        }
+        $action = "fallback"
+        $fallbackAgent = "codex"
+    } elseif ($Agent -eq "codex") {
+        if ($OutputText -match "loop.*detect|iteration.*limit|max.*turns") {
+            $diagnosis = "Codex hit loop/iteration limit"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "Codex produced no output"
+        } else {
+            $diagnosis = "Codex exit code $ExitCode"
+        }
+        if ($Phase -match "research|review|verify|plan") {
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        }
+    } elseif ($Agent -eq "claude") {
+        if (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "Claude produced no output"
+        } else {
+            $diagnosis = "Claude exit code $ExitCode"
+        }
+    } else {
+        $diagnosis = "Unknown agent '$Agent' exit code $ExitCode"
+    }
+
+    return @{ Diagnosis = $diagnosis; Action = $action; FallbackAgent = $fallbackAgent; FallbackMode = $fallbackMode }
+}
+
+function Invoke-AgentFallback {
+    param(
+        [string]$FallbackAgent,
+        [string]$Prompt,
+        [string]$AllowedTools = "Read,Write,Bash,mcp__*",
+        [string]$LogFile
+    )
+
+    $fbOutput = $null
+    $fbExit = 1
+
+    try {
+        if ($FallbackAgent -eq "codex") {
+            $fbOutput = $Prompt | codex exec --full-auto - 2>&1
+            $fbExit = $LASTEXITCODE
+        } elseif ($FallbackAgent -eq "claude") {
+            $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
+            $fbExit = $LASTEXITCODE
+        } elseif ($FallbackAgent -eq "gemini") {
+            $fbOutput = $Prompt | gemini --sandbox 2>&1
+            $fbExit = $LASTEXITCODE
+        }
+        if ($LogFile -and $fbOutput) {
+            $fbOutput | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        }
+    } catch { $fbExit = 1 }
+
+    return @{ Success = ($fbExit -eq 0 -and $fbOutput -and $fbOutput.Count -gt 0); Output = $fbOutput; ExitCode = $fbExit }
+}
+
+# ===========================================
+# RETRY WITH ADAPTIVE BATCH REDUCTION
+# ===========================================
+
 function Invoke-WithRetry {
     param(
         [string]$Agent,           # "claude", "codex", or "gemini"
@@ -338,16 +428,41 @@ function Invoke-WithRetry {
                 break
             }
 
-            if ($isTokenError -or ($isCrash -and $i -lt $MaxAttempts)) {
-                # Reduce batch size
-                $CurrentBatchSize = [math]::Max(
-                    $script:MIN_BATCH_SIZE,
-                    [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR)
-                )
-                $result.FinalBatchSize = $CurrentBatchSize
+            if ($isCrash -and $i -lt $MaxAttempts) {
+                if ($isTokenError) {
+                    # Token/context limit -> reduce batch size (smaller batch = fewer tokens)
+                    $CurrentBatchSize = [math]::Max(
+                        $script:MIN_BATCH_SIZE,
+                        [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR)
+                    )
+                    $result.FinalBatchSize = $CurrentBatchSize
+                    $reason = "token limit"
+                    Write-Host "    [!!]  $reason -> batch $CurrentBatchSize. Retry in $($script:RETRY_DELAY_SECONDS)s..." -ForegroundColor DarkYellow
+                } else {
+                    # Non-token failure -> diagnose root cause and attempt fallback
+                    $reason = if ($isTimeout) { "timeout" } else { "exit code $exitCode" }
+                    $recovery = Get-FailureDiagnosis -Agent $Agent -ExitCode $exitCode `
+                        -OutputText $outputText -Phase $Phase
+                    Write-Host "    [!!]  $reason - $($recovery.Diagnosis)" -ForegroundColor DarkYellow
 
-                $reason = if ($isTokenError) { "token limit" } elseif ($isTimeout) { "timeout" } else { "exit code $exitCode" }
-                Write-Host "    [!!]  Failed ($reason). Reducing batch to $CurrentBatchSize. Retrying in $($script:RETRY_DELAY_SECONDS)s..." -ForegroundColor DarkYellow
+                    # Attempt fallback to alternative agent
+                    if ($recovery.Action -eq "fallback" -and $recovery.FallbackAgent) {
+                        Write-Host "    [SYNC] Falling back: $Agent -> $($recovery.FallbackAgent)..." -ForegroundColor Yellow
+                        $fb = Invoke-AgentFallback -FallbackAgent $recovery.FallbackAgent `
+                            -Prompt $effectivePrompt -AllowedTools $AllowedTools -LogFile $LogFile
+
+                        if ($fb.Success) {
+                            Write-Host "    [OK] Fallback to $($recovery.FallbackAgent) succeeded" -ForegroundColor Green
+                            $result.Success = $true
+                            $result.FinalBatchSize = $CurrentBatchSize
+                            return $result
+                        } else {
+                            Write-Host "    [!!]  Fallback to $($recovery.FallbackAgent) also failed (exit $($fb.ExitCode))" -ForegroundColor DarkYellow
+                        }
+                    }
+
+                    Write-Host "    Retry $($i+1)/$MaxAttempts in $($script:RETRY_DELAY_SECONDS)s (batch unchanged: $CurrentBatchSize)..." -ForegroundColor DarkYellow
+                }
 
                 # Log the failure
                 $errorEntry = @{
@@ -386,12 +501,7 @@ function Invoke-WithRetry {
             Add-Content -Path (Join-Path $GsdDir "logs\errors.jsonl") -Value $errorEntry -Encoding UTF8
 
             if ($i -lt $MaxAttempts) {
-                $CurrentBatchSize = [math]::Max(
-                    $script:MIN_BATCH_SIZE,
-                    [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR)
-                )
-                $result.FinalBatchSize = $CurrentBatchSize
-                Write-Host "    Reducing batch to $CurrentBatchSize. Retrying in $($script:RETRY_DELAY_SECONDS)s..." -ForegroundColor DarkYellow
+                # Don't reduce batch for exceptions - retry at same size
                 Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
             }
         }
