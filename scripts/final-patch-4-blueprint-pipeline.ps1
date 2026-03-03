@@ -250,7 +250,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     # Health regression
     if (-not $DryRun -and $Iteration -gt 1) {
         if (Test-HealthRegression -PreviousHealth $PrevHealth -CurrentHealth $Health -RepoRoot $RepoRoot -Iteration $Iteration) {
-            Send-GsdNotification -Title "Iter $Iteration: Regression Reverted" `
+            Send-GsdNotification -Title "Iter ${Iteration}: Regression Reverted" `
                 -Message "$repoName | ${Health}% dropped from ${PrevHealth}% - reverted | Stall $($StallCount+1)/$StallThreshold" `
                 -Tags "warning" -Priority "high"
             $script:LAST_NOTIFY_TIME = Get-Date
@@ -290,7 +290,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Invoke-BuildValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -AutoFix | Out-Null
         } else {
             $CurrentBatchSize = $result.FinalBatchSize; $StallCount++
-            Send-GsdNotification -Title "Iter $Iteration: Build Failed" `
+            Send-GsdNotification -Title "Iter ${Iteration}: Build Failed" `
                 -Message "$repoName | Health: ${Health}% | Batch reduced -> $CurrentBatchSize | Stall $StallCount/$StallThreshold" `
                 -Tags "warning" -Priority "default"
             $script:LAST_NOTIFY_TIME = Get-Date
@@ -304,7 +304,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         $StallCount++
         $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * 0.75))
         Write-Host "  [!!]  Stall $StallCount/$StallThreshold | Batch -> $CurrentBatchSize" -ForegroundColor DarkYellow
-        Send-GsdNotification -Title "Iter $Iteration: No Progress" `
+        Send-GsdNotification -Title "Iter ${Iteration}: No Progress" `
             -Message "$repoName | Health: ${NewHealth}% (unchanged) | Batch -> $CurrentBatchSize | Stall $StallCount/$StallThreshold" `
             -Tags "hourglass" -Priority "default"
         $script:LAST_NOTIFY_TIME = Get-Date
