@@ -101,7 +101,7 @@ Write-Host ""
 
 Send-GsdNotification -Title "GSD Converge Started" `
     -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize | Throttle: ${ThrottleSeconds}s" `
-    -Tags "rocket" -Priority "low"
+    -Tags "rocket" -Priority "default"
 
 # Prompt resolver with interface context
 function Local-ResolvePrompt($templatePath, $iter, $health) {
@@ -268,18 +268,33 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
             }
             Invoke-BuildValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -AutoFix | Out-Null
-        } else { $CurrentBatchSize = $result.FinalBatchSize; $StallCount++; continue }
+        } else {
+            $CurrentBatchSize = $result.FinalBatchSize; $StallCount++
+            Send-GsdNotification -Title "Iter $Iteration: Execute Failed" `
+                -Message "$repoName | Health: ${Health}% | Batch reduced -> $CurrentBatchSize | Stall $StallCount/$StallThreshold" `
+                -Tags "warning" -Priority "default"
+            $script:LAST_NOTIFY_TIME = Get-Date
+            continue
+        }
     }
 
     # Regression + stall
     $NewHealth = Get-Health
     if (-not $DryRun -and $Iteration -gt 1 -and (Test-HealthRegression -PreviousHealth $PrevHealth -CurrentHealth $NewHealth -RepoRoot $RepoRoot -Iteration $Iteration)) {
+        Send-GsdNotification -Title "Iter $Iteration: Regression Reverted" `
+            -Message "$repoName | ${NewHealth}% dropped from ${PrevHealth}% - reverted | Stall $($StallCount+1)/$StallThreshold" `
+            -Tags "warning" -Priority "high"
+        $script:LAST_NOTIFY_TIME = Get-Date
         $Health = $PrevHealth; $StallCount++; continue
     }
     if ($NewHealth -le $PrevHealth -and $Iteration -gt 1) {
         $StallCount++
         $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * 0.75))
         Write-Host "  [!!]  Stall $StallCount/$StallThreshold | Batch -> $CurrentBatchSize" -ForegroundColor DarkYellow
+        Send-GsdNotification -Title "Iter $Iteration: No Progress" `
+            -Message "$repoName | Health: ${NewHealth}% (unchanged) | Batch -> $CurrentBatchSize | Stall $StallCount/$StallThreshold" `
+            -Tags "hourglass" -Priority "default"
+        $script:LAST_NOTIFY_TIME = Get-Date
         if ($StallCount -ge $StallThreshold -and -not $DryRun) {
             Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read .gsd\health\*, .gsd\logs\errors.jsonl. Diagnose. Write .gsd\health\stall-diagnosis.md." `
                 -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
