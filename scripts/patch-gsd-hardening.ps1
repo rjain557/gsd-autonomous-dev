@@ -218,16 +218,20 @@ function Wait-ForQuotaReset {
             Write-Host "    Sleep $sleepCount/$($script:QUOTA_MAX_SLEEPS) (${currentSleep}min). Wake at: $($wakeTime.ToString('HH:mm'))" -ForegroundColor DarkGray
             Start-Sleep -Seconds ($currentSleep * 60)
 
-            # Test if quota has reset by trying a minimal call
+            # Test if quota has reset - use the SAME agent that was exhausted
             try {
-                $testOutput = claude -p "Reply with just the word READY" 2>&1
+                if ($Agent -eq "codex") {
+                    $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
+                } else {
+                    $testOutput = claude -p "Reply with just the word READY" 2>&1
+                }
                 if ($testOutput -match "READY") {
-                    Write-Host "    [OK] Quota reset after ${currentSleep}min. Resuming..." -ForegroundColor Green
+                    Write-Host "    [OK] $Agent quota reset after ${currentSleep}min. Resuming..." -ForegroundColor Green
                     return $true
                 }
                 $quotaCheck = Test-IsQuotaError ($testOutput -join "`n")
                 if ($quotaCheck -eq "none") {
-                    Write-Host "    [OK] Quota available. Resuming..." -ForegroundColor Green
+                    Write-Host "    [OK] $Agent quota available. Resuming..." -ForegroundColor Green
                     return $true
                 }
             } catch {
