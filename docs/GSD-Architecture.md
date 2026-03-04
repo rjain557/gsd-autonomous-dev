@@ -121,6 +121,7 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 9. POST-ITERATION: File map update, checkpoint save, notification
 10. STALL DIAGNOSIS COUNCIL: 3-agent collaborative diagnosis if health stalls
 11. CONVERGENCE COUNCIL (at 100% health): 3 agents independently review, Claude synthesizes verdict
+    - Note: Steps 2-10 only run when health < 100%. Use `-ForceCodeReview` to force one review iteration at 100%.
 12. FINAL VALIDATION: Build, test, SQL, audit checks (hard failures reset to 99%)
 
 ### gsd-blueprint

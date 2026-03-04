@@ -1042,7 +1042,7 @@ param(
     [int]$ThrottleSeconds = 30,
     [string]$NtfyTopic = "",
     [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck,
-    [switch]$AutoResolve,
+    [switch]$AutoResolve, [switch]$ForceCodeReview,
     [int]$SupervisorAttempts = 5,
     [switch]$NoSupervisor
 )
@@ -1061,7 +1061,7 @@ if ($NoSupervisor -or -not (Get-Command Invoke-SupervisorLoop -ErrorAction Silen
         -StallThreshold $StallThreshold -BatchSize $BatchSize `
         -ThrottleSeconds $ThrottleSeconds -NtfyTopic $NtfyTopic `
         -DryRun:$DryRun -SkipInit:$SkipInit -SkipResearch:$SkipResearch `
-        -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve
+        -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve -ForceCodeReview:$ForceCodeReview
     return
 }
 
@@ -1076,6 +1076,7 @@ $originalParams = @{
     SkipResearch = $SkipResearch.IsPresent
     SkipSpecCheck = $SkipSpecCheck.IsPresent
     AutoResolve = $AutoResolve.IsPresent
+    ForceCodeReview = $ForceCodeReview.IsPresent
 }
 
 Invoke-SupervisorLoop -Pipeline "converge" -OriginalParams $originalParams `
@@ -1165,7 +1166,7 @@ function gsd-converge {
         [int]$MaxIterations = 20, [int]$StallThreshold = 3, [int]$BatchSize = 8,
         [int]$ThrottleSeconds = 30, [string]$NtfyTopic = "",
         [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch,
-        [switch]$SkipSpecCheck, [switch]$AutoResolve,
+        [switch]$SkipSpecCheck, [switch]$AutoResolve, [switch]$ForceCodeReview,
         [int]$SupervisorAttempts = 5, [switch]$NoSupervisor
     )
     $script = "$env:USERPROFILE\.gsd-global\scripts\supervisor-converge.ps1"
@@ -1179,10 +1180,11 @@ function gsd-converge {
     if ($SkipResearch) { $gsdArgs += "-SkipResearch" }
     if ($SkipSpecCheck){ $gsdArgs += "-SkipSpecCheck" }
     if ($AutoResolve)  { $gsdArgs += "-AutoResolve" }
+    if ($ForceCodeReview) { $gsdArgs += "-ForceCodeReview" }
     if ($NoSupervisor) { $gsdArgs += "-NoSupervisor" }
     # Use pwsh (PS7) if available, otherwise fall back to current session
     $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
-    if ($pwsh) { & pwsh @gsdArgs } else { & $script -MaxIterations $MaxIterations -StallThreshold $StallThreshold -BatchSize $BatchSize -ThrottleSeconds $ThrottleSeconds -NtfyTopic $NtfyTopic -DryRun:$DryRun -SkipInit:$SkipInit -SkipResearch:$SkipResearch -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve -SupervisorAttempts $SupervisorAttempts -NoSupervisor:$NoSupervisor }
+    if ($pwsh) { & pwsh @gsdArgs } else { & $script -MaxIterations $MaxIterations -StallThreshold $StallThreshold -BatchSize $BatchSize -ThrottleSeconds $ThrottleSeconds -NtfyTopic $NtfyTopic -DryRun:$DryRun -SkipInit:$SkipInit -SkipResearch:$SkipResearch -SkipSpecCheck:$SkipSpecCheck -AutoResolve:$AutoResolve -ForceCodeReview:$ForceCodeReview -SupervisorAttempts $SupervisorAttempts -NoSupervisor:$NoSupervisor }
 }
 '@
 

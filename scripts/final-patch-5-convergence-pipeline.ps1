@@ -20,7 +20,7 @@ param(
     [int]$ThrottleSeconds = 30,
     [string]$NtfyTopic = "",
     [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck,
-    [switch]$AutoResolve
+    [switch]$AutoResolve, [switch]$ForceCodeReview
 )
 
 $ErrorActionPreference = "Continue"
@@ -106,6 +106,7 @@ if ($checkpoint -and $checkpoint.pipeline -eq "converge") {
 
 Write-Host "  Health: ${Health}% -> 100% | Batch: $CurrentBatchSize | Interfaces: $($Interfaces.Count)" -ForegroundColor White
 if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle: ${ThrottleSeconds}s between agent calls (prevents quota exhaustion)" -ForegroundColor DarkGray }
+if ($ForceCodeReview) { Write-Host "  Force:    code-review will run even at 100% health" -ForegroundColor Yellow }
 if ($script:NTFY_TOPIC) { Write-Host "  Notify:   ntfy.sh/$($script:NTFY_TOPIC)" -ForegroundColor DarkGray }
 Write-Host ""
 
@@ -202,6 +203,16 @@ $ValidationAttempts = 0; $MaxValidationAttempts = 3; $validationResult = $null
 $CouncilAttempts = 0; $MaxCouncilAttempts = 2; $councilResult = $null
 
 do {
+
+# -ForceCodeReview: temporarily drop health so code-review runs once
+if ($ForceCodeReview -and $Health -ge $TargetHealth) {
+    Write-Host "  [FORCE] ForceCodeReview: dropping health to 99% for one review iteration" -ForegroundColor Yellow
+    $healthObj = Get-Content $HealthFile -Raw | ConvertFrom-Json
+    $healthObj.health_score = 99
+    $healthObj | ConvertTo-Json | Set-Content $HealthFile -Encoding UTF8
+    $Health = 99
+    $ForceCodeReview = $false  # Only force once
+}
 
 while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallCount -lt $StallThreshold) {
     $Iteration++; $PrevHealth = $Health
