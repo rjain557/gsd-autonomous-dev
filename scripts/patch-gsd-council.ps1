@@ -60,6 +60,209 @@ $councilCode = @'
 # GSD LLM COUNCIL MODULE - appended to resilience.ps1
 # ===============================================================
 
+function Build-RequirementChunks {
+    <#
+    .SYNOPSIS
+        Groups requirements dynamically based on fields in the matrix.
+        No hardcoded domain maps -- discovers best grouping from actual data.
+    #>
+    param(
+        [string]$MatrixPath,
+        [int]$MaxChunkSize = 25,
+        [int]$MinGroupSize = 5,
+        [string]$Strategy = "auto"
+    )
+
+    if (-not (Test-Path $MatrixPath)) { return @() }
+    $matrix = Get-Content $MatrixPath -Raw | ConvertFrom-Json
+    $reqs = @($matrix.requirements)
+    if ($reqs.Count -eq 0) { return @() }
+
+    # If total reqs fit in one chunk, return single chunk
+    if ($reqs.Count -le $MaxChunkSize) {
+        return @(@{
+            Name = "all"
+            Requirements = $reqs
+            FileHints = @($reqs | Where-Object { $_.notes } | ForEach-Object { $_.notes })
+        })
+    }
+
+    $groupField = $null
+    $groups = @{}
+
+    if ($Strategy -eq "auto") {
+        # Discover best grouping field dynamically from the data
+        $candidateFields = @("pattern", "sdlc_phase", "priority", "source", "spec_doc")
+        $bestField = $null
+        $bestScore = [int]::MaxValue  # Lower = better (closer to target chunk size)
+
+        foreach ($field in $candidateFields) {
+            $hasField = @($reqs | Where-Object { $_.$field }).Count
+            if ($hasField -lt ($reqs.Count * 0.5)) { continue }
+
+            $testGroups = @{}
+            foreach ($req in $reqs) {
+                $key = if ($req.$field) { $req.$field.ToString() } else { "unknown" }
+                if (-not $testGroups.ContainsKey($key)) { $testGroups[$key] = 0 }
+                $testGroups[$key]++
+            }
+
+            $groupCount = $testGroups.Count
+            if ($groupCount -lt 2 -or $groupCount -gt ($reqs.Count / 2)) { continue }
+
+            $targetSize = [math]::Min($MaxChunkSize, [math]::Ceiling($reqs.Count / [math]::Max(3, $groupCount)))
+            $score = 0
+            foreach ($count in $testGroups.Values) {
+                $score += [math]::Abs($count - $targetSize)
+            }
+
+            if ($score -lt $bestScore) {
+                $bestScore = $score
+                $bestField = $field
+            }
+        }
+
+        $groupField = if ($bestField) { $bestField } else { $null }
+    }
+    elseif ($Strategy -match "^field:(.+)$") {
+        $groupField = $Matches[1]
+    }
+
+    if ($groupField) {
+        foreach ($req in $reqs) {
+            $key = if ($req.$groupField) { $req.$groupField.ToString() } else { "unknown" }
+            if (-not $groups.ContainsKey($key)) { $groups[$key] = @() }
+            $groups[$key] += $req
+        }
+    }
+    else {
+        $Strategy = "id-range"
+    }
+
+    $chunks = @()
+
+    if ($Strategy -eq "id-range") {
+        for ($i = 0; $i -lt $reqs.Count; $i += $MaxChunkSize) {
+            $end = [math]::Min($i + $MaxChunkSize - 1, $reqs.Count - 1)
+            $slice = @($reqs[$i..$end])
+            $chunks += @{
+                Name = "block-$([math]::Floor($i / $MaxChunkSize) + 1)"
+                Requirements = $slice
+                FileHints = @($slice | Where-Object { $_.notes } | ForEach-Object { $_.notes })
+            }
+        }
+        return $chunks
+    }
+
+    $pendingSmall = @()
+    $pendingNames = @()
+
+    foreach ($key in ($groups.Keys | Sort-Object)) {
+        $groupReqs = @($groups[$key])
+
+        if ($groupReqs.Count -gt $MaxChunkSize) {
+            for ($i = 0; $i -lt $groupReqs.Count; $i += $MaxChunkSize) {
+                $end = [math]::Min($i + $MaxChunkSize - 1, $groupReqs.Count - 1)
+                $slice = @($groupReqs[$i..$end])
+                $subIdx = [math]::Floor($i / $MaxChunkSize) + 1
+                $chunks += @{
+                    Name = "$key-$subIdx"
+                    Requirements = $slice
+                    FileHints = @($slice | Where-Object { $_.notes } | ForEach-Object { $_.notes })
+                }
+            }
+        }
+        elseif ($groupReqs.Count -lt $MinGroupSize) {
+            $pendingSmall += $groupReqs
+            $pendingNames += $key
+            if ($pendingSmall.Count -ge [math]::Floor($MaxChunkSize * 0.6)) {
+                $chunks += @{
+                    Name = ($pendingNames -join "+")
+                    Requirements = @($pendingSmall)
+                    FileHints = @($pendingSmall | Where-Object { $_.notes } | ForEach-Object { $_.notes })
+                }
+                $pendingSmall = @()
+                $pendingNames = @()
+            }
+        }
+        else {
+            $chunks += @{
+                Name = $key
+                Requirements = $groupReqs
+                FileHints = @($groupReqs | Where-Object { $_.notes } | ForEach-Object { $_.notes })
+            }
+        }
+    }
+
+    if ($pendingSmall.Count -gt 0) {
+        $chunks += @{
+            Name = ($pendingNames -join "+")
+            Requirements = @($pendingSmall)
+            FileHints = @($pendingSmall | Where-Object { $_.notes } | ForEach-Object { $_.notes })
+        }
+    }
+
+    return $chunks
+}
+
+function Build-ChunkContext {
+    <#
+    .SYNOPSIS
+        Builds focused context for one chunk -- only that chunk's requirements + file hints.
+    #>
+    param(
+        [hashtable]$Chunk,
+        [int]$ChunkIndex,
+        [int]$TotalChunks,
+        [double]$Health,
+        [int]$Iteration,
+        [string]$Pipeline,
+        [string]$CouncilType,
+        [string]$GsdDir,
+        [string]$GroupField = ""
+    )
+
+    $context = @()
+    $context += "# Council Chunk Review: $($Chunk.Name) [$($ChunkIndex + 1)/$TotalChunks]"
+    $context += "- Health: ${Health}% | Iteration: $Iteration | Pipeline: $Pipeline"
+    $context += "- Chunk: $($Chunk.Name) | Requirements: $($Chunk.Requirements.Count)"
+    if ($GroupField) { $context += "- Grouped by: $GroupField" }
+    $context += ""
+
+    $chunkReqs = $Chunk.Requirements | ForEach-Object {
+        $r = @{ id = $_.id; status = $_.status; description = $_.description }
+        if ($_.priority) { $r.priority = $_.priority }
+        if ($_.pattern) { $r.pattern = $_.pattern }
+        if ($_.notes) { $r.notes = $_.notes }
+        if ($_.spec_doc) { $r.spec_doc = $_.spec_doc }
+        $r
+    }
+    $context += "## Requirements in This Chunk"
+    $context += '```json'
+    $context += ($chunkReqs | ConvertTo-Json -Depth 3 -Compress)
+    $context += '```'
+    $context += ""
+
+    if ($Chunk.FileHints -and $Chunk.FileHints.Count -gt 0) {
+        $context += "## Relevant Files"
+        foreach ($hint in ($Chunk.FileHints | Select-Object -Unique)) {
+            $context += "- $hint"
+        }
+        $context += ""
+    }
+
+    $driftPath = Join-Path $GsdDir "health\drift-report.md"
+    if (Test-Path $driftPath) {
+        $driftRaw = (Get-Content $driftPath -Raw).Trim()
+        if ($driftRaw.Length -gt 1000) { $driftRaw = $driftRaw.Substring(0, 1000) + "`n... (truncated)" }
+        $context += "## Drift Report"
+        $context += $driftRaw
+        $context += ""
+    }
+
+    return ($context -join "`n")
+}
+
 function Invoke-LlmCouncil {
     <#
     .SYNOPSIS
@@ -207,95 +410,253 @@ function Invoke-LlmCouncil {
         }
     }
 
-    Write-Host "  [SCALES] Dispatching $($agents.Count) independent reviews ($CouncilType)..." -ForegroundColor DarkGray
+    # ── CHUNKING DECISION ──
+    $useChunking = $false
+    $chunkingCfg = $null
+    $groupFieldUsed = ""
 
-    $reviews = @{}
-
-    foreach ($agent in $agents) {
-        $templatePath = Join-Path $promptDir $agent.Template
-        if (-not (Test-Path $templatePath)) {
-            Write-Host "    [WARN] Missing template: $templatePath -- skipping $($agent.Name)" -ForegroundColor DarkYellow
-            $reviews[$agent.Name] = @{ Success = $false; Output = "Template not found" }
-            continue
+    if ($CouncilType -eq "convergence") {
+        $agentMapPath = Join-Path $globalDir "config\agent-map.json"
+        if (Test-Path $agentMapPath) {
+            try {
+                $agentMapCfg = Get-Content $agentMapPath -Raw | ConvertFrom-Json
+                $chunkingCfg = $agentMapCfg.council.chunking
+            } catch { }
         }
 
-        $prompt = (Get-Content $templatePath -Raw)
-        $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir).Replace("{{REPO_ROOT}}", $RepoRoot)
-        $prompt += "`n`n$sharedContext"
-
-        Write-Host "    $($agent.Name.ToUpper()) reviewing..." -ForegroundColor DarkGray
-
-        $retryParams = @{
-            Agent          = $agent.Name
-            Prompt         = $prompt
-            Phase          = $phaseName
-            LogFile        = "$logDir\council-$CouncilType-$($agent.Name).log"
-            MaxAttempts    = 2
-            CurrentBatchSize = 1
-            GsdDir         = $GsdDir
+        if ($chunkingCfg -and $chunkingCfg.enabled) {
+            $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
+            if (Test-Path $matrixPath) {
+                $matrixCheck = Get-Content $matrixPath -Raw | ConvertFrom-Json
+                $reqCount = @($matrixCheck.requirements).Count
+                $minToChunk = if ($chunkingCfg.min_requirements_to_chunk) { [int]$chunkingCfg.min_requirements_to_chunk } else { 30 }
+                if ($reqCount -ge $minToChunk) {
+                    $useChunking = $true
+                }
+            }
         }
-        if ($agent.AllowedTools) { $retryParams["AllowedTools"] = $agent.AllowedTools }
-        if ($agent.Mode) { $retryParams["GeminiMode"] = $agent.Mode }
+    }
 
-        $result = Invoke-WithRetry @retryParams
-        $reviews[$agent.Name] = $result
+    if ($useChunking) {
+        # ── CHUNKED CONVERGENCE PATH ──
+        $maxChunk = if ($chunkingCfg.max_chunk_size) { [int]$chunkingCfg.max_chunk_size } else { 25 }
+        $minGroup = if ($chunkingCfg.min_group_size) { [int]$chunkingCfg.min_group_size } else { 5 }
+        $chunkStrategy = if ($chunkingCfg.strategy) { $chunkingCfg.strategy } else { "auto" }
+        $cooldownSec = if ($chunkingCfg.cooldown_seconds) { [int]$chunkingCfg.cooldown_seconds } else { 5 }
 
-        if ($result.Success) {
-            Write-Host "    $($agent.Name.ToUpper()) review complete" -ForegroundColor DarkGreen
+        $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
+        $chunks = Build-RequirementChunks -MatrixPath $matrixPath -MaxChunkSize $maxChunk -MinGroupSize $minGroup -Strategy $chunkStrategy
+
+        Write-Host "  [SCALES] Chunked review: $($chunks.Count) chunks from $reqCount requirements (strategy: $chunkStrategy)" -ForegroundColor Cyan
+
+        $allChunkVerdicts = @()
+        $totalChunkSuccesses = 0
+
+        for ($ci = 0; $ci -lt $chunks.Count; $ci++) {
+            $chunk = $chunks[$ci]
+            Write-Host "  [SCALES] Chunk $($ci + 1)/$($chunks.Count): $($chunk.Name) ($($chunk.Requirements.Count) reqs)..." -ForegroundColor DarkGray
+
+            $chunkContext = Build-ChunkContext -Chunk $chunk -ChunkIndex $ci -TotalChunks $chunks.Count `
+                -Health $Health -Iteration $Iteration -Pipeline $Pipeline -CouncilType $CouncilType `
+                -GsdDir $GsdDir -GroupField $groupFieldUsed
+
+            $chunkReviews = @{}
+
+            foreach ($agent in $agents) {
+                $templatePath = Join-Path $promptDir $agent.Template
+                if (-not (Test-Path $templatePath)) {
+                    Write-Host "    [WARN] Missing template: $templatePath -- skipping $($agent.Name)" -ForegroundColor DarkYellow
+                    $chunkReviews[$agent.Name] = @{ Success = $false; Output = "Template not found" }
+                    continue
+                }
+
+                $prompt = (Get-Content $templatePath -Raw)
+                $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir).Replace("{{REPO_ROOT}}", $RepoRoot)
+                $prompt += "`n`n$chunkContext"
+
+                Write-Host "    $($agent.Name.ToUpper()) reviewing chunk $($chunk.Name)..." -ForegroundColor DarkGray
+
+                $chunkPhase = "council-review-chunk$($ci + 1)"
+                $retryParams = @{
+                    Agent          = $agent.Name
+                    Prompt         = $prompt
+                    Phase          = $chunkPhase
+                    LogFile        = "$logDir\council-convergence-$($agent.Name)-chunk$($ci + 1).log"
+                    MaxAttempts    = 2
+                    CurrentBatchSize = 1
+                    GsdDir         = $GsdDir
+                }
+                if ($agent.AllowedTools) { $retryParams["AllowedTools"] = $agent.AllowedTools }
+                if ($agent.Mode) { $retryParams["GeminiMode"] = $agent.Mode }
+
+                $result = Invoke-WithRetry @retryParams
+                $chunkReviews[$agent.Name] = $result
+
+                if ($result.Success) {
+                    Write-Host "    $($agent.Name.ToUpper()) chunk $($chunk.Name) complete" -ForegroundColor DarkGreen
+                } else {
+                    Write-Host "    $($agent.Name.ToUpper()) chunk $($chunk.Name) failed: $($result.Error)" -ForegroundColor DarkYellow
+                }
+            }
+
+            # Collect chunk verdict from logs
+            $chunkVerdict = @{ ChunkName = $chunk.Name; ReqCount = $chunk.Requirements.Count; AgentResults = @{} }
+            $chunkHasSuccess = $false
+            foreach ($agent in $agents) {
+                $chunkLog = "$logDir\council-convergence-$($agent.Name)-chunk$($ci + 1).log"
+                if ((Test-Path $chunkLog) -and $chunkReviews[$agent.Name].Success) {
+                    $logContent = Get-Content $chunkLog -Raw -ErrorAction SilentlyContinue
+                    if ($logContent -and $logContent.Length -gt 2000) {
+                        $logContent = $logContent.Substring(0, 2000) + "`n... (truncated)"
+                    }
+                    $chunkVerdict.AgentResults[$agent.Name] = $logContent
+                    $chunkHasSuccess = $true
+                }
+            }
+            if ($chunkHasSuccess) { $totalChunkSuccesses++ }
+            $allChunkVerdicts += $chunkVerdict
+
+            # Cooldown between chunks (not after last)
+            if ($ci -lt ($chunks.Count - 1) -and $cooldownSec -gt 0) {
+                Start-Sleep -Seconds $cooldownSec
+            }
+        }
+
+        # Quorum check on chunks
+        if ($totalChunkSuccesses -lt 1) {
+            Write-Host "  [SCALES] All chunk reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
+            $fallbackResult = @{
+                Approved = $true
+                Findings = @{
+                    approved   = $true
+                    confidence = 50
+                    votes      = @{}
+                    concerns   = @("Council quorum not met (0/$($chunks.Count) chunks had successful reviews)")
+                    strengths  = @()
+                    reason     = "Auto-approved: no chunk reviews succeeded"
+                }
+                Report = ""
+            }
+            $fallbackResult.Findings | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $councilDir "council-review.json") -Encoding UTF8
+            return $fallbackResult
+        }
+
+        # ── CHUNKED SYNTHESIS ──
+        Write-Host "  [SCALES] Synthesizing $($chunks.Count) chunk verdicts..." -ForegroundColor DarkGray
+
+        $synthesisPrompt = ""
+        $synthTemplatePath = Join-Path $promptDir "synthesize-chunked.md"
+        if (Test-Path $synthTemplatePath) {
+            $synthesisPrompt = (Get-Content $synthTemplatePath -Raw)
+            $synthesisPrompt = $synthesisPrompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir)
+            $synthesisPrompt = $synthesisPrompt.Replace("{{CHUNK_COUNT}}", "$($chunks.Count)").Replace("{{TOTAL_REQS}}", "$reqCount")
         } else {
-            Write-Host "    $($agent.Name.ToUpper()) review failed: $($result.Error)" -ForegroundColor DarkYellow
+            $synthesisPrompt = "You are the synthesis judge. Read all chunk review verdicts below. Produce a JSON verdict."
         }
-    }
 
-    # Count successful reviews
-    $successCount = ($reviews.Values | Where-Object { $_.Success }).Count
-    if ($successCount -lt 1) {
-        Write-Host "  [SCALES] All reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
-        $fallbackResult = @{
-            Approved = $true
-            Findings = @{
-                approved   = $true
-                confidence = 50
-                votes      = @{}
-                concerns   = @("Council quorum not met ($successCount/2 reviewers responded)")
-                strengths  = @()
-                reason     = "Auto-approved: insufficient council quorum"
+        # Append all chunk verdicts
+        foreach ($cv in $allChunkVerdicts) {
+            $synthesisPrompt += "`n`n## Chunk: $($cv.ChunkName) ($($cv.ReqCount) requirements)"
+            foreach ($agentName in $cv.AgentResults.Keys) {
+                $synthesisPrompt += "`n### $($agentName.ToUpper())`n$($cv.AgentResults[$agentName])"
             }
-            Report = ""
         }
-        # Write partial results
-        $fallbackResult.Findings | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $councilDir "council-review.json") -Encoding UTF8
-        return $fallbackResult
-    }
 
-    # ── 3. SYNTHESIS (Claude reads all reviews) ──
-    Write-Host "  [SCALES] Synthesizing council verdict..." -ForegroundColor DarkGray
+        $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
+            -LogFile "$logDir\council-convergence-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
+            -AllowedTools "Read"
 
-    $synthesisPrompt = ""
-    $synthTemplatePath = Join-Path $promptDir "synthesize.md"
-    if (Test-Path $synthTemplatePath) {
-        $synthesisPrompt = (Get-Content $synthTemplatePath -Raw)
-        $synthesisPrompt = $synthesisPrompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir)
     } else {
-        $synthesisPrompt = "You are the synthesis judge. Read all 3 reviews below. Produce a JSON verdict."
-    }
+        # ── MONOLITHIC PATH (non-convergence or chunking disabled) ──
+        Write-Host "  [SCALES] Dispatching $($agents.Count) independent reviews ($CouncilType)..." -ForegroundColor DarkGray
 
-    # Append each agent's review log
-    foreach ($agentEntry in $agents) {
-        $agentName = $agentEntry.Name
-        $logPath = "$logDir\council-$CouncilType-$agentName.log"
-        if (Test-Path $logPath) {
-            $logContent = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
-            if ($logContent -and $logContent.Length -gt 3000) { $logContent = $logContent.Substring(0, 3000) + "`n... (truncated)" }
-            if ($logContent) {
-                $synthesisPrompt += "`n`n## $($agentName.ToUpper()) Review`n$logContent"
+        $reviews = @{}
+
+        foreach ($agent in $agents) {
+            $templatePath = Join-Path $promptDir $agent.Template
+            if (-not (Test-Path $templatePath)) {
+                Write-Host "    [WARN] Missing template: $templatePath -- skipping $($agent.Name)" -ForegroundColor DarkYellow
+                $reviews[$agent.Name] = @{ Success = $false; Output = "Template not found" }
+                continue
+            }
+
+            $prompt = (Get-Content $templatePath -Raw)
+            $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir).Replace("{{REPO_ROOT}}", $RepoRoot)
+            $prompt += "`n`n$sharedContext"
+
+            Write-Host "    $($agent.Name.ToUpper()) reviewing..." -ForegroundColor DarkGray
+
+            $retryParams = @{
+                Agent          = $agent.Name
+                Prompt         = $prompt
+                Phase          = $phaseName
+                LogFile        = "$logDir\council-$CouncilType-$($agent.Name).log"
+                MaxAttempts    = 2
+                CurrentBatchSize = 1
+                GsdDir         = $GsdDir
+            }
+            if ($agent.AllowedTools) { $retryParams["AllowedTools"] = $agent.AllowedTools }
+            if ($agent.Mode) { $retryParams["GeminiMode"] = $agent.Mode }
+
+            $result = Invoke-WithRetry @retryParams
+            $reviews[$agent.Name] = $result
+
+            if ($result.Success) {
+                Write-Host "    $($agent.Name.ToUpper()) review complete" -ForegroundColor DarkGreen
+            } else {
+                Write-Host "    $($agent.Name.ToUpper()) review failed: $($result.Error)" -ForegroundColor DarkYellow
             }
         }
-    }
 
-    $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
-        -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
-        -AllowedTools "Read"
+        # Count successful reviews
+        $successCount = ($reviews.Values | Where-Object { $_.Success }).Count
+        if ($successCount -lt 1) {
+            Write-Host "  [SCALES] All reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
+            $fallbackResult = @{
+                Approved = $true
+                Findings = @{
+                    approved   = $true
+                    confidence = 50
+                    votes      = @{}
+                    concerns   = @("Council quorum not met ($successCount/2 reviewers responded)")
+                    strengths  = @()
+                    reason     = "Auto-approved: insufficient council quorum"
+                }
+                Report = ""
+            }
+            $fallbackResult.Findings | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $councilDir "council-review.json") -Encoding UTF8
+            return $fallbackResult
+        }
+
+        # ── 3. SYNTHESIS (Claude reads all reviews) ──
+        Write-Host "  [SCALES] Synthesizing council verdict..." -ForegroundColor DarkGray
+
+        $synthesisPrompt = ""
+        $synthTemplatePath = Join-Path $promptDir "synthesize.md"
+        if (Test-Path $synthTemplatePath) {
+            $synthesisPrompt = (Get-Content $synthTemplatePath -Raw)
+            $synthesisPrompt = $synthesisPrompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir)
+        } else {
+            $synthesisPrompt = "You are the synthesis judge. Read all reviews below. Produce a JSON verdict."
+        }
+
+        # Append each agent's review log
+        foreach ($agentEntry in $agents) {
+            $agentName = $agentEntry.Name
+            $logPath = "$logDir\council-$CouncilType-$agentName.log"
+            if (Test-Path $logPath) {
+                $logContent = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
+                if ($logContent -and $logContent.Length -gt 3000) { $logContent = $logContent.Substring(0, 3000) + "`n... (truncated)" }
+                if ($logContent) {
+                    $synthesisPrompt += "`n`n## $($agentName.ToUpper()) Review`n$logContent"
+                }
+            }
+        }
+
+        $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
+            -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
+            -AllowedTools "Read"
+    }
 
     # ── 4. PARSE VERDICT & WRITE OUTPUTS ──
     $approved = $true
@@ -609,6 +970,53 @@ Return ONLY a JSON object:
 ```
 '@ | Set-Content (Join-Path $promptDir "synthesize.md") -Encoding UTF8
 
+# Chunked synthesis template
+@'
+# LLM Council Synthesis -- Chunked Review Verdict
+
+You are the JUDGE synthesizing chunk-level review verdicts into a single final verdict.
+
+## Context
+- Health: {{HEALTH}}% | Iteration: {{ITERATION}}
+- GSD dir: {{GSD_DIR}}
+- Total chunks reviewed: {{CHUNK_COUNT}}
+- Total requirements: {{TOTAL_REQS}}
+
+## Your Task
+1. Read ALL chunk review verdicts below
+2. For each chunk, note what Codex and Gemini found
+3. Look for CROSS-CHUNK PATTERNS -- the same issue appearing in multiple chunks indicates a systemic problem
+4. Weigh each agent's expertise:
+   - Codex: Implementation & code quality expert
+   - Gemini: Requirements & spec alignment expert
+5. Produce a FINAL VERDICT covering the entire project
+
+## Decision Rules
+- If ANY chunk has a "block" vote with confidence > 70: verdict is BLOCKED
+- If the same concern appears in 2+ chunks: treat as systemic -- verdict is BLOCKED
+- If most chunks approve with minor concerns: verdict is APPROVED
+- When in doubt, BLOCK -- it's cheaper to fix now than after handoff
+- Weight concerns proportionally to chunk size (more requirements = more impact)
+
+## Output Format (max 3000 tokens)
+Return ONLY a JSON object:
+```json
+{
+  "approved": true|false,
+  "confidence": 0-100,
+  "votes": {
+    "codex": "approve|concern|block",
+    "gemini": "approve|concern|block"
+  },
+  "concerns": ["concern 1 (from chunk X)", "SYSTEMIC: concern seen in N chunks"],
+  "strengths": ["strength 1", "strength 2"],
+  "systemic_issues": ["issue that appeared across multiple chunks"],
+  "chunks_reviewed": {{CHUNK_COUNT}},
+  "reason": "1-3 sentence explanation of the verdict"
+}
+```
+'@ | Set-Content (Join-Path $promptDir "synthesize-chunked.md") -Encoding UTF8
+
 # ── POST-RESEARCH templates (Claude + Codex validate Gemini research) ──
 
 @'
@@ -913,7 +1321,7 @@ The spec-fix phase resolved spec conflicts. Verify the resolution is correct and
 JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...], "strengths": [...], "summary": "..." }
 '@ | Set-Content (Join-Path $promptDir "post-spec-fix-gemini.md") -Encoding UTF8
 
-Write-Host "[OK] 19 council prompt templates written to: $promptDir" -ForegroundColor Green
+Write-Host "[OK] 20 council prompt templates written to: $promptDir" -ForegroundColor Green
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host "  LLM Council installed successfully" -ForegroundColor Green

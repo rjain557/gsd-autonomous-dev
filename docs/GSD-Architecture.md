@@ -879,39 +879,55 @@ Set ntfy_topic to "auto" for per-project auto-detection, or a specific string to
 
 ### LLM Council (Multi-Stage)
 
-The LLM Council provides multi-agent cross-validation at 6 stages across both pipelines. Each council type uses 2-3 agents reviewing independently, then Claude synthesizes a consensus verdict.
+The LLM Council provides multi-agent cross-validation at 6 stages across both pipelines. Codex and Gemini review independently, then Claude synthesizes a consensus verdict. Claude is supervisor-only -- it does not participate in reviews.
 
 #### Council Types
 
-| Type | Trigger | Agents | Action on Block |
-|------|---------|--------|-----------------|
-| **convergence** | Health reaches 100% | Claude + Codex + Gemini | Health reset to 99%, feedback injected |
-| **post-research** | After Gemini research phase | Claude + Codex | Feedback injected into plan phase prompts |
-| **pre-execute** | Before Codex execute phase | Claude + Gemini | Feedback injected into execute prompts |
-| **post-blueprint** | After blueprint manifest generated | Claude + Codex + Gemini | Blueprint regenerated with feedback |
-| **stall-diagnosis** | Health stalls (no progress) | Claude + Codex + Gemini | Root cause analysis replaces single-agent diagnosis |
-| **post-spec-fix** | After Gemini resolves spec conflicts | Claude + Codex | Retry spec resolution with feedback |
+| Type | Trigger | Reviewers | Synthesizer | Action on Block |
+|------|---------|-----------|-------------|-----------------|
+| **convergence** | Health reaches 100% | Codex + Gemini | Claude | Health reset to 99%, feedback injected |
+| **post-research** | After Gemini research phase | Codex + Gemini | Claude | Feedback injected into plan phase prompts |
+| **pre-execute** | Before Codex execute phase | Codex + Gemini | Claude | Feedback injected into execute prompts |
+| **post-blueprint** | After blueprint manifest generated | Codex + Gemini | Claude | Blueprint regenerated with feedback |
+| **stall-diagnosis** | Health stalls (no progress) | Codex + Gemini | Claude | Root cause analysis replaces single-agent diagnosis |
+| **post-spec-fix** | After Gemini resolves spec conflicts | Codex + Gemini | Claude | Retry spec resolution with feedback |
 
 #### Agent Review Focus Areas
 
-| Agent | Focus Area |
-|-------|-----------|
-| Claude | Architecture, security/compliance (HIPAA, SOC2, PCI, GDPR), maintainability |
-| Codex | Implementation completeness, error handling, stored procedure patterns, edge cases |
-| Gemini | Requirements coverage, spec alignment, UI/UX flows, integration gaps |
+| Agent | Role | Focus Area |
+|-------|------|-----------|
+| Codex | Reviewer | Implementation completeness, error handling, stored procedure patterns, edge cases |
+| Gemini | Reviewer | Requirements coverage, spec alignment, UI/UX flows, integration gaps |
+| Claude | Synthesizer | Reads both reviews, finds consensus/disagreement, produces final verdict |
 
-Claude synthesizes all reviews into a consensus verdict (approve/block). Non-blocking councils (post-research, pre-execute) inject feedback without stopping the pipeline. Blocking councils (convergence, post-blueprint) can force a retry.
+Non-blocking councils (post-research, pre-execute) inject feedback without stopping the pipeline. Blocking councils (convergence, post-blueprint) can force a retry.
+
+#### Chunked Council Reviews
+
+For projects with 30+ requirements, the convergence council automatically chunks requirements into smaller groups (default max 25 per chunk). This prevents quota exhaustion and ensures every requirement gets reviewed.
+
+| Config | Default | Description |
+|--------|---------|-------------|
+| `chunking.enabled` | true | Enable/disable chunked reviews |
+| `chunking.max_chunk_size` | 25 | Max requirements per chunk |
+| `chunking.min_group_size` | 5 | Merge groups smaller than this |
+| `chunking.strategy` | "auto" | "auto" (discover from data), "field:X" (explicit), "id-range" (sequential) |
+| `chunking.cooldown_seconds` | 5 | Pause between chunks to avoid rate limits |
+| `chunking.min_requirements_to_chunk` | 30 | Skip chunking for small projects |
+
+The "auto" strategy reads the actual requirements-matrix.json and discovers the best grouping field dynamically (tries `pattern`, `sdlc_phase`, `priority`, `source`, `spec_doc`). No hardcoded domain maps.
 
 #### Council Cost per Run
 
-| Council Type | Agents | Est. Output Tokens | Est. Cost |
-|-------------|--------|-------------------|-----------|
-| convergence (3+synthesis) | 3 | ~9,000 | ~$0.43 |
-| post-research (2+synthesis) | 2 | ~6,000 | ~$0.25 |
-| pre-execute (2+synthesis) | 2 | ~6,000 | ~$0.25 |
-| post-blueprint (3+synthesis) | 3 | ~9,000 | ~$0.43 |
-| stall-diagnosis (3+synthesis) | 3 | ~9,000 | ~$0.43 |
-| post-spec-fix (2+synthesis) | 2 | ~6,000 | ~$0.25 |
+| Council Type | Reviewers | Est. Output Tokens | Est. Cost |
+|-------------|-----------|-------------------|-----------|
+| convergence (2+synthesis) | 2 | ~7,000 | ~$0.28 |
+| convergence chunked (10 chunks) | 2 x 10 + 1 | ~3,000/chunk | ~$0.50-1.50 |
+| post-research (2+synthesis) | 2 | ~5,000 | ~$0.12 |
+| pre-execute (2+synthesis) | 2 | ~5,000 | ~$0.12 |
+| post-blueprint (2+synthesis) | 2 | ~7,000 | ~$0.16 |
+| stall-diagnosis (2+synthesis) | 2 | ~7,000 | ~$0.16 |
+| post-spec-fix (2+synthesis) | 2 | ~5,000 | ~$0.12 |
 
 Max 2 convergence council attempts per pipeline run. Findings are included in the developer handoff report.
 

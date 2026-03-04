@@ -57,24 +57,42 @@ Defines the convergence loop phase sequence. Each phase maps to a specific agent
 
 #### council
 
-LLM Council configuration. The council provides multi-agent cross-validation at 6 stages across both pipelines: convergence (100% health gate), post-research, pre-execute, post-blueprint, stall-diagnosis, and post-spec-fix.
+LLM Council configuration. The council provides multi-agent cross-validation at 6 stages across both pipelines: convergence (100% health gate), post-research, pre-execute, post-blueprint, stall-diagnosis, and post-spec-fix. Codex and Gemini review; Claude synthesizes only.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | enabled | bool | true | Enable/disable all council reviews |
 | max_attempts | int | 2 | Max convergence council runs per pipeline (prevents infinite looping) |
-| consensus_threshold | float | 0.66 | Fraction of agents that must agree to approve (2/3) |
+| consensus_threshold | float | 0.66 | Fraction of reviewers that must agree to approve (1/2) |
 
 Council types and their behavior:
 
-| Type | Pipeline | Blocking | Agents |
-|------|----------|----------|--------|
-| convergence | Both | Yes (resets health to 99%) | Claude + Codex + Gemini |
-| post-research | Convergence | No (feedback only) | Claude + Codex |
-| pre-execute | Convergence | No (feedback only) | Claude + Gemini |
-| post-blueprint | Blueprint | Yes (regenerates manifest) | Claude + Codex + Gemini |
-| stall-diagnosis | Both | N/A (diagnostic) | Claude + Codex + Gemini |
-| post-spec-fix | Both | Yes (retries resolution) | Claude + Codex |
+| Type | Pipeline | Blocking | Reviewers | Synthesizer |
+|------|----------|----------|-----------|-------------|
+| convergence | Both | Yes (resets health to 99%) | Codex + Gemini | Claude |
+| post-research | Convergence | No (feedback only) | Codex + Gemini | Claude |
+| pre-execute | Convergence | No (feedback only) | Codex + Gemini | Claude |
+| post-blueprint | Blueprint | Yes (regenerates manifest) | Codex + Gemini | Claude |
+| stall-diagnosis | Both | N/A (diagnostic) | Codex + Gemini | Claude |
+| post-spec-fix | Both | Yes (retries resolution) | Codex + Gemini | Claude |
+
+#### council.chunking
+
+Chunked review configuration for the convergence council. Large projects have requirements auto-chunked into smaller groups for focused, quota-friendly reviews.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | bool | true | Enable/disable chunked reviews |
+| max_chunk_size | int | 25 | Max requirements per chunk |
+| min_group_size | int | 5 | Groups smaller than this get merged |
+| strategy | string | "auto" | Chunking strategy (see below) |
+| cooldown_seconds | int | 5 | Pause between chunks |
+| min_requirements_to_chunk | int | 30 | Skip chunking below this count |
+
+Chunking strategies:
+- **auto** (default): Discovers the best grouping field from the data (tries `pattern`, `sdlc_phase`, `priority`, `source`, `spec_doc`)
+- **field:X**: Force group by a specific field (e.g., `"field:sdlc_phase"`)
+- **id-range**: Sequential blocks of N requirements (fallback)
 
 ## Pricing Cache
 

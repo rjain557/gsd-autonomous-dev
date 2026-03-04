@@ -263,7 +263,7 @@ If you see `[GSD-STATUS]` messages you did not request, someone else (or another
 
 ## LLM Council Issues
 
-The LLM Council runs at 6 stages across both pipelines. Each stage uses 2-3 agents for independent review with Claude synthesizing the verdict.
+The LLM Council runs at 6 stages across both pipelines. Codex and Gemini review independently, then Claude synthesizes the verdict. For convergence reviews with 30+ requirements, reviews are auto-chunked into smaller groups.
 
 ### Council keeps blocking (health stuck at 99%)
 
@@ -272,7 +272,7 @@ The convergence council runs when health reaches 100%, before validation. If it 
 If council blocks twice:
 
 1. **Read the council findings**: `.gsd/code-review/council-findings.md` has the detailed report with agent votes, concerns, and reasoning
-2. **Check individual reviews**: `.gsd/logs/council-claude.log`, `council-codex.log`, `council-gemini.log`
+2. **Check individual reviews**: `.gsd/logs/council-convergence-codex.log`, `council-convergence-gemini.log` (or `council-convergence-codex-chunk1.log` etc. for chunked reviews)
 3. **Check the verdict**: `.gsd/health/council-review.json` has the structured JSON verdict
 4. **Common causes**:
    - Agents disagree on whether requirements are truly satisfied (false positives in health scoring)
@@ -282,23 +282,23 @@ If council blocks twice:
 
 ### Council auto-approves (quorum not met)
 
-If fewer than the required agents respond successfully, the council auto-approves with a warning. This can happen if:
+If no reviewers respond successfully, the council auto-approves with a warning. This can happen if:
 
 1. **Agent CLI not installed**: Gemini missing? Install with `npm install -g @google/gemini-cli`
-2. **Prompt template missing**: Check `%USERPROFILE%\.gsd-global\prompts\council\` has all 14 templates (6 types x 2 + synthesis variants)
-3. **Agent quota exhausted**: Council runs after iteration phases, so quota may be depleted
+2. **Prompt template missing**: Check `%USERPROFILE%\.gsd-global\prompts\council\` has all 20 templates (6 types x 3 agent templates + 2 synthesis variants)
+3. **Agent quota exhausted**: Council runs after iteration phases, so quota may be depleted. Chunked reviews reduce per-call quota pressure
 4. **Network issues**: Agent CLI can't reach API endpoint
 
 ### Council synthesis fails to parse
 
-The synthesis agent (Claude) should return a JSON verdict. If parsing fails, the council auto-approves. Check `.gsd/logs/council-synthesis.log` for the raw output. The prompt template (`council/synthesize.md`) should instruct Claude to return **only** a JSON object.
+The synthesis agent (Claude) should return a JSON verdict. If parsing fails, the council auto-approves. Check `.gsd/logs/council-convergence-synthesis.log` for the raw output. The prompt templates (`council/synthesize.md` or `council/synthesize-chunked.md`) instruct Claude to return **only** a JSON object.
 
 ### Post-research or pre-execute council slowing iterations
 
 The post-research and pre-execute councils are non-blocking (feedback only, no retry). If they are adding too much latency:
 
 1. **Disable council globally**: Set `"council": { "enabled": false }` in `global-config.json`
-2. **These councils add ~$0.25 each** per iteration (2-agent review + synthesis)
+2. **These councils add ~$0.12 each** per iteration (2 reviews + synthesis)
 3. **Check logs**: `.gsd/logs/council-*.log` for individual agent timing
 
 ### Post-blueprint council keeps regenerating manifest
@@ -306,16 +306,25 @@ The post-research and pre-execute councils are non-blocking (feedback only, no r
 The post-blueprint council reviews the blueprint manifest. If it blocks, the manifest is regenerated with council feedback. If this cycles:
 
 1. **Check council feedback**: `.gsd/supervisor/council-feedback.md` contains the concerns injected into the next blueprint generation
-2. **Common causes**: Blueprint is missing items that all 3 agents identify as required by specs
+2. **Common causes**: Blueprint is missing items that both Codex and Gemini identify as required by specs
 3. **Override**: Set `"council": { "enabled": false }` and run `gsd-blueprint -BuildOnly` to skip manifest regeneration
 
 ### Stall diagnosis council not finding root cause
 
-The 3-agent stall diagnosis replaces the previous single-agent approach. If it's not helpful:
+The 2-agent stall diagnosis (Codex + Gemini) replaces the previous single-agent approach. If it's not helpful:
 
-1. **Check diagnosis logs**: `.gsd/logs/council-claude.log`, `council-codex.log`, `council-gemini.log` during stall
-2. **Review the stall-diagnosis.md**: Written to `.gsd/code-review/council-findings.md`
+1. **Check diagnosis logs**: `.gsd/logs/council-stall-diagnosis-codex.log`, `council-stall-diagnosis-gemini.log`
+2. **Review the findings**: Written to `.gsd/code-review/council-findings.md`
 3. **The supervisor still runs**: After council diagnosis, the supervisor's Layer 2/3 analysis may provide additional fixes
+
+### Chunked reviews not activating
+
+If chunking is enabled but reviews run monolithically:
+
+1. **Check requirement count**: Chunking only activates with 30+ requirements (configurable: `council.chunking.min_requirements_to_chunk` in `agent-map.json`)
+2. **Only convergence type**: Chunking only applies to convergence council, not other types
+3. **Check config**: Verify `council.chunking.enabled = true` in `agent-map.json`
+4. **Check logs**: Look for "Chunked review: N chunks from M requirements" in console output
 
 ## Final Validation Issues
 

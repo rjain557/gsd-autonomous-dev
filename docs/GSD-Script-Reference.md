@@ -316,16 +316,18 @@ Adds final validation gate and developer handoff report to resilience.ps1. Insta
 
 ### patch-gsd-council.ps1 (Script 7)
 
-Adds `Invoke-LlmCouncil` to resilience.ps1 and creates 14 council prompt templates (6 types x 2 agent templates + synthesis variants). Multi-stage LLM Council system providing cross-validation at 6 points across both pipelines:
+Adds `Invoke-LlmCouncil`, `Build-RequirementChunks`, and `Build-ChunkContext` to resilience.ps1 and creates 20 council prompt templates (6 types x 3 agent templates + 2 synthesis variants). Multi-stage LLM Council system providing cross-validation at 6 points across both pipelines. Codex and Gemini review; Claude synthesizes only.
 
-| Council Type | Pipeline | Agents | Behavior |
-|-------------|----------|--------|----------|
-| convergence | Both | Claude + Codex + Gemini | Blocking: resets health to 99% if blocked |
-| post-research | Convergence | Claude + Codex | Non-blocking: injects feedback into plan phase |
-| pre-execute | Convergence | Claude + Gemini | Non-blocking: injects feedback into execute phase |
-| post-blueprint | Blueprint | Claude + Codex + Gemini | Blocking: regenerates manifest if blocked |
-| stall-diagnosis | Both | Claude + Codex + Gemini | Diagnostic: replaces single-agent stall analysis |
-| post-spec-fix | Both | Claude + Codex | Blocking: retries spec resolution if blocked |
+| Council Type | Pipeline | Reviewers | Behavior |
+|-------------|----------|-----------|----------|
+| convergence | Both | Codex + Gemini | Blocking: resets health to 99% if blocked |
+| post-research | Convergence | Codex + Gemini | Non-blocking: injects feedback into plan phase |
+| pre-execute | Convergence | Codex + Gemini | Non-blocking: injects feedback into execute phase |
+| post-blueprint | Blueprint | Codex + Gemini | Blocking: regenerates manifest if blocked |
+| stall-diagnosis | Both | Codex + Gemini | Diagnostic: replaces single-agent stall analysis |
+| post-spec-fix | Both | Codex + Gemini | Blocking: retries spec resolution if blocked |
+
+For projects with 30+ requirements, the convergence council auto-chunks requirements into groups of 25 (configurable in `agent-map.json` under `council.chunking`). The "auto" strategy discovers the best grouping field from the data -- no hardcoded domain maps.
 
 Max 2 convergence council attempts per run. Outputs: `.gsd/health/council-review.json`, `.gsd/code-review/council-findings.md`. Council findings are included in the developer handoff report.
 
@@ -870,7 +872,7 @@ Report sections: Header, Quick Start (auto-detected build commands), Database Se
 
 ### Invoke-LlmCouncil
 
-Multi-agent council review with 6 council types. Runs 2-3 agents in parallel for independent reviews, then Claude synthesizes a consensus verdict.
+Multi-agent council review with 6 council types. Codex and Gemini review independently, then Claude synthesizes a consensus verdict. For convergence reviews with 30+ requirements, automatically chunks requirements into smaller groups for focused, quota-friendly reviews.
 
 Parameters:
 
@@ -889,6 +891,15 @@ Output files:
 - `.gsd/health/council-review.json` -- structured verdict with per-agent votes
 - `.gsd/code-review/council-findings.md` -- human-readable council report
 - `.gsd/supervisor/council-feedback.md` -- injected into next iteration prompts (if blocked)
+- `.gsd/logs/council-convergence-{agent}-chunk{N}.log` -- per-chunk review logs (chunked mode)
+
+### Build-RequirementChunks
+
+Groups requirements dynamically based on fields in the matrix. No hardcoded domain maps. Strategies: "auto" (discover best field), "field:X" (explicit), "id-range" (sequential blocks).
+
+### Build-ChunkContext
+
+Builds focused context for one chunk -- only that chunk's requirements, file hints, and drift report.
 
 ### Invoke-SpecConsistencyCheck
 
