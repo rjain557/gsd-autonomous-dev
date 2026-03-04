@@ -2097,7 +2097,10 @@ function Update-CostSummary {
 
         if (Test-Path $summaryPath) {
             try {
-                $summary = Get-Content $summaryPath -Raw | ConvertFrom-Json
+                $raw = Get-Content $summaryPath -Raw | ConvertFrom-Json
+                # ConvertFrom-Json returns PSCustomObject -- convert to hashtable so
+                # we can dynamically add keys and mutate nested properties in-place
+                $summary = ConvertTo-MutableSummary $raw
             } catch {
                 # Corrupt -- rebuild
                 $summary = Rebuild-CostSummary -GsdDir $GsdDir
@@ -2142,12 +2145,11 @@ function Update-CostSummary {
         $p.calls = [int]$p.calls + 1
         $p.cost_usd = [math]::Round([double]$p.cost_usd + $UsageEntry.cost_usd, 6)
 
-        # Update current run
-        $runs = @($summary.runs)
-        if ($runs.Count -gt 0) {
-            $currentRun = $runs[$runs.Count - 1]
-            $currentRun.calls = [int]$currentRun.calls + 1
-            $currentRun.cost_usd = [math]::Round([double]$currentRun.cost_usd + $UsageEntry.cost_usd, 6)
+        # Update current run (mutate in-place on $summary.runs, not a copy)
+        if ($summary.runs -and $summary.runs.Count -gt 0) {
+            $summary.runs[$summary.runs.Count - 1].calls = [int]$summary.runs[$summary.runs.Count - 1].calls + 1
+            $summary.runs[$summary.runs.Count - 1].cost_usd = [math]::Round(
+                [double]$summary.runs[$summary.runs.Count - 1].cost_usd + $UsageEntry.cost_usd, 6)
         }
 
         $summary | ConvertTo-Json -Depth 5 | Set-Content $summaryPath -Encoding UTF8
@@ -2224,6 +2226,69 @@ function Rebuild-CostSummary {
     $summary | ConvertTo-Json -Depth 5 | Set-Content $summaryPath -Encoding UTF8
 
     return $summary
+}
+
+function ConvertTo-MutableSummary {
+    <#
+    .SYNOPSIS
+        Converts a PSCustomObject (from ConvertFrom-Json) into nested hashtables
+        so that dynamic property addition and in-place mutation work correctly.
+    #>
+    param([object]$Obj)
+
+    $h = @{
+        project_start  = if ($Obj.project_start) { $Obj.project_start } else { (Get-Date).ToUniversalTime().ToString("o") }
+        last_updated   = if ($Obj.last_updated) { $Obj.last_updated } else { (Get-Date).ToUniversalTime().ToString("o") }
+        total_calls    = [int]$Obj.total_calls
+        total_cost_usd = [double]$Obj.total_cost_usd
+        total_tokens   = @{
+            input  = [long]$Obj.total_tokens.input
+            output = [long]$Obj.total_tokens.output
+            cached = [long]$Obj.total_tokens.cached
+        }
+        by_agent = @{}
+        by_phase = @{}
+        runs     = @()
+    }
+
+    # Convert by_agent
+    if ($Obj.by_agent) {
+        foreach ($prop in $Obj.by_agent.PSObject.Properties) {
+            $h.by_agent[$prop.Name] = @{
+                calls    = [int]$prop.Value.calls
+                cost_usd = [double]$prop.Value.cost_usd
+                tokens   = @{
+                    input  = [long]$prop.Value.tokens.input
+                    output = [long]$prop.Value.tokens.output
+                    cached = [long]$prop.Value.tokens.cached
+                }
+            }
+        }
+    }
+
+    # Convert by_phase
+    if ($Obj.by_phase) {
+        foreach ($prop in $Obj.by_phase.PSObject.Properties) {
+            $h.by_phase[$prop.Name] = @{
+                calls    = [int]$prop.Value.calls
+                cost_usd = [double]$prop.Value.cost_usd
+            }
+        }
+    }
+
+    # Convert runs array -- each element must be a mutable hashtable
+    if ($Obj.runs) {
+        foreach ($run in @($Obj.runs)) {
+            $h.runs += @{
+                started  = $run.started
+                ended    = $run.ended
+                calls    = [int]$run.calls
+                cost_usd = [double]$run.cost_usd
+            }
+        }
+    }
+
+    return $h
 }
 
 function Complete-CostTrackingRun {

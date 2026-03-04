@@ -671,7 +671,7 @@ Parameters:
 
 ### Update-CostSummary
 
-Incremental merge-on-write update to `cost-summary.json`. Reads existing summary, adds new usage entry totals, writes back. Same merge-on-write pattern as `Update-EngineStatus`.
+Incremental merge-on-write update to `cost-summary.json`. Reads existing summary, converts it from PSCustomObject to mutable hashtables via `ConvertTo-MutableSummary`, adds new usage entry totals, writes back. This conversion is required because `ConvertFrom-Json` returns PSCustomObjects where dynamic property addition and in-place nested mutation silently fail.
 
 Parameters:
 
@@ -680,9 +680,19 @@ Parameters:
 | -GsdDir | Path to .gsd directory |
 | -UsageEntry | Hashtable with the usage data to merge |
 
+### ConvertTo-MutableSummary
+
+Converts a PSCustomObject (from `ConvertFrom-Json`) into nested hashtables so that dynamic property addition (`$summary.by_agent.$newKey = @{...}`) and in-place mutation of nested values work correctly. Called by `Update-CostSummary` after reading `cost-summary.json`.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -Obj | The PSCustomObject to convert |
+
 ### Rebuild-CostSummary
 
-Full rebuild of `cost-summary.json` from `token-usage.jsonl`. Use when the summary is corrupted or out of sync. Reads every JSONL line and reconstructs all aggregates from scratch.
+Full rebuild of `cost-summary.json` from `token-usage.jsonl`. Use when the summary is corrupted or out of sync. Reads every JSONL line and reconstructs all aggregates from scratch. Builds using native hashtables so no PSCustomObject conversion is needed.
 
 Parameters:
 

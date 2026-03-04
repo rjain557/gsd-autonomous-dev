@@ -589,6 +589,18 @@ If `.gsd/costs/token-usage.jsonl` is not being populated:
 2. **Check CLI version**: The JSON output flags require recent CLI versions. Older CLIs may not support `--output-format json` (Claude/Gemini) or `--json` (Codex). Update CLIs via `npm update -g`
 3. **JSON parse failure**: If a CLI returns unexpected JSON format, the engine silently falls back to raw output and skips cost logging for that call. Check `.gsd/logs/` for raw agent output
 
+### cost-summary.json shows all zeros despite JSONL having data
+
+This was caused by a PSCustomObject mutation bug (fixed in v1.4.1). `ConvertFrom-Json` returns PSCustomObjects where dynamic property addition and in-place nested mutation silently fail. The fix adds `ConvertTo-MutableSummary` which converts the deserialized JSON to nested hashtables before mutation.
+
+After updating to the fix, rebuild the summary once to populate from JSONL ground truth:
+
+```powershell
+. "$env:USERPROFILE\.gsd-global\lib\modules\resilience.ps1"
+$summary = Rebuild-CostSummary -GsdDir ".gsd"
+$summary | ConvertTo-Json -Depth 5 | Set-Content ".gsd\costs\cost-summary.json" -Encoding UTF8
+```
+
 ### cost-summary.json is corrupted or out of sync
 
 Rebuild the summary from the ground-truth JSONL file:
