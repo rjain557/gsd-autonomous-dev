@@ -801,6 +801,19 @@ if (Test-Path $executePath) {
     }
 }
 
+# Append to blueprint codex/build.md
+$buildPath = Join-Path $GsdGlobalDir "blueprint\prompts\codex\build.md"
+if (Test-Path $buildPath) {
+    $content = Get-Content $buildPath -Raw
+    if ($content -notmatch "Security & Quality Standards") {
+        $content = $content.Replace("### Meet ALL Acceptance Criteria", "$securityRef`n`n### Meet ALL Acceptance Criteria")
+        Set-Content -Path $buildPath -Value $content -Encoding UTF8
+        Write-Host "   [OK] blueprint\prompts\codex\build.md updated" -ForegroundColor DarkGreen
+    } else {
+        Write-Host "   [>>]  blueprint\prompts\codex\build.md already has security ref" -ForegroundColor DarkGray
+    }
+}
+
 # Append security checklist to council review prompts
 foreach ($reviewFile in @("council\codex-review.md", "council\gemini-review.md")) {
     $reviewPath = Join-Path $GsdGlobalDir "prompts\$reviewFile"

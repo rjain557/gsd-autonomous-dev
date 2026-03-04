@@ -449,6 +449,12 @@ Create the COMPLETE file at the path specified. Not a snippet - the full file.
 - PCI: never log card numbers, tokenization for payment data
 - GDPR: consent tracking, data export endpoint, data deletion endpoint
 
+### Security & Quality Standards (MANDATORY)
+Follow ALL rules in: %USERPROFILE%\.gsd-global\prompts\shared\security-standards.md
+Follow conventions in: %USERPROFILE%\.gsd-global\prompts\shared\coding-conventions.md
+Ensure database completeness per: %USERPROFILE%\.gsd-global\prompts\shared\database-completeness-review.md
+Every violation will be caught by the council review and final validation.
+
 ### Meet ALL Acceptance Criteria
 After generating each file, mentally verify it meets every acceptance criterion
 listed in the blueprint item. If it doesn't, fix it before moving on.
