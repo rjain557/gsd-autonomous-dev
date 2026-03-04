@@ -828,31 +828,98 @@ function Invoke-WithRetry {
             # -- Check for quota errors --
             $quotaType = Test-IsQuotaError $outputText
             if ($quotaType -ne "none") {
+                # Track tokens consumed by this failed attempt
+                $trackData = if ($tokenData) { $tokenData } else {
+                    New-EstimatedTokenData -Agent $Agent -PromptText $effectivePrompt -ErrorType $quotaType
+                }
+                if ($GsdDir) {
+                    try {
+                        $pipelineType = if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
+                        Save-TokenUsage -GsdDir $GsdDir -Agent $Agent -Phase $Phase `
+                            -Iteration $i -Pipeline $pipelineType -BatchSize $CurrentBatchSize `
+                            -Success $false -TokenData $trackData
+                    } catch { }
+                }
+
+                # Track consecutive quota failures per agent
+                if (-not $consecutiveQuotaFails.ContainsKey($Agent)) {
+                    $consecutiveQuotaFails[$Agent] = 0
+                }
+                $consecutiveQuotaFails[$Agent]++
+
                 Write-GsdError -GsdDir $GsdDir -Category "quota" -Phase $Phase -Iteration $i `
                     -Message "$Agent $quotaType" -Resolution "Waiting for reset"
+
+                # Rotate to different agent after N consecutive quota hits
+                if ($consecutiveQuotaFails[$Agent] -ge $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) {
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    if ($rotatedAgent) {
+                        Write-Host "    [ROTATE] $Agent exhausted $($consecutiveQuotaFails[$Agent])x. Switching to $rotatedAgent" -ForegroundColor Yellow
+                        Write-GsdError -GsdDir $GsdDir -Category "agent_rotate" -Phase $Phase -Iteration $i `
+                            -Message "$Agent -> $rotatedAgent after $($consecutiveQuotaFails[$Agent]) consecutive quota failures" `
+                            -Resolution "Rotated agent"
+                        Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
+                        $Agent = $rotatedAgent
+                        $consecutiveQuotaFails[$rotatedAgent] = 0
+                        $i--
+                        continue
+                    }
+                }
+
+                # Check cumulative wait cap
+                if ($totalQuotaWaitMinutes -ge $script:QUOTA_CUMULATIVE_MAX_MINUTES) {
+                    Write-Host "    [XX] Cumulative quota wait ($totalQuotaWaitMinutes min) exceeds cap ($($script:QUOTA_CUMULATIVE_MAX_MINUTES) min). Giving up." -ForegroundColor Red
+                    $result.Error = "Quota exhausted: waited $totalQuotaWaitMinutes min total across all agents"
+                    return $result
+                }
 
                 # Engine status: sleeping for quota backoff
                 if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
                     Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -SleepReason "quota_backoff" -LastError "$Agent $quotaType"
                 }
 
+                $waitStart = Get-Date
                 $quotaOk = Wait-ForQuotaReset -QuotaType $quotaType -Agent $Agent -GsdDir $GsdDir
+                $waitElapsed = ((Get-Date) - $waitStart).TotalMinutes
+                $totalQuotaWaitMinutes += $waitElapsed
+
                 if ($quotaOk) {
-                    # Engine status: recovered from quota backoff
                     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
                         Update-EngineStatus -GsdDir $GsdDir -State "running" -RecoveredFromError $true
                     }
-                    # Don't count this as a retry - reset the attempt counter
+                    $consecutiveQuotaFails[$Agent] = 0
                     $i--
                     continue
                 } else {
-                    $result.Error = "Quota exhausted and did not reset"
+                    # Quota didn't reset -- try rotating before giving up
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    if ($rotatedAgent) {
+                        Write-Host "    [ROTATE] $Agent quota didn't reset. Trying $rotatedAgent" -ForegroundColor Yellow
+                        Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
+                        $Agent = $rotatedAgent
+                        $i--
+                        continue
+                    }
+                    $result.Error = "Quota exhausted and did not reset after $([math]::Round($totalQuotaWaitMinutes)) min"
                     return $result
                 }
             }
 
             # -- Check for auth errors (not retryable) --
-            if ($outputText -match "(unauthorized|invalid.*key|auth.*fail|401|403)") {
+            if ($outputText -match "(unauthorized|invalid.*key|auth.*fail|401)" -and
+    $outputText -notmatch "(rate|quota|resource.exhausted|too.many|throttl)") {
+                # Track tokens consumed by auth-failed attempt
+                $trackData = if ($tokenData) { $tokenData } else {
+                    New-EstimatedTokenData -Agent $Agent -PromptText $effectivePrompt -ErrorType "auth"
+                }
+                if ($GsdDir) {
+                    try {
+                        $pipelineType = if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
+                        Save-TokenUsage -GsdDir $GsdDir -Agent $Agent -Phase $Phase `
+                            -Iteration $i -Pipeline $pipelineType -BatchSize $CurrentBatchSize `
+                            -Success $false -TokenData $trackData
+                    } catch { }
+                }
                 $result.Error = "AUTH_ERROR"
                 Write-Host "    [XX] Auth error - cannot retry" -ForegroundColor Red
                 return $result
@@ -864,6 +931,19 @@ function Invoke-WithRetry {
             $isCrash = ($exitCode -ne 0) -or (-not $output) -or ($output.Count -eq 0)
 
             if ($isCrash -and $i -lt $MaxAttempts) {
+                # Track tokens consumed by crashed attempt
+                $trackData = if ($tokenData) { $tokenData } else {
+                    New-EstimatedTokenData -Agent $Agent -PromptText $effectivePrompt -ErrorType "crash"
+                }
+                if ($GsdDir) {
+                    try {
+                        $pipelineType = if (Test-Path "$GsdDir\blueprint") { "blueprint" } else { "converge" }
+                        Save-TokenUsage -GsdDir $GsdDir -Agent $Agent -Phase $Phase `
+                            -Iteration $i -Pipeline $pipelineType -BatchSize $CurrentBatchSize `
+                            -Success $false -TokenData $trackData
+                    } catch { }
+                }
+
                 if ($isTokenError) {
                     # Token/context limit -> reduce batch size (smaller batch = fewer tokens)
                     $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR))
