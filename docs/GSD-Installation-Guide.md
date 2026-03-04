@@ -61,6 +61,41 @@ API keys are stored as persistent User-level environment variables (never commit
 
 You can use either method (or both). API keys take priority when set. See the setup-gsd-api-keys.ps1 section in the Script Reference for full details.
 
+### REST Agent API Keys (Optional)
+
+The engine supports 4 additional REST API agents that expand the rotation pool from 3 to 7. These are optional — agents without keys are silently excluded from rotation.
+
+| Environment Variable | Provider | Model | Key Source |
+|---------------------|----------|-------|-----------|
+| KIMI_API_KEY | Moonshot AI | Kimi K2.5 | https://platform.moonshot.cn |
+| DEEPSEEK_API_KEY | DeepSeek | DeepSeek V3 | https://platform.deepseek.com |
+| GLM_API_KEY | Zhipu AI | GLM-5 | https://open.bigmodel.cn |
+| MINIMAX_API_KEY | MiniMax | MiniMax M2.5 | https://platform.minimaxi.com |
+
+Set keys as persistent User-level environment variables:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("KIMI_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("GLM_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("MINIMAX_API_KEY", "your-key-here", "User")
+```
+
+No terminal restart is needed — the engine auto-loads User-level keys during preflight. You can verify detection by running any pipeline and checking the preflight output:
+
+```
+  [OK] KIMI_API_KEY set (REST agent: kimi)
+  [OK] DEEPSEEK_API_KEY set (REST agent: deepseek)
+  [OK] GLM_API_KEY set (REST agent: glm5)
+  [OK] MINIMAX_API_KEY set (REST agent: minimax)
+  4 REST agent(s) available for rotation
+```
+
+Benefits of adding REST agents:
+- **Immediate rotation**: When any CLI agent hits quota, the engine rotates to the next available agent instantly (no 5-minute sleep)
+- **7 independent quota pools**: Virtually eliminates quota-induced stalls during long autonomous runs
+- **Cost-effective**: REST API pricing is competitive (DeepSeek: $0.28/$0.42 per million input/output tokens)
+
 ## Quick Start
 
 ### Step 1: Clone the Repository
@@ -76,7 +111,7 @@ cd gsd-autonomous-dev
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-This runs all 19 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for API keys if they are not already configured.
+This runs all 21 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for CLI agent API keys if they are not already configured.
 
 | Order | Script | What It Installs |
 |-------|--------|-----------------|
@@ -99,14 +134,16 @@ This runs all 19 install/patch scripts in dependency order. The installer also r
 | 17 | patch-gsd-council.ps1 | LLM Council (multi-agent review gate at 100% health) |
 | 18 | patch-gsd-parallel-execute.ps1 | Parallel sub-task execution (split batch, round-robin agents) |
 | 19 | patch-gsd-resilience-hardening.ps1 | Resilience hardening (token tracking, auth fix, quota cap, agent rotation) |
+| 20 | patch-gsd-quality-gates.ps1 | Quality gates (DB completeness, security compliance, spec validation) |
+| 21 | patch-gsd-multi-model.ps1 | Multi-model LLM integration (Kimi, DeepSeek, GLM-5, MiniMax REST agents) |
 
 Optional standalone scripts (not run by installer):
-- **setup-gsd-api-keys.ps1** -- manage API key environment variables (set, show, clear)
+- **setup-gsd-api-keys.ps1** -- manage CLI agent API key environment variables (set, show, clear)
 - **setup-gsd-convergence.ps1** -- per-project convergence config (run manually if needed)
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
 - **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
 
-The repository contains 25 scripts total: 1 master installer, 1 pre-flight check, 19 scripts run by installer (17 core patches + 1 bug fix + 1 resilience hardening), and 4 standalone utilities.
+The repository contains 27 scripts total: 1 master installer, 1 pre-flight check, 21 scripts run by installer (19 core patches + 1 bug fix + 1 resilience hardening), and 4 standalone utilities.
 
 ### Step 3: Restart Terminal
 
@@ -136,7 +173,8 @@ After installation, the engine creates:
     gsd-costs.cmd               # Token cost calculator
   config\
     global-config.json          # Global settings (notifications, patterns, phases)
-    agent-map.json              # Agent-to-phase assignments
+    agent-map.json              # Agent-to-phase assignments, parallel config, council reviewers
+    model-registry.json         # Multi-model registry (CLI + REST agent metadata, rotation pool)
   lib\modules\
     resilience.ps1              # Retry, checkpoint, lock, rollback, adaptive batch, hardening, final validation
     supervisor.ps1              # Self-healing supervisor (diagnosis, fix, pattern memory)

@@ -89,13 +89,90 @@ Or pass keys directly for non-interactive update:
 
 ### Removing API keys
 
-To remove all API key environment variables and revert to interactive auth:
+To remove all CLI API key environment variables and revert to interactive auth:
 
 ```powershell
 .\scripts\setup-gsd-api-keys.ps1 -Clear
 ```
 
 Restart your terminal for the removal to take effect in new processes.
+
+## REST Agent Issues
+
+### REST agent keys show "not set" in preflight
+
+If you set REST agent API keys but preflight shows `[--] KIMI_API_KEY not set`:
+
+1. **Keys set in a different scope**: The engine checks Process → User → Machine scopes. Verify which scope your key is in:
+
+```powershell
+# Check User scope
+[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "User")
+
+# Check Machine scope (requires admin to set, but readable by all)
+[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "Machine")
+```
+
+2. **Keys were set after the patch was applied**: If you installed the multi-model patch before setting keys, everything is fine — just set the keys and run the pipeline again. The preflight auto-loads keys from User/Machine scope.
+
+3. **Re-run the patch script**: If preflight still doesn't detect keys, re-run the installer to ensure the latest preflight code is deployed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
+```
+
+### REST agent returns "unauthorized" during rotation
+
+The API key is set but the provider rejects it. Common causes:
+
+1. **Expired or revoked key**: Log into the provider's dashboard and verify the key is active
+2. **Wrong key for wrong provider**: Ensure KIMI_API_KEY is a Moonshot key (not DeepSeek, etc.)
+3. **Account has no credit**: Some providers require prepaid credit balance
+
+The engine treats "unauthorized" as a non-retryable error and moves to the next agent in the pool.
+
+### REST agent returns "rate_limit" errors
+
+REST API providers have their own rate limits independent of CLI agents. The engine handles these the same way as CLI quota errors:
+
+1. The agent enters cooldown (recorded in `.gsd/supervisor/agent-cooldowns.json`)
+2. The engine rotates to the next available agent
+3. The cooldown agent is re-tried after the cooldown period expires
+
+### "Unknown agent 'kimi' exit code 1" (or glm5, deepseek, minimax)
+
+This means `Get-FailureDiagnosis` doesn't recognize the REST agent. The multi-model patch steps 13B/13C were not applied.
+
+**Fix**: Re-run `install-gsd-all.ps1` or manually run `patch-gsd-multi-model.ps1`. Steps 13B/13C patch both the original and enhanced `Get-FailureDiagnosis` functions to handle REST agent HTTP errors (429→rate limit, 402→quota exhausted, 401→auth failure, 5xx→server error, timeout).
+
+### REST agent not appearing in rotation pool
+
+Check:
+
+1. **API key is set**: `[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "User")` returns a value
+2. **Agent is enabled in model-registry.json**: The agent entry has `"enabled": true` (default)
+3. **Agent is in rotation_pool_default**: Check `%USERPROFILE%\.gsd-global\config\model-registry.json`
+
+### Disabling a specific REST agent
+
+Set `"enabled": false` in model-registry.json, or remove/unset its environment variable:
+
+```powershell
+# Disable by removing key
+[System.Environment]::SetEnvironmentVariable("KIMI_API_KEY", $null, "User")
+
+# Or disable in registry (keeps key for later re-enabling)
+# Edit %USERPROFILE%\.gsd-global\config\model-registry.json
+# Set agents.kimi.enabled = false
+```
+
+### MINIMAX_API_KEY not showing in preflight
+
+If only 3 of 4 REST agents appear in preflight output, verify the key name is exactly `MINIMAX_API_KEY` (all uppercase, underscores). Check:
+
+```powershell
+[System.Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "User")
+```
 
 ## Runtime Issues
 
@@ -115,15 +192,23 @@ Get-Process | Where-Object { $_.CommandLine -match "convergence-loop|blueprint-p
 
 ### "Quota exhausted on claude" / "Sleeping 60 minutes"
 
-Your API quota (or OAuth session limit) is exhausted. The engine sleeps and retries automatically with adaptive backoff (5 min -> 10 min -> 20 min -> 40 min -> 60 min cap). Max retry: 24 hours.
+Your API quota (or OAuth session limit) is exhausted. With 7 agents configured, the engine immediately rotates to the next available agent on first quota failure. If all 7 agents are exhausted, adaptive backoff starts (5 min -> 10 min -> 20 min -> 40 min -> 60 min cap). Cumulative wait capped at 2 hours.
 
 If using OAuth, close other Claude sessions to free quota. Check usage at console.anthropic.com/settings/usage.
 
 To reduce quota consumption:
+- **Add REST agent API keys** (KIMI_API_KEY, DEEPSEEK_API_KEY, GLM_API_KEY, MINIMAX_API_KEY) to expand the rotation pool from 3 to 7 agents across 7 independent providers
 - Use -SkipResearch to skip the Gemini/Codex research phase
 - Increase -ThrottleSeconds (e.g., 60 or 120) to slow down agent calls
 - Reduce -MaxIterations to limit total runs
 - Ensure Gemini CLI is installed (`npm install -g @google/gemini-cli`) -- Gemini uses a separate quota pool, reducing load on Claude/Codex
+
+Check current agent cooldowns:
+
+```powershell
+# View which agents are in cooldown
+Get-Content .gsd\supervisor\agent-cooldowns.json | ConvertFrom-Json
+```
 
 ### "Network unavailable. Polling every 30s..."
 

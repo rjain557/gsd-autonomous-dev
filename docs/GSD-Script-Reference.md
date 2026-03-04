@@ -244,7 +244,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 19 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 25 scripts total (1 master installer + 1 pre-flight + 19 run by installer + 4 standalone utilities).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 21 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 27 scripts total (1 master installer + 1 pre-flight + 21 run by installer + 4 standalone utilities).
 
 Usage:
 
@@ -288,7 +288,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
-The master installer (`install-gsd-all.ps1`) runs these 18 scripts in order. Each is idempotent and safe to re-run.
+The master installer (`install-gsd-all.ps1`) runs these 21 scripts in order. Each is idempotent and safe to re-run.
 
 ### install-gsd-global.ps1 (Script 1)
 
@@ -306,7 +306,7 @@ Installs gsd-assess command, assessment prompts, file map generation, -MapOnly f
 
 ### patch-gsd-resilience.ps1 (Script 4)
 
-Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-Checkpoint, Restore-Checkpoint, New-Lock, Remove-Lock, Save-GsdSnapshot, Invoke-AdaptiveBatch, Get-FailureDiagnosis, Invoke-AgentFallback. Agent calls run in isolated child processes with a 30-minute watchdog that kills hung agents and retries.
+Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-Checkpoint, Restore-Checkpoint, New-Lock, Remove-Lock, Save-GsdSnapshot, Invoke-AdaptiveBatch, Get-FailureDiagnosis, Invoke-AgentFallback. Agent calls run in isolated child processes with a 30-minute watchdog that kills hung agents and retries. Note: Get-FailureDiagnosis is extended by `patch-gsd-multi-model.ps1` (steps 13B/13C) to handle REST agent HTTP errors.
 
 ### patch-gsd-hardening.ps1 (Script 5)
 
@@ -385,18 +385,35 @@ Resilience hardening patch fixing four gaps: (P1) tracks token costs on ALL atte
 
 Quality gates patch adding three verification layers: (1) `Test-DatabaseCompleteness` -- zero-token-cost static analysis verifying the full chain API Endpoint -> Stored Procedure -> Tables -> Seed Data by scanning `11-api-to-sp-map.md` and source files; (2) `Test-SecurityCompliance` -- zero-token-cost regex scan catching OWASP Top 10 violations (SQL injection, XSS, eval(), hardcoded secrets, missing [Authorize], BinaryFormatter, localStorage secrets); (3) `Invoke-SpecQualityGate` -- enhanced spec validation combining existing consistency check with AI-powered clarity scoring (spec-kit inspired) and cross-artifact consistency checking. Creates 5 prompt templates in `prompts/shared/` and `prompts/claude/` (security-standards.md, coding-conventions.md, database-completeness-review.md, spec-clarity-check.md, cross-artifact-consistency.md). Adds security checklist to council review prompts. Adds `quality_gates` config block to global-config.json. Integrates into both pipelines before final validation.
 
+### patch-gsd-multi-model.ps1 (Script 21)
+
+Multi-model LLM integration patch adding four OpenAI-compatible REST API agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) to expand the agent pool from 3 to 7. Creates `model-registry.json` (central metadata for all agents: CLI vs REST type, endpoints, API key env vars, pricing, model IDs). Adds `Invoke-OpenAICompatibleAgent` and `Test-IsOpenAICompatAgent` functions to resilience.ps1. Patches `Invoke-WithRetry` (both original and enhanced versions) to dispatch REST agents via the generic adapter. Patches `Extract-TokensFromOutput` for `openai-compat-result` JSON parsing. Patches `Get-TokenPrice` with pricing for 4 new models. Patches `Get-NextAvailableAgent` to read rotation pool from model-registry.json (with API key validation for REST agents). Reduces `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` from 3 to 1 for immediate rotation. Patches `Wait-ForQuotaReset` with REST agent probe support. Patches both `Get-FailureDiagnosis` functions (original and enhanced) to handle REST agent HTTP errors (429→rate limit, 402→quota exhausted, 401→auth failure, 5xx→server error, timeout) with fallback to claude for read-only phases (steps 13B/13C). Expands council reviewers pool dynamically from agent-map.json. Adds REST agent API key checks to `Test-PreFlight` (warnings only). Patches supervisor diagnosis for cooldown-aware routing. Updates token-cost-calculator.ps1 with new model pricing and LiteLLM lookups. Creates `openai-compat-review.md` council prompt template.
+
+New functions:
+
+| Function | Description |
+|----------|-------------|
+| `Invoke-OpenAICompatibleAgent` | Generic REST adapter for OpenAI-compatible chat completions API. Reads config from model-registry.json, resolves API key, builds request, calls Invoke-RestMethod, returns synthetic JSON envelope with usage tokens. Maps HTTP errors to GSD error taxonomy (rate_limit, unauthorized, server_error). |
+| `Test-IsOpenAICompatAgent` | Checks model-registry.json to determine if a given agent name is an openai-compat REST agent. |
+
+New/modified constants:
+
+| Constant | Old Value | New Value | Description |
+|----------|-----------|-----------|-------------|
+| QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE | 3 | 1 | Rotate immediately on first quota hit (7 agents available) |
+
 ### Optional standalone scripts
 
 These are NOT run by the installer but can be run manually:
 
-- **setup-gsd-api-keys.ps1** -- Manages API key environment variables for all three providers. See below for full usage.
+- **setup-gsd-api-keys.ps1** -- Manages API key environment variables for all three CLI providers. See below for full usage.
 - **setup-gsd-convergence.ps1** -- Per-project convergence config setup. Detects latest Figma design version, references SDLC specs (Phase A-E), creates per-project .gsd/ folder structure. Legacy script superseded by the global install approach.
 - **install-gsd-keybindings.ps1** -- Adds VS Code keyboard shortcuts (Ctrl+Shift+G chord prefix).
 - **token-cost-calculator.ps1** -- Token cost estimator script (also installed globally as `gsd-costs` by install-gsd-global.ps1).
 
 ### setup-gsd-api-keys.ps1
 
-Manages API key environment variables for the three AI agents used by the GSD engine. Keys are stored as persistent User-level environment variables (Windows registry), never committed to git.
+Manages API key environment variables for the three CLI agents used by the GSD engine. REST agent API keys (KIMI_API_KEY, DEEPSEEK_API_KEY, GLM_API_KEY, MINIMAX_API_KEY) are set separately via `[System.Environment]::SetEnvironmentVariable()` -- see the Installation Guide for details. All keys are stored as persistent User-level environment variables (Windows registry), never committed to git.
 
 Usage:
 
@@ -496,7 +513,7 @@ Parameters:
 
 | Parameter | Description |
 |-----------|-------------|
-| -Agent | "claude", "codex", or "gemini" |
+| -Agent | "claude", "codex", "gemini", or any REST agent name from model-registry.json |
 | -Prompt | The prompt text |
 | -Phase | Phase name for logging |
 | -LogFile | Path to log file |
@@ -819,11 +836,15 @@ Detailed format: `Cost: $1.24 run / $3.18 total | 412K tok (claude $1.91, codex 
 
 Analyzes agent failure output to determine root cause and recommend recovery action. Returns a diagnosis object with the failure reason, recommended action (retry, fallback, or escalate), and optional fallback agent.
 
-Gemini-specific diagnostics: sandbox/plan-mode restriction, model unavailable, prompt too large, server error, auth failure. Codex-specific: working directory issues, prompt format errors. Claude-specific: tool permission errors.
+Agent-specific diagnostics:
+- **Gemini**: sandbox/plan-mode restriction, model unavailable, prompt too large, server error, auth failure
+- **Codex**: working directory issues, prompt format errors, loop/iteration limits
+- **Claude**: max turns limit, tool permission errors
+- **REST agents** (kimi, deepseek, glm5, minimax): HTTP 429 rate limit, 402 quota exhausted, 401 auth failure, 5xx server error, timeout. REST agents fall back to claude for read-only phases (review, council, research, plan), retry for write phases. Added by `patch-gsd-multi-model.ps1` steps 13B/13C.
 
 ### Invoke-AgentFallback
 
-Attempts to run the same prompt with an alternative agent when the primary agent fails. Fallback chain: codex -> claude, claude -> codex, gemini -> codex. Returns success/failure and output.
+Attempts to run the same prompt with an alternative agent when the primary agent fails. Fallback chain: codex -> claude, claude -> codex, gemini -> codex, REST agents -> claude (read-only phases). Returns success/failure and output.
 
 ### Local-ResolvePrompt
 

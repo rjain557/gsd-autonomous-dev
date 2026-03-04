@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 18 scripts in correct order.
+    GSD Master Installer - Runs ALL 21 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -87,12 +87,13 @@ $scripts = @(
     @{ File="patch-gsd-parallel-execute.ps1";     Desc="Parallel Sub-Task Execution (split batch, round-robin agents)" }
     @{ File="patch-gsd-resilience-hardening.ps1"; Desc="Resilience Hardening (token tracking, auth fix, quota cap, agent rotation)" }
     @{ File="patch-gsd-quality-gates.ps1";       Desc="Quality Gates (DB completeness, security standards, spec validation)" }
+    @{ File="patch-gsd-multi-model.ps1";        Desc="Multi-Model LLM Integration (Kimi K2.5, DeepSeek, GLM-5, MiniMax via REST API)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 20 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 21 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

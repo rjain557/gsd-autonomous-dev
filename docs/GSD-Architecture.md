@@ -2,9 +2,9 @@
 
 ## Overview
 
-The GSD Engine orchestrates three AI agents (Claude Code, Codex CLI, and Gemini CLI) through PowerShell scripts to autonomously develop, fix, and verify code against specifications. It runs unattended with comprehensive self-healing for network failures, quota limits, disk space, JSON corruption, agent boundary violations, and stalls.
+The GSD Engine orchestrates seven AI agents (3 CLI-based + 4 REST API) through PowerShell scripts to autonomously develop, fix, and verify code against specifications. It runs unattended with comprehensive self-healing for network failures, quota limits, disk space, JSON corruption, agent boundary violations, and stalls.
 
-The three-model strategy distributes work across independent quota pools: Claude handles reasoning (review, plan, verify), Codex handles code generation (execute), and Gemini handles research and spec-fix (saves Claude/Codex quota).
+The multi-model strategy distributes work across independent quota pools: Claude handles reasoning (review, plan, verify), Codex handles code generation (execute), and Gemini handles research and spec-fix. Four additional REST API agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) expand the rotation pool — when any CLI agent exhausts its quota, the engine immediately rotates to the next available agent instead of waiting in sleep loops.
 
 ## Installed Directory Structure
 
@@ -20,6 +20,8 @@ After running install-gsd-all.ps1, the engine creates:
     gsd-costs.cmd               # Token cost calculator
   config\
     global-config.json          # Global settings (notifications, patterns, phases)
+    agent-map.json              # Agent-to-phase assignments, parallel config, council reviewers
+    model-registry.json         # Multi-model registry (CLI + REST agent metadata, rotation pool)
   lib\modules\
     resilience.ps1              # Retry, checkpoint, lock, rollback, adaptive batch, hardening, final validation
     interfaces.ps1              # Multi-interface detection + auto-discovery
@@ -28,7 +30,7 @@ After running install-gsd-all.ps1, the engine creates:
     claude\                     # Claude Code prompt templates (review, plan, verify)
     codex\                      # Codex prompt templates (execute, research fallback)
     gemini\                     # Gemini prompt templates (research, spec-fix)
-    council\                    # Council prompt templates (14 templates: 6 types x 2 + synthesis variants)
+    council\                    # Council prompt templates (15 templates: 6 types x 2 + synthesis variants + openai-compat-review)
   blueprint\
     scripts\
       blueprint-pipeline.ps1    # Blueprint generation + build loop
@@ -102,7 +104,7 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 
 ### gsd-assess
 
-1. Detect interfaces (recursive scan for design\{type}\v##)
+1. Detect interfaces (recursive scan for design\{type}\v## + auto-detect API from .sln/.csproj + Database from .sql files)
 2. Auto-discover _analysis/ and _stubs/ within each interface
 3. Generate file map (JSON + tree)
 4. Send assessment prompt to Claude with file map + interface context
@@ -134,7 +136,9 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 6. STALL DIAGNOSIS COUNCIL: 3-agent collaborative diagnosis if health stalls
 7. Repeat until 100% or stalled
 
-## Agent Assignment (Three-Model Strategy)
+## Agent Assignment (Multi-Model Strategy)
+
+### Primary Agents (CLI-based)
 
 | Phase | Agent | Mode | Why |
 |-------|-------|------|-----|
@@ -143,28 +147,49 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 | Plan | Claude | `--allowedTools Read,Write,Bash` | Better at strategic planning |
 | Execute | Codex (or parallel pool) | `--full-auto` | Faster at bulk code generation; parallel mode round-robins across agents |
 | Verify | Claude | `--allowedTools Read,Write,Bash` | Better at spec compliance checking |
-| Council Review | Claude + Codex + **Gemini** | Independent parallel reviews | 3-agent cross-validation at 100% health |
-| Council Synthesize | Claude | Reads all 3 reviews | Produces consensus verdict (approve/block) |
+| Council Review | Claude + Codex + **Gemini** + REST agents | Independent parallel reviews | Multi-agent cross-validation at 100% health |
+| Council Synthesize | Claude | Reads all reviews | Produces consensus verdict (approve/block) |
 | Spec-Fix | **Gemini** | `--yolo` (write) | Saves Claude/Codex quota for code gen |
 | Blueprint | Claude | `--allowedTools Read,Write,Bash` | Better at spec-to-manifest generation |
 | Build | Codex | `--full-auto` | Faster at code generation from specs |
 
-Token budgets are optimized across three independent quota pools:
+### REST API Agents (OpenAI-compatible)
+
+| Agent | Provider | Model ID | Input $/M | Output $/M |
+|-------|----------|----------|-----------|------------|
+| kimi | Moonshot AI | kimi-k2.5 | $0.60 | $2.50 |
+| deepseek | DeepSeek | deepseek-chat | $0.28 | $0.42 |
+| glm5 | Zhipu AI | glm-5 | $1.00 | $3.20 |
+| minimax | MiniMax | MiniMax-M2.5 | $0.29 | $1.20 |
+
+REST agents participate in:
+- **Agent rotation**: When a CLI agent hits quota, the engine rotates to the next available REST agent
+- **Parallel execute pool**: Added to the `execute_parallel.agent_pool` for sub-task distribution
+- **Council reviews**: Added to `council.reviewers` for expanded cross-validation
+- **Supervisor fallback**: L2 diagnosis can use a REST agent when Claude is in cooldown
+
+REST agents use the OpenAI-compatible chat completions API (text-in/text-out). They do not support file-system tool use, so they handle text generation sub-tasks only. Full agentic file editing stays with CLI agents.
+
+Token budgets are optimized across seven independent quota pools:
 - Claude Code: 4 reasoning phases (review, create-phases, plan, verify) = ~5K tokens each
 - Codex: 1 execution phase (execute) = ~65K tokens per iteration
 - Gemini: 2 supporting phases (research, spec-fix) = ~10K tokens per iteration
+- Kimi/DeepSeek/GLM-5/MiniMax: rotation fallbacks + parallel sub-tasks + council reviews
 
-### Why Three Models?
+### Why Seven Models?
 
 Each agent draws from an independent API quota pool. This means:
 - Claude quota exhaustion does NOT block Gemini research or Codex execution
-- Codex quota exhaustion does NOT block Claude review or Gemini research
+- Codex quota exhaustion triggers immediate rotation to the next available agent (kimi, deepseek, glm5, or minimax) instead of a 5-minute sleep loop
 - Gemini handles the "unlimited reading" work that previously burned through Codex quota
-- Overall throughput increases because agents can work without competing for the same quota
+- REST agents provide 4 additional fallback pools, dramatically reducing total wait time during quota exhaustion
+- Overall throughput increases because 7 agents across 7 providers virtually eliminates quota-induced stalls
 
 ### API Key Authentication
 
-Each agent CLI supports two authentication methods: interactive login (OAuth) and API key environment variables. API keys bypass interactive rate limits and enable higher throughput for autonomous pipelines.
+Each CLI agent supports two authentication methods: interactive login (OAuth) and API key environment variables. REST API agents require API keys (no CLI to authenticate interactively).
+
+#### CLI Agent Keys
 
 | Environment Variable | CLI | Expected Prefix | Purpose |
 |---------------------|-----|----------------|---------|
@@ -172,9 +197,29 @@ Each agent CLI supports two authentication methods: interactive login (OAuth) an
 | OPENAI_API_KEY | Codex | sk- | Execute, build phases |
 | GOOGLE_API_KEY | Gemini | AIza | Research, spec-fix phases |
 
-API keys are configured during installation (Step 0 of `install-gsd-global.ps1`) or via the standalone `setup-gsd-api-keys.ps1` script. Keys are stored as persistent User-level environment variables (Windows registry), never committed to git.
+CLI agent API keys are configured during installation (Step 0 of `install-gsd-global.ps1`) or via `setup-gsd-api-keys.ps1`. If not set, CLI agents fall back to interactive OAuth (which may have lower rate limits).
 
-If API keys are not set, agents fall back to interactive OAuth authentication (which may have lower rate limits).
+#### REST Agent Keys
+
+| Environment Variable | Provider | Agent Name | Key Source |
+|---------------------|----------|-----------|-----------|
+| KIMI_API_KEY | Moonshot AI | kimi | https://platform.moonshot.cn |
+| DEEPSEEK_API_KEY | DeepSeek | deepseek | https://platform.deepseek.com |
+| GLM_API_KEY | Zhipu AI | glm5 | https://open.bigmodel.cn |
+| MINIMAX_API_KEY | MiniMax | minimax | https://platform.minimaxi.com |
+
+REST agent API keys are optional. Agents without keys are automatically excluded from the rotation pool. Set keys as User-level environment variables:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("KIMI_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("GLM_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("MINIMAX_API_KEY", "your-key-here", "User")
+```
+
+The engine checks environment variables in order: Process → User → Machine. Keys set at User or Machine level are automatically loaded into the current session at preflight time, so you do not need to restart your terminal after setting them.
+
+All API keys are stored as persistent environment variables (Windows registry), never committed to git.
 
 ### Gemini Fallback
 
@@ -240,7 +285,7 @@ After each successful phase, state is saved to .gsd-checkpoint.json. On restart,
 
 ### Quota Management
 
-Detects "quota exhausted" or "rate limit" in agent output. Adaptive backoff: starts at 5 minutes, doubles each cycle (5 -> 10 -> 20 -> 40 -> 60 -> 60 min cap). Max 24 hours of retries with hourly quota checks. Differentiates rate_limit (wait 2 min) vs quota_exhausted (wait hours).
+Detects "quota exhausted" or "rate limit" in agent output. On first quota failure, the engine immediately rotates to the next available agent (from a pool of 7) instead of waiting. If all agents are exhausted, adaptive backoff starts: 5 minutes, doubles each cycle (5 -> 10 -> 20 -> 40 -> 60 -> 60 min cap). Cumulative quota wait capped at 2 hours. Differentiates rate_limit (wait 2 min) vs quota_exhausted (rotate immediately, then wait if all exhausted).
 
 ### Proactive Throttling
 
@@ -614,11 +659,27 @@ During blueprint verification, Claude traces data paths end-to-end:
 
 ## Interface Detection
 
+A complete project has three foundational layers:
+
+```
+UI Interfaces (web, mobile, mcp, browser, agent)
+        |
+    REST API / Backend (.NET Controllers -> Services -> Dapper)
+        |
+    Database (SQL Server stored procs -> tables -> seed data)
+```
+
+All UI interfaces communicate with the database through the API. The engine detects each layer as a separate interface.
+
 The engine searches for design folders in this order:
 1. Direct: {repo}\design\{type}\ (e.g., design\web\)
 2. Recursive: searches up to 3 levels deep for any folder named {type} whose parent is "design"
 
-Supported interface types: web, mcp, browser, mobile, agent
+Supported interface types: web, api, database, mcp, browser, mobile, agent
+
+The `api` and `database` types can be detected two ways:
+- **Design-dir based**: `design\api\v##` or `design\database\v##` (same as other types)
+- **Auto-detected from project structure**: `.sln`/`.csproj` files trigger API detection; `database/`/`db/` directories containing `.sql` files trigger Database detection. Auto-detected interfaces are marked accordingly in the output.
 
 Within each interface version folder, it recursively finds:
 - _analysis/ (12 expected deliverable files from Figma Make)
