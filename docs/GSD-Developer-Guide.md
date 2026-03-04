@@ -36,6 +36,9 @@ classification: "Confidential - Internal Use Only"
 - [Chapter 8: Script Reference](#chapter-8-script-reference)
 - [Chapter 9: Troubleshooting](#chapter-9-troubleshooting)
 - [Chapter 10: Cost Management](#chapter-10-cost-management)
+- [Chapter 11: Coding Standards & Methodologies](#chapter-11-coding-standards--methodologies)
+- [Chapter 12: Database Coding Standards](#chapter-12-database-coding-standards)
+- [Chapter 13: Compliance & Security Coding](#chapter-13-compliance--security-coding)
 - [Appendix A: Complete File Inventory](#appendix-a-complete-file-inventory)
 - [Appendix B: Prompt Templates](#appendix-b-prompt-templates)
 - [Appendix C: Notification Events](#appendix-c-notification-events)
@@ -1549,6 +1552,776 @@ Three-tier pricing: Best case, Expected case, Worst case.
 | ChatGPT Plus | $20 |
 | ChatGPT Pro | $200 |
 | Minimum bundle (Pro tiers) | $60/month |
+
+---
+
+## Chapter 11: Coding Standards & Methodologies
+
+This chapter documents the coding methodologies enforced by the GSD Engine across all pipelines. These standards are not optional -- they are injected into every agent prompt and validated by quality gates. Code that violates these patterns is flagged during review and blocked at final validation.
+
+### 11.1 Spec-Driven Development
+
+The GSD Engine follows a strict specification-driven development model. Code is generated from specifications, never the other way around. The flow is:
+
+1. **Design**: Build the frontend prototype in Figma Make
+2. **Analyze**: Figma Make generates 12 analysis deliverables + backend/database stubs
+3. **Assess**: `gsd-assess` reads all specs and creates work classification
+4. **Build**: `gsd-blueprint` or `gsd-converge` generates code to match specs
+5. **Verify**: Claude verifies every requirement against actual code, traces data paths end-to-end
+
+Specifications are the single source of truth. If the code doesn't match the spec, the code is wrong -- not the spec. The engine never modifies specifications to match existing code (unless explicitly running the spec-fix phase with Gemini for contradiction resolution).
+
+### 11.2 Contract-First, API-First Development
+
+Every API endpoint is defined in the specification documents before any code is generated. The contract is established through the 12 Figma Make analysis deliverables:
+
+| Deliverable | Defines |
+|---|---|
+| `06-api-contracts.md` | Every HTTP endpoint with request/response shapes |
+| `11-api-to-sp-map.md` | End-to-end traceability: Frontend Hook -> API Route -> Controller -> Stored Procedure -> Tables |
+| `05-data-types.md` | TypeScript interfaces that become C# DTOs |
+
+The API contract flows through every layer:
+
+```
+Frontend Hook  ->  API Route  ->  Controller  ->  Service  ->  Repository  ->  Stored Procedure  ->  Tables
+   (React)        (HTTP)        (.NET 8)      (.NET 8)     (.NET 8)        (SQL Server)         (SQL Server)
+```
+
+Every layer must match. The engine validates this chain during database completeness checks and storyboard verification. An endpoint that exists in the controller but has no matching stored procedure is a hard failure.
+
+### 11.3 Backend Coding Standards (.NET 8)
+
+The GSD Engine enforces .NET 8 with Dapper as the backend framework. Entity Framework is explicitly prohibited -- all database access goes through stored procedures via Dapper.
+
+#### Project Structure
+
+```
+src/
+  MyApp.Api/
+    Controllers/          # API controllers (one per entity group)
+    Program.cs            # Host configuration, DI, middleware
+  MyApp.Core/
+    DTOs/                 # Data transfer objects (request + response)
+    Interfaces/           # Service and repository interfaces
+    Services/             # Business logic services
+  MyApp.Infrastructure/
+    Repositories/         # Dapper-based repository implementations
+    DependencyInjection.cs
+```
+
+#### Controller Patterns
+
+Every controller follows this pattern:
+
+```csharp
+[ApiController]
+[Route("api/tenants/{tenantId}/[controller]")]
+[Authorize]
+public class EntityController : ControllerBase
+{
+    private readonly IEntityService _service;
+
+    public EntityController(IEntityService service)
+    {
+        _service = service;
+    }
+
+    /// <summary>Get all entities for tenant</summary>
+    [HttpGet]
+    public async Task<ActionResult<List<EntityDto>>> GetAll(
+        [FromRoute] string tenantId)
+    {
+        var result = await _service.GetAllAsync(tenantId);
+        return Ok(result);
+    }
+
+    /// <summary>Create a new entity</summary>
+    [HttpPost]
+    public async Task<ActionResult<EntityDto>> Create(
+        [FromRoute] string tenantId,
+        [FromBody] CreateEntityRequest request)
+    {
+        var result = await _service.CreateAsync(tenantId, request);
+        return CreatedAtAction(nameof(GetById), new { tenantId, id = result.Id }, result);
+    }
+}
+```
+
+Key rules:
+- Every controller must have `[ApiController]` and `[Authorize]` attributes
+- Route pattern: `api/tenants/{tenantId}/[controller]` for tenant-scoped resources
+- Use `[FromRoute]`, `[FromBody]`, `[FromQuery]` parameter annotations explicitly
+- Async/await throughout -- no synchronous database calls
+- Return appropriate HTTP status codes (200, 201, 400, 404)
+- XML doc comments on every action method
+
+#### DTO Patterns
+
+```csharp
+public class EntityDto
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    [Required]
+    [StringLength(200)]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("createdAt")]
+    public DateTime CreatedAt { get; set; }
+
+    [JsonPropertyName("modifiedAt")]
+    public DateTime ModifiedAt { get; set; }
+}
+```
+
+Key rules:
+- Property names in PascalCase (C# convention) with `[JsonPropertyName("camelCase")]` for serialization
+- Data annotations for validation: `[Required]`, `[StringLength]`, `[Range]`, `[EmailAddress]`
+- Separate request DTOs (CreateEntityRequest, UpdateEntityRequest) from response DTOs (EntityDto)
+- Default values on string properties (`= string.Empty`) to avoid null reference issues
+
+#### Repository Pattern (Dapper)
+
+```csharp
+public class EntityRepository : IEntityRepository
+{
+    private readonly IDbConnection _connection;
+
+    public EntityRepository(IDbConnection connection)
+    {
+        _connection = connection;
+    }
+
+    public async Task<IEnumerable<EntityDto>> GetAllAsync(string tenantId)
+    {
+        return await _connection.QueryAsync<EntityDto>(
+            "usp_Entity_GetAll",
+            new { TenantId = tenantId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<int> CreateAsync(string tenantId, CreateEntityRequest request)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("TenantId", tenantId);
+        parameters.Add("Name", request.Name);
+        parameters.Add("NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+
+        await _connection.ExecuteAsync(
+            "usp_Entity_Create",
+            parameters,
+            commandType: CommandType.StoredProcedure);
+
+        return parameters.Get<int>("NewId");
+    }
+}
+```
+
+Key rules:
+- Every repository method calls exactly one stored procedure via Dapper
+- Always use `CommandType.StoredProcedure` -- never inline SQL
+- Use `DynamicParameters` for output parameters
+- No string concatenation in any query -- all parameters are passed as objects
+
+### 11.4 SP-Only Pattern
+
+The SP-Only pattern is the most important architectural constraint enforced by the GSD Engine. Every API endpoint maps to exactly one stored procedure. No exceptions.
+
+| Layer | Calls | Via |
+|---|---|---|
+| Controller | Service | Dependency injection |
+| Service | Repository | Dependency injection |
+| Repository | Stored Procedure | Dapper `CommandType.StoredProcedure` |
+
+What is **prohibited**:
+- Inline SQL in any C# file
+- Entity Framework DbContext or LINQ-to-SQL
+- Raw ADO.NET queries
+- String concatenation to build SQL
+- Multiple database calls per API endpoint (use a single SP with JOINs or temp tables)
+
+What is **required**:
+- One SP per endpoint (CRUD operations: GetAll, GetById, Create, Update, Delete)
+- Complex operations use a single SP with transactions
+- Stored procedures handle all business logic that touches data
+- The C# service layer handles orchestration and validation only
+
+### 11.5 Frontend Coding Standards (React 18)
+
+The GSD Engine enforces React 18 with functional components and hooks. Class components are prohibited.
+
+#### Component Patterns
+
+```tsx
+interface EntityListProps {
+  tenantId: string;
+  onEntitySelect: (entity: EntityDto) => void;
+}
+
+export const EntityList: React.FC<EntityListProps> = ({ tenantId, onEntitySelect }) => {
+  const { data, isLoading, error } = useEntities(tenantId);
+
+  if (isLoading) return <LoadingSkeleton />;
+  if (error) return <ErrorCard message={error.message} onRetry={() => {}} />;
+  if (!data?.length) return <EmptyState message="No entities found" />;
+
+  return (
+    <div className="entity-list">
+      {data.map((entity) => (
+        <EntityCard
+          key={entity.id}
+          entity={entity}
+          onClick={() => onEntitySelect(entity)}
+        />
+      ))}
+    </div>
+  );
+};
+```
+
+Key rules:
+- Functional components only with TypeScript interfaces for props
+- Custom hooks for all data fetching and state management
+- Handle all states: loading, error, empty, and populated
+- Use `key` prop on all list items
+- Destructure props in the function signature
+
+#### Hook Patterns
+
+```tsx
+export function useEntities(tenantId: string) {
+  const [data, setData] = useState<EntityDto[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setIsLoading(true);
+        const response = await apiClient.get(`/api/tenants/${tenantId}/entities`);
+        setData(response.data);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error('Unknown error'));
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchData();
+  }, [tenantId]);
+
+  return { data, isLoading, error };
+}
+```
+
+Key rules:
+- One hook per entity or feature area
+- Return `{ data, isLoading, error }` consistently
+- Handle errors with try/catch -- never let unhandled promises propagate
+- Include dependency arrays on all useEffect calls
+
+### 11.6 Blueprint Tier Structure
+
+When the GSD Engine generates code via the blueprint pipeline, it follows a strict tier ordering. Each tier depends on the previous tier being complete. This ensures that database tables exist before stored procedures reference them, and stored procedures exist before controllers call them.
+
+| Tier | Name | Contents | Depends On |
+|---|---|---|---|
+| 1 | Database Foundation | Tables, migrations, indexes, constraints, foreign keys | Nothing |
+| 1.5 | Database Functions & Views | Views for complex reads, scalar/table-valued functions | Tier 1 |
+| 2 | Stored Procedures | All CRUD + business logic SPs | Tier 1, 1.5 |
+| 2.5 | Seed Data | INSERT scripts per table group, FK-consistent, matching Figma mock data | Tier 1, 2 |
+| 3 | API Layer | .NET 8 controllers, services, repositories, DTOs, validators | Tier 2 |
+| 4 | Frontend Components | React 18 components matching Figma exactly | Tier 3 |
+| 5 | Integration & Config | Routing, auth flows, middleware, DI, config files | Tier 3, 4 |
+| 6 | Compliance & Polish | Audit logging, encryption, RBAC, error boundaries, accessibility | Tier 5 |
+
+The blueprint manifest (`blueprint.json`) assigns each item to a tier, and the build phase processes tiers in order. Items within the same tier can be built in parallel.
+
+### 11.7 Figma Make Integration (12 Deliverables)
+
+The Figma Make prompt generates 12 analysis deliverables that serve as the complete specification for the AI coding agents. These are the "contract" between design and code.
+
+| # | File | What It Defines | Engine Uses It For |
+|---|---|---|---|
+| 01 | `screen-inventory.md` | All screens with layout, data, interactions | Blueprint item generation |
+| 02 | `component-inventory.md` | Reusable components with props, states, variants | Component-level work items |
+| 03 | `design-system.md` | Colors, typography, spacing, tokens | Design token validation |
+| 04 | `navigation-routing.md` | Routes, navigation tree, deep linking | Route scaffolding |
+| 05 | `data-types.md` | TypeScript interfaces for all entities | Type generation, DTO mapping |
+| 06 | `api-contracts.md` | Every API endpoint with request/response shapes | Controller scaffolding |
+| 07 | `hooks-state.md` | React hooks with return shapes, API calls | Hook generation |
+| 08 | `mock-data-catalog.md` | All mock data with exact values | Seed data validation |
+| 09 | `storyboards.md` | User flows with step-by-step actions | Storyboard-aware verification |
+| 10 | `screen-state-matrix.md` | Loading/error/empty states per screen | State coverage verification |
+| 11 | `api-to-sp-map.md` | Frontend -> API -> SP -> Table traceability | End-to-end chain verification |
+| 12 | `implementation-guide.md` | Build order, architecture decisions | Build ordering |
+
+Additionally, the Figma Make prompt generates backend and database stubs:
+
+| Stub | Location | Content |
+|---|---|---|
+| Controllers | `_stubs/backend/Controllers/*.cs` | .NET 8 controller stubs with method signatures |
+| DTOs | `_stubs/backend/Models/*.cs` | C# DTO classes matching TypeScript types |
+| Tables | `_stubs/database/01-tables.sql` | SQL Server CREATE TABLE statements |
+| Stored Procedures | `_stubs/database/02-stored-procedures.sql` | SP stubs with TRY/CATCH skeleton |
+| Seed Data | `_stubs/database/03-seed-data.sql` | INSERT statements matching mock data exactly |
+
+All 12 analysis files must be present. The engine validates by exact filename and reports `_analysis/ (12/12 deliverables)` during assessment.
+
+---
+
+## Chapter 12: Database Coding Standards
+
+This chapter documents the SQL Server database coding standards enforced by the GSD Engine. All database access goes through stored procedures -- no ORM queries, no inline SQL.
+
+### 12.1 Stored Procedure Naming Convention
+
+All stored procedures follow the naming pattern:
+
+```
+usp_[Entity]_[Operation]
+```
+
+| Operation | Convention | Example |
+|---|---|---|
+| Get all | `usp_Entity_GetAll` | `usp_Project_GetAll` |
+| Get by ID | `usp_Entity_GetById` | `usp_Project_GetById` |
+| Create | `usp_Entity_Create` | `usp_Project_Create` |
+| Update | `usp_Entity_Update` | `usp_Project_Update` |
+| Delete | `usp_Entity_Delete` | `usp_Project_Delete` |
+| Search/filter | `usp_Entity_Search` | `usp_Project_Search` |
+| Bulk operations | `usp_Entity_BulkCreate` | `usp_Project_BulkCreate` |
+| Custom business logic | `usp_Entity_[Action]` | `usp_Project_Archive` |
+
+### 12.2 Stored Procedure Template
+
+Every stored procedure must follow this template:
+
+```sql
+CREATE PROCEDURE usp_Entity_GetAll
+    @TenantId NVARCHAR(50),
+    @PageNumber INT = 1,
+    @PageSize INT = 25
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        SELECT
+            e.Id,
+            e.Name,
+            e.Status,
+            e.CreatedAt,
+            e.ModifiedAt
+        FROM Entity e
+        WHERE e.TenantId = @TenantId
+          AND e.IsDeleted = 0
+        ORDER BY e.CreatedAt DESC
+        OFFSET (@PageNumber - 1) * @PageSize ROWS
+        FETCH NEXT @PageSize ROWS ONLY;
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+```
+
+Key rules:
+- `SET NOCOUNT ON` at the start of every SP
+- `BEGIN TRY / BEGIN CATCH` wrapping all logic -- no exceptions
+- `THROW` in the CATCH block to propagate errors
+- All parameters are typed and use `@ParameterName` syntax
+- No string concatenation anywhere -- all values are parameters
+- `GO` statement after each SP to separate batches
+
+### 12.3 Create (INSERT) Pattern
+
+```sql
+CREATE PROCEDURE usp_Entity_Create
+    @TenantId NVARCHAR(50),
+    @Name NVARCHAR(200),
+    @Description NVARCHAR(MAX) = NULL,
+    @CreatedBy NVARCHAR(100),
+    @NewId INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        INSERT INTO Entity (TenantId, Name, Description, CreatedBy, CreatedAt, ModifiedAt)
+        VALUES (@TenantId, @Name, @Description, @CreatedBy, GETUTCDATE(), GETUTCDATE());
+
+        SET @NewId = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+```
+
+Key rules:
+- Use `OUTPUT` parameter for identity returns on INSERT operations
+- Use `SCOPE_IDENTITY()` -- never `@@IDENTITY`
+- Always set `CreatedAt` and `ModifiedAt` to `GETUTCDATE()`
+- Use `NVARCHAR` for all string columns (Unicode support)
+
+### 12.4 Update Pattern
+
+```sql
+CREATE PROCEDURE usp_Entity_Update
+    @Id INT,
+    @TenantId NVARCHAR(50),
+    @Name NVARCHAR(200),
+    @Description NVARCHAR(MAX) = NULL,
+    @ModifiedBy NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        UPDATE Entity
+        SET Name = @Name,
+            Description = @Description,
+            ModifiedBy = @ModifiedBy,
+            ModifiedAt = GETUTCDATE()
+        WHERE Id = @Id
+          AND TenantId = @TenantId;
+
+        IF @@ROWCOUNT = 0
+            THROW 50001, 'Entity not found or access denied.', 1;
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+```
+
+Key rules:
+- Always include `TenantId` in the WHERE clause for tenant-scoped operations
+- Check `@@ROWCOUNT` after UPDATE/DELETE to detect missing records
+- Use custom error numbers (50001+) for business logic errors
+- Always update `ModifiedAt` and `ModifiedBy` on UPDATE
+
+### 12.5 Delete Pattern (Soft Delete)
+
+```sql
+CREATE PROCEDURE usp_Entity_Delete
+    @Id INT,
+    @TenantId NVARCHAR(50),
+    @DeletedBy NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        UPDATE Entity
+        SET IsDeleted = 1,
+            DeletedBy = @DeletedBy,
+            DeletedAt = GETUTCDATE(),
+            ModifiedAt = GETUTCDATE()
+        WHERE Id = @Id
+          AND TenantId = @TenantId
+          AND IsDeleted = 0;
+
+        IF @@ROWCOUNT = 0
+            THROW 50002, 'Entity not found or already deleted.', 1;
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+```
+
+Key rules:
+- Use soft deletes (IsDeleted flag) -- never `DELETE FROM` in production
+- All SELECT queries must include `AND IsDeleted = 0`
+- Track `DeletedBy` and `DeletedAt` for audit trail
+
+### 12.6 Table Design Standards
+
+```sql
+CREATE TABLE Entity (
+    Id              INT IDENTITY(1,1) PRIMARY KEY,
+    TenantId        NVARCHAR(50)    NOT NULL,
+    Name            NVARCHAR(200)   NOT NULL,
+    Description     NVARCHAR(MAX)   NULL,
+    Status          NVARCHAR(50)    NOT NULL DEFAULT 'Active',
+    IsDeleted       BIT             NOT NULL DEFAULT 0,
+    CreatedBy       NVARCHAR(100)   NOT NULL,
+    CreatedAt       DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
+    ModifiedBy      NVARCHAR(100)   NULL,
+    ModifiedAt      DATETIME2       NOT NULL DEFAULT GETUTCDATE(),
+    DeletedBy       NVARCHAR(100)   NULL,
+    DeletedAt       DATETIME2       NULL,
+
+    CONSTRAINT FK_Entity_Tenant FOREIGN KEY (TenantId)
+        REFERENCES Tenant(Id)
+);
+
+CREATE INDEX IX_Entity_TenantId ON Entity(TenantId);
+CREATE INDEX IX_Entity_Status ON Entity(Status) WHERE IsDeleted = 0;
+```
+
+Required columns on every table:
+
+| Column | Type | Purpose |
+|---|---|---|
+| CreatedAt | DATETIME2 | When the record was created (UTC) |
+| CreatedBy | NVARCHAR(100) | Who created the record |
+| ModifiedAt | DATETIME2 | Last modification timestamp (UTC) |
+| ModifiedBy | NVARCHAR(100) | Who last modified the record |
+| IsDeleted | BIT | Soft delete flag (default 0) |
+
+Required columns on tenant-scoped tables:
+
+| Column | Type | Purpose |
+|---|---|---|
+| TenantId | NVARCHAR(50) | Tenant isolation -- every query must filter by TenantId |
+
+Index requirements:
+- Index on every foreign key column
+- Filtered index on frequently queried columns with `WHERE IsDeleted = 0`
+- Composite index on `(TenantId, Status)` for common filter patterns
+
+### 12.7 Seed Data Standards
+
+Seed data must match the Figma mock data exactly. The engine uses the `MERGE` or `IF NOT EXISTS` pattern for idempotent execution:
+
+```sql
+-- Seed: Tenants
+IF NOT EXISTS (SELECT 1 FROM Tenant WHERE Id = 'tenant-001')
+BEGIN
+    INSERT INTO Tenant (Id, Name, Status, CreatedBy, CreatedAt, ModifiedAt)
+    VALUES ('tenant-001', 'Acme Corp', 'Active', 'SYSTEM', GETUTCDATE(), GETUTCDATE());
+END
+
+-- Seed: Users (depends on Tenant)
+IF NOT EXISTS (SELECT 1 FROM [User] WHERE Id = 'user-001')
+BEGIN
+    INSERT INTO [User] (Id, TenantId, Email, DisplayName, Role, CreatedBy, CreatedAt, ModifiedAt)
+    VALUES ('user-001', 'tenant-001', 'admin@acme.com', 'Admin User', 'Admin', 'SYSTEM', GETUTCDATE(), GETUTCDATE());
+END
+```
+
+Key rules:
+- Insert order must respect foreign key constraints (Tenant before User, User before dependent entities)
+- Use `IF NOT EXISTS` for idempotent execution -- safe to re-run
+- IDs in seed data must match IDs used in mock data and between related tables
+- Use realistic, recent timestamps
+- Use `'SYSTEM'` as `CreatedBy` for seed data
+
+### 12.8 SQL Validation Rules
+
+The GSD Engine runs regex-based SQL validation on every iteration. These patterns are hard failures:
+
+| Pattern | Detection | Why |
+|---|---|---|
+| String concatenation + SQL keywords | `'+.*SELECT\|'+.*INSERT\|'+.*UPDATE\|'+.*DELETE\|'+.*EXEC` | SQL injection vulnerability |
+| Missing TRY/CATCH | SP body without `BEGIN TRY` | Unhandled errors crash the application |
+| Missing audit columns | `CREATE TABLE` without `CreatedAt` | Compliance requirement (HIPAA, SOC 2) |
+| No `SET NOCOUNT ON` | SP body without `SET NOCOUNT ON` | Performance issue (extra result sets) |
+
+These violations are detected by `Test-SqlFiles` in resilience.ps1 and reported in the code review. Critical violations block convergence.
+
+---
+
+## Chapter 13: Compliance & Security Coding
+
+This chapter documents the compliance frameworks and security coding standards enforced by the GSD Engine. The engine scans for OWASP patterns, validates compliance requirements, and blocks deployments that fail security checks.
+
+### 13.1 Compliance Frameworks
+
+The GSD Engine enforces four compliance frameworks simultaneously:
+
+| Framework | Scope | Key Requirements |
+|---|---|---|
+| HIPAA | Protected Health Information | Encryption at rest and in transit, audit logging, access controls, minimum necessary access |
+| SOC 2 | Service Organization Controls | Audit trails, change management, logical access controls, monitoring |
+| PCI DSS | Payment Card Data | Encryption, key management, network segmentation, logging, access control |
+| GDPR | Personal Data (EU) | Data minimization, right to erasure, consent management, data portability |
+
+These are configured in `global-config.json`:
+
+```json
+"compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"]
+```
+
+Every agent prompt includes these compliance requirements. Code generated by the engine must satisfy all four frameworks. The security compliance quality gate validates enforcement.
+
+### 13.2 OWASP Security Scanning
+
+The engine runs automated security scanning based on OWASP patterns. This is a zero-token-cost regex scan that runs before final validation.
+
+#### Critical Violations (Hard Failures)
+
+These block convergence. Code with critical violations cannot reach 100% health.
+
+| Vulnerability | Detection Pattern | Layer | Prevention |
+|---|---|---|---|
+| SQL Injection | String concatenation + SQL keywords in `.cs` files | Backend | Use parameterized stored procedures via Dapper |
+| Cross-Site Scripting (XSS) | `dangerouslySetInnerHTML` without DOMPurify in `.tsx/.jsx` files | Frontend | Use DOMPurify.sanitize() or avoid dangerouslySetInnerHTML |
+| Code Injection | `eval()` or `new Function()` in `.ts/.tsx/.js/.jsx` files | Frontend | Never use eval or dynamic code execution |
+| Secrets in Browser Storage | `localStorage` + sensitive keywords (password, secret, token, apiKey) in `.ts/.tsx` files | Frontend | Use httpOnly cookies for sensitive data |
+| Hardcoded Credentials | Connection strings, passwords, or API keys in source code | All | Use environment variables and configuration |
+
+#### High Severity (Warnings)
+
+These are flagged in the developer handoff report but do not block convergence.
+
+| Vulnerability | Detection Pattern | Layer | Prevention |
+|---|---|---|---|
+| Missing Authorization | Controllers without `[Authorize]` attribute | Backend | Add `[Authorize]` to every controller class |
+| Missing HTTPS Enforcement | HTTP URLs in configuration | All | Use HTTPS everywhere |
+| Missing Rate Limiting | API endpoints without throttling | Backend | Add rate limiting middleware |
+
+#### Medium Severity (Warnings)
+
+| Vulnerability | Detection Pattern | Layer | Prevention |
+|---|---|---|---|
+| Missing Audit Columns | `CREATE TABLE` without `CreatedAt`/`ModifiedAt` | Database | Include audit columns on every table |
+| Missing Input Validation | DTOs without `[Required]` or `[StringLength]` annotations | Backend | Add data annotations to all DTO properties |
+| Missing Error Boundaries | React components without error boundaries | Frontend | Wrap top-level components in ErrorBoundary |
+
+### 13.3 Quality Gates
+
+The GSD Engine runs three quality gate checks that validate completeness, security, and spec quality before declaring a project complete.
+
+#### Gate 1: Spec Quality (Pre-Generation)
+
+Runs once at pipeline start. Ensures specifications are clear and consistent before code generation begins.
+
+| Check | Method | Cost | Threshold |
+|---|---|---|---|
+| Spec consistency | Local regex scan | Free | Block on contradictions |
+| Spec clarity | Claude AI analysis | ~$0.15 | Block if score < 70%, warn 70-85% |
+| Cross-artifact consistency | Claude AI analysis | ~$0.15 | Block on mismatches between deliverables |
+
+The spec clarity score measures:
+- Are acceptance criteria specific and testable?
+- Are data types fully defined?
+- Are edge cases documented?
+- Are error states specified?
+- Are RBAC rules explicit?
+
+#### Gate 2: Database Completeness (Pre-Validation)
+
+Runs when health reaches 100%. Zero token cost (regex scan). Minimum coverage: 90%.
+
+Verifies the full chain exists for every endpoint:
+
+```
+API Endpoint  ->  Stored Procedure  ->  Tables  ->  Seed Data
+     |                  |                  |            |
+  [HttpGet]      CREATE PROC        CREATE TABLE    INSERT INTO
+  [HttpPost]     usp_Entity_*       Entity          Entity
+```
+
+The check scans:
+- `_analysis/11-api-to-sp-map.md` for the expected mapping
+- `.cs` files for `[Http*]` attributes in controllers
+- `.sql` files for `CREATE PROC`, `CREATE TABLE`, `INSERT INTO` statements
+- Results written to `.gsd/assessment/db-completeness.json`
+
+#### Gate 3: Security Compliance (Pre-Validation)
+
+Runs when health reaches 100%. Zero token cost (regex scan).
+
+- **Critical violations**: Hard failure -- health set to 99%, pipeline continues to fix
+- **High/medium violations**: Warnings included in developer handoff report
+
+Configuration in `global-config.json`:
+
+```json
+"quality_gates": {
+    "database_completeness": {
+        "enabled": true,
+        "require_seed_data": true,
+        "min_coverage_pct": 90
+    },
+    "security_compliance": {
+        "enabled": true,
+        "block_on_critical": true,
+        "warn_on_high": true
+    },
+    "spec_quality": {
+        "enabled": true,
+        "min_clarity_score": 70,
+        "check_cross_artifact": true
+    }
+}
+```
+
+### 13.4 Security Coding Patterns by Layer
+
+#### Backend (.NET 8) Security
+
+| Pattern | Implementation | Compliance |
+|---|---|---|
+| Authentication | JWT Bearer tokens via `[Authorize]` attribute | SOC 2, HIPAA |
+| Authorization | Role-based access control (RBAC) via `[Authorize(Roles = "Admin")]` | SOC 2, HIPAA |
+| Input Validation | Data annotations on DTOs (`[Required]`, `[StringLength]`, `[Range]`) | OWASP |
+| SQL Injection Prevention | Parameterized stored procedures via Dapper -- no inline SQL | OWASP, PCI |
+| Audit Logging | CreatedBy/ModifiedBy/DeletedBy tracked on every write operation | HIPAA, SOC 2 |
+| Encryption in Transit | HTTPS enforced via middleware | HIPAA, PCI |
+| Error Handling | Global exception handler returns sanitized errors (no stack traces) | OWASP |
+| CORS | Configured explicitly -- no wildcard origins | OWASP |
+
+#### Frontend (React 18) Security
+
+| Pattern | Implementation | Compliance |
+|---|---|---|
+| XSS Prevention | Never use `dangerouslySetInnerHTML` without DOMPurify | OWASP |
+| Sensitive Data | Never store tokens/passwords in localStorage -- use httpOnly cookies | OWASP, PCI |
+| Dynamic Code | Never use `eval()` or `new Function()` | OWASP |
+| Auth Token Handling | Store JWT in httpOnly secure cookie, not accessible to JavaScript | OWASP |
+| Error Boundaries | Wrap top-level routes in React ErrorBoundary components | SOC 2 |
+| Content Security Policy | Set CSP headers to prevent script injection | OWASP |
+
+#### Database (SQL Server) Security
+
+| Pattern | Implementation | Compliance |
+|---|---|---|
+| Parameterized Queries | All input via SP parameters -- no string concatenation | OWASP, PCI |
+| Tenant Isolation | Every query includes `WHERE TenantId = @TenantId` | HIPAA, SOC 2 |
+| Soft Deletes | Never hard-delete records -- set IsDeleted flag | HIPAA (retention), GDPR (audit) |
+| Audit Columns | CreatedAt, CreatedBy, ModifiedAt, ModifiedBy on every table | HIPAA, SOC 2 |
+| Encryption at Rest | SQL Server Transparent Data Encryption (TDE) | HIPAA, PCI |
+| Minimum Privilege | Application user has EXECUTE permission only -- no direct table access | SOC 2, PCI |
+
+### 13.5 Tenant Isolation
+
+Multi-tenancy is enforced at every layer. A tenant must never be able to access another tenant's data.
+
+| Layer | Enforcement Mechanism |
+|---|---|
+| API Route | `tenantId` in the URL path: `/api/tenants/{tenantId}/...` |
+| Controller | Validates `tenantId` from route matches the authenticated user's tenant claim |
+| Service | Passes `tenantId` to every repository method |
+| Repository | Passes `@TenantId` parameter to every stored procedure |
+| Stored Procedure | Includes `WHERE TenantId = @TenantId` in every query |
+| Table | `TenantId NVARCHAR(50) NOT NULL` column with foreign key to Tenant table |
+
+The engine validates tenant isolation during code review. A stored procedure that queries data without filtering by `TenantId` on a tenant-scoped table is flagged as a critical security violation.
+
+### 13.6 Final Validation Gate
+
+When health reaches 100%, the engine runs a comprehensive final validation before declaring convergence. This is the last line of defense.
+
+| # | Check | Type | Description |
+|---|---|---|---|
+| 1 | .NET build | Hard | `dotnet build --no-restore` -- zero compilation errors |
+| 2 | npm build | Hard | `npm run build` -- frontend compiles cleanly |
+| 3 | .NET tests | Hard | `dotnet test --no-build` -- all tests pass |
+| 4 | npm tests | Hard | `npm test` (CI=true) -- all tests pass |
+| 5 | SQL validation | Warn | Pattern violations in SQL files |
+| 6 | .NET vulnerability audit | Warn | `dotnet list package --vulnerable` |
+| 7 | npm vulnerability audit | Warn | `npm audit --audit-level=high` |
+| 8 | Database completeness | Hard | Full chain API -> SP -> Table -> Seed verified |
+| 9 | Security compliance | Hard/Warn | Critical = hard failure, High/Medium = warning |
+
+Hard failures reset health to 99% and inject the failure details into agent prompts via `error-context.md`. The engine then loops to fix the issues automatically. Up to 3 validation attempts are allowed before the pipeline exits to prevent infinite loops.
 
 ---
 
