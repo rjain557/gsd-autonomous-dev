@@ -379,6 +379,10 @@ Installs parallel sub-task execution for the execute phase. Adds `execute_parall
 
 Resilience hardening patch fixing four gaps: (P1) tracks token costs on ALL attempts (success, failure, quota probes) with cost estimation when agents return error text instead of JSON; (P2) fixes auth regex that misclassified Gemini 403 rate limits as auth failures, routing them to proper quota backoff; (P3) adds 2-hour cumulative quota wait cap to prevent 14+ hour sleep loops; (P4) adds automatic agent rotation after 3 consecutive quota failures on the same agent (e.g., codex exhausted -> switch to claude). New functions: `New-EstimatedTokenData`, `Get-NextAvailableAgent`, `Set-AgentCooldown`. New constants: `QUOTA_CUMULATIVE_MAX_MINUTES` (120), `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` (3). Creates `.gsd/supervisor/agent-cooldowns.json` at runtime.
 
+### patch-gsd-quality-gates.ps1 (Script 20)
+
+Quality gates patch adding three verification layers: (1) `Test-DatabaseCompleteness` -- zero-token-cost static analysis verifying the full chain API Endpoint -> Stored Procedure -> Tables -> Seed Data by scanning `11-api-to-sp-map.md` and source files; (2) `Test-SecurityCompliance` -- zero-token-cost regex scan catching OWASP Top 10 violations (SQL injection, XSS, eval(), hardcoded secrets, missing [Authorize], BinaryFormatter, localStorage secrets); (3) `Invoke-SpecQualityGate` -- enhanced spec validation combining existing consistency check with AI-powered clarity scoring (spec-kit inspired) and cross-artifact consistency checking. Creates 5 prompt templates in `prompts/shared/` and `prompts/claude/` (security-standards.md, coding-conventions.md, database-completeness-review.md, spec-clarity-check.md, cross-artifact-consistency.md). Adds security checklist to council review prompts. Adds `quality_gates` config block to global-config.json. Integrates into both pipelines before final validation.
+
 ### Optional standalone scripts
 
 These are NOT run by the installer but can be run manually:
@@ -900,6 +904,50 @@ Groups requirements dynamically based on fields in the matrix. No hardcoded doma
 ### Build-ChunkContext
 
 Builds focused context for one chunk -- only that chunk's requirements, file hints, and drift report.
+
+### Test-DatabaseCompleteness
+
+Zero-token-cost static analysis verifying the full database chain. Discovers API endpoints from `11-api-to-sp-map.md` or `[Http*]` attributes, stored procedures from `CREATE PROC` in `.sql` files, tables from `CREATE TABLE`, seed data from `INSERT INTO`/`MERGE`. Cross-references the chain and writes `.gsd/assessment/db-completeness.json`. Config: `quality_gates.database_completeness` in global-config.json.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| RepoRoot | string | Project root path |
+| GsdDir | string | Project .gsd directory |
+| Detailed | switch | Show per-file details |
+
+Returns: `@{ Passed; Coverage; OverallPct; Issues; MissingStoredProcs; MissingSeedData }`
+
+### Test-SecurityCompliance
+
+Zero-token-cost regex scan catching OWASP violations. Scans `.cs`, `.ts`, `.tsx`, `.js`, `.jsx`, `.sql`, `.json` files for 9 vulnerability patterns plus missing `[Authorize]` and missing audit columns. Writes `.gsd/assessment/security-compliance.json`. Config: `quality_gates.security_compliance` in global-config.json.
+
+| Pattern | Severity | Description |
+|---------|----------|-------------|
+| String concat + SQL | Critical | SQL injection |
+| dangerouslySetInnerHTML | Critical | XSS (skips if DOMPurify present) |
+| eval() / new Function() | Critical | Code injection |
+| localStorage + secrets | Critical | Sensitive data in browser |
+| Hardcoded secrets | Critical | Credentials in source |
+| Missing [Authorize] | High | Unprotected controller |
+| Missing audit columns | Medium | CREATE TABLE without CreatedAt |
+| Console log + secrets | High | PII in logs |
+| sp_executesql + concat | Critical | Dynamic SQL injection |
+
+Returns: `@{ Passed; Violations; ViolationCount; Criticals; Highs; Mediums }`
+
+### Invoke-SpecQualityGate
+
+Enhanced spec validation combining three checks: (1) existing `Invoke-SpecConsistencyCheck` (contradiction detection), (2) AI-powered spec clarity scoring via Claude using `spec-clarity-check.md` template (scores 0-100, blocks < 70), (3) cross-artifact consistency checking via Claude using `cross-artifact-consistency.md` template (validates entity/field names, chain completeness, seed data). Config: `quality_gates.spec_quality` in global-config.json.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| RepoRoot | string | | Project root path |
+| GsdDir | string | | Project .gsd directory |
+| Interfaces | array | @() | Detected interfaces |
+| DryRun | switch | | Skip AI calls |
+| MinClarityScore | int | 70 | Minimum clarity score to pass |
+
+Returns: `@{ Passed; ClarityScore; ConsistencyPassed; Issues; Verdict }`
 
 ### Invoke-SpecConsistencyCheck
 

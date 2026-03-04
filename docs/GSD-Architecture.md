@@ -769,6 +769,60 @@ Pre-flight checks for required tools:
 
 Warns on untested versions but does not block execution.
 
+## Quality Gates
+
+Before final validation, the engine runs three quality gate checks that verify completeness, security, and spec quality.
+
+### Pre-Generation: Spec Quality Gate
+
+Runs once at pipeline start (before blueprint or convergence begins). Combines three checks:
+
+| Check | Method | Token Cost | Action |
+|-------|--------|-----------|--------|
+| Spec consistency | `Invoke-SpecConsistencyCheck` | 0 (local) | Block on contradictions |
+| Spec clarity | Claude via `spec-clarity-check.md` | ~$0.15 | Block if score < 70, warn 70-85 |
+| Cross-artifact consistency | Claude via `cross-artifact-consistency.md` | ~$0.15 | Block on mismatches |
+
+### Pre-Validation: Database Completeness
+
+Runs before final validation when health reaches 100%. Zero token cost (regex scan).
+
+Verifies the full chain: API Endpoint -> Stored Procedure -> Tables -> Seed Data.
+- Scans `_analysis/11-api-to-sp-map.md` for the mapping table
+- Falls back to scanning `[Http*]` attributes in `.cs` files
+- Cross-references `CREATE PROC`, `CREATE TABLE`, `INSERT INTO` in `.sql` files
+- Writes `.gsd/assessment/db-completeness.json`
+- Failures injected into `supervisor/error-context.md` for next iteration
+
+### Pre-Validation: Security Compliance
+
+Runs before final validation. Zero token cost (regex scan of source files).
+
+| Pattern | Severity | Description |
+|---------|----------|-------------|
+| String concat + SQL keywords | Critical | SQL injection |
+| dangerouslySetInnerHTML (without DOMPurify) | Critical | XSS |
+| eval() / new Function() | Critical | Code injection |
+| localStorage + sensitive keywords | Critical | Secrets in browser storage |
+| Hardcoded connection strings/passwords | Critical | Exposed credentials |
+| Missing [Authorize] on controllers | High | Unprotected endpoints |
+| Missing audit columns | Medium | CREATE TABLE without CreatedAt |
+
+Critical violations are hard failures. High/medium are warnings.
+
+### Enhanced Blueprint Tier Structure
+
+| Tier | Name | Contents |
+|------|------|----------|
+| 1 | Database Foundation | Tables, migrations, indexes, constraints |
+| 1.5 | Database Functions & Views | Views for complex reads, scalar/table-valued functions |
+| 2 | Stored Procedures | All CRUD + business logic SPs |
+| 2.5 | Seed Data | INSERT scripts per table group, FK-consistent, matching Figma mock data |
+| 3 | API Layer | .NET 8 controllers, services, repositories, DTOs, validators |
+| 4 | Frontend Components | React 18 components matching Figma exactly |
+| 5 | Integration & Config | Routing, auth flows, middleware, DI, config files |
+| 6 | Compliance & Polish | Audit logging, encryption, RBAC, error boundaries, accessibility |
+
 ## Final Validation Gate
 
 When health reaches 100%, the engine runs a final validation gate before declaring CONVERGED or BLUEPRINT COMPLETE. This bridges the gap between "all requirements have matching code references" and "the code actually compiles and runs."
@@ -784,11 +838,13 @@ When health reaches 100%, the engine runs a final validation gate before declari
 | 5 | SQL validation | `Test-SqlFiles` (existing function) | WARN | SQL pattern violations are advisory |
 | 6 | .NET vulnerability audit | `dotnet list package --vulnerable` | WARN | Flags vulnerable NuGet packages |
 | 7 | npm vulnerability audit | `npm audit --audit-level=high` | WARN | Flags high+ severity npm vulnerabilities |
+| 8 | Database completeness | `Test-DatabaseCompleteness` | HARD | Full chain API->SP->Table->Seed verified |
+| 9 | Security compliance | `Test-SecurityCompliance` | HARD/WARN | Critical=hard, High/Medium=warn |
 
 ### Failure Handling
 
-- **Hard failures** (checks 1-4): Set health to 99%, write failures to `.gsd/supervisor/error-context.md` so the next iteration's code review picks them up, loop continues to fix the issues
-- **Warnings** (checks 5-7): Included in the developer handoff report but do NOT block convergence
+- **Hard failures** (checks 1-4, 8, 9-critical): Set health to 99%, write failures to `.gsd/supervisor/error-context.md` so the next iteration's code review picks them up, loop continues to fix the issues
+- **Warnings** (checks 5-7, 9-high/medium): Included in the developer handoff report but do NOT block convergence
 - **Max 3 validation attempts**: If validation fails 3 times, the pipeline exits to avoid infinite loops
 - **Skipped checks**: If no .sln, no package.json, or no test projects exist, those checks are skipped (not a failure)
 

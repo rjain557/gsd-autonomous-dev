@@ -16,8 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GSD_VERSION = "1.4.0"
-$GSD_DATE = "2026-03-03"
+$GSD_VERSION = "1.5.0"
+$GSD_DATE = "2026-03-04"
 
 # Run prerequisites check first if the script exists
 $prereqScript = Join-Path $scriptDir "install-gsd-prerequisites.ps1"
@@ -86,12 +86,13 @@ $scripts = @(
     @{ File="patch-false-converge-fix.ps1";         Desc="Fix false convergence exit + orphaned profile code" }
     @{ File="patch-gsd-parallel-execute.ps1";     Desc="Parallel Sub-Task Execution (split batch, round-robin agents)" }
     @{ File="patch-gsd-resilience-hardening.ps1"; Desc="Resilience Hardening (token tracking, auth fix, quota cap, agent rotation)" }
+    @{ File="patch-gsd-quality-gates.ps1";       Desc="Quality Gates (DB completeness, security standards, spec validation)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 19 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 20 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

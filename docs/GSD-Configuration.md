@@ -94,6 +94,56 @@ Chunking strategies:
 - **field:X**: Force group by a specific field (e.g., `"field:sdlc_phase"`)
 - **id-range**: Sequential blocks of N requirements (fallback)
 
+#### quality_gates
+
+Controls the three quality gate checks that run during pipeline execution.
+
+```json
+"quality_gates": {
+    "database_completeness": {
+        "enabled": true,
+        "require_seed_data": true,
+        "min_coverage_pct": 90
+    },
+    "security_compliance": {
+        "enabled": true,
+        "block_on_critical": true,
+        "warn_on_high": true
+    },
+    "spec_quality": {
+        "enabled": true,
+        "min_clarity_score": 70,
+        "check_cross_artifact": true
+    }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `database_completeness.enabled` | bool | true | Enable/disable DB completeness check |
+| `database_completeness.require_seed_data` | bool | true | Require seed data for every table |
+| `database_completeness.min_coverage_pct` | int | 90 | Minimum coverage % to pass |
+| `security_compliance.enabled` | bool | true | Enable/disable security scan |
+| `security_compliance.block_on_critical` | bool | true | Critical violations are hard failures |
+| `security_compliance.warn_on_high` | bool | true | High severity shown as warnings |
+| `spec_quality.enabled` | bool | true | Enable/disable spec quality gate |
+| `spec_quality.min_clarity_score` | int | 70 | Minimum spec clarity score (0-100) |
+| `spec_quality.check_cross_artifact` | bool | true | Run cross-artifact consistency check |
+
+Disable any gate: set `enabled: false`. Skip spec quality gate: use `-SkipSpecCheck` pipeline parameter.
+
+### Prompt Templates
+
+Quality gate prompt templates are stored in:
+
+| Path | Description |
+|------|-------------|
+| `prompts/shared/security-standards.md` | 88+ OWASP security rules by layer (.NET, SQL, React, compliance) |
+| `prompts/shared/coding-conventions.md` | .NET/React/SQL naming, formatting, SOLID conventions |
+| `prompts/shared/database-completeness-review.md` | Database chain verification rules and enhanced tier structure |
+| `prompts/claude/spec-clarity-check.md` | Pre-generation spec clarity audit template |
+| `prompts/claude/cross-artifact-consistency.md` | Post-Figma-Make cross-reference validation template |
+
 ## Pricing Cache
 
 ### pricing-cache.json

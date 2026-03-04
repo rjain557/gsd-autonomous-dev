@@ -326,6 +326,52 @@ If chunking is enabled but reviews run monolithically:
 3. **Check config**: Verify `council.chunking.enabled = true` in `agent-map.json`
 4. **Check logs**: Look for "Chunked review: N chunks from M requirements" in console output
 
+## Quality Gate Issues
+
+### Database completeness check failing
+
+If `Test-DatabaseCompleteness` reports missing stored procedures or seed data:
+
+1. **Check `db-completeness.json`**: Read `.gsd/assessment/db-completeness.json` for the exact gaps
+2. **Missing SPs**: The API endpoint exists but no matching `CREATE PROC` in any `.sql` file. Generate the SP.
+3. **Missing seed data**: Table exists but no `INSERT INTO` for that table. Add seed data matching Figma mock data.
+4. **Verify `11-api-to-sp-map.md`**: If this file has empty cells or "MISSING" entries, the chain is broken.
+5. **Disable**: Set `quality_gates.database_completeness.enabled = false` in `global-config.json`
+
+### Security compliance violations
+
+If `Test-SecurityCompliance` reports critical violations:
+
+1. **Check `security-compliance.json`**: Read `.gsd/assessment/security-compliance.json` for file paths and line numbers
+2. **SQL injection**: Replace string concatenation with parameterized Dapper queries
+3. **XSS (dangerouslySetInnerHTML)**: Add DOMPurify sanitization or remove dangerouslySetInnerHTML
+4. **Hardcoded secrets**: Move to environment variables or secret manager
+5. **Missing [Authorize]**: Add `[Authorize]` attribute to controller class
+6. **False positives**: If `appsettings.Development.json` is flagged, this is auto-skipped. Other patterns in test files can be addressed by excluding test paths.
+7. **Disable**: Set `quality_gates.security_compliance.enabled = false` in `global-config.json`
+
+### Spec quality gate blocking pipeline
+
+If `Invoke-SpecQualityGate` blocks with clarity < 70:
+
+1. **Check `spec-quality-gate.json`**: Read `.gsd/assessment/spec-quality-gate.json` for the clarity score and issues
+2. **Check `spec-quality.json`**: Read `.gsd/assessment/spec-quality.json` for detailed findings (ambiguous language, missing chain links)
+3. **Fix specs**: Address the specific issues listed (replace "should" with concrete requirements, add acceptance criteria)
+4. **Lower threshold**: Set `quality_gates.spec_quality.min_clarity_score = 50` to be more lenient
+5. **Skip entirely**: Use `-SkipSpecCheck` pipeline parameter
+6. **Disable**: Set `quality_gates.spec_quality.enabled = false` in `global-config.json`
+
+### Cross-artifact consistency mismatches
+
+If the cross-artifact check finds entity/field name mismatches:
+
+1. **Check `cross-artifact-consistency.json`**: Read `.gsd/assessment/cross-artifact-consistency.json` for exact mismatches
+2. **Entity name mismatches**: Ensure `Project` is `Project` everywhere (not `Projects` or `project`)
+3. **Field name mismatches**: TypeScript `firstName` should map to C# `FirstName` and SQL `FirstName`
+4. **Missing chain links**: If an API endpoint has no SP mapping, add the row to `11-api-to-sp-map.md`
+5. **Seed data gaps**: Add INSERT scripts for tables that have CREATE TABLE but no seed data
+6. **Disable**: Set `quality_gates.spec_quality.check_cross_artifact = false`
+
 ## Final Validation Issues
 
 ### Validation keeps failing (health stuck at 99%)
