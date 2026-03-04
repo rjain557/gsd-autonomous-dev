@@ -280,6 +280,20 @@ If council blocks twice:
    - Implementation stubs counted as "satisfied" but council sees them as incomplete
 5. **Override**: Set `"council": { "enabled": false }` in `global-config.json` to skip all council reviews
 
+### Code review changes not taking effect (health already 100%)
+
+When health starts at 100%, the convergence loop skips directly to the LLM Council gate. The code-review, research, plan, and execute phases only run inside the inner `while (health < 100%)` loop, so any updates to prompts or review logic won't take effect.
+
+**Symptoms**: You updated code-review prompts or scoring logic, but re-running `gsd-converge` jumps straight to the council review without running code-review first.
+
+**Fix**: Use the `-ForceCodeReview` flag to force one full code-review iteration before the council gate:
+
+```powershell
+gsd-converge -ForceCodeReview -SkipInit -ThrottleSeconds 60
+```
+
+This temporarily drops health to 99% so the inner loop enters and runs code-review with your updated logic. After code-review re-scores health, the normal council gate takes over. The flag only forces one iteration — it does not loop indefinitely.
+
 ### Council auto-approves (quorum not met)
 
 If no reviewers respond successfully, the council auto-approves with a warning. This can happen if:

@@ -1145,7 +1145,7 @@ $wrapperPs1 = @"
 function gsd-converge {
     param(
         [switch]`$DryRun, [switch]`$SkipInit, [switch]`$SkipResearch, [switch]`$SkipSpecCheck,
-        [switch]`$AutoResolve, [int]`$MaxIterations = 20, [int]`$StallThreshold = 3,
+        [switch]`$AutoResolve, [switch]`$ForceCodeReview, [int]`$MaxIterations = 20, [int]`$StallThreshold = 3,
         [int]`$ThrottleSeconds = 30, [string]`$NtfyTopic = ""
     )
     `$params = @{ MaxIterations = `$MaxIterations; StallThreshold = `$StallThreshold; ThrottleSeconds = `$ThrottleSeconds }
@@ -1154,6 +1154,7 @@ function gsd-converge {
     if (`$SkipResearch) { `$params.SkipResearch = `$true }
     if (`$SkipSpecCheck) { `$params.SkipSpecCheck = `$true }
     if (`$AutoResolve) { `$params.AutoResolve = `$true }
+    if (`$ForceCodeReview) { `$params.ForceCodeReview = `$true }
     if (`$NtfyTopic) { `$params.NtfyTopic = `$NtfyTopic }
     & "`$env:USERPROFILE\.gsd-global\scripts\convergence-loop.ps1" @params
 }

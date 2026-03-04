@@ -29,6 +29,7 @@ gsd-converge -DryRun                  # Preview without executing
 gsd-converge -MaxIterations 5         # Limit iterations
 gsd-converge -ThrottleSeconds 60      # 60s delay between phases
 gsd-converge -AutoResolve             # Auto-fix spec conflicts via Gemini
+gsd-converge -ForceCodeReview         # Force code review even at 100% health
 gsd-converge -NtfyTopic "my-topic"    # Override notification topic
 ```
 
@@ -41,6 +42,7 @@ Parameters:
 | -SkipResearch | false | Skip Gemini/Codex research phase (saves tokens) |
 | -SkipSpecCheck | false | Skip spec consistency check before starting |
 | -AutoResolve | false | Auto-resolve spec conflicts via Gemini (falls back to Codex) |
+| -ForceCodeReview | false | Force one code-review iteration even when health is already 100% |
 | -BatchSize | 8 | Items per execute cycle (adaptive: shrinks on failure, grows on success) |
 | -MaxIterations | 20 | Maximum convergence iterations |
 | -StallThreshold | 3 | Stop after N iterations with no improvement |
