@@ -1471,7 +1471,78 @@ function Start-CommandListener {
                         $msg = $line | ConvertFrom-Json
                         if ($msg.event -ne "message") { continue }
                         $text = ($msg.message -as [string]).Trim().ToLower()
-                        if ($text -ne "progress") { continue }
+                        if ($text -ne "progress" -and $text -ne "token" -and $text -ne "tokens" -and $text -ne "cost" -and $text -ne "costs") { continue }
+
+                        # -- TOKEN/COST COMMAND --
+                        if ($text -eq "token" -or $text -eq "tokens" -or $text -eq "cost" -or $text -eq "costs") {
+                            $costPath = Join-Path $GsdDir "costs\cost-summary.json"
+                            $tokenBody = "[GSD-COSTS] Token Cost Report`n$RepoName | $Pipeline pipeline"
+
+                            if (Test-Path $costPath) {
+                                try {
+                                    $cs = Get-Content $costPath -Raw | ConvertFrom-Json
+                                    $tc = [math]::Round([double]$cs.total_cost_usd, 2)
+                                    $inK = [math]::Round([long]$cs.total_tokens.input / 1000, 0)
+                                    $outK = [math]::Round([long]$cs.total_tokens.output / 1000, 0)
+                                    $totalK = $inK + $outK
+                                    $calls = [int]$cs.total_calls
+
+                                    $tokenBody += "`n`nTotal Cost: `$$tc"
+                                    $tokenBody += "`nTokens: ${totalK}K (${inK}K in / ${outK}K out)"
+                                    $tokenBody += "`nAPI Calls: $calls"
+
+                                    # Per-agent breakdown
+                                    $tokenBody += "`n`nBy Agent:"
+                                    foreach ($ag in @("claude","codex","gemini")) {
+                                        if ($cs.by_agent.$ag) {
+                                            $ac = [math]::Round([double]$cs.by_agent.$ag.cost_usd, 2)
+                                            $aIn = [math]::Round([long]$cs.by_agent.$ag.tokens.input / 1000, 0)
+                                            $aOut = [math]::Round([long]$cs.by_agent.$ag.tokens.output / 1000, 0)
+                                            $aCalls = [int]$cs.by_agent.$ag.calls
+                                            $tokenBody += "`n  $($ag.ToUpper()): `$$ac | $($aIn + $aOut)K tok | $aCalls calls"
+                                        }
+                                    }
+
+                                    # Per-phase breakdown
+                                    if ($cs.by_phase) {
+                                        $tokenBody += "`n`nBy Phase:"
+                                        $phaseProps = $cs.by_phase | Get-Member -MemberType NoteProperty
+                                        foreach ($pp in $phaseProps) {
+                                            $pn = $pp.Name
+                                            $pv = $cs.by_phase.$pn
+                                            $pc = [math]::Round([double]$pv.cost_usd, 2)
+                                            if ($pc -gt 0) {
+                                                $tokenBody += "`n  $pn : `$$pc ($([int]$pv.calls) calls)"
+                                            }
+                                        }
+                                    }
+
+                                    # Current run cost
+                                    $runs = @($cs.runs)
+                                    if ($runs.Count -gt 0) {
+                                        $lastRun = $runs[$runs.Count - 1]
+                                        $rc = [math]::Round([double]$lastRun.cost_usd, 2)
+                                        $tokenBody += "`n`nThis Run: `$$rc"
+                                    }
+                                } catch {
+                                    $tokenBody += "`n`nError reading cost data: $($_.Exception.Message)"
+                                }
+                            } else {
+                                $tokenBody += "`n`nNo cost data yet (costs/cost-summary.json not found)"
+                            }
+
+                            $totalElapsed = [math]::Floor(((Get-Date) - $pipelineStart).TotalMinutes)
+                            $tokenBody += "`nElapsed: ${totalElapsed}m"
+
+                            $tokenHeaders = @{
+                                "Title"    = "[GSD-COSTS] $RepoName"
+                                "Priority" = "default"
+                                "Tags"     = "money_with_wings"
+                            }
+                            Invoke-RestMethod -Uri "https://ntfy.sh/$Topic" -Method Post `
+                                -Body $tokenBody -Headers $tokenHeaders -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+                            continue
+                        }
 
                         # Gather progress from local files
                         $checkpointPath = Join-Path $GsdDir ".gsd-checkpoint.json"
