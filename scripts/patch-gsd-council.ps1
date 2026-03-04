@@ -5,8 +5,9 @@
 
 .DESCRIPTION
     Adds a multi-agent "council" review that runs when health reaches 100%,
-    BEFORE the final validation gate. Three agents (Claude, Codex, Gemini)
-    independently review the codebase, then Claude synthesizes a consensus verdict.
+    BEFORE the final validation gate. Two agents (Codex, Gemini) independently
+    review the codebase, then Claude synthesizes a consensus verdict.
+    Claude is supervisor-only -- reviews are delegated to Codex and Gemini.
 
     If the council blocks:
       - Health resets to 99% so the convergence loop continues
@@ -62,15 +63,15 @@ $councilCode = @'
 function Invoke-LlmCouncil {
     <#
     .SYNOPSIS
-        Multi-agent council review: 3 agents review independently in parallel,
+        Multi-agent council review: 2 agents (Codex + Gemini) review independently,
         Claude synthesizes a consensus verdict on project readiness.
     .PARAMETER CouncilType
-        convergence (default) - Full 3-agent review at 100% health
-        post-research   - 2-agent check after research phase (Claude + Codex validate Gemini findings)
-        pre-execute     - 2-agent check before execute phase (Claude + Gemini validate plan)
-        post-blueprint  - 3-agent review after blueprint manifest generated
-        stall-diagnosis - 3-agent parallel stall diagnosis
-        post-spec-fix   - 2-agent check after spec conflict resolution (Claude + Codex validate Gemini fix)
+        convergence (default) - 2-agent review at 100% health (Codex + Gemini)
+        post-research   - 2-agent check after research phase (Codex + Gemini validate findings)
+        pre-execute     - 2-agent check before execute phase (Codex + Gemini validate plan)
+        post-blueprint  - 2-agent review after blueprint manifest generated (Codex + Gemini)
+        stall-diagnosis - 2-agent parallel stall diagnosis (Codex + Gemini)
+        post-spec-fix   - 2-agent check after spec conflict resolution (Codex + Gemini validate fix)
     .RETURNS
         @{ Approved = bool; Findings = @{...}; Report = string }
     #>
@@ -158,26 +159,25 @@ function Invoke-LlmCouncil {
 
     $sharedContext = $context -join "`n"
 
-    # ── 2. PARALLEL AGENT REVIEWS ──
+    # ── 2. PARALLEL AGENT REVIEWS (Codex + Gemini only, Claude synthesizes) ──
     # Select agents and templates based on council type
     switch ($CouncilType) {
         "post-research" {
             $agents = @(
-                @{ Name = "claude"; Template = "post-research-claude.md"; Mode = ""; AllowedTools = "Read,Glob,Grep" }
                 @{ Name = "codex";  Template = "post-research-codex.md";  Mode = ""; AllowedTools = "" }
+                @{ Name = "gemini"; Template = "post-research-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
             )
             $phaseName = "council-post-research"
         }
         "pre-execute" {
             $agents = @(
-                @{ Name = "claude"; Template = "pre-execute-claude.md"; Mode = ""; AllowedTools = "Read,Glob,Grep" }
+                @{ Name = "codex";  Template = "pre-execute-codex.md";  Mode = ""; AllowedTools = "" }
                 @{ Name = "gemini"; Template = "pre-execute-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
             )
             $phaseName = "council-pre-execute"
         }
         "post-blueprint" {
             $agents = @(
-                @{ Name = "claude"; Template = "post-blueprint-claude.md"; Mode = ""; AllowedTools = "Read,Glob,Grep" }
                 @{ Name = "codex";  Template = "post-blueprint-codex.md";  Mode = ""; AllowedTools = "" }
                 @{ Name = "gemini"; Template = "post-blueprint-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
             )
@@ -185,7 +185,6 @@ function Invoke-LlmCouncil {
         }
         "stall-diagnosis" {
             $agents = @(
-                @{ Name = "claude"; Template = "stall-claude.md"; Mode = ""; AllowedTools = "Read,Glob,Grep" }
                 @{ Name = "codex";  Template = "stall-codex.md";  Mode = ""; AllowedTools = "" }
                 @{ Name = "gemini"; Template = "stall-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
             )
@@ -193,15 +192,14 @@ function Invoke-LlmCouncil {
         }
         "post-spec-fix" {
             $agents = @(
-                @{ Name = "claude"; Template = "post-spec-fix-claude.md"; Mode = ""; AllowedTools = "Read,Glob,Grep" }
                 @{ Name = "codex";  Template = "post-spec-fix-codex.md";  Mode = ""; AllowedTools = "" }
+                @{ Name = "gemini"; Template = "post-spec-fix-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
             )
             $phaseName = "council-post-spec-fix"
         }
         default {
-            # "convergence" -- full 3-agent review
+            # "convergence" -- 2-agent review (codex + gemini), claude synthesizes
             $agents = @(
-                @{ Name = "claude"; Template = "claude-review.md"; Mode = ""; AllowedTools = "Read,Glob,Grep" }
                 @{ Name = "codex";  Template = "codex-review.md";  Mode = ""; AllowedTools = "" }
                 @{ Name = "gemini"; Template = "gemini-review.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
             )
@@ -251,15 +249,15 @@ function Invoke-LlmCouncil {
 
     # Count successful reviews
     $successCount = ($reviews.Values | Where-Object { $_.Success }).Count
-    if ($successCount -lt 2) {
-        Write-Host "  [SCALES] Only $successCount/3 reviews succeeded -- auto-approving (insufficient quorum)" -ForegroundColor DarkYellow
+    if ($successCount -lt 1) {
+        Write-Host "  [SCALES] All reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
         $fallbackResult = @{
             Approved = $true
             Findings = @{
                 approved   = $true
                 confidence = 50
                 votes      = @{}
-                concerns   = @("Council quorum not met ($successCount/3 agents responded)")
+                concerns   = @("Council quorum not met ($successCount/2 reviewers responded)")
                 strengths  = @()
                 reason     = "Auto-approved: insufficient council quorum"
             }
@@ -574,25 +572,24 @@ Rules:
 @'
 # LLM Council Synthesis -- Final Verdict
 
-You are the JUDGE synthesizing 3 independent agent reviews into a single verdict.
+You are the JUDGE synthesizing 2 independent agent reviews into a single verdict.
 
 ## Context
 - Health: {{HEALTH}}% | Iteration: {{ITERATION}}
 - GSD dir: {{GSD_DIR}}
 
 ## Your Task
-1. Read all 3 agent reviews below
-2. Identify areas of CONSENSUS (all agree) and DISAGREEMENT
+1. Read both agent reviews below
+2. Identify areas of CONSENSUS and DISAGREEMENT
 3. Weigh each agent's expertise:
-   - Claude: Architecture & compliance expert
    - Codex: Implementation & code quality expert
    - Gemini: Requirements & spec alignment expert
 4. Produce a FINAL VERDICT
 
 ## Decision Rules
 - If ANY agent votes "block" with confidence > 70: verdict is BLOCKED
-- If 2+ agents vote "concern" with similar issues: verdict is BLOCKED
-- If all agents vote "approve" or only minor concerns: verdict is APPROVED
+- If both agents vote "concern" with similar issues: verdict is BLOCKED
+- If both agents vote "approve" or only minor concerns: verdict is APPROVED
 - When in doubt, BLOCK -- it's cheaper to fix now than after handoff
 
 ## Output Format (max 3000 tokens)
@@ -602,7 +599,6 @@ Return ONLY a JSON object:
   "approved": true|false,
   "confidence": 0-100,
   "votes": {
-    "claude": "approve|concern|block",
     "codex": "approve|concern|block",
     "gemini": "approve|concern|block"
   },
@@ -653,7 +649,27 @@ Validate research findings produced by Gemini. Are they technically accurate?
 JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...], "strengths": [...], "summary": "..." }
 '@ | Set-Content (Join-Path $promptDir "post-research-codex.md") -Encoding UTF8
 
-# ── PRE-EXECUTE templates (Claude + Gemini validate plan before Codex runs) ──
+@'
+# Council: Post-Research Validation (Gemini)
+
+Validate research findings produced by the research phase. Cross-check for completeness and accuracy.
+
+## Context
+- Health: {{HEALTH}}% | Iteration: {{ITERATION}}
+- Read: {{GSD_DIR}}\logs\iter*-2.log (research output), {{GSD_DIR}}\health\requirements-matrix.json
+
+## Review Focus
+1. Are research findings relevant to the current requirements?
+2. Are recommended patterns consistent with .NET 8 + Dapper + SQL Server stored procs + React 18?
+3. Did research miss any obvious patterns or dependencies in the codebase?
+4. Are there any incorrect or misleading conclusions?
+5. Are external references and dependencies accurately described?
+
+## Output (max 1500 tokens)
+JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...], "strengths": [...], "summary": "..." }
+'@ | Set-Content (Join-Path $promptDir "post-research-gemini.md") -Encoding UTF8
+
+# ── PRE-EXECUTE templates (Codex + Gemini validate plan) ──
 
 @'
 # Council: Pre-Execute Plan Review (Claude)
@@ -673,6 +689,26 @@ Review the execution plan BEFORE code generation begins. Catch bad plans early.
 ## Output (max 1500 tokens)
 JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...], "strengths": [...], "summary": "..." }
 '@ | Set-Content (Join-Path $promptDir "pre-execute-claude.md") -Encoding UTF8
+
+@'
+# Council: Pre-Execute Plan Review (Codex)
+
+Review the execution plan BEFORE code generation begins. Catch bad plans early.
+
+## Context
+- Health: {{HEALTH}}% | Iteration: {{ITERATION}}
+- Read: {{GSD_DIR}}\generation-queue\queue-current.json, {{GSD_DIR}}\agent-handoff\current-assignment.md
+
+## Review Focus
+1. Is the batch size appropriate? Too many items risks quality; too few wastes iterations.
+2. Are item dependencies ordered correctly? (e.g., models before controllers, DB before API)
+3. Are acceptance criteria clear enough for the execute agent to implement?
+4. Does the plan address the highest-priority drift items?
+5. Are the implementation patterns feasible for code generation?
+
+## Output (max 1500 tokens)
+JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...], "strengths": [...], "summary": "..." }
+'@ | Set-Content (Join-Path $promptDir "pre-execute-codex.md") -Encoding UTF8
 
 @'
 # Council: Pre-Execute Plan Review (Gemini)
@@ -857,13 +893,33 @@ Gemini resolved spec conflicts. Verify the resolution is implementable.
 JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...], "strengths": [...], "summary": "..." }
 '@ | Set-Content (Join-Path $promptDir "post-spec-fix-codex.md") -Encoding UTF8
 
-Write-Host "[OK] 14 council prompt templates written to: $promptDir" -ForegroundColor Green
+@'
+# Council: Post-Spec-Fix Validation (Gemini)
+
+The spec-fix phase resolved spec conflicts. Verify the resolution is correct and complete.
+
+## Context
+- Iteration: {{ITERATION}} | Health: {{HEALTH}}%
+- Read: {{GSD_DIR}}\spec-conflicts\resolution-summary.md, updated specs in docs\
+
+## Review Focus
+1. Does the resolution preserve the intent of both conflicting requirements?
+2. Are there downstream impacts the fix didn't consider?
+3. Did the resolution introduce any new inconsistencies?
+4. Is the resolution aligned with HIPAA/SOC2/PCI/GDPR compliance requirements?
+5. Are all affected spec references updated consistently?
+
+## Output (max 1500 tokens)
+JSON: { "vote": "approve|concern|block", "confidence": 0-100, "findings": [...], "strengths": [...], "summary": "..." }
+'@ | Set-Content (Join-Path $promptDir "post-spec-fix-gemini.md") -Encoding UTF8
+
+Write-Host "[OK] 19 council prompt templates written to: $promptDir" -ForegroundColor Green
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host "  LLM Council installed successfully" -ForegroundColor Green
 Write-Host "  Council types: convergence, post-research, pre-execute," -ForegroundColor DarkGray
 Write-Host "    post-blueprint, stall-diagnosis, post-spec-fix" -ForegroundColor DarkGray
-Write-Host "  Full council: ~4 API calls (~$0.43)" -ForegroundColor DarkGray
-Write-Host "  Light council: ~2-3 API calls (~$0.20-0.30)" -ForegroundColor DarkGray
+Write-Host "  Full council: ~3 API calls (2 reviews + 1 synthesis, ~$0.28)" -ForegroundColor DarkGray
+Write-Host "  Reviews: Codex + Gemini | Synthesis: Claude" -ForegroundColor DarkGray
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host ""
