@@ -152,6 +152,9 @@ Send-GsdNotification -Title "GSD Blueprint Started" `
     -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize" `
     -Tags "rocket" -Priority "default"
 
+# Save LOC baseline (starting commit hash for total diff at exit)
+if (Get-Command Save-LocBaseline -ErrorAction SilentlyContinue) { Save-LocBaseline -GsdDir $GsdDir }
+
 # Start background heartbeat (sends progress every 10 min even during long agent calls)
 Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
     -Pipeline "blueprint" -RepoName $repoName -IntervalMinutes 10
@@ -524,6 +527,11 @@ Write-Host "=========================================================" -Foregrou
     Stop-CommandListener
     if (Get-Command Stop-EngineStatusHeartbeat -ErrorAction SilentlyContinue) { Stop-EngineStatusHeartbeat }
     if (Get-Command Complete-CostTrackingRun -ErrorAction SilentlyContinue) { Complete-CostTrackingRun -GsdDir $GsdDir }
+
+    # Final LOC tracking: compute total lines from baseline to HEAD
+    if (Get-Command Complete-LocTracking -ErrorAction SilentlyContinue) {
+        Complete-LocTracking -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Pipeline "blueprint"
+    }
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health

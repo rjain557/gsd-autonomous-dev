@@ -36,6 +36,7 @@ You are a technical writer producing a professional developer guide as a Microso
 - `scripts/patch-gsd-parallel-execute.ps1` - Parallel sub-task execution
 - `scripts/patch-gsd-resilience-hardening.ps1` - Token tracking, quota cap, agent rotation
 - `scripts/patch-gsd-quality-gates.ps1` - DB completeness, security standards, spec validation
+- `scripts/patch-gsd-multi-model.ps1` - Multi-model LLM integration (4 REST agents)
 - `scripts/install-gsd-keybindings.ps1` - VS Code shortcuts
 - `scripts/setup-gsd-api-keys.ps1` - API key management
 
@@ -46,9 +47,9 @@ Generate the Word document with the following structure. Use professional format
 ---
 
 #### FRONT MATTER
-- **Title Page**: "GSD Autonomous Development Engine - Developer Guide", Version 1.5.0, Date, "Confidential - Internal Use Only"
+- **Title Page**: "GSD Autonomous Development Engine - Developer Guide", Version 1.6.0, Date, "Confidential - Internal Use Only"
 - **Table of Contents**: Auto-generated from headings
-- **Document History**: Version 1.0.0 (Initial Release), Version 1.1.0 (Codex CLI update, multi-agent support, supervisor, cost tracking), Version 1.2.0 (LLM Council, parallel execution, resilience hardening), Version 1.5.0 (Quality gates, chunked council reviews)
+- **Document History**: Version 1.0.0 (Initial Release), Version 1.1.0 (Codex CLI update, multi-agent support, supervisor, cost tracking), Version 1.2.0 (LLM Council, parallel execution, resilience hardening), Version 1.5.0 (Quality gates, chunked council reviews), Version 1.6.0 (Multi-model LLM integration with 4 REST agents, API/Database interface auto-detection, REST agent error handling)
 
 ---
 
@@ -57,7 +58,7 @@ Generate the Word document with the following structure. Use professional format
 **1.1 Why We Built This**
 Write a compelling 2-3 paragraph narrative explaining the problem:
 - Traditional software development with AI assistants is manual, fragile, and expensive. A developer has to copy-paste prompts, manually review output, fix issues, and repeat. There is no memory between sessions, no automatic recovery from failures, no way to verify completeness against specifications.
-- The GSD Engine automates the entire develop-review-fix loop. It orchestrates multiple AI agents (Claude, Codex, Gemini), assigns each to the tasks they do best, and runs autonomously until the codebase matches the specification. It handles crashes, quota limits, network failures, JSON corruption, agent boundary violations, stalls, and even specification contradictions without human intervention. When the engine reaches 100% health, it runs a full validation gate (compilation, tests, security audit, database completeness) before declaring success.
+- The GSD Engine automates the entire develop-review-fix loop. It orchestrates 7 AI agents -- 3 CLI (Claude, Codex, Gemini) and 4 REST API (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) -- assigns each to the tasks they do best, and runs autonomously until the codebase matches the specification. It handles crashes, quota limits, network failures, JSON corruption, agent boundary violations, stalls, and even specification contradictions without human intervention. When the engine reaches 100% health, it runs a full validation gate (compilation, tests, security audit, database completeness) before declaring success.
 - The result: a developer writes specifications, runs one command, and gets a fully built, verified, compliant codebase. What used to take weeks of manual AI-assisted development happens overnight. The engine tracks actual API costs in real time, generates developer handoff documentation, auto-commits to git with code review text, and sends push notifications to your phone so you can monitor progress from anywhere.
 
 **1.2 Design Philosophy**
@@ -76,10 +77,10 @@ High-level summary of the three core capabilities (`gsd-assess`, `gsd-converge`,
 #### CHAPTER 2: ARCHITECTURE
 
 **2.1 System Overview**
-Describe the overall architecture. Include a text-based diagram showing the flow between the developer, the GSD engine (PowerShell orchestrator), the three AI agents (Claude Code, Codex CLI, Gemini CLI), the resilience layer, and the quality gates layer.
+Describe the overall architecture. Include a text-based diagram showing the flow between the developer, the GSD engine (PowerShell orchestrator), the 7 AI agents (3 CLI: Claude Code, Codex CLI, Gemini CLI + 4 REST: Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5), the resilience layer, and the quality gates layer. Show how all UI interfaces communicate with the database through the API layer.
 
 **2.2 Agent Assignment**
-Table showing which agent handles which phase, why, and approximate token usage. Include Claude, Codex, and Gemini roles. Note that Gemini is optional (falls back to Codex). Mention supervisor agent override and parallel execution round-robin.
+Table showing which agent handles which phase, why, and approximate token usage. Include Claude, Codex, and Gemini primary roles. Note that Gemini is optional (falls back to Codex). Mention the 4 REST agents (Kimi, DeepSeek, GLM-5, MiniMax) as rotation/council review pool. Mention supervisor agent override, parallel execution round-robin, and registry-driven rotation pool from model-registry.json.
 
 **2.3 Convergence Loop (5-Phase)**
 Detailed walkthrough of the code-review -> create-phases -> research -> plan -> execute cycle. Include text-based diagram. Explain what each phase does, which agent runs it, what artifacts it produces, and where council gates appear (post-research non-blocking, pre-execute non-blocking, convergence blocking at 100%). Include phase details table with agent, input, output, and token columns.
@@ -107,10 +108,10 @@ Full tree of the `.gsd/` folder created in each project, with descriptions of ev
 Tables of required software (PowerShell, Node.js, npm, .NET SDK, Git, Claude Code CLI, Codex CLI) and optional software (Gemini CLI, sqlcmd, ntfy app) with versions, install commands, and purpose.
 
 **3.2 API Key Configuration**
-Step-by-step instructions for setting up Anthropic, OpenAI, and Google API keys. Include both interactive login (Method 1) and API key (Method 2) methods. Table of environment variables with CLI mapping and key source URLs.
+Step-by-step instructions for setting up Anthropic, OpenAI, and Google API keys. Include both interactive login (Method 1) and API key (Method 2) methods. Table of environment variables with CLI mapping and key source URLs. Include REST agent API keys section: KIMI_API_KEY, DEEPSEEK_API_KEY, GLM_API_KEY, MINIMAX_API_KEY (optional, warn-only if missing -- REST agents are disabled individually when key is not set).
 
 **3.3 Running the Master Installer**
-Step-by-step walkthrough of `install-gsd-all.ps1`. Table of all 20 scripts in execution order with one-line descriptions. Table of 4 optional standalone scripts.
+Step-by-step walkthrough of `install-gsd-all.ps1`. Table of all 21 scripts in execution order with one-line descriptions. Table of 4 optional standalone scripts.
 
 **3.4 Post-Install Verification**
 Commands to verify the installation: reload profile, gsd-status, prerequisites verify, version check.
@@ -173,7 +174,7 @@ How New-Lock and Remove-Lock work. Lock file path (.gsd/.gsd-lock). Contains PID
 Automatic revert when health drops >5% after an iteration. Steps: restore checkpoint, log regression, send ntfy, reduce batch.
 
 **5.5 Quota and Rate Limit Handling**
-Wait-ForQuotaReset behavior: exponential backoff (5 -> 10 -> 20 -> 40 -> 60 min cap), up to 24 cycles. Cumulative cap: 120 minutes total. Agent rotation after 3 consecutive failures. Agent cooldowns tracked in JSON. Auth detection hardening (403 = rate limit not auth, Gemini 403 routes to quota backoff).
+Wait-ForQuotaReset behavior: exponential backoff (5 -> 10 -> 20 -> 40 -> 60 min cap), up to 24 cycles. Cumulative cap: 120 minutes total. Agent rotation after 1 consecutive failure (reduced from 3 by multi-model patch for immediate rotation across 7 agents). Agent cooldowns tracked in JSON. Auth detection hardening (403 = rate limit not auth, Gemini 403 routes to quota backoff). REST agents: HTTP 429 -> rate_limit, 402 -> quota_exhausted, 401 -> unauthorized (mapped to same GSD error taxonomy as CLI agents). Get-FailureDiagnosis handles REST agent errors with fallback to claude for read-only phases.
 
 **5.6 Network Failure Handling**
 Test-NetworkAvailability behavior: 30-second polling, multiple endpoints, auto-resume, ntfy notification on drop/recovery.
@@ -217,27 +218,46 @@ Detailed JSON schemas for:
 - cost-summary.json (project_start, total_calls, total_cost_usd, total_tokens, by_agent, by_phase, runs)
 - supervisor-state.json (pipeline, attempt, max_attempts, strategies_tried, diagnoses)
 
-**6.5 Environment Variables**
-API key variables table (variable, CLI, expected prefix, key source). System variables table (USERPROFILE, USERNAME, PATH).
+**6.5 Model Registry (model-registry.json)**
+Central agent configuration created by `patch-gsd-multi-model.ps1`. JSON schema with agent entries (type: cli/openai-compat, endpoint, api_key_env, model_id, enabled, pricing). rotation_pool_default array. Agent types table (7 agents with type, model, provider, pricing).
 
-**6.6 Pricing Cache**
-Location, auto-generated by gsd-costs. Supported models table (6 models with cache key, model name, default role). Cache freshness table (<14d fresh, 14-60d aging, >60d stale, no cache fetches/fallback).
+**6.6 Environment Variables**
+API key variables table (variable, CLI, expected prefix, key source) -- include ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY for CLI agents. REST agent API key variables table (KIMI_API_KEY, DEEPSEEK_API_KEY, GLM_API_KEY, MINIMAX_API_KEY -- optional, warn-only). System variables table (USERPROFILE, USERNAME, PATH).
+
+**6.7 Pricing Cache**
+Location, auto-generated by gsd-costs. Supported models table (10 models with cache key, model name, default role): Claude Sonnet/Opus/Haiku, GPT 5.3 Codex, GPT-5.1 Codex, Gemini 3.1 Pro, Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5. Cache freshness table (<14d fresh, 14-60d aging, >60d stale, no cache fetches/fallback).
 
 ---
 
 #### CHAPTER 7: MULTI-INTERFACE SUPPORT
 
-**7.1 Interface Types**
-Supported types table: web, mcp, browser, mobile, agent with descriptions and detection patterns.
+**7.1 Component Architecture**
+A complete project has three foundational layers. All UI interfaces communicate with the database through the API:
+```
+UI Interfaces (web, mobile, mcp, browser, agent)
+        |
+    REST API / Backend (.NET Controllers -> Services -> Dapper)
+        |
+    Database (SQL Server stored procs -> tables -> seed data)
+```
 
-**7.2 Directory Structure**
-Expected design/ folder layout with interface type folders and version subfolders.
+**7.2 Interface Types**
+Supported types table (7 types): web, api, database, mcp, browser, mobile, agent with descriptions, detection patterns, and color coding. Note that api and database support dual detection (design-dir based AND auto-detected from project structure).
 
-**7.3 Figma Make Integration**
+**7.3 Directory Structure**
+Expected design/ folder layout with interface type folders and version subfolders. Include design\api\v## and design\database\v## alongside design\web\v##.
+
+**7.4 Figma Make Integration**
 The 12 expected deliverable files in `_analysis/` (table with #, file, content). The 3 backend stubs in `_stubs/` (table with file, content).
 
-**7.4 Auto-Discovery**
+**7.5 Auto-Discovery**
 How Find-ProjectInterfaces recursively scans the repo. 4-step process: check design/ folder, find latest version, detect _analysis/_stubs, return interface objects.
+
+**7.6 Auto-Detection from Project Structure**
+When design\api\ or design\database\ directories don't exist, the engine auto-detects these interfaces from the project:
+- **API detection**: Scans for .sln or .csproj files. Discovers Controllers/, Services/, Models/, Repositories/, Middleware/ directories. Marked as "Auto-detected from {solution-name}.sln".
+- **Database detection**: Scans for database/, db/, sql/, migrations/ directories containing .sql files. Marked as "Auto-detected from N SQL files".
+Auto-detected interfaces appear in the summary with limited metadata (no _analysis/ or _stubs/) but are still tracked as components.
 
 ---
 
@@ -254,14 +274,14 @@ Full reference for each command with usage examples and output description:
 - gsd-remote
 
 **8.2 Installation Scripts**
-One paragraph + key details for each of the 20 scripts run by the installer. Include the functions each script adds and the artifacts it creates:
+One paragraph + key details for each of the 21 scripts run by the installer. Include the functions each script adds and the artifacts it creates:
 1. install-gsd-global.ps1 - Core engine installer
 2. install-gsd-blueprint.ps1 - Blueprint pipeline installer
 3. patch-gsd-partial-repo.ps1 - gsd-assess + Update-FileMap
 4. patch-gsd-resilience.ps1 - Invoke-WithRetry, New-Lock, Save-Checkpoint, etc.
 5. patch-gsd-hardening.ps1 - JSON validation, quota, network, heartbeat, notifications
 6. patch-gsd-final-validation.ps1 - Invoke-FinalValidation + New-DeveloperHandoff
-7. patch-gsd-figma-make.ps1 - Find-ProjectInterfaces
+7. patch-gsd-figma-make.ps1 - Find-ProjectInterfaces (7 interface types + auto-detection)
 8. final-patch-1-spec-check.ps1 - Invoke-SpecConsistencyCheck
 9. final-patch-2-sql-cli.ps1 - SQL validation, CLI checks, Test-SqlFiles
 10. final-patch-3-storyboard-verify.ps1 - verify-storyboard.md prompt
@@ -275,12 +295,13 @@ One paragraph + key details for each of the 20 scripts run by the installer. Inc
 18. patch-gsd-parallel-execute.ps1 - Invoke-ParallelExecute
 19. patch-gsd-resilience-hardening.ps1 - Token tracking, auth fix, quota cap, agent rotation
 20. patch-gsd-quality-gates.ps1 - Test-DatabaseCompleteness, Test-SecurityCompliance, Invoke-SpecQualityGate
+21. patch-gsd-multi-model.ps1 - Invoke-OpenAICompatibleAgent, Test-IsOpenAICompatAgent, model-registry.json, REST agent dispatch/fallback/diagnosis (steps 13B/13C), council pool expansion, 4 REST agents
 
 **8.3 Standalone Utilities**
 - setup-gsd-api-keys.ps1 (interactive setup, -Show, -Clear)
 - setup-gsd-convergence.ps1 (per-project bootstrap, 16 subdirectories)
 - install-gsd-keybindings.ps1 (VS Code Ctrl+Shift+G chords)
-- token-cost-calculator.ps1 (~1048 lines, 6 models, client quoting)
+- token-cost-calculator.ps1 (~1048 lines, 10 models, client quoting)
 
 **8.4 Key Internal Functions**
 Function signature + description for each:
@@ -295,9 +316,12 @@ Function signature + description for each:
 - Test-DatabaseCompleteness - Zero-token static DB chain scan
 - Test-SecurityCompliance - Zero-token OWASP regex scan with pattern table
 - Invoke-SpecQualityGate - Spec consistency + clarity + cross-artifact
-- Find-ProjectInterfaces - Multi-interface auto-discovery
+- Find-ProjectInterfaces - Multi-interface auto-discovery (7 types + auto-detect API/DB)
 - Invoke-ParallelExecute - Round-robin parallel sub-task dispatch
-- Get-NextAvailableAgent / Set-AgentCooldown - Agent rotation for quota management
+- Get-NextAvailableAgent / Set-AgentCooldown - Agent rotation for quota management (registry-driven 7-agent pool)
+- Get-FailureDiagnosis - Agent error analysis (CLI + REST HTTP error mapping) with fallback recommendations
+- Invoke-OpenAICompatibleAgent - Generic REST adapter for OpenAI-compatible APIs
+- Test-IsOpenAICompatAgent - Registry lookup for REST vs CLI agent type
 
 ---
 
@@ -322,6 +346,9 @@ Common problems and fixes:
 - Claude Code auth failure (re-authenticate, set API key)
 - Codex CLI flag changes (version check, update, untested version warning)
 - Gemini OAuth expired (re-authenticate via browser)
+- REST agent "Unknown agent" error (re-run install -- patch-gsd-multi-model.ps1 steps 13B/13C patch Get-FailureDiagnosis)
+- REST agent auth failure (check API key env var, verify in model-registry.json)
+- REST agent not in rotation pool (check API key set, agent enabled in registry, agent in rotation_pool_default)
 
 **9.4 Spec Consistency Conflicts**
 How to read spec-consistency-report.json and markdown version. Common conflict types table (data type mismatch, API contract conflict, navigation conflict, business rule conflict) with resolution strategies. Auto-resolution with -AutoResolve flag.
@@ -388,29 +415,35 @@ Enforced via agent prompts:
 #### CHAPTER 12: LLM MODELS AND CAPABILITIES
 
 **12.1 Supported Models**
-<!-- TODO: Add supported model details (names, versions, providers, capabilities) -->
+Table of all 7 agents with columns: Agent Name, Provider, Model ID, Type (CLI/REST), Input $/M, Output $/M, Context Window. CLI agents: Claude (Anthropic, claude-sonnet-4-20250514, $3.00/$15.00), Codex (OpenAI, codex, $1.50/$6.00), Gemini (Google, gemini-2.5-pro, $1.25/$10.00). REST agents: Kimi K2.5 (Moonshot AI, moonshot-v1-128k, $0.60/$2.50), DeepSeek V3 (DeepSeek, deepseek-chat, $0.28/$0.42), GLM-5 (Zhipu AI, glm-5, $1.00/$3.20), MiniMax M2.5 (MiniMax, abab6.5s-chat, $0.29/$1.20).
 
 **12.2 Model Selection and Roles**
-<!-- TODO: Add which models work best for each phase and why -->
+Table of model-to-phase assignments: Claude = judgment-heavy phases (code-review, plan, council synthesis), Codex = code generation (execute, fix), Gemini = research (read-only plan mode), REST agents = council reviews and rotation fallback pool. Explain why: Claude has best judgment, Codex is fastest for code generation, Gemini excels at research with plan mode. REST agents expand the rotation pool to reduce quota downtime. Rotation pool defined in model-registry.json rotation_pool_default.
 
 **12.3 Model Configuration**
-<!-- TODO: Add how to configure model selection, API endpoints, and parameters -->
+model-registry.json schema: agents object (per-agent: type, endpoint, api_key_env, model_id, enabled, pricing), rotation_pool_default array. How to add a new REST agent. How to disable an agent (set enabled:false or remove API key). How to change the rotation pool order. Agent-map.json council.reviewers for council pool expansion.
 
 **12.4 Model Performance Characteristics**
-<!-- TODO: Add benchmarks, token limits, latency, and quality comparisons -->
+Table comparing models: context window sizes, typical response latency, strengths/weaknesses. Note that REST agents typically have higher latency due to network round-trip but are cheaper. CLI agents have local process overhead but lower latency for established connections.
 
 **12.5 Model Cost Comparison**
-<!-- TODO: Add detailed cost-per-token pricing and per-iteration cost by model choice -->
+Detailed pricing table (7 agents with input/output/cache-read pricing). Per-iteration cost comparison: convergence pipeline cost by model choice, blueprint pipeline cost by model choice. Cost savings from multi-model rotation (cheaper REST agents for council reviews). Reference token-cost-calculator.ps1 for project-specific estimates.
 
 **12.6 Model-Specific Tips and Limitations**
-<!-- TODO: Add known quirks, workarounds, and best practices per model -->
+- **Claude**: Best all-around, most expensive. Use for judgment phases. Falls back to as last resort.
+- **Codex**: Fast code generation but limited reasoning. Use --full-auto for execution. Loop detection limits.
+- **Gemini**: Excellent research in plan mode (read-only). OAuth can expire mid-run. Falls back to Codex.
+- **Kimi K2.5**: Good multilingual support. 128K context. May timeout on very large prompts.
+- **DeepSeek V3**: Cheapest option ($0.28/$0.42). Good for code review. Rate limits can be aggressive.
+- **GLM-5**: Good general reasoning. Chinese-origin model with English support.
+- **MiniMax M2.5**: Balanced price/performance. Good for council reviews.
 
 ---
 
 #### APPENDICES
 
 **Appendix A: Complete File Inventory**
-Every file created by the installer with path and one-line description. Organized as table for global engine files (~/.gsd-global/) covering: bin/, config/, lib/modules/, scripts/, blueprint/, prompts/ (claude, codex, gemini, council, shared), supervisor/, and root files.
+Every file created by the installer with path and one-line description. Organized as table for global engine files (~/.gsd-global/) covering: bin/, config/ (global-config.json, agent-map.json, model-registry.json), lib/modules/ (resilience.ps1, interfaces.ps1, interface-wrapper.ps1), scripts/, blueprint/, prompts/ (claude, codex, gemini, council, shared), supervisor/, and root files.
 
 **Appendix B: Prompt Templates**
 Summary table of all prompt templates with columns: template path, agent, purpose, approximate output. Cover all claude/, codex/, gemini/, and council/ templates.
@@ -422,10 +455,10 @@ Full table of all 20 ntfy notification events with trigger and content columns: 
 Full table of 12 error categories logged in errors.jsonl with description and auto-recovery columns: quota, network, disk, corrupt_json, boundary_violation, agent_crash, health_regression, spec_conflict, watchdog_timeout, build_fail, fallback_success, validation_fail.
 
 **Appendix E: Glossary**
-Key terms table (24 terms): convergence, blueprint, health score, iteration, batch size, stall threshold, supervisor, council, agent override, checkpoint, pattern memory, escalation, Figma Make, quality gate, spec clarity score, token budget, developer handoff, drift report, heartbeat, agent cooldown, chunked review.
+Key terms table (30+ terms): convergence, blueprint, health score, iteration, batch size, stall threshold, supervisor, council, agent override, checkpoint, pattern memory, escalation, Figma Make, quality gate, spec clarity score, token budget, developer handoff, drift report, heartbeat, agent cooldown, chunked review, model registry, REST agent, OpenAI-compatible, rotation pool, interface auto-detection, component architecture, API layer, database layer.
 
 **Appendix F: Constants and Defaults**
-Constants table (12 constants): SUPERVISOR_MAX_ATTEMPTS (5), SUPERVISOR_TIMEOUT_HOURS (24), AGENT_WATCHDOG_MINUTES (30), RETRY_MAX (3), MIN_BATCH_SIZE (2), BATCH_REDUCTION_FACTOR (0.5), RETRY_DELAY_SECONDS (10), LOCK_STALE_MINUTES (120), HEALTH_REGRESSION_THRESHOLD (5), QUOTA_CUMULATIVE_MAX_MINUTES (120), QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE (3), HEARTBEAT_INTERVAL_SECONDS (60). Default batch sizes table (blueprint 15, convergence 8).
+Constants table (12 constants): SUPERVISOR_MAX_ATTEMPTS (5), SUPERVISOR_TIMEOUT_HOURS (24), AGENT_WATCHDOG_MINUTES (30), RETRY_MAX (3), MIN_BATCH_SIZE (2), BATCH_REDUCTION_FACTOR (0.5), RETRY_DELAY_SECONDS (10), LOCK_STALE_MINUTES (120), HEALTH_REGRESSION_THRESHOLD (5), QUOTA_CUMULATIVE_MAX_MINUTES (120), QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE (1 -- reduced from 3 by multi-model patch for immediate rotation), HEARTBEAT_INTERVAL_SECONDS (60). Default batch sizes table (blueprint 15, convergence 8). Interface types count: 7 (web, api, database, mcp, browser, mobile, agent). Agent pool size: 7 (3 CLI + 4 REST).
 
 ---
 

@@ -1,6 +1,6 @@
 # GSD Autonomous Development Engine - Developer Guide
 
-**Version:** 1.5.0
+**Version:** 1.6.0
 **Date:** March 2026
 **Classification:** Confidential - Internal Use Only
 
@@ -14,6 +14,7 @@
 | 1.1.0 | March 2026 | Codex CLI update, multi-agent support, supervisor, cost tracking |
 | 1.2.0 | March 2026 | LLM Council, parallel execution, resilience hardening |
 | 1.5.0 | March 2026 | Quality gates (DB completeness, security compliance, spec validation), chunked council reviews |
+| 1.6.0 | March 2026 | Multi-model LLM integration (4 REST agents), API/Database interface auto-detection, REST agent error handling |
 
 ---
 
@@ -23,7 +24,7 @@
 
 Traditional software development with AI assistants is manual, fragile, and expensive. A developer copies and pastes prompts into ChatGPT or Claude, manually reviews the output, fixes issues, copies the next piece of context, and repeats. There is no memory between sessions, no automatic recovery from failures, and no way to verify that the generated code actually matches the specifications. A single network timeout or quota exhaustion kills the entire workflow and the developer has to start over. Even worse, there is no guarantee that the AI understood the spec correctly -- contradictions between specification documents go undetected until code review reveals the damage.
 
-The GSD Engine automates the entire develop-review-fix loop. It orchestrates three AI agents -- Claude Code for reasoning, Codex CLI for code generation, and Gemini CLI for research -- assigns each to the tasks they do best, and runs autonomously until the codebase matches the specification. It handles crashes, quota limits, network failures, JSON corruption, agent boundary violations, stalls, and even specification contradictions without human intervention. When the engine reaches 100% health, it runs a full validation gate (compilation, tests, security audit, database completeness) before declaring success.
+The GSD Engine automates the entire develop-review-fix loop. It orchestrates seven AI agents -- three CLI (Claude Code for reasoning, Codex CLI for code generation, Gemini CLI for research) and four REST API (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5 for expanded rotation and council reviews) -- assigns each to the tasks they do best, and runs autonomously until the codebase matches the specification. It handles crashes, quota limits, network failures, JSON corruption, agent boundary violations, stalls, and even specification contradictions without human intervention. When the engine reaches 100% health, it runs a full validation gate (compilation, tests, security audit, database completeness) before declaring success.
 
 The result: a developer writes specifications, runs one command, and gets a fully built, verified, compliant codebase. What used to take weeks of manual AI-assisted development happens overnight. The engine tracks actual API costs in real time, generates developer handoff documentation, auto-commits to git with code review text, and sends push notifications to your phone so you can monitor progress from anywhere.
 
@@ -61,7 +62,7 @@ Supporting utilities:
 
 ## 2.1 System Overview
 
-The GSD Engine is a PowerShell-based orchestration framework that coordinates three AI agents through iterative loops. The developer provides specifications and Figma designs; the engine handles everything else.
+The GSD Engine is a PowerShell-based orchestration framework that coordinates seven AI agents -- three CLI (Claude Code, Codex CLI, Gemini CLI) and four REST API (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) -- through iterative loops. The developer provides specifications and Figma designs; the engine handles everything else.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -84,6 +85,11 @@ The GSD Engine is a PowerShell-based orchestration framework that coordinates th
 │  │  Reasoning  │ │ Generation │ │  Research   │         │
 │  │  ~3K/iter   │ │ ~65K/iter  │ │  ~20K/iter  │         │
 │  └─────────────┘ └────────────┘ └────────────┘         │
+│  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌─────────┐       │
+│  │ Kimi K2.5│ │DeepSeek  │ │GLM-5 │ │ MiniMax │       │
+│  │  $0.60/M │ │ $0.28/M  │ │$1.00 │ │ $0.29/M │       │
+│  │  REST API │ │ REST API │ │ REST │ │ REST API│       │
+│  └──────────┘ └──────────┘ └──────┘ └─────────┘       │
 │                                                         │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │              Resilience Layer                     │   │
@@ -507,7 +513,7 @@ cd gsd-autonomous-dev
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-The master installer runs 20 scripts in dependency order. It also runs `install-gsd-prerequisites.ps1` as a pre-flight check. On first run, it prompts for API keys if not already configured.
+The master installer runs 21 scripts in dependency order. It also runs `install-gsd-prerequisites.ps1` as a pre-flight check. On first run, it prompts for API keys if not already configured.
 
 | Order | Script | What It Installs |
 |-------|--------|-----------------|
@@ -531,6 +537,7 @@ The master installer runs 20 scripts in dependency order. It also runs `install-
 | 18 | patch-gsd-parallel-execute.ps1 | Parallel sub-task execution (split batch, round-robin agents) |
 | 19 | patch-gsd-resilience-hardening.ps1 | Resilience hardening (token tracking, auth fix, quota cap, agent rotation) |
 | 20 | patch-gsd-quality-gates.ps1 | Quality gates (DB completeness, security standards, spec validation) |
+| 21 | patch-gsd-multi-model.ps1 | Multi-model LLM integration (4 REST agents, model registry, error handling) |
 
 Optional standalone scripts (not run by installer):
 
@@ -541,7 +548,7 @@ Optional standalone scripts (not run by installer):
 | install-gsd-keybindings.ps1 | VS Code keyboard shortcuts (Ctrl+Shift+G chords) |
 | token-cost-calculator.ps1 | Token cost estimator (also installed globally as gsd-costs) |
 
-The repository contains 26 scripts total: 1 master installer, 1 pre-flight check, 20 scripts run by installer, and 4 standalone utilities.
+The repository contains 27 scripts total: 1 master installer, 1 pre-flight check, 21 scripts run by installer, and 4 standalone utilities.
 
 ## 3.4 Post-Install Verification
 
@@ -1430,6 +1437,10 @@ Auto-generated by `gsd-costs`. Stores cached LLM pricing from the LiteLLM open-s
 | `codex` | GPT 5.3 Codex | Build, Execute |
 | `codex_gpt51` | GPT Codex 5.1 | Alternative code gen |
 | `gemini` | Gemini 3.1 Pro | Research, Spec-fix |
+| `kimi` | Kimi K2.5 (Moonshot) | Council review, rotation fallback |
+| `deepseek` | DeepSeek V3 | Council review, rotation fallback |
+| `glm5` | GLM-5 (Zhipu AI) | Council review, rotation fallback |
+| `minimax` | MiniMax M2.5 | Council review, rotation fallback |
 
 ### Cache Freshness
 
@@ -1444,19 +1455,35 @@ Auto-generated by `gsd-costs`. Stores cached LLM pricing from the LiteLLM open-s
 
 # Chapter 7: Multi-Interface Support
 
-## 7.1 Interface Types
+## 7.1 Component Architecture
 
-The engine detects and supports five interface types:
+A complete project has three foundational layers. All UI interfaces communicate with the database through the API:
 
-| Type | Description | Detection Pattern |
-|------|-------------|-------------------|
-| `web` | Web application UI | `design/web/`, `design/figma/` |
-| `mcp` | Admin/management portal | `design/mcp/` |
-| `browser` | Browser extension | `design/browser/` |
-| `mobile` | iOS/Android mobile app | `design/mobile/` |
-| `agent` | Background agent/service | `design/agent/` |
+```
+UI Interfaces (web, mobile, mcp, browser, agent)
+        │
+    REST API / Backend (.NET Controllers → Services → Dapper)
+        │
+    Database (SQL Server stored procs → tables → seed data)
+```
 
-## 7.2 Directory Structure
+## 7.2 Interface Types
+
+The engine detects and supports seven interface types:
+
+| Type | Description | Detection Pattern | Auto-Detect |
+|------|-------------|-------------------|-------------|
+| `web` | Web application UI | `design/web/v##` | No |
+| `api` | REST API / Backend | `design/api/v##` | Yes (.sln, .csproj) |
+| `database` | Database / SQL Schema | `design/database/v##` | Yes (.sql files) |
+| `mcp` | Admin/management portal | `design/mcp/v##` | No |
+| `browser` | Browser extension | `design/browser/v##` | No |
+| `mobile` | iOS/Android mobile app | `design/mobile/v##` | No |
+| `agent` | Background agent/service | `design/agent/v##` | No |
+
+The `api` and `database` types support dual detection: design-dir based (like other types) and auto-detected from project structure when design directories don't exist.
+
+## 7.3 Directory Structure
 
 ```
 design\
@@ -1464,6 +1491,14 @@ design\
 │   └── v01\                    # Version folder
 │       ├── _analysis\          # 12 Figma Make deliverables
 │       └── _stubs\             # Backend stubs (SQL)
+├── api\
+│   └── v01\
+│       ├── _analysis\
+│       └── _stubs\
+├── database\
+│   └── v01\
+│       ├── _analysis\
+│       └── _stubs\
 ├── mcp\
 │   └── v01\
 │       ├── _analysis\
@@ -1501,7 +1536,7 @@ And 3 backend stubs in `_stubs/`:
 | `02-stored-procedures.sql` | CREATE PROCEDURE statements |
 | `03-seed-data.sql` | INSERT/MERGE seed data |
 
-## 7.4 Auto-Discovery
+## 7.5 Auto-Discovery
 
 `Find-ProjectInterfaces` recursively scans the repository:
 
@@ -1511,6 +1546,24 @@ And 3 backend stubs in `_stubs/`:
 4. Returns a list of interface objects with type, path, version, and available deliverables
 
 The engine processes each interface independently, passing interface-specific context to all agent prompts.
+
+## 7.6 Auto-Detection from Project Structure
+
+When `design/api/` or `design/database/` directories don't exist, the engine auto-detects these interfaces from the project structure:
+
+**API Detection:**
+- Scans for `.sln` or `.csproj` files in the repository
+- Discovers `Controllers/`, `Services/`, `Models/`, `Repositories/`, `Middleware/` directories
+- Excludes paths under `design/`, `node_modules/`, `bin/`, `obj/`, and `_stubs/`
+- Displayed as "Auto-detected from {solution-name}.sln"
+
+**Database Detection:**
+- Scans for `database/`, `db/`, `sql/`, or `migrations/` directories
+- Counts `.sql` files recursively within those directories
+- Excludes paths under `design/`, `node_modules/`, `bin/`, `obj/`, and `_stubs/`
+- Displayed as "Auto-detected from N SQL files"
+
+Auto-detected interfaces appear in the summary with limited metadata (no `_analysis/` or `_stubs/`) but are still tracked as project components and included in the interface context injected into agent prompts.
 
 ---
 
@@ -1782,13 +1835,39 @@ Invoke-SpecQualityGate -RepoRoot <string> -GsdDir <string>
 
 Orchestrates spec validation: existing `Invoke-SpecConsistencyCheck` + Claude clarity scoring (1 call, ~2K tokens) + Claude cross-artifact consistency (1 call, ~2K tokens). Returns `@{ Passed; ClarityScore; ConsistencyPassed; Issues }`.
 
+### Get-FailureDiagnosis
+
+```
+Get-FailureDiagnosis -Agent <string> -ExitCode <int>
+    -OutputText <string> -Phase <string>
+```
+
+Analyzes agent failure output to determine root cause and recommend recovery action. Handles all 7 agents: Gemini (sandbox restrictions, model unavailable, prompt too large), Codex (loop limits, no output), Claude (max turns), and REST agents (HTTP 429 rate limit, 402 quota exhausted, 401 auth failure, 5xx server error, timeout). REST agents fall back to claude for read-only phases (review, council, research, plan); retry for write phases.
+
+### Invoke-OpenAICompatibleAgent
+
+```
+Invoke-OpenAICompatibleAgent -AgentName <string> -Prompt <string>
+    [-TimeoutSeconds <int>]
+```
+
+Generic REST adapter for OpenAI-compatible chat completions API. Reads config from model-registry.json, resolves API key from environment, builds request, calls `Invoke-RestMethod`, returns synthetic JSON envelope with usage tokens. Maps HTTP errors to GSD error taxonomy (rate_limit, unauthorized, server_error, quota_exhausted).
+
+### Test-IsOpenAICompatAgent
+
+```
+Test-IsOpenAICompatAgent -AgentName <string>
+```
+
+Checks model-registry.json to determine if a given agent name is an openai-compat REST agent. Returns `$true` for kimi, deepseek, glm5, minimax (when registered and enabled).
+
 ### Find-ProjectInterfaces
 
 ```
 Find-ProjectInterfaces -RepoRoot <string>
 ```
 
-Recursively scans `design/` for interface types. Returns array of interface objects with type, path, version, and available deliverables.
+Recursively scans `design/` for 7 interface types (web, api, database, mcp, browser, mobile, agent). Auto-detects API from .sln/.csproj and Database from .sql files when design directories don't exist. Returns array of interface objects with type, path, version, and available deliverables.
 
 ### Invoke-ParallelExecute
 
@@ -1869,9 +1948,10 @@ Locks older than 120 minutes are automatically reclaimed.
 
 The engine handles this automatically:
 1. Exponential backoff (5-60 min cycles)
-2. After 3 consecutive failures: agent rotation
+2. After 1 consecutive failure: agent rotation (across 7-agent pool)
 3. Cumulative cap: 120 minutes total
 4. ntfy notification sent
+5. REST agents: HTTP 429/402/401/5xx mapped to same error taxonomy as CLI agents
 
 To manually reset:
 ```powershell
@@ -3059,6 +3139,124 @@ Enforced via agent prompts:
 
 ---
 
+# Chapter 12: LLM Models and Capabilities
+
+## 12.1 Supported Models
+
+The GSD Engine supports 7 AI agents across two types:
+
+| Agent | Provider | Type | Input $/M | Output $/M | Context | Primary Role |
+|-------|----------|------|-----------|------------|---------|-------------|
+| Claude | Anthropic | CLI | $3.00 | $15.00 | 200K | Reasoning (review, plan, synthesis) |
+| Codex | OpenAI | CLI | $1.50 | $6.00 | 200K | Code generation (execute, build) |
+| Gemini | Google | CLI | $1.25 | $10.00 | 1M | Research (read-only plan mode) |
+| Kimi K2.5 | Moonshot AI | REST | $0.60 | $2.50 | 128K | Council review, rotation fallback |
+| DeepSeek V3 | DeepSeek | REST | $0.28 | $0.42 | 64K | Council review, rotation fallback |
+| GLM-5 | Zhipu AI | REST | $1.00 | $3.20 | 128K | Council review, rotation fallback |
+| MiniMax M2.5 | MiniMax | REST | $0.29 | $1.20 | 200K | Council review, rotation fallback |
+
+## 12.2 Model Selection and Roles
+
+| Phase | Primary Agent | Why | Fallback |
+|-------|--------------|-----|----------|
+| Code Review | Claude | Best judgment for scoring health | -- |
+| Research | Gemini | Excellent in read-only plan mode | Codex |
+| Plan | Claude | Best prioritization reasoning | -- |
+| Execute | Codex | Fastest code generation | Claude |
+| Council Review | Codex + Gemini + REST | Independent multi-perspective review | Next available |
+| Council Synthesis | Claude | Best consensus reasoning | -- |
+| Supervisor Diagnosis | Claude | Best root-cause analysis | Next available (cooldown-aware) |
+
+REST agents (Kimi, DeepSeek, GLM-5, MiniMax) serve as:
+- **Council reviewers**: Expand the review pool for more diverse perspectives
+- **Rotation fallback**: When CLI agents hit quota limits, REST agents keep the pipeline moving
+- **Cost optimization**: DeepSeek V3 at $0.28/$0.42 is 5-35x cheaper than CLI agents for review tasks
+
+## 12.3 Model Configuration
+
+All agents are configured in `model-registry.json`:
+
+```json
+{
+  "agents": {
+    "kimi": {
+      "type": "openai-compat",
+      "endpoint": "https://api.moonshot.cn/v1/chat/completions",
+      "api_key_env": "KIMI_API_KEY",
+      "model_id": "moonshot-v1-128k",
+      "enabled": true,
+      "pricing": { "input_per_m": 0.60, "output_per_m": 2.50 }
+    }
+  },
+  "rotation_pool_default": ["claude", "codex", "gemini", "kimi", "deepseek", "glm5", "minimax"]
+}
+```
+
+**To add a new REST agent:** Add an entry to `agents` with type `openai-compat`, set the API key environment variable, add to `rotation_pool_default`.
+
+**To disable an agent:** Set `"enabled": false` in model-registry.json, or remove its API key environment variable.
+
+## 12.4 Model Cost Comparison
+
+### Per-Iteration Cost by Agent (Convergence Pipeline)
+
+| Phase | Agent | Input Tokens | Output Tokens | Cost (Sonnet) |
+|-------|-------|-------------|---------------|--------------|
+| Code Review | Claude | ~2,000 | ~1,000 | $0.02 |
+| Research | Gemini | ~3,000 | ~20,000 | $0.20 |
+| Plan | Claude | ~1,500 | ~500 | $0.01 |
+| Execute | Codex | ~5,000 | ~65,000 | $0.40 |
+| **Total** | | | | **~$0.63** |
+
+### Council Review Cost Per Agent
+
+| Agent | Input ~2K / Output ~2K | Cost |
+|-------|----------------------|------|
+| Claude | 2K in + 2K out | $0.036 |
+| Codex | 2K in + 2K out | $0.015 |
+| Gemini | 2K in + 2K out | $0.023 |
+| DeepSeek | 2K in + 2K out | $0.001 |
+| Kimi | 2K in + 2K out | $0.006 |
+| MiniMax | 2K in + 2K out | $0.003 |
+
+Using REST agents for council reviews is 5-35x cheaper than CLI agents.
+
+## 12.5 Error Handling by Agent Type
+
+### CLI Agents (claude, codex, gemini)
+
+CLI agents run in isolated child processes. Errors are detected from exit codes and stdout patterns:
+- Exit code 0 = success
+- Exit code != 0 = failure (diagnosed by Get-FailureDiagnosis)
+- Stdout patterns: "sandbox.*restrict", "loop.*detect", "max.*turns"
+
+### REST Agents (kimi, deepseek, glm5, minimax)
+
+REST agents are invoked via `Invoke-OpenAICompatibleAgent`. HTTP errors are mapped to GSD taxonomy:
+
+| HTTP Status | GSD Category | Engine Action |
+|-------------|-------------|---------------|
+| 200 | success | Process response |
+| 401 | unauthorized | Fail (check API key) |
+| 402 | quota_exhausted | Wait + rotate |
+| 429 | rate_limit | Backoff + rotate |
+| 500-504 | server_error | Retry |
+| Timeout | timeout | Retry with reduced batch |
+
+Both agent types use the same retry/fallback/rotation infrastructure.
+
+## 12.6 Model-Specific Tips
+
+- **Claude**: Most capable overall, most expensive. Best for judgment-heavy phases. Falls back to as last resort for all other agents.
+- **Codex**: Fast code generation but limited reasoning. Always use `--full-auto` mode. Has loop detection limits that can trigger early exit.
+- **Gemini**: Excellent research in plan mode (read-only). OAuth tokens can expire mid-run -- re-authenticate via browser if needed. Falls back to Codex.
+- **Kimi K2.5**: Good multilingual support. 128K context window. May timeout on very large prompts.
+- **DeepSeek V3**: Cheapest option at $0.28/$0.42 per M tokens. Good for code review tasks. Rate limits can be aggressive.
+- **GLM-5**: Good general reasoning. Chinese-origin model with strong English support.
+- **MiniMax M2.5**: Balanced price/performance. Good for council reviews. 200K context window.
+
+---
+
 # Appendices
 
 ## Appendix A: Complete File Inventory
@@ -3074,6 +3272,7 @@ Enforced via agent prompts:
 | `bin/gsd-costs.cmd` | Token cost calculator CLI wrapper |
 | `config/global-config.json` | Global settings |
 | `config/agent-map.json` | Agent-to-phase mapping + parallel config |
+| `config/model-registry.json` | Central agent registry (CLI + REST, endpoints, API keys, pricing) |
 | `lib/modules/resilience.ps1` | Core resilience module (~2000+ lines) |
 | `lib/modules/interfaces.ps1` | Multi-interface detection |
 | `lib/modules/interface-wrapper.ps1` | Agent prompt context builder |
@@ -3125,6 +3324,7 @@ Enforced via agent prompts:
 | `council/codex-review.md` | Codex | Implementation quality review | ~2K tokens |
 | `council/gemini-review.md` | Gemini | Requirements alignment review | ~2K tokens |
 | `council/claude-synthesize.md` | Claude | Consensus synthesis | ~1K tokens |
+| `council/openai-compat-review.md` | REST agents | Generic implementation quality review | ~2K tokens |
 
 ## Appendix C: Notification Events
 
@@ -3193,6 +3393,11 @@ Enforced via agent prompts:
 | **Heartbeat** | 60-second periodic status update during long agent calls |
 | **Agent Cooldown** | Temporary lockout of an agent after consecutive quota failures |
 | **Chunked Review** | Breaking large requirement sets into smaller groups for focused council reviews |
+| **Model Registry** | Central JSON config (model-registry.json) defining all 7 agents with type, endpoint, API key, pricing |
+| **REST Agent** | OpenAI-compatible API agent (Kimi, DeepSeek, GLM-5, MiniMax) invoked via HTTP instead of CLI |
+| **Rotation Pool** | Ordered list of agents available for failover when current agent hits quota limits |
+| **Interface Auto-Detection** | Automatic discovery of API (.sln/.csproj) and Database (.sql) components from project structure |
+| **Component Architecture** | Three-layer project model: UI Interfaces → REST API → Database |
 
 ---
 
@@ -3210,7 +3415,7 @@ Enforced via agent prompts:
 | `LOCK_STALE_MINUTES` | 120 | Lock file age before auto-reclaim |
 | `HEALTH_REGRESSION_THRESHOLD` | 5 | Max % drop before revert |
 | `QUOTA_CUMULATIVE_MAX_MINUTES` | 120 | Total quota wait cap |
-| `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` | 3 | Failures before agent switch |
+| `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` | 1 | Failures before agent switch (reduced from 3 by multi-model patch) |
 | `HEARTBEAT_INTERVAL_SECONDS` | 60 | ntfy heartbeat frequency |
 
 ### Default Batch Sizes
@@ -3222,5 +3427,5 @@ Enforced via agent prompts:
 
 ---
 
-*Generated from GSD Engine v1.5.0 source documentation and scripts.*
-*Total scripts: 26 (1 master installer + 1 pre-flight + 20 installer scripts + 4 standalone utilities)*
+*Generated from GSD Engine v1.6.0 source documentation and scripts.*
+*Total scripts: 27 (1 master installer + 1 pre-flight + 21 installer scripts + 4 standalone utilities)*
