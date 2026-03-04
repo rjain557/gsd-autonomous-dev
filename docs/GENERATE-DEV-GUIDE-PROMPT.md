@@ -31,6 +31,12 @@ You are a technical writer producing a professional developer guide as a Microso
 - `scripts/patch-gsd-final-validation.ps1` - Final validation gate
 - `scripts/token-cost-calculator.ps1` - Cost estimation and tracking
 - `scripts/final-patch-1-spec-check.ps1` through `final-patch-7-spec-resolve.ps1` - Integration patches
+- `scripts/patch-gsd-supervisor.ps1` - Self-healing supervisor
+- `scripts/patch-false-converge-fix.ps1` - False convergence fix
+- `scripts/patch-gsd-council.ps1` - LLM Council multi-agent review
+- `scripts/patch-gsd-parallel-execute.ps1` - Parallel sub-task execution
+- `scripts/patch-gsd-resilience-hardening.ps1` - Token tracking, quota cap, agent rotation
+- `scripts/patch-gsd-quality-gates.ps1` - DB completeness, security standards, spec validation
 - `scripts/install-gsd-keybindings.ps1` - VS Code shortcuts
 - `scripts/setup-gsd-api-keys.ps1` - API key management
 
@@ -41,9 +47,9 @@ Generate the Word document with the following structure. Use professional format
 ---
 
 #### FRONT MATTER
-- **Title Page**: "GSD Autonomous Development Engine - Developer Guide", Version 1.1.0, Date, "Confidential - Internal Use Only"
+- **Title Page**: "GSD Autonomous Development Engine - Developer Guide", Version 1.5.0, Date, "Confidential - Internal Use Only"
 - **Table of Contents**: Auto-generated from headings
-- **Document History**: Version 1.0.0 (Initial Release), Version 1.1.0 (Codex CLI update, multi-agent support, supervisor, cost tracking)
+- **Document History**: Version 1.0.0 (Initial Release), Version 1.1.0 (Codex CLI update, multi-agent support, supervisor, cost tracking), Version 1.2.0 (LLM Council, parallel execution, resilience hardening), Version 1.5.0 (Quality gates, chunked council reviews)
 
 ---
 
@@ -104,7 +110,7 @@ Table of all required and optional software with versions and install commands.
 Step-by-step instructions for setting up Anthropic, OpenAI, and Google API keys. Include both interactive and command-line methods.
 
 **3.3 Running the Master Installer**
-Step-by-step walkthrough of `install-gsd-all.ps1`. List all 16 scripts in execution order with one-line descriptions.
+Step-by-step walkthrough of `install-gsd-all.ps1`. List all 20 scripts in execution order with one-line descriptions.
 
 **3.4 Post-Install Verification**
 Commands to verify the installation succeeded.
@@ -229,13 +235,13 @@ How Find-ProjectInterfaces recursively scans the repo.
 Full reference for: gsd-assess, gsd-converge, gsd-blueprint, gsd-status, gsd-costs, gsd-init, gsd-remote.
 
 **8.2 Installation Scripts**
-One paragraph + key details for each of the 16 scripts run by the installer.
+One paragraph + key details for each of the 20 scripts run by the installer.
 
 **8.3 Standalone Utilities**
 setup-gsd-api-keys.ps1, setup-gsd-convergence.ps1, install-gsd-keybindings.ps1, token-cost-calculator.ps1.
 
 **8.4 Key Internal Functions**
-Reference for: Invoke-WithRetry, Update-FileMap, Save-Checkpoint, Restore-Checkpoint, Wait-ForQuotaReset, Test-NetworkAvailability, Save-GsdSnapshot, Find-ProjectInterfaces, Invoke-SpecConsistencyCheck, Invoke-FinalValidation, Invoke-SupervisorDiagnosis, Invoke-SupervisorFix.
+Reference for: Invoke-WithRetry, Update-FileMap, Save-Checkpoint, Restore-Checkpoint, Wait-ForQuotaReset, Test-NetworkAvailability, Save-GsdSnapshot, Find-ProjectInterfaces, Invoke-SpecConsistencyCheck, Invoke-FinalValidation, Invoke-SupervisorDiagnosis, Invoke-SupervisorFix, Invoke-LlmCouncil, Invoke-ParallelExecute, Test-DatabaseCompleteness, Test-SecurityCompliance, Invoke-SpecQualityGate.
 
 ---
 

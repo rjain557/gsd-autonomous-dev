@@ -1,567 +1,613 @@
----
-title: "GSD Autonomous Development Engine - Developer Guide"
-version: "1.1.0"
-date: "2026-03-03"
-classification: "Confidential - Internal Use Only"
----
+# GSD Autonomous Development Engine - Developer Guide
 
-# GSD Autonomous Development Engine
-
-## Developer Guide
-
-**Version 1.1.0** | March 2026
-
-*Confidential - Internal Use Only*
+**Version:** 1.5.0
+**Date:** March 2026
+**Classification:** Confidential - Internal Use Only
 
 ---
 
-### Document History
+## Document History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | February 2026 | Initial release |
-| 1.1.0 | March 2026 | Codex CLI update (`codex exec --full-auto`), multi-agent cost tracking, supervisor pattern memory, false convergence fix, API key management |
+| 1.1.0 | March 2026 | Codex CLI update, multi-agent support, supervisor, cost tracking |
+| 1.2.0 | March 2026 | LLM Council, parallel execution, resilience hardening |
+| 1.5.0 | March 2026 | Quality gates (DB completeness, security compliance, spec validation), chunked council reviews |
 
 ---
 
-### Table of Contents
+# Chapter 1: Introduction
 
-- [Chapter 1: Introduction](#chapter-1-introduction)
-- [Chapter 2: Architecture](#chapter-2-architecture)
-- [Chapter 3: Installation](#chapter-3-installation)
-- [Chapter 4: Usage Guide](#chapter-4-usage-guide)
-- [Chapter 5: Resilience and Self-Healing](#chapter-5-resilience-and-self-healing)
-- [Chapter 6: Configuration Reference](#chapter-6-configuration-reference)
-- [Chapter 7: Multi-Interface Support](#chapter-7-multi-interface-support)
-- [Chapter 8: Script Reference](#chapter-8-script-reference)
-- [Chapter 9: Troubleshooting](#chapter-9-troubleshooting)
-- [Chapter 10: Cost Management](#chapter-10-cost-management)
-- [Appendix A: Complete File Inventory](#appendix-a-complete-file-inventory)
-- [Appendix B: Prompt Templates](#appendix-b-prompt-templates)
-- [Appendix C: Notification Events](#appendix-c-notification-events)
-- [Appendix D: Error Categories](#appendix-d-error-categories)
-- [Appendix E: Glossary](#appendix-e-glossary)
+## 1.1 Why We Built This
 
----
+Traditional software development with AI assistants is manual, fragile, and expensive. A developer copies and pastes prompts into ChatGPT or Claude, manually reviews the output, fixes issues, copies the next piece of context, and repeats. There is no memory between sessions, no automatic recovery from failures, and no way to verify that the generated code actually matches the specifications. A single network timeout or quota exhaustion kills the entire workflow and the developer has to start over. Even worse, there is no guarantee that the AI understood the spec correctly -- contradictions between specification documents go undetected until code review reveals the damage.
 
-## Chapter 1: Introduction
+The GSD Engine automates the entire develop-review-fix loop. It orchestrates three AI agents -- Claude Code for reasoning, Codex CLI for code generation, and Gemini CLI for research -- assigns each to the tasks they do best, and runs autonomously until the codebase matches the specification. It handles crashes, quota limits, network failures, JSON corruption, agent boundary violations, stalls, and even specification contradictions without human intervention. When the engine reaches 100% health, it runs a full validation gate (compilation, tests, security audit, database completeness) before declaring success.
 
-### 1.1 Why We Built This
+The result: a developer writes specifications, runs one command, and gets a fully built, verified, compliant codebase. What used to take weeks of manual AI-assisted development happens overnight. The engine tracks actual API costs in real time, generates developer handoff documentation, auto-commits to git with code review text, and sends push notifications to your phone so you can monitor progress from anywhere.
 
-Traditional AI-assisted development is manual, fragile, and fundamentally stateless. The typical workflow involves a developer copying requirements into a prompt, waiting for generated code, manually reviewing the output, fixing issues, and repeating the cycle. There is no memory between sessions -- context evaporates the moment a chat window closes. There is no recovery from failures -- a single quota timeout, network glitch, or malformed response kills the entire session and forces the developer to start over. There is no way to verify completeness against specifications -- the developer must manually cross-reference every requirement, every Figma design, every acceptance criterion against what was actually produced. This approach does not scale beyond trivial projects.
+## 1.2 Design Philosophy
 
-The GSD Engine automates the entire develop-review-fix loop. It orchestrates three AI agents -- Claude Code for reasoning and analysis, Codex CLI for code generation, and Gemini CLI for research and spec-fixing -- assigning each to the tasks they do best, and runs autonomously until the codebase matches specifications. It handles crashes, quota limits, network failures, and agent errors without human intervention. When the engine detects a stall (health score stops improving), a self-healing supervisor diagnoses the root cause, modifies prompts, reduces batch sizes, reassigns agents, and restarts the pipeline -- up to five recovery attempts before escalating to a human with a detailed diagnosis report. The engine maintains full state across interruptions: you can Ctrl+C mid-run, transfer to a different workstation, or lose power entirely, and it resumes exactly where it left off.
+- **Token-optimized agent assignment** -- Claude handles judgment-heavy phases (review, plan, verify) where reasoning quality matters. Codex and Gemini handle high-volume generation and research where throughput matters. Each draws from independent API quota pools.
+- **Specification-driven** -- Code matches specifications, not the other way around. The engine extracts requirements from specs and Figma, tracks them in a matrix, and converges until every requirement is satisfied.
+- **Self-healing** -- Retry with batch reduction, checkpoint/resume, health regression rollback, network polling, quota backoff, agent timeout watchdog, and a supervisor that root-causes stalls across projects.
+- **Idempotent** -- Safe to re-run, safe to interrupt (Ctrl+C) and resume. The engine picks up from the last checkpoint. Safe to install over an existing installation.
+- **Observable** -- Health scores, push notifications via ntfy.sh, remote monitoring via QR code, live cost tracking, and structured error logs.
+- **Quality-gated** -- Database completeness verification, OWASP security compliance scanning, spec clarity scoring, cross-artifact consistency checks, and multi-agent council review at convergence.
 
-The result: a developer writes specifications, runs one command, and returns to a fully built, verified, compliant codebase. What used to take weeks of manual AI-assisted development happens overnight. The engine tracks actual API token costs across every agent call, generates developer handoff reports documenting what was built and why, and sends push notifications to your phone so you can monitor progress from anywhere. When the health score reaches 100% and final validation passes, you receive a notification with a complete summary -- ready for human review and deployment.
+## 1.3 What Was Built
 
-### 1.2 Design Philosophy
+The GSD Engine provides three core capabilities:
 
-- **Specification-Driven**: Code matches specs, not the other way around. A requirements matrix tracks every item from SDLC documents and Figma designs all the way to code, with statuses updated automatically each iteration.
-- **Token-Optimized Agent Assignment**: Claude (expensive, excellent at judgment) handles review, plan, and verify phases. Codex (cheaper, excellent at generation) handles execute and build phases. Gemini (separate quota pool entirely) handles research and spec-fix. Each agent draws from an independent API quota, maximizing throughput.
-- **Self-Healing**: The engine retries with automatic batch reduction, maintains checkpoint/resume state for crash recovery, rolls back on health regression, and employs a supervisor with cross-project pattern memory that learns from previous failures across all your projects.
-- **Idempotent**: Safe to re-run at any time. Safe to interrupt with Ctrl+C and resume. Safe to transfer between workstations via git. The .gsd/ state folder travels with the repository.
-- **Observable**: Health scores track progress from 0% to 100%. Push notifications via ntfy.sh deliver real-time updates. Remote monitoring via QR code lets you watch from your phone. Actual cost tracking per agent call provides full transparency into API spend.
+| Command | Purpose | When to Use |
+|---------|---------|-------------|
+| `gsd-assess` | Scan codebase, detect interfaces, generate file map, classify work | Pre-flight analysis on any repo |
+| `gsd-converge` | 5-phase convergence loop to fix existing code toward 100% | Existing codebase needs to match specs |
+| `gsd-blueprint` | 3-phase spec-to-code pipeline for greenfield development | New project, build from specs + Figma |
 
-### 1.3 What Was Built
+Supporting utilities:
 
-The GSD Engine provides three core capabilities, each optimized for a different development scenario:
-
-| Capability | Command | Best For | Pipeline |
-|---|---|---|---|
-| Assess | `gsd-assess` | Understanding an existing codebase | One-time scan |
-| Converge | `gsd-converge` | Fixing existing code toward spec compliance | 5-phase iterative loop |
-| Blueprint | `gsd-blueprint` | Building new code from specs (greenfield) | 3-phase generation pipeline |
-
-**Assess** performs a deep inventory of your codebase -- cataloging every backend endpoint, database object, frontend component, and their relationships -- and classifies each item as skip, fix, build, or review. It produces a work classification that feeds directly into the convergence loop or blueprint pipeline.
-
-**Converge** is the iterative engine for existing codebases. It reviews code against specifications, plans the next batch of fixes, executes them, and loops until health reaches 100%. Each iteration commits to git with the current health score, providing a full audit trail.
-
-**Blueprint** is the generation engine for greenfield projects. It reads all specifications and Figma designs, produces a complete project manifest (every file that needs to exist), then generates and verifies in batches until the entire manifest is built.
-
-Supporting tools complement the core pipelines:
-
-- `gsd-status` -- Health dashboard showing current score, phase, iteration count, and recent history
-- `gsd-costs` -- Cost estimation before a run and actual cost tracking during/after
-- `gsd-init` -- Initialize the .gsd/ folder for a new project
-- `gsd-remote` -- Launch remote monitoring with a QR code for phone access
-
-### 1.4 Three-Model Strategy
-
-| Agent | Role | Phases | Token Budget |
-|---|---|---|---|
-| Claude Code | Reasoning, analysis, architectural judgment | Review, Plan, Verify, Blueprint, Assess | ~11K tokens/iteration |
-| Codex CLI | Fast code generation, bulk operations | Execute, Build, Research (fallback) | Unlimited |
-| Gemini CLI | Research, spec-fix (optional, separate quota) | Research, Spec-fix | Unlimited |
-
-Each agent draws from an independent API quota pool -- exhausting your OpenAI quota does not affect Claude operations, and vice versa. Gemini is optional; if unavailable, the engine falls back to Codex for research and spec-fix phases. This three-model strategy maximizes throughput while keeping Claude costs under control: Claude performs only the high-judgment work (review, plan, verify) where its reasoning capabilities justify the cost, while Codex handles the high-volume code generation where raw output speed matters most.
+| Command | Purpose |
+|---------|---------|
+| `gsd-status` | Health dashboard for current project |
+| `gsd-init` | Initialize `.gsd/` folder without running iterations |
+| `gsd-remote` | Launch remote monitoring with QR code |
+| `gsd-costs` | Estimate API costs, compare pipelines, generate client quotes |
 
 ---
 
-## Chapter 2: Architecture
+# Chapter 2: Architecture
 
-### 2.1 System Overview
+## 2.1 System Overview
 
-The GSD Engine runs entirely on your local developer workstation. It reads specifications (SDLC documents, Figma analysis files, and stub definitions), orchestrates AI agents through a PowerShell-based engine, and writes all state to the per-project .gsd/ folder. There is no server component, no cloud infrastructure, and no data leaves your machine except the API calls to the AI providers themselves. Push notifications are sent via ntfy.sh (a lightweight pub/sub service) so you can monitor from your phone, but this is optional and carries no sensitive data.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     DEVELOPER WORKSTATION                        │
-│                                                                  │
-│   Specifications          GSD Engine              AI Agents      │
-│   ┌──────────┐      ┌──────────────────┐    ┌────────────────┐  │
-│   │ SDLC     │─────>│ PowerShell       │───>│ Claude Code    │  │
-│   │ Phase A-E│      │ Orchestrator     │    │ (Review, Plan) │  │
-│   ├──────────┤      │                  │    ├────────────────┤  │
-│   │ Figma    │─────>│ Convergence Loop │───>│ Codex CLI      │  │
-│   │ _analysis│      │ Blueprint Pipe   │    │ (Execute,Build)│  │
-│   ├──────────┤      │ Supervisor       │    ├────────────────┤  │
-│   │ Stubs    │─────>│ Resilience Module│───>│ Gemini CLI     │  │
-│   │ _stubs/  │      └──────────────────┘    │ (Research)     │  │
-│   └──────────┘             │                └────────────────┘  │
-│                            │                                     │
-│                     ┌──────▼──────┐     ┌──────────────┐        │
-│                     │ .gsd/ State │     │ ntfy.sh      │        │
-│                     │ Health,Logs │     │ Push Notify  │        │
-│                     │ Checkpoint  │     │ Phone Monitor│        │
-│                     └─────────────┘     └──────────────┘        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-The orchestrator manages the full lifecycle: reading specs, selecting the appropriate agent for each phase, building context-rich prompts via the interface wrapper, invoking agents, parsing their output, updating state, handling errors, and committing results to git. The resilience module provides retry logic, checkpoint/resume, file locking, batch reduction, cost tracking, and push notifications. The supervisor wraps the entire pipeline and provides self-healing recovery when the engine stalls.
-
-### 2.2 Agent Assignment
-
-Each phase of the engine is assigned to the agent best suited for the task. The assignment is configurable via `agent-map.json`, and the supervisor can dynamically reassign phases during recovery.
-
-**Phase-to-Agent Mapping:**
-
-| Phase | Agent | Why | Output Tokens |
-|---|---|---|---|
-| Code Review | Claude Code | Superior architectural analysis and spec compliance judgment | ~3,000 |
-| Create Phases | Claude Code | One-time requirement extraction demanding precise interpretation | ~5,000 |
-| Research | Gemini (fallback: Codex) | Thorough analysis benefits from separate quota pool | ~10,000+ |
-| Plan | Claude Code | Strategic planning and dependency ordering require strong reasoning | ~3,000 |
-| Execute | Codex (fallback: Claude) | Fast bulk code generation at lower cost per token | ~50,000+ |
-| Blueprint | Claude Code | Spec-to-manifest generation requires comprehensive understanding | ~5,000 |
-| Build | Codex (fallback: Claude) | High-volume code generation from blueprint items | ~80,000+ |
-| Verify | Claude Code | Spec compliance checking demands precise judgment | ~3,000 |
-| Spec-Fix | Gemini (fallback: Codex) | Auto-resolving spec contradictions on a separate quota | ~2,000 |
-
-**Agent Boundary Enforcement:**
-
-| Domain | Claude Code | Codex | Gemini |
-|---|---|---|---|
-| Source code | READ only | READ + WRITE | READ only |
-| .gsd/health/ | READ + WRITE | READ only | READ only |
-| .gsd/research/ | READ only | READ + WRITE | READ + WRITE |
-| .gsd/agent-handoff/ | WRITE assignment | APPEND log | -- |
-| docs/ | READ only | READ only | READ only |
-
-These boundaries are enforced through prompt instructions and the interface wrapper. Claude never modifies source code directly -- it writes analysis and instructions that Codex then executes. This separation ensures that the expensive reasoning agent is never wasted on bulk file operations, and the fast generation agent never makes unsupervised architectural decisions.
-
-### 2.3 Convergence Loop (5-Phase)
-
-The convergence loop is the core engine for iteratively improving an existing codebase toward full specification compliance. Each iteration runs all five phases in sequence, commits the results to git, and loops until the health score reaches 100%, a stall is detected, or the maximum iteration count is reached.
+The GSD Engine is a PowerShell-based orchestration framework that coordinates three AI agents through iterative loops. The developer provides specifications and Figma designs; the engine handles everything else.
 
 ```
-┌─────────────────────────────────────────────────┐
-│            GSD CONVERGENCE LOOP                  │
-│                                                  │
-│  1. CODE REVIEW    ──> Claude Code (~3K tokens)  │
-│     Scan repo vs requirements matrix             │
-│     Score health, update statuses                │
-│          │                                       │
-│  2. CREATE PHASES  ──> Claude Code (~5K tokens)  │
-│     One-time: Extract requirements from specs    │
-│     (skipped after iteration 1)                  │
-│          │                                       │
-│  3. RESEARCH       ──> Gemini/Codex (~10K+ tok)  │
-│     Deep-read specs, Figma, codebase             │
-│     Build dependency maps, patterns              │
-│          │                                       │
-│  4. PLAN           ──> Claude Code (~3K tokens)  │
-│     Select next 3-8 requirements                 │
-│     Write execution instructions                 │
-│          │                                       │
-│  5. EXECUTE        ──> Codex (~50K+ tokens)      │
-│     Generate code for the batch                  │
-│     Build validation + auto-fix                  │
-│          │                                       │
-│     git commit ──> Loop back to 1                │
-│                                                  │
-│  Exit when: health=100% + validation passes      │
-│         or: stall threshold reached              │
-│         or: max iterations reached               │
-└─────────────────────────────────────────────────┘
-```
-
-**Phase 1: Code Review** (Claude Code)
-Scans every requirement in the requirements matrix against the current codebase. Updates each requirement's status to one of: `satisfied`, `partial`, or `not_started`. Calculates the health score as `satisfied / total * 100`. Writes three output files: `health-current.json` (machine-readable score and breakdown), `drift-report.md` (human-readable gaps between specs and code, max 50 lines), and `review-current.md` (detailed findings, max 100 lines). If the health score reaches 100%, the engine triggers the final validation gate.
-
-**Phase 2: Create Phases** (Claude Code)
-One-time extraction of all requirements from SDLC documents and Figma designs into `requirements-matrix.json`. This phase runs on the first iteration or when specifications change, and is skipped on subsequent iterations. It maps every requirement to a structured record containing: id, source document, description, current status, dependencies on other requirements, and priority level.
-
-**Phase 3: Research** (Gemini, fallback: Codex)
-Deep analysis of the codebase, specifications, Figma designs, and dependency relationships. The research agent reads broadly -- examining code patterns, identifying architectural conventions, mapping data flows, and noting spec ambiguities. Output is written to `.gsd/research/` and is consumed by the Plan phase. This phase can be skipped with the `-SkipResearch` flag.
-
-**Phase 4: Plan** (Claude Code)
-Selects the next batch of 3-8 requirements to implement or fix. Priority ordering follows these rules: resolve dependencies first, follow SDLC phase order (A through E), build backend before frontend, and group related items together to minimize context switching. Output is `queue-current.json` (machine-readable batch) and `current-assignment.md` (detailed instructions for the execute agent).
-
-**Phase 5: Execute** (Codex, fallback: Claude)
-Generates all code for the planned batch. Produces full, production-ready files following the project's established patterns. After code generation, build validation runs automatically (`dotnet build` for backend, `npm run build` for frontend). If the build fails, the agent attempts auto-fix (up to 3 attempts). On success, the engine commits to git with a message containing the current health score and iteration number.
-
-### 2.4 Blueprint Pipeline (3-Phase)
-
-The blueprint pipeline is optimized for greenfield projects where most or all code needs to be generated from scratch. Instead of iteratively reviewing and fixing, it generates a complete project manifest upfront and then builds and verifies in batches.
-
-```
-┌─────────────────────────────────────────────────┐
-│           GSD BLUEPRINT PIPELINE                 │
-│                                                  │
-│  1. BLUEPRINT      ──> Claude Code (~5K tokens)  │
-│     Read all specs + Figma                       │
-│     Generate blueprint.json manifest             │
-│          │                                       │
-│  2. BUILD          ──> Codex (~80K+ tokens)      │
-│     Generate code for batch of items             │
-│     Build validation + auto-fix                  │
-│          │                                       │
-│  3. VERIFY         ──> Claude Code (~3K tokens)  │
-│     Check each item against specs                │
-│     Update statuses, score health                │
-│          │                                       │
-│     Loop 2-3 until 100% or stalled               │
-└─────────────────────────────────────────────────┘
-```
-
-**Phase 1: Blueprint** (Claude Code) -- Runs once. Reads all SDLC specifications and Figma analysis files and produces `blueprint.json`: a complete manifest of every file the project needs, with acceptance criteria for each. This phase must be exhaustive -- any item omitted from the blueprint will not be built. Output is approximately 5K tokens.
-
-**Phase 2: Build** (Codex) -- Generates code for a batch of blueprint items. Each item includes the target file path, description, acceptance criteria, and dependencies. Build validation runs after generation. The batch size starts at the configured maximum and automatically reduces if builds fail repeatedly.
-
-**Phase 3: Verify** (Claude Code) -- Binary check: does each file exist and does it meet its acceptance criteria? Updates item statuses in the blueprint, calculates the health score, and writes `next-batch.json` for the next Build phase. Output is approximately 2K tokens with no prose -- just status updates.
-
-The Build-Verify loop repeats until all blueprint items reach `satisfied` status or the engine detects a stall. Blueprint is best for greenfield projects; convergence is best for existing codebases. The two pipelines are interchangeable -- they share the same `.gsd/` state directory, and you can switch between them at any time.
-
-### 2.5 Data Flow Diagrams
-
-**gsd-assess Flow:**
-
-```
-┌────────────┐    ┌────────────────┐    ┌──────────────────────┐
-│ Repository │───>│ Update-FileMap │───>│ file-map.json        │
-│ (all files)│    │                │    │ file-map-tree.md     │
-└────────────┘    └────────────────┘    └──────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                      DEVELOPER                          │
+│   Provides: Specs (docs/) + Figma (design/) + .sln     │
+│   Receives: Working code + developer-handoff.md         │
+└────────────────────────┬────────────────────────────────┘
                          │
-                         ▼
-              ┌─────────────────────┐    ┌──────────────────────┐
-              │ Claude Code         │───>│ assessment-summary.md│
-              │ (assess prompt)     │    │ work-classification  │
-              │                     │    │ backend-inventory    │
-              │ Reads: specs,       │    │ database-inventory   │
-              │   Figma, code       │    │ frontend-inventory   │
-              └─────────────────────┘    └──────────────────────┘
+                    gsd-converge / gsd-blueprint
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│                    GSD ENGINE                            │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              PowerShell Orchestrator              │   │
+│  │  convergence-loop.ps1 / blueprint-pipeline.ps1   │   │
+│  └──────┬──────────────┬──────────────┬─────────────┘   │
+│         │              │              │                  │
+│  ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼───────┐         │
+│  │ Claude Code │ │ Codex CLI  │ │ Gemini CLI │         │
+│  │  Reasoning  │ │ Generation │ │  Research   │         │
+│  │  ~3K/iter   │ │ ~65K/iter  │ │  ~20K/iter  │         │
+│  └─────────────┘ └────────────┘ └────────────┘         │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              Resilience Layer                     │   │
+│  │  Retry, Checkpoint, Lock, Quota, Network,        │   │
+│  │  Watchdog, Regression, Supervisor, Council        │   │
+│  └──────────────────────────────────────────────────┘   │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              Quality Gates                        │   │
+│  │  Spec Clarity, DB Completeness, Security Scan,   │   │
+│  │  Final Validation (build, test, audit)            │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**gsd-converge Per-Iteration Flow:**
+## 2.2 Agent Assignment
+
+The three-model strategy distributes work across independent quota pools. Each agent is assigned to phases that match its strengths:
+
+| Agent | Role | Phases | Approx. Tokens/Iter | Why This Agent |
+|-------|------|--------|---------------------|----------------|
+| **Claude Code** | Reasoning & analysis | Review, Plan, Verify, Blueprint, Spec check | ~3-5K output | Best judgment, catches nuance, understands requirements |
+| **Codex CLI** | Code generation | Execute, Build | ~65-80K output | Fastest code gen, largest output window |
+| **Gemini CLI** | Research & spec-fix | Research, Spec-fix | ~20K output | Saves Claude/Codex quota for their strengths |
+
+Gemini is optional. If not installed, the engine falls back to Codex for research phases.
+
+Agent assignment can be overridden by the supervisor at runtime via `.gsd/supervisor/agent-override.json`, and parallel execution distributes sub-tasks round-robin across all three agents.
+
+## 2.3 Convergence Loop (5-Phase)
+
+The convergence pipeline (`gsd-converge`) runs a 5-phase loop that iteratively fixes existing code to match specifications:
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                     ITERATION N                                 │
-│                                                                 │
-│  ┌─────────┐   ┌──────────┐   ┌──────┐   ┌─────────┐         │
-│  │ REVIEW  │──>│ RESEARCH │──>│ PLAN │──>│ EXECUTE │──> git   │
-│  │ Claude  │   │ Gemini   │   │Claude│   │ Codex   │   commit │
-│  └────┬────┘   └──────────┘   └──┬───┘   └────┬────┘         │
-│       │                          │             │               │
-│       ▼                          ▼             ▼               │
-│  health-current    queue-current.json    source code           │
-│  drift-report      assignment.md         build validation      │
-│  review-current                          auto-fix if needed    │
-│       │                                                        │
-│       ▼                                                        │
-│  health >= 100%? ──YES──> Final Validation ──> Handoff Report  │
-│       │                                                        │
-│       NO ──> stalled? ──YES──> Supervisor Recovery             │
-│       │                                                        │
-│       NO ──> max iterations? ──YES──> Handoff Report           │
-│       │                                                        │
-│       NO ──> Next Iteration                                    │
-└────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                 CONVERGENCE PIPELINE                     │
+│                                                         │
+│  ┌─── One-time ───┐                                    │
+│  │ Spec Quality    │◄── Blocks if clarity < 70         │
+│  │ Gate            │                                    │
+│  │ Create-phases   │◄── Claude extracts requirements   │
+│  └────────┬────────┘                                    │
+│           │                                             │
+│  ┌────────▼────────────────────────────────────────┐    │
+│  │              ITERATION LOOP                      │    │
+│  │                                                  │    │
+│  │  Phase 1: CODE-REVIEW (Claude)                   │    │
+│  │    Score health, update requirement statuses      │    │
+│  │                                                  │    │
+│  │  Phase 2: RESEARCH (Gemini, read-only)           │    │
+│  │    Investigate patterns, dependencies, tech       │    │
+│  │    ► Post-research council (non-blocking)         │    │
+│  │                                                  │    │
+│  │  Phase 3: PLAN (Claude)                          │    │
+│  │    Prioritize next batch, write instructions      │    │
+│  │    ► Pre-execute council (non-blocking)           │    │
+│  │                                                  │    │
+│  │  Phase 4: EXECUTE (Codex, parallel optional)     │    │
+│  │    Generate code for batch items                  │    │
+│  │                                                  │    │
+│  │  Phase 5: Stall/regression checks                │    │
+│  │    Revert if health drops >5%                     │    │
+│  │                                                  │    │
+│  │  At 100%: Council gate (blocking)                 │    │
+│  │           DB completeness check                   │    │
+│  │           Security compliance scan                │    │
+│  │           Final validation (build, test, audit)   │    │
+│  └──────────────────────────────────────────────────┘    │
+│                                                         │
+│  Output: developer-handoff.md + git commit + push       │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**gsd-blueprint Per-Iteration Flow:**
+### Phase Details
+
+| Phase | Agent | Input | Output | Tokens |
+|-------|-------|-------|--------|--------|
+| Create-phases | Claude | Specs, Figma | requirements-matrix.json | ~3K (one-time) |
+| Code-review | Claude | Source code, matrix | health-current.json, review-current.md | ~3K |
+| Research | Gemini | Matrix, source | research findings | ~20K |
+| Plan | Claude | Matrix, research | queue-current.json, current-assignment.md | ~2K |
+| Execute | Codex | Assignment, queue | Source code files | ~65K |
+
+## 2.4 Blueprint Pipeline (3-Phase)
+
+The blueprint pipeline (`gsd-blueprint`) builds a project from scratch using specifications and Figma designs:
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                     BLUEPRINT PIPELINE                          │
-│                                                                 │
-│  ┌───────────┐   ┌─────────────┐   ┌──────────┐              │
-│  │ BLUEPRINT │──>│ BUILD       │──>│ VERIFY   │──> git commit │
-│  │ Claude    │   │ Codex       │   │ Claude   │               │
-│  │ (once)    │   │ (per batch) │   │(per iter)│               │
-│  └─────┬─────┘   └──────┬──────┘   └────┬─────┘              │
-│        │                │               │                      │
-│        ▼                ▼               ▼                      │
-│  blueprint.json   source code     next-batch.json              │
-│  (full manifest)  build validate  status updates               │
-│                                                                │
-│  Loop BUILD-VERIFY until 100% or stalled                       │
-└────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                  BLUEPRINT PIPELINE                      │
+│                                                         │
+│  ┌─── One-time ───┐                                    │
+│  │ Spec Quality    │◄── Blocks if clarity < 70         │
+│  │ Gate            │                                    │
+│  │ BLUEPRINT       │◄── Claude reads all specs + Figma │
+│  │ (Claude)        │    Produces blueprint.json         │
+│  │                 │    (~5K tokens, exhaustive)        │
+│  │ Post-blueprint  │◄── Council validates manifest     │
+│  │ Council         │                                    │
+│  └────────┬────────┘                                    │
+│           │                                             │
+│  ┌────────▼────────────────────────────────────────┐    │
+│  │              ITERATION LOOP                      │    │
+│  │                                                  │    │
+│  │  Phase 1: VERIFY (Claude)                        │    │
+│  │    Binary check: file exists + meets criteria     │    │
+│  │    Update statuses, write next-batch.json         │    │
+│  │    (~2K tokens per iteration)                     │    │
+│  │                                                  │    │
+│  │  Phase 2: BUILD (Codex)                          │    │
+│  │    Generate complete files for batch items         │    │
+│  │    (~80K tokens per iteration)                    │    │
+│  │                                                  │    │
+│  │  Phase 3: Stall/regression checks                │    │
+│  │                                                  │    │
+│  │  At 100%: DB completeness + Security scan         │    │
+│  │           Final validation (build, test, audit)   │    │
+│  └──────────────────────────────────────────────────┘    │
+│                                                         │
+│  Output: developer-handoff.md + git commit + push       │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 2.6 Installed Directory Structure
+### When to Use Each Pipeline
 
-The global engine installs to `%USERPROFILE%\.gsd-global\` and is shared across all projects on the workstation.
+| Scenario | Pipeline | Why |
+|----------|----------|-----|
+| New project, no existing code | `gsd-blueprint` | Generates from specs via blueprint manifest |
+| New project, partial code exists | `gsd-assess` then `gsd-blueprint -BuildOnly` | Assessment classifies existing code; blueprint fills gaps |
+| Existing project, needs fixes | `gsd-converge` | Reviews against specs, fixes iteratively |
+| Blueprint at 60-80%, stuck | Switch to `gsd-converge` | Convergence handles iterative fix-verify better |
+| Quick assessment only | `gsd-assess` | Work classification without modifying code |
+
+## 2.5 Data Flow Diagrams
+
+### gsd-assess Flow
+
+```
+Developer runs: gsd-assess
+         │
+         ▼
+┌─────────────────┐     ┌──────────────────┐
+│ Find-Project    │────►│ Detect interfaces │
+│ Interfaces      │     │ (web, mcp, mobile │
+└────────┬────────┘     │  browser, agent)  │
+         │              └──────────────────┘
+         ▼
+┌─────────────────┐     ┌──────────────────┐
+│ Update-FileMap  │────►│ .gsd/assessment/  │
+│ (inventory)     │     │ file-map.md       │
+└────────┬────────┘     └──────────────────┘
+         │
+         ▼
+┌─────────────────┐     ┌──────────────────┐
+│ Claude assess   │────►│ Work classif.    │
+│ (per interface) │     │ (skip/refactor/  │
+└─────────────────┘     │  extend/build)   │
+                        └──────────────────┘
+```
+
+### gsd-converge Per-Iteration Flow
+
+```
+Iteration N starts
+         │
+         ▼
+┌──────────────────┐  health-current.json
+│  CODE-REVIEW     │─────────────────────►  .gsd/health/
+│  (Claude)        │  review-current.md
+└────────┬─────────┘─────────────────────►  .gsd/code-review/
+         │
+         ▼
+┌──────────────────┐  research findings
+│  RESEARCH        │─────────────────────►  .gsd/research/
+│  (Gemini)        │
+└────────┬─────────┘
+         │  ► Post-research council (non-blocking feedback)
+         ▼
+┌──────────────────┐  queue-current.json
+│  PLAN            │─────────────────────►  .gsd/generation-queue/
+│  (Claude)        │  current-assignment.md
+└────────┬─────────┘─────────────────────►  .gsd/agent-handoff/
+         │  ► Pre-execute council (non-blocking feedback)
+         ▼
+┌──────────────────┐  source code files
+│  EXECUTE         │─────────────────────►  src/
+│  (Codex parallel)│  handoff-log.jsonl
+└────────┬─────────┘─────────────────────►  .gsd/agent-handoff/
+         │
+         ▼
+   Health check ──► If regression >5%: REVERT
+         │
+         ▼
+   If 100%: Council gate ──► DB check ──► Security scan ──► Final validation
+```
+
+### gsd-blueprint Per-Iteration Flow
+
+```
+Iteration N starts
+         │
+         ▼
+┌──────────────────┐  blueprint.json (updated statuses)
+│  VERIFY          │─────────────────────────────────────►  .gsd/blueprint/
+│  (Claude)        │  next-batch.json
+└────────┬─────────┘─────────────────────────────────────►  .gsd/blueprint/
+         │
+         ▼
+┌──────────────────┐  source code files
+│  BUILD           │─────────────────────────────────────►  src/
+│  (Codex)         │  build-log.jsonl
+└────────┬─────────┘─────────────────────────────────────►  .gsd/blueprint/
+         │
+         ▼
+   Health check ──► If regression: REVERT
+         │
+         ▼
+   If 100%: DB check ──► Security scan ──► Final validation
+```
+
+## 2.6 Installed Directory Structure
+
+After running `install-gsd-all.ps1`, the engine creates:
 
 ```
 %USERPROFILE%\.gsd-global\
-├── bin\                              CLI wrappers (added to PATH)
-│   ├── gsd-converge.cmd              Convergence loop launcher
-│   ├── gsd-blueprint.cmd             Blueprint pipeline launcher
-│   ├── gsd-status.cmd                Health status dashboard
-│   ├── gsd-remote.cmd                Remote monitoring launcher
-│   └── gsd-costs.cmd                 Token cost calculator
+│
+├── bin\                              # CLI wrappers (added to PATH)
+│   ├── gsd-converge.cmd              # Convergence loop launcher
+│   ├── gsd-blueprint.cmd             # Blueprint pipeline launcher
+│   ├── gsd-status.cmd                # Health status dashboard
+│   ├── gsd-remote.cmd                # Remote monitoring launcher
+│   └── gsd-costs.cmd                 # Token cost calculator
+│
 ├── config\
-│   ├── global-config.json            Notifications, patterns, phase order
-│   └── agent-map.json                Agent-to-phase assignments
+│   ├── global-config.json            # Global settings (notifications, patterns, phases, council, quality_gates)
+│   └── agent-map.json                # Agent-to-phase assignments + parallel execution config
+│
 ├── lib\modules\
-│   ├── resilience.ps1                Core: retry, checkpoint, lock, batch, costs, notifications
-│   ├── supervisor.ps1                Self-healing: diagnosis, fix, pattern memory
-│   ├── interfaces.ps1                Multi-interface detection + auto-discovery
-│   └── interface-wrapper.ps1         Context builder for agent prompts
+│   ├── resilience.ps1                # Retry, checkpoint, lock, rollback, adaptive batch, hardening,
+│   │                                 # final validation, council, parallel execute, quality gates
+│   ├── interfaces.ps1                # Multi-interface detection + auto-discovery
+│   └── interface-wrapper.ps1         # Context builder for agent prompts
+│
 ├── prompts\
-│   ├── claude\                       Claude prompt templates (review, plan, verify, assess)
-│   ├── codex\                        Codex prompt templates (execute, build)
-│   └── gemini\                       Gemini prompt templates (research, spec-fix)
+│   ├── claude\                       # Claude Code prompt templates
+│   │   ├── code-review.md            # Health scoring and requirement status updates
+│   │   ├── plan.md                   # Batch prioritization and execution instructions
+│   │   ├── verify.md                 # Blueprint verification (binary file checks)
+│   │   ├── verify-storyboard.md      # Storyboard-aware verification (data flow tracing)
+│   │   ├── assess.md                 # Codebase assessment prompt
+│   │   ├── spec-clarity-check.md     # Pre-generation spec quality audit
+│   │   └── cross-artifact-consistency.md  # Post-Figma-Make cross-reference validation
+│   ├── codex\                        # Codex prompt templates
+│   │   ├── execute.md                # Code generation for convergence batches
+│   │   └── execute-subtask.md        # Sub-task prompt for parallel execution
+│   ├── gemini\                       # Gemini prompt templates
+│   │   ├── research.md               # Technical research (read-only)
+│   │   └── resolve-spec-conflicts.md # Spec contradiction resolution
+│   ├── council\                      # LLM Council review templates (14 files)
+│   │   ├── codex-review.md           # Codex implementation quality review
+│   │   ├── gemini-review.md          # Gemini requirements/spec alignment review
+│   │   ├── claude-synthesize.md      # Claude consensus synthesis
+│   │   ├── codex-review-chunked.md   # Chunked review variant
+│   │   ├── gemini-review-chunked.md  # Chunked review variant
+│   │   └── ...                       # (stall, post-research, pre-execute, post-blueprint, post-spec-fix)
+│   └── shared\                       # Shared reference documents
+│       ├── security-standards.md     # 88+ OWASP security rules by layer
+│       ├── coding-conventions.md     # .NET/React/SQL naming and formatting
+│       └── database-completeness-review.md  # DB chain verification rules
+│
 ├── blueprint\
-│   └── scripts\
-│       ├── blueprint-pipeline.ps1    Blueprint generation + build loop
-│       └── assess.ps1                Assessment script (gsd-assess)
+│   ├── scripts\
+│   │   ├── blueprint-pipeline.ps1    # Blueprint generation + build loop
+│   │   ├── supervisor-blueprint.ps1  # Supervisor wrapper for blueprint
+│   │   └── assess.ps1                # Assessment script (gsd-assess)
+│   └── prompts\codex\
+│       ├── build.md                  # Code generation for blueprint batches
+│       └── partial-repo-guide.md     # Guidance for partial/existing repos
+│
 ├── scripts\
-│   ├── convergence-loop.ps1          5-phase convergence engine
-│   ├── supervisor-converge.ps1       Supervisor wrapper for convergence
-│   ├── supervisor-blueprint.ps1      Supervisor wrapper for blueprint
-│   ├── gsd-profile-functions.ps1     PowerShell profile (gsd-* commands)
-│   └── token-cost-calculator.ps1     Token cost estimator
+│   ├── convergence-loop.ps1          # 5-phase convergence engine
+│   ├── supervisor-converge.ps1       # Supervisor wrapper for convergence
+│   ├── gsd-profile-functions.ps1     # PowerShell profile functions
+│   └── token-cost-calculator.ps1     # Token cost estimator (gsd-costs)
+│
 ├── supervisor\
-│   └── pattern-memory.jsonl          Cross-project failure patterns + fixes
-├── pricing-cache.json                Cached LLM pricing (auto-updated)
-├── KNOWN-LIMITATIONS.md              Full scenario matrix
-└── VERSION                           Installed version stamp
+│   └── pattern-memory.jsonl          # Cross-project failure patterns + fixes
+│
+├── pricing-cache.json                # Cached LLM pricing data (auto-updated from LiteLLM)
+├── KNOWN-LIMITATIONS.md              # Full scenario matrix
+└── VERSION                           # Installed version stamp
 ```
 
-### 2.7 Per-Project State (.gsd/ folder)
+## 2.7 Per-Project State (.gsd/ Folder)
 
-Each project maintains its own `.gsd/` folder at the repository root. This folder contains all engine state and travels with the repo via git, enabling workstation transfers and full audit history.
+Each project gets a `.gsd/` folder tracking all state:
 
 ```
 .gsd\
-├── assessment\
-│   ├── assessment-summary.md         Human-readable findings
-│   ├── work-classification.json      Skip/fix/build/review per item
-│   ├── backend-inventory.json        C# layer detail
-│   ├── database-inventory.json       SQL layer detail
-│   ├── frontend-inventory.json       React layer detail
-│   └── file-inventory.json           Complete file catalog
 ├── health\
-│   ├── health-current.json           Current health score + breakdown
-│   ├── health-history.jsonl          Score progression over iterations
-│   ├── requirements-matrix.json      Every requirement with status
-│   ├── drift-report.md               Gaps between specs and code
-│   ├── review-current.md             Latest review findings
-│   ├── engine-status.json            Live engine state (phase, agent, heartbeat)
-│   └── final-validation.json         Quality gate results at 100%
-├── costs\
-│   ├── token-usage.jsonl             Every agent call with tokens + cost
-│   └── cost-summary.json             Rolling totals by agent, phase, run
-├── supervisor\
-│   ├── supervisor-state.json         Recovery attempt tracking
-│   ├── last-run-summary.json         Why pipeline exited
-│   ├── error-context.md              Injected into agent prompts
-│   ├── prompt-hints.md               Persistent constraints for agents
-│   ├── agent-override.json           Phase-to-agent reassignment
-│   ├── diagnosis-{N}.md              Root cause analysis per attempt
-│   └── escalation-report.md          Human intervention guide
+│   ├── health-current.json           # Current health score + breakdown
+│   ├── health-history.jsonl          # Health progression per iteration
+│   ├── requirements-matrix.json      # All requirements with statuses
+│   ├── engine-status.json            # Live engine state (phase, agent, heartbeat)
+│   ├── final-validation.json         # Validation gate results
+│   ├── council-review.json           # Latest council review verdict
+│   └── drift-report.md              # Requirements drift analysis
+│
+├── code-review\
+│   ├── review-current.md             # Latest code review findings
+│   └── council-findings.md           # Council review details
+│
 ├── generation-queue\
-│   └── queue-current.json            Next batch of items to build
+│   └── queue-current.json            # Prioritized batch for next iteration
+│
 ├── agent-handoff\
-│   └── current-assignment.md         Instructions for execute/build agent
+│   ├── current-assignment.md         # Instructions for executing agent
+│   └── handoff-log.jsonl             # Agent completion logs
+│
+├── research\                         # Gemini research findings
+│
+├── specs\                            # SDLC reference + Figma mapping
+│
+├── assessment\                       # gsd-assess output
+│   └── file-map.md                   # Complete file inventory
+│
+├── blueprint\                        # Blueprint pipeline state
+│   ├── blueprint.json                # Full manifest
+│   ├── next-batch.json               # Current build batch
+│   └── build-log.jsonl               # Build completion log
+│
+├── costs\
+│   ├── token-usage.jsonl             # Append-only token cost log (ground truth)
+│   └── cost-summary.json             # Rolling totals by agent/phase/run
+│
 ├── logs\
-│   ├── errors.jsonl                  Categorized error log
-│   └── iter{N}-{phase}.log          Per-iteration agent output
-├── blueprint\
-│   └── blueprint.json                Full project manifest
-├── file-map.json                     Machine-readable repo inventory
-├── file-map-tree.md                  Human-readable directory tree
-├── spec-consistency-report.json      Spec conflict analysis
-├── .gsd-checkpoint.json              Crash recovery state
-└── .gsd-lock                         Prevents concurrent runs
+│   └── errors.jsonl                  # Structured error log
+│
+├── supervisor\
+│   ├── supervisor-state.json         # Recovery attempt tracking
+│   ├── last-run-summary.json         # Pipeline exit state
+│   ├── error-context.md              # Error info injected into prompts
+│   ├── prompt-hints.md               # Persistent agent behavior hints
+│   ├── agent-override.json           # Phase-to-agent reassignment
+│   ├── agent-cooldowns.json          # Agent quota cooldown tracking
+│   ├── diagnosis-{N}.md              # Root-cause analysis per attempt
+│   └── escalation-report.md          # Human escalation (after max attempts)
+│
+└── .gsd-checkpoint.json              # Crash recovery checkpoint
 ```
 
 ---
 
-## Chapter 3: Installation
+# Chapter 3: Installation
 
-### 3.1 Prerequisites
+## 3.1 Prerequisites
 
-**Required Software:**
+### Required Software
 
-| Tool | Version | Purpose | Install Command |
-|---|---|---|---|
-| PowerShell | 5.1+ or 7+ | Script execution | Pre-installed on Windows |
-| Node.js | 18+ | JavaScript runtime for npm | `winget install OpenJS.NodeJS.LTS` |
-| npm | 9+ | Package manager | Included with Node.js |
-| .NET SDK | 8+ | Backend build validation | `winget install Microsoft.DotNet.SDK.8` |
-| Git | 2+ | Version control, snapshots | `winget install Git.Git` |
-| Claude Code CLI | Latest | AI agent (review, plan, verify) | `npm install -g @anthropic-ai/claude-code` |
-| Codex CLI | Latest | AI agent (execute, build) | `npm install -g @openai/codex` |
+| Tool | Version | Install Command | Purpose |
+|------|---------|-----------------|---------|
+| PowerShell | 5.1+ (Windows) | Pre-installed | Script execution |
+| Node.js | 18+ | `winget install OpenJS.NodeJS.LTS` | CLI tools runtime |
+| npm | 9+ | Included with Node.js | Package manager |
+| .NET SDK | 8.x | `winget install Microsoft.DotNet.SDK.8` | Backend compilation |
+| Git | 2.x+ | `winget install Git.Git` | Version control |
+| Claude Code CLI | Latest | `npm install -g @anthropic-ai/claude-code` | AI reasoning agent |
+| Codex CLI | Latest | `npm install -g @openai/codex` | AI code generation agent |
 
-**Optional Software:**
+### Optional Software
 
 | Tool | Purpose | Install Command |
-|---|---|---|
+|------|---------|-----------------|
 | Gemini CLI | Three-model optimization (research, spec-fix) | `npm install -g @google/gemini-cli` |
-| sqlcmd | SQL syntax validation | `winget install Microsoft.SqlServer.SqlCmd` |
+| sqlcmd | SQL syntax validation during final validation | `winget install Microsoft.SqlServer.SqlCmd` |
 | ntfy app | Mobile push notifications | iOS App Store / Google Play |
 
-All required tools must be installed and available on your system PATH before running the GSD installer. The installer includes a pre-flight check (`install-gsd-prerequisites.ps1`) that verifies each dependency and can automatically install missing tools via winget.
+## 3.2 API Key Configuration
 
-### 3.2 API Key Configuration
+Each CLI must be authenticated. There are two methods:
 
-API keys are recommended for autonomous pipelines because they provide higher throughput and more predictable rate limits than interactive authentication. Keys are stored as persistent User-level environment variables and are never committed to git.
+**Method 1: Interactive Login (default)**
+
+```powershell
+claude    # Follow interactive auth flow
+codex     # Follow interactive auth flow
+gemini    # Follow Google OAuth flow (opens browser)
+```
+
+**Method 2: API Keys (recommended for autonomous pipelines)**
+
+API keys bypass interactive rate limits and allow higher throughput. Configure them during installation or separately:
+
+```powershell
+# Interactive setup (prompts for each key)
+powershell -ExecutionPolicy Bypass -File scripts/setup-gsd-api-keys.ps1
+
+# Check current key status
+powershell -ExecutionPolicy Bypass -File scripts/setup-gsd-api-keys.ps1 -Show
+
+# Clear all keys
+powershell -ExecutionPolicy Bypass -File scripts/setup-gsd-api-keys.ps1 -Clear
+```
+
+API keys are stored as persistent User-level environment variables (never committed to git):
 
 | Environment Variable | CLI | Get Key From |
-|---|---|---|
-| ANTHROPIC_API_KEY | Claude Code | https://console.anthropic.com/settings/keys |
-| OPENAI_API_KEY | Codex | https://platform.openai.com/api-keys |
-| GOOGLE_API_KEY | Gemini | https://aistudio.google.com/apikey |
+|---------------------|-----|-------------|
+| `ANTHROPIC_API_KEY` | Claude Code | https://console.anthropic.com/settings/keys |
+| `OPENAI_API_KEY` | Codex | https://platform.openai.com/api-keys |
+| `GOOGLE_API_KEY` | Gemini | https://aistudio.google.com/apikey |
 
-**Method 1: During Installation (automatic)**
+You can use either method or both. API keys take priority when set.
 
-The master installer prompts for API keys as Step 0. If keys are already set as environment variables, this step is automatically skipped.
-
-**Method 2: Standalone Script**
+## 3.3 Running the Master Installer
 
 ```powershell
-# Interactive (prompts for each key)
-.\scripts\setup-gsd-api-keys.ps1
-
-# Non-interactive (pass keys directly)
-.\scripts\setup-gsd-api-keys.ps1 -AnthropicKey "sk-ant-..." -OpenAIKey "sk-..." -GoogleKey "AIza..."
-
-# Check current status
-.\scripts\setup-gsd-api-keys.ps1 -Show
-
-# Remove all keys
-.\scripts\setup-gsd-api-keys.ps1 -Clear
+git clone <your-gsd-repo-url>
+cd gsd-autonomous-dev
+powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-**Method 3: Manual**
-
-```powershell
-[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
-[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-...", "User")
-[System.Environment]::SetEnvironmentVariable("GOOGLE_API_KEY", "AIza...", "User")
-```
-
-After setting keys via any method, restart your terminal for the environment variables to take effect in new processes.
-
-### 3.3 Running the Master Installer
-
-```powershell
-git clone https://github.com/your-org/gsd-autonomous-dev.git
-cd gsd-autonomous-dev\scripts
-powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
-```
-
-The installer runs `install-gsd-prerequisites.ps1` first as a pre-flight check, then executes all 16 installation scripts in order:
+The master installer runs 20 scripts in dependency order. It also runs `install-gsd-prerequisites.ps1` as a pre-flight check. On first run, it prompts for API keys if not already configured.
 
 | Order | Script | What It Installs |
-|---|---|---|
-| 1 | install-gsd-global.ps1 | API keys, global directory, engine, config, profile, gsd-costs |
+|-------|--------|-----------------|
+| 1 | install-gsd-global.ps1 | API key setup, global directory, engine, config, profile, gsd-costs |
 | 2 | install-gsd-blueprint.ps1 | Blueprint pipeline, assess script, prompts |
-| 3 | patch-gsd-partial-repo.ps1 | gsd-assess command, file map generation |
-| 4 | patch-gsd-resilience.ps1 | Resilience module (retry, checkpoint, lock, watchdog) |
-| 5 | patch-gsd-hardening.ps1 | Hardening (quota, network, boundary, notifications, cost tracking) |
+| 3 | patch-gsd-partial-repo.ps1 | gsd-assess command, file map generation, partial repo handling |
+| 4 | patch-gsd-resilience.ps1 | Resilience module (retry, checkpoint, lock, watchdog timeout) |
+| 5 | patch-gsd-hardening.ps1 | Hardening (quota, network, boundary, notifications, heartbeat) |
 | 6 | patch-gsd-final-validation.ps1 | Final validation gate + developer handoff report |
 | 7 | patch-gsd-figma-make.ps1 | Interface detection, _analysis/_stubs discovery |
 | 8 | final-patch-1-spec-check.ps1 | Spec consistency checker |
 | 9 | final-patch-2-sql-cli.ps1 | SQL validation, CLI version checks |
 | 10 | final-patch-3-storyboard-verify.ps1 | Storyboard-aware verification prompts |
-| 11 | final-patch-4-blueprint-pipeline.ps1 | Final blueprint pipeline with all integrations |
-| 12 | final-patch-5-convergence-pipeline.ps1 | Final convergence loop with all integrations |
-| 13 | final-patch-6-assess-limitations.ps1 | Final assess script + known limitations |
+| 11 | final-patch-4-blueprint-pipeline.ps1 | Final blueprint pipeline with all features |
+| 12 | final-patch-5-convergence-pipeline.ps1 | Final convergence loop with all features |
+| 13 | final-patch-6-assess-limitations.ps1 | Final assess script with known limitations |
 | 14 | final-patch-7-spec-resolve.ps1 | Spec conflict auto-resolution via Gemini |
-| 15 | patch-gsd-supervisor.ps1 | Self-healing supervisor system |
-| 16 | patch-false-converge-fix.ps1 | Bug fix: false convergence exit |
+| 15 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
+| 16 | patch-false-converge-fix.ps1 | Fix false convergence exit + orphaned profile code |
+| 17 | patch-gsd-council.ps1 | LLM Council (multi-agent review gate at 100% health) |
+| 18 | patch-gsd-parallel-execute.ps1 | Parallel sub-task execution (split batch, round-robin agents) |
+| 19 | patch-gsd-resilience-hardening.ps1 | Resilience hardening (token tracking, auth fix, quota cap, agent rotation) |
+| 20 | patch-gsd-quality-gates.ps1 | Quality gates (DB completeness, security standards, spec validation) |
 
-The installer is idempotent -- it is safe to re-run at any time for updates. Each script checks for existing installations and overwrites only the files it manages.
+Optional standalone scripts (not run by installer):
 
-### 3.4 Post-Install Verification
+| Script | Purpose |
+|--------|---------|
+| setup-gsd-api-keys.ps1 | Manage API key environment variables (set, show, clear) |
+| setup-gsd-convergence.ps1 | Per-project convergence config (run manually if needed) |
+| install-gsd-keybindings.ps1 | VS Code keyboard shortcuts (Ctrl+Shift+G chords) |
+| token-cost-calculator.ps1 | Token cost estimator (also installed globally as gsd-costs) |
 
-After installation completes, restart your terminal to load the updated PowerShell profile, then verify:
+The repository contains 26 scripts total: 1 master installer, 1 pre-flight check, 20 scripts run by installer, and 4 standalone utilities.
+
+## 3.4 Post-Install Verification
 
 ```powershell
-# Restart terminal first (required to load profile)
+# Restart terminal first (or reload profile)
+. $PROFILE
 
 # Verify commands are available
 gsd-status
 
-# Verify all prerequisites
+# Verify prerequisites
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-prerequisites.ps1 -VerifyOnly
+
+# Verify installed version
+Get-Content "$env:USERPROFILE\.gsd-global\VERSION"
 ```
 
-The `gsd-status` command should display the health dashboard (or a message indicating no project is initialized in the current directory). The prerequisite check with `-VerifyOnly` reports the status of every required and optional tool without modifying anything.
+## 3.5 VS Code Integration
 
-### 3.5 VS Code Integration
+### Tasks
 
-**Tasks** are available via Ctrl+Shift+P > "Run Task":
+Two VS Code tasks are registered during installation:
 
-- GSD: Convergence Loop
-- GSD: Blueprint Pipeline
+- **GSD: Convergence Loop** -- runs `gsd-converge`
+- **GSD: Blueprint Pipeline** -- runs `gsd-blueprint`
 
-**Keyboard Shortcuts** (available after running `install-gsd-keybindings.ps1`):
+### Keyboard Shortcuts
+
+Install with: `powershell -ExecutionPolicy Bypass -File scripts/install-gsd-keybindings.ps1`
 
 | Shortcut | Action |
-|---|---|
-| Ctrl+Shift+G, C | Run convergence loop |
-| Ctrl+Shift+G, B | Run blueprint pipeline |
-| Ctrl+Shift+G, S | Show status dashboard |
+|----------|--------|
+| `Ctrl+Shift+G, C` | Run convergence loop |
+| `Ctrl+Shift+G, B` | Run blueprint pipeline |
+| `Ctrl+Shift+G, S` | Show status dashboard |
 
-### 3.6 Multi-Workstation Setup
+These use a chord sequence: hold Ctrl+Shift+G, release, then press the second key.
 
-GSD supports installation on multiple workstations with seamless work transfer via git. The entire `.gsd/` state directory -- health scores, requirements matrix, checkpoint state, logs, and all engine state -- travels with the repository.
+## 3.6 Multi-Workstation Setup
 
-**On the source workstation:**
+The engine state is stored in two places:
 
-```powershell
-# Wait for current iteration to complete (watch for git commit line)
-# Ctrl+C during a safe pause (e.g., quota sleep)
-git add -A
-git commit -m "gsd: pause for workstation transfer"
-git push
-```
+1. **Global engine** (`~/.gsd-global/`) -- installed per workstation
+2. **Project state** (`.gsd/`) -- committed to git, portable between workstations
 
-**On the target workstation:**
+To work from a second workstation:
 
 ```powershell
-# One-time setup
-git clone https://github.com/your-org/gsd-autonomous-dev.git
-cd gsd-autonomous-dev\scripts
-powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
+# On workstation 2: install the engine
+powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 
-# Resume work
-cd C:\path\to\your-project
+# Pull project state
+cd C:\path\to\your\repo
 git pull
-Remove-Item .gsd/.gsd-lock -Force    # Clear stale lock if present
-gsd-converge                          # Resumes from checkpoint
+
+# Resume -- the engine picks up from the checkpoint
+gsd-converge -SkipInit
 ```
 
-The engine detects the existing checkpoint and resumes from the exact phase and iteration where work was paused.
+Lock files prevent concurrent runs. If a lock file is stale (older than 120 minutes), the engine automatically claims it.
 
-### 3.7 Updating and Uninstalling
+## 3.7 Updating and Uninstalling
 
-**Update:**
+### Updating
+
+The installer is idempotent. Re-run to pick up updates:
 
 ```powershell
 cd gsd-autonomous-dev
@@ -569,288 +615,350 @@ git pull
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-Pull the latest changes and re-run the master installer. The idempotent installer overwrites engine files with updated versions while preserving your configuration and per-project state.
+Existing configurations and project data are preserved.
 
-**Uninstall:**
+### Uninstalling
 
 ```powershell
 # Remove global engine
 Remove-Item -Recurse -Force "$env:USERPROFILE\.gsd-global"
 
-# Remove profile entries (manual edit)
-notepad $PROFILE    # Remove gsd-related lines
+# Remove profile entries (manual)
+notepad $PROFILE
+# Remove all gsd-related lines
 
 # Remove API keys (optional)
-.\scripts\setup-gsd-api-keys.ps1 -Clear
+powershell -ExecutionPolicy Bypass -File scripts/setup-gsd-api-keys.ps1 -Clear
 
-# Remove per-project state
+# Remove per-project state (in each repo)
 Remove-Item -Recurse -Force .gsd
 ```
 
 ---
 
-## Chapter 4: Usage Guide
+# Chapter 4: Usage Guide
 
-### 4.1 First Project Setup
+## 4.1 First Project Setup
 
-Step-by-step from empty repo to first run:
-
-1. **Prepare your repository** -- must be a git repo with .sln at root:
+### Expected Project Structure
 
 ```
-your-repo\
+C:\repos\my-app\
+├── .git\                             # Git repository
+├── .sln                              # .NET solution file
 ├── design\
-│   └── web\v01\
-│       ├── _analysis\        <- 12 Figma Make deliverables
-│       └── _stubs\           <- Controller, DTO, SQL stubs
-├── docs\                     <- SDLC Phase A-E specifications
-├── src\                      <- Source code
-├── .sln                      <- .NET solution file
-└── package.json              <- Frontend (if applicable)
+│   └── web\v01\                      # Figma designs (versioned)
+│       ├── _analysis\                # 12 Figma Make deliverables
+│       │   ├── 01-layout-hierarchy.md
+│       │   ├── 02-component-catalog.md
+│       │   ├── 03-navigation-map.md
+│       │   ├── 04-design-tokens.md
+│       │   ├── 05-interaction-patterns.md
+│       │   ├── 06-api-contracts.md
+│       │   ├── 07-state-machines.md
+│       │   ├── 08-accessibility-spec.md
+│       │   ├── 09-responsive-breakpoints.md
+│       │   ├── 10-error-states.md
+│       │   ├── 11-api-to-sp-map.md
+│       │   └── 12-mock-data.md
+│       └── _stubs\                   # Backend stubs from Figma Make
+│           ├── 01-tables.sql
+│           ├── 02-stored-procedures.sql
+│           └── 03-seed-data.sql
+├── docs\
+│   ├── Phase-A-Requirements.md       # SDLC specifications
+│   ├── Phase-B-Design.md
+│   ├── Phase-C-Architecture.md
+│   ├── Phase-D-Implementation.md
+│   └── Phase-E-Testing.md
+└── src\                              # Source code
+    ├── MyApp.Api\                    # .NET 8 backend
+    └── myapp-ui\                     # React 18 frontend
 ```
 
-2. **Initialize**: `gsd-init` creates the .gsd/ folder
-3. **Assess**: `gsd-assess` analyzes existing code, generates file map
-4. **Choose pipeline**: `gsd-blueprint` for greenfield, `gsd-converge` for existing code
-5. **Monitor**: Watch terminal output, subscribe to ntfy topic on phone
+### Step-by-Step: New Project (Blueprint)
 
-**Decision heuristic:**
+```powershell
+cd C:\repos\my-app
 
-| Scenario | Command |
-|---|---|
-| New project, no code | `gsd-blueprint` |
-| New project, some scaffolding exists | `gsd-assess` then `gsd-blueprint` |
-| Existing project needs fixes | `gsd-converge` |
-| Blueprint at 60-80%, stuck | Switch to `gsd-converge` |
-| Quick assessment only | `gsd-assess` |
+# 1. Initialize GSD state
+gsd-init
 
-### 4.2 Running gsd-assess
+# 2. Assess the codebase
+gsd-assess
+
+# 3. Estimate costs before starting
+gsd-costs -ProjectPath "C:\repos\my-app"
+
+# 4. Run blueprint pipeline
+gsd-blueprint
+```
+
+### Step-by-Step: Existing Project (Convergence)
+
+```powershell
+cd C:\repos\my-app
+
+# 1. Initialize
+gsd-init
+
+# 2. Assess
+gsd-assess
+
+# 3. Run convergence
+gsd-converge
+```
+
+## 4.2 Running gsd-assess
+
+Scans the codebase, detects interfaces, generates a file map, and runs a Claude assessment.
 
 ```powershell
 gsd-assess              # Full assessment
-gsd-assess -MapOnly     # Regenerate file map only
+gsd-assess -MapOnly     # Regenerate file map without Claude assessment
 gsd-assess -DryRun      # Preview without executing
 ```
 
-**What it produces:**
-- `.gsd/assessment/assessment-summary.md` -- Human-readable findings
-- `.gsd/assessment/work-classification.json` -- Skip/fix/build/review per item
-- `.gsd/assessment/backend-inventory.json` -- C# controllers, services, repos, DTOs
-- `.gsd/assessment/database-inventory.json` -- Tables, stored procedures, views
-- `.gsd/assessment/frontend-inventory.json` -- Screens, components, hooks
-- `.gsd/assessment/file-inventory.json` -- Complete file catalog
-- `.gsd/file-map.json` -- Machine-readable repo inventory
-- `.gsd/file-map-tree.md` -- Human-readable directory tree
+**Output:** `.gsd/assessment/` folder with file inventories, pattern detection, spec coverage analysis, and work classification (skip/refactor/extend/build_new).
 
-### 4.3 Running gsd-converge
+## 4.3 Running gsd-converge
 
-Full parameter reference:
+Runs the 5-phase convergence loop to fix existing code toward 100% health.
+
+```powershell
+gsd-converge                              # Full convergence
+gsd-converge -SkipResearch                # Skip Gemini research phase (saves tokens)
+gsd-converge -DryRun                      # Preview without executing
+gsd-converge -MaxIterations 5             # Limit iterations
+gsd-converge -SkipInit                    # Skip initial requirements check, use existing matrix
+gsd-converge -ThrottleSeconds 60          # 60s delay between phases
+gsd-converge -AutoResolve                 # Auto-fix spec conflicts via Gemini
+gsd-converge -NtfyTopic "my-topic"        # Override notification topic
+gsd-converge -SupervisorAttempts 3        # Max supervisor recovery attempts
+gsd-converge -NoSupervisor               # Bypass supervisor entirely
+```
 
 | Parameter | Default | Description |
-|---|---|---|
-| -DryRun | false | Preview mode, no agent calls |
-| -SkipInit | false | Skip initial requirements check |
-| -SkipResearch | false | Skip Gemini/Codex research phase |
-| -SkipSpecCheck | false | Skip spec consistency check |
-| -AutoResolve | false | Auto-resolve spec conflicts via Gemini |
-| -BatchSize | 8 | Items per execute cycle |
-| -MaxIterations | 20 | Maximum iterations |
-| -StallThreshold | 3 | Stop after N stalled iterations |
-| -ThrottleSeconds | 30 | Delay between agent calls |
-| -NtfyTopic | (auto) | Override ntfy notification topic |
-| -SupervisorAttempts | 5 | Max supervisor recovery attempts |
-| -NoSupervisor | false | Bypass supervisor wrapper |
+|-----------|---------|-------------|
+| `-DryRun` | false | Preview mode, no agent calls or code changes |
+| `-SkipInit` | false | Skip initial requirements check, use existing matrix |
+| `-SkipResearch` | false | Skip Gemini/Codex research phase (saves tokens) |
+| `-SkipSpecCheck` | false | Skip spec consistency check before starting |
+| `-AutoResolve` | false | Auto-resolve spec conflicts via Gemini |
+| `-BatchSize` | 8 | Items per execute cycle (adaptive: shrinks on failure, grows on success) |
+| `-MaxIterations` | 50 | Safety limit on total iterations |
+| `-StallThreshold` | 3 | Consecutive zero-progress iterations before stall declaration |
+| `-ThrottleSeconds` | 0 | Delay between phases (useful for rate limiting) |
+| `-NtfyTopic` | auto | Override notification topic |
+| `-SupervisorAttempts` | 5 | Max supervisor recovery attempts |
+| `-NoSupervisor` | false | Bypass supervisor entirely |
 
-Example usage patterns:
+## 4.4 Running gsd-blueprint
+
+Runs the 3-phase blueprint pipeline for greenfield development.
 
 ```powershell
-gsd-converge                              # Standard run
-gsd-converge -SkipResearch                # Save tokens (skip research)
-gsd-converge -MaxIterations 5             # Quick 5-iteration run
-gsd-converge -ThrottleSeconds 60          # Slower, less quota pressure
-gsd-converge -AutoResolve                 # Auto-fix spec conflicts
-gsd-converge -NoSupervisor                # Debug without supervisor
-gsd-converge -BatchSize 4 -MaxIterations 10  # Conservative run
+gsd-blueprint                             # Full pipeline
+gsd-blueprint -BlueprintOnly              # Generate manifest only (no build)
+gsd-blueprint -BuildOnly                  # Build from existing manifest
+gsd-blueprint -VerifyOnly                 # Verify existing files only
+gsd-blueprint -DryRun                     # Preview without executing
+gsd-blueprint -MaxIterations 10           # Limit build iterations
+gsd-blueprint -BatchSize 15              # Items per build cycle
 ```
-
-**What to expect during a run:**
-
-```
-  Resilience library ready.
-  Hardening modules loaded.
-  ntfy topic (auto): gsd-rjain-myproject
-
-  CLAUDE -> code-review
-    Attempt 1/3 (batch: 8)...
-  CODEX -> research
-    Attempt 1/3 (batch: 8)...
-  CLAUDE -> plan
-    Attempt 1/3 (batch: 8)...
-  CODEX -> execute (batch: 8)
-    Attempt 1/3 (batch: 8)...
-
-  gsd: iter 1 (health: 45.2%)
-```
-
-### 4.4 Running gsd-blueprint
 
 | Parameter | Default | Description |
-|---|---|---|
-| -DryRun | false | Preview mode |
-| -BlueprintOnly | false | Generate manifest only |
-| -BuildOnly | false | Resume build from existing manifest |
-| -VerifyOnly | false | Re-verify without generating |
-| -SkipSpecCheck | false | Skip spec consistency check |
-| -AutoResolve | false | Auto-resolve spec conflicts |
-| -MaxIterations | 30 | Maximum build/verify iterations |
-| -StallThreshold | 3 | Stall detection threshold |
-| -BatchSize | 15 | Items per build cycle |
-| -ThrottleSeconds | 30 | Delay between calls |
-| -NtfyTopic | (auto) | Notification topic override |
-| -SupervisorAttempts | 5 | Max recovery attempts |
-| -NoSupervisor | false | Bypass supervisor |
+|-----------|---------|-------------|
+| `-DryRun` | false | Preview mode |
+| `-BlueprintOnly` | false | Generate blueprint.json only |
+| `-BuildOnly` | false | Skip blueprint, start at build phase |
+| `-VerifyOnly` | false | Verify existing files only |
+| `-BatchSize` | 15 | Items per build cycle |
+| `-MaxIterations` | 50 | Safety limit |
+| `-StallThreshold` | 3 | Stall detection threshold |
+| `-ThrottleSeconds` | 0 | Delay between phases |
+| `-SkipSpecCheck` | false | Skip spec quality gate |
+| `-AutoResolve` | false | Auto-fix spec conflicts |
 
-Typical workflow:
+## 4.5 Running gsd-status
 
 ```powershell
-gsd-blueprint                    # Full pipeline
-gsd-blueprint -BlueprintOnly     # Just generate manifest, review it
-gsd-blueprint -BuildOnly         # Resume building from manifest
-gsd-blueprint -VerifyOnly        # Re-score after manual fixes
+gsd-status    # Shows health score, iteration, phase, costs
 ```
 
-When to switch to convergence: When blueprint reaches 60-80% and stalls, switch to `gsd-converge` which handles iterative fix-and-verify better for remaining gaps.
+Displays the current project health dashboard including health score, requirement breakdown, current phase, iteration count, and accumulated costs.
 
-### 4.5 Running gsd-status
+## 4.6 Running gsd-costs
 
 ```powershell
-gsd-status
+# Quick estimate from existing blueprint
+gsd-costs -ProjectPath "C:\repos\my-app"
+
+# Manual estimate for a new project
+gsd-costs -TotalItems 150 -Pipeline blueprint
+
+# Compare both pipelines side-by-side
+gsd-costs -TotalItems 150 -ShowComparison
+
+# Use Claude Opus instead of default Sonnet
+gsd-costs -TotalItems 150 -ClaudeModel opus
+
+# Detailed per-item breakdown
+gsd-costs -TotalItems 150 -Detailed
+
+# Client quote with 7x markup
+gsd-costs -TotalItems 150 -ClientQuote -Markup 7 -ClientName "Acme Corp"
+
+# View actual costs from a completed run
+gsd-costs -ShowActual
+
+# Force refresh pricing data
+gsd-costs -UpdatePricing
 ```
 
-Shows: current health score, iteration count, batch sizes, convergence/blueprint progress, active/stalled state.
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-ProjectPath` | (current dir) | Path to project with blueprint.json |
+| `-TotalItems` | (from blueprint) | Total items to build |
+| `-CompletedItems` | 0 | Items already completed |
+| `-Pipeline` | blueprint | Pipeline type (blueprint/convergence) |
+| `-BatchSize` | 15 | Items per batch |
+| `-BatchEfficiency` | 0.85 | Expected success rate per batch |
+| `-RetryRate` | 0.15 | Expected retry rate |
+| `-ClaudeModel` | sonnet | Claude model (sonnet/opus/haiku) |
+| `-ShowComparison` | false | Side-by-side pipeline comparison |
+| `-ShowActual` | false | Show actual costs from completed runs |
+| `-Detailed` | false | Per-item breakdown |
+| `-ClientQuote` | false | Generate client-facing quote |
+| `-Markup` | 7 | Client markup multiplier |
+| `-ClientName` | "" | Client name for quote header |
+| `-UpdatePricing` | false | Force refresh pricing cache |
 
-### 4.6 Running gsd-costs
-
-**Pre-run estimation:**
-
-```powershell
-gsd-costs                                    # Auto-detect from current project
-gsd-costs -TotalItems 150                    # Manual estimate
-gsd-costs -TotalItems 200 -ShowComparison    # Blueprint vs convergence side-by-side
-gsd-costs -TotalItems 300 -ClientQuote -Markup 8  # Client quote
-```
-
-**Live cost tracking:**
-
-```powershell
-gsd-costs -ShowActual    # View actual costs from pipeline runs
-```
-
-Output sections: Project Summary, Model Pricing, Phase-by-Phase Breakdown, Cost by Agent, Key Metrics, Subscription Comparison, Pipeline Comparison, Client Quote.
-
-**Token estimates per item type:**
-
-| Item Type | Output Tokens |
-|---|---|
-| sql-migration | 1,000 |
-| stored-procedure | 2,000 |
-| controller | 5,000 |
-| service | 3,500 |
-| dto | 1,500 |
-| react-component | 4,000 |
-| hook | 2,500 |
-| test | 3,000 |
-
-**Client quoting tiers:**
+### Client Quote Complexity Tiers
 
 | Tier | Item Count | Suggested Markup |
-|---|---|---|
-| Standard | <=100 | 5x |
-| Complex | <=250 | 7x |
-| Enterprise | <=500 | 7-10x |
-| Enterprise+ | >500 | 10x |
+|------|-----------|-----------------|
+| Standard | <= 100 | 5x |
+| Complex | <= 250 | 7x |
+| Enterprise | <= 500 | 7-10x |
+| Enterprise+ | > 500 | 10x |
 
-### 4.7 Monitoring a Running Pipeline
+## 4.7 Monitoring a Running Pipeline
 
-**Terminal Output Icons:**
+### Terminal Output
 
-| Icon | Meaning |
-|---|---|
-| CLAUDE -> | Claude Code phase (review, plan, verify) |
-| CODEX -> | Codex phase (execute, build) |
-| GEMINI -> | Gemini phase (research, spec-fix) |
-| OK | Phase completed successfully |
-| !! | Warning or retry |
-| XX | Phase failed |
-| STALLED | Pipeline stalled, no progress |
+The engine outputs progress information with status icons:
 
-**Push Notifications (ntfy.sh):**
+```
+[*] Iteration 5 | Health: 72.5% | Batch: 8
+[>] Phase: execute (codex)
+[+] Requirements satisfied: 29/40
+[-] Build check: PASSED
+[!] Warning: 2 NuGet vulnerabilities
+```
 
-1. Install ntfy app on your phone (free, no account)
-2. Run a pipeline -- note the topic at startup: `ntfy topic (auto): gsd-rjain-projectname`
+### Push Notifications (ntfy.sh)
+
+1. Install the ntfy app on your phone (free, no account required)
+2. Run any pipeline -- note the topic at startup: `ntfy topic (auto): gsd-rjain-patient-portal`
 3. Subscribe to that topic in the ntfy app
-4. Receive real-time notifications: iteration complete, stalled, quota exhausted, converged, errors
-5. Send "progress" to the topic to get a status response
 
-**Remote Monitoring:**
+Notification events include:
+
+| Event | Description |
+|-------|-------------|
+| `iteration_complete` | Health score after each iteration |
+| `converged` | Pipeline reached 100% and passed validation |
+| `stalled` | No progress for N consecutive iterations |
+| `quota_exhausted` | All quota retries exhausted |
+| `error` | Unrecoverable error occurred |
+| `heartbeat` | Periodic status update (every 60s during agent calls) |
+| `supervisor_active` | Supervisor recovery started |
+| `supervisor_recovered` | Supervisor fixed the issue |
+| `supervisor_escalation` | Supervisor gave up, human needed |
+| `validation_failed` | Final validation check failed |
+| `validation_passed` | Final validation passed |
+
+All notifications that include status information also include running token cost data. Terminal notifications include per-agent cost breakdown.
+
+### Remote Monitoring
 
 ```powershell
-gsd-remote    # Displays QR code, scan with phone
+gsd-remote    # Displays QR code -- scan with phone
 ```
 
-### 4.8 Interrupting and Resuming
-
-**Safe to Ctrl+C when:**
-- Between iterations (after git commit line)
-- During quota sleep ("Sleeping 60 minutes...")
-- During network polling ("Polling every 30s...")
-
-**After Ctrl+C:**
+### Reading State Files Directly
 
 ```powershell
-# Check for stale lock
-Remove-Item .gsd/.gsd-lock -Force    # If present
-gsd-converge                          # Resumes from checkpoint
+# Current health
+Get-Content .gsd\health\health-current.json | ConvertFrom-Json
+
+# Engine status (phase, agent, heartbeat)
+Get-Content .gsd\health\engine-status.json | ConvertFrom-Json
+
+# Cost summary
+Get-Content .gsd\costs\cost-summary.json | ConvertFrom-Json
+
+# Recent errors
+Get-Content .gsd\logs\errors.jsonl | ForEach-Object { $_ | ConvertFrom-Json } | Select-Object -Last 5
 ```
 
-**Transfer to another workstation:**
+## 4.8 Interrupting and Resuming
+
+### Safe Interruption
+
+Press `Ctrl+C` at any time. The engine saves a checkpoint before each phase. On resume:
 
 ```powershell
-# Source machine
-git add -A && git commit -m "gsd: pause" && git push
+# Resume from checkpoint
+gsd-converge -SkipInit
 
-# Target machine
-git pull && Remove-Item .gsd/.gsd-lock -Force && gsd-converge
+# Or for blueprint
+gsd-blueprint -BuildOnly
+```
+
+The engine reads `.gsd/.gsd-checkpoint.json` and picks up from the last completed phase.
+
+### What State Is Preserved
+
+- Health score and history
+- Requirements matrix with all statuses
+- All generated code (committed to git)
+- Cost tracking data
+- Error logs
+- Supervisor state and pattern memory
+
+### Transferring to Another Workstation
+
+```powershell
+# Workstation 1: commit and push state
+git add .gsd/
+git commit -m "Save GSD state for transfer"
+git push
+
+# Workstation 2: pull and resume
+git pull
+gsd-converge -SkipInit
 ```
 
 ---
 
-## Chapter 5: Resilience and Self-Healing
+# Chapter 5: Resilience and Self-Healing
 
-### 5.1 Retry with Batch Reduction
+## 5.1 Retry with Batch Reduction
 
-When an agent call fails, `Invoke-WithRetry` retries up to 3 times, halving the batch size each time:
+`Invoke-WithRetry` wraps every agent call with automatic retry logic:
 
-```
-Attempt 1: batch 8 -> FAIL
-Attempt 2: batch 4 -> FAIL
-Attempt 3: batch 2 -> FAIL -> Try fallback agent
-```
+- **Max retries:** 3 per agent call
+- **Batch reduction:** 50% on each failure (e.g., 8 -> 4 -> 2)
+- **Minimum batch:** 2 items
+- **Retry delay:** 10 seconds between attempts
 
-Minimum batch size: 2. If all retries fail, the engine tries a fallback agent (codex->claude, gemini->codex).
+Token costs are tracked on ALL attempts (success and failure), with estimation when agents return error text instead of structured JSON.
 
-Configuration constants:
+## 5.2 Checkpoint and Recovery
 
-| Constant | Default | Description |
-|---|---|---|
-| RETRY_MAX | 3 | Maximum retries per agent call |
-| MIN_BATCH_SIZE | 2 | Minimum batch size after reduction |
-| BATCH_REDUCTION_FACTOR | 0.5 | Multiplier on failure |
-| RETRY_DELAY_SECONDS | 10 | Delay between retries |
-
-### 5.2 Checkpoint and Recovery
-
-After each successful phase, state is saved to `.gsd/.gsd-checkpoint.json`:
+`Save-Checkpoint` records state before each phase:
 
 ```json
 {
@@ -865,125 +973,146 @@ After each successful phase, state is saved to `.gsd/.gsd-checkpoint.json`:
 }
 ```
 
-On restart, the engine reads the checkpoint and resumes from the last completed phase. No work is repeated.
+On crash, `Restore-Checkpoint` reads this file and resumes from the last completed phase. The checkpoint is also read by the background heartbeat job for ntfy status notifications.
 
-### 5.3 Lock File Management
+## 5.3 Lock File Management
 
-`.gsd/.gsd-lock` prevents concurrent GSD runs on the same project. The lock includes a timestamp for stale detection -- locks older than 120 minutes are auto-cleared.
+`New-Lock` and `Remove-Lock` prevent concurrent pipeline runs on the same project:
 
-To manually clear: `Remove-Item .gsd/.gsd-lock -Force`
+- Lock file: `.gsd/.gsd-lock`
+- Contains PID of the running process
+- Stale lock detection: 120 minutes (auto-claimed)
+- If another process holds the lock, the engine exits with a warning
 
-### 5.4 Health Regression Protection
+## 5.4 Health Regression Protection
 
-If health drops >5% after an iteration, the engine:
+After each iteration, the engine compares the new health score to the previous one. If health drops by more than 5%, the engine automatically reverts:
 
-1. Detects the regression via `Test-HealthRegression`
-2. Auto-reverts to the pre-iteration git state via `Save-GsdSnapshot`
-3. Logs a `health_regression` error
-4. Increments the stall counter
+1. Restores the previous checkpoint
+2. Logs the regression to `errors.jsonl`
+3. Sends an ntfy notification
+4. Continues with a reduced batch size
 
-### 5.5 Quota and Rate Limit Handling
+## 5.5 Quota and Rate Limit Handling
 
-`Wait-ForQuotaReset` implements adaptive backoff:
+`Wait-ForQuotaReset` detects quota exhaustion and rate limits:
 
-- First sleep: 5 minutes
-- Each subsequent: doubles (10 -> 20 -> 40 -> 60 min cap)
-- Maximum: 24 cycles (up to 24 hours)
-- Sends push notification on each sleep
-- Tests agent availability before resuming
+- Exponential backoff: 5 -> 10 -> 20 -> 40 -> 60 minute cap per cycle
+- Up to 24 cycles (24 hours maximum per quota wait)
+- Cumulative cap: 120 minutes total across all quota waits (prevents 14+ hour sleeps)
+- Agent rotation: After 3 consecutive quota failures on one agent, switches to next available agent (codex -> claude -> gemini)
+- Agent cooldowns tracked in `.gsd/supervisor/agent-cooldowns.json`
 
-### 5.6 Network Failure Handling
+Authentication detection has been hardened:
+- 403 responses are NOT treated as auth failures (they indicate rate limits)
+- Gemini 403 specifically routes to quota backoff rather than auth retry
 
-`Test-NetworkAvailability` polls every 30 seconds via `claude -p "PING" --max-turns 1`. Maximum wait: 1 hour. Sends push notification when connection drops and when it's restored.
+## 5.6 Network Failure Handling
 
-### 5.7 Build Validation and Auto-Fix
+`Test-NetworkAvailability` polls for internet connectivity:
 
-After every Execute/Build phase:
+- 30-second polling interval
+- Tests connectivity to multiple endpoints
+- Resumes automatically when connection restored
+- Sends ntfy notification when network drops and recovers
 
-1. `dotnet build` runs (if .sln exists)
-2. `npm run build` runs (if package.json exists)
-3. On failure -> Codex auto-fixes compilation errors
-4. Re-verify after fix
-5. If auto-fix succeeds -> git commit
-6. If auto-fix fails -> log error, continue
+## 5.7 Build Validation and Auto-Fix
 
-### 5.8 Agent Watchdog
+After each execute phase:
+1. Runs `dotnet build` (if .sln exists)
+2. Runs `npm run build` (if package.json exists)
+3. On failure: dispatches Codex to fix build errors
+4. Retries build after fix
 
-Each agent call runs in an isolated child process with a 30-minute watchdog timer (`AGENT_WATCHDOG_MINUTES`). If the agent hangs:
+## 5.8 Agent Watchdog
 
-1. Watchdog kills the process tree
-2. Halves the batch size
-3. Sends high-priority push notification
-4. Retries with smaller batch
+Every agent call has a 30-minute watchdog timer:
 
-### 5.9 The Supervisor
+- If an agent hangs for 30 minutes, the process is killed
+- The engine retries with a reduced batch
+- Timeout events are logged to `errors.jsonl`
+- Notification sent via ntfy
 
-The supervisor wraps the entire pipeline in a recovery loop:
+## 5.9 The Supervisor
+
+The supervisor is an outer loop that wraps the entire pipeline. When a pipeline exits (stalled, crashed, or max iterations without convergence):
 
 ```
-┌─────────────────────────────────────┐
-│         SUPERVISOR LOOP              │
-│                                      │
-│  Attempt 1: Run pipeline             │
-│  -> Pipeline stalls/crashes          │
-│  -> Get error statistics (free)      │
-│  -> AI diagnosis (1 Claude call)     │
-│  -> AI fix (1 Claude call)           │
-│  -> Write error-context.md           │
-│  -> Write prompt-hints.md            │
-│  -> Restart pipeline in new terminal │
-│                                      │
-│  Attempt 2: Run with hints           │
-│  -> (repeat if still failing)        │
-│                                      │
-│  After 5 attempts:                   │
-│  -> Generate escalation-report.md    │
-│  -> Send urgent notification         │
-│  -> "NEEDS HUMAN" alert              │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                 SUPERVISOR LOOP                   │
+│                                                  │
+│  Attempt 1:                                      │
+│    1. Run pipeline normally                      │
+│    2. Pipeline exits (stalled/crashed)           │
+│    3. L1: Pattern match errors.jsonl (free)      │
+│    4. L2: Claude diagnoses root cause (~1 call)  │
+│    5. L3: Claude generates fix (~1 call)         │
+│       Modifies: prompts, queue, matrix, specs    │
+│    6. Restart pipeline in new terminal           │
+│                                                  │
+│  Attempt 2-5: Repeat with new diagnosis          │
+│    - Won't repeat same fix (strategies_tried)    │
+│    - Learns from cross-project patterns          │
+│                                                  │
+│  After max attempts:                             │
+│    - Generate escalation-report.md               │
+│    - Send urgent ntfy notification               │
+│    - Exit for human intervention                 │
+└──────────────────────────────────────────────────┘
 ```
 
-**Cross-project learning**: Successful fixes are saved to `~/.gsd-global/supervisor/pattern-memory.jsonl`. Before running AI diagnosis, the supervisor checks if a known fix exists for this failure pattern -- saving AI costs.
+**Pattern memory** (`~/.gsd-global/supervisor/pattern-memory.jsonl`) stores successful fixes across all projects. When a similar failure pattern is detected in a different project, the supervisor tries the known fix first.
 
-**Bypassing**: `gsd-converge -NoSupervisor` runs the pipeline directly without the supervisor wrapper.
+**Supervisor parameters:**
+- `-SupervisorAttempts 5` (default max attempts)
+- `-NoSupervisor` (bypass supervisor entirely)
 
-### 5.10 Final Validation Gate
+## 5.10 Final Validation Gate
 
-When health reaches 100%, `Invoke-FinalValidation` runs 7 checks:
+When health reaches 100%, `Invoke-FinalValidation` runs 9 checks:
 
-| Check | Type | What It Does |
-|---|---|---|
-| dotnet build | HARD | .NET compilation check |
-| npm build | HARD | Frontend build check |
-| dotnet test | HARD | Unit/integration tests (if test projects exist) |
-| npm test | HARD | Frontend tests (if test script exists) |
-| SQL validation | WARNING | Pattern compliance (TRY/CATCH, parameterized queries) |
-| NuGet audit | WARNING | Vulnerability scan |
-| npm audit | WARNING | Vulnerability scan |
+| Check | Type | Failure Action |
+|-------|------|---------------|
+| 1. `dotnet build` (strict) | Hard | Health -> 99%, loop auto-fixes |
+| 2. `npm run build` | Hard | Health -> 99%, loop auto-fixes |
+| 3. `dotnet test` | Hard | Health -> 99%, loop auto-fixes |
+| 4. `npm test` | Hard | Health -> 99%, loop auto-fixes |
+| 5. SQL validation | Warning | Advisory, included in handoff |
+| 6. `dotnet audit` | Warning | Advisory, included in handoff |
+| 7. `npm audit` | Warning | Advisory, included in handoff |
+| 8. DB completeness | Hard | Health -> 99%, coverage < 90% fails |
+| 9. Security compliance | Hard/Warn | Critical = hard failure, High = warning |
 
-Hard failures reset health to 99% so the loop auto-fixes. Warnings are included in the developer handoff report. Maximum 3 validation attempts.
+Maximum 3 validation attempts. The outer do/while loop wraps the main iteration loop, allowing the engine to fix validation failures and retry.
 
-On pipeline exit (converged, stalled, or max iterations), `New-DeveloperHandoff` generates `developer-handoff.md` with: build commands, database setup, environment configuration, project structure, requirements status, validation results, known issues, health progression chart, and cost summary.
+After the pipeline exits (converged, stalled, or max iterations), `New-DeveloperHandoff` generates `developer-handoff.md` with:
+
+1. Quick Start (auto-detected build commands)
+2. Database Setup (SQL files, connection strings)
+3. Environment Configuration (config files, .env)
+4. Project Structure (file tree)
+5. Requirements Status (grouped table)
+6. Validation Results
+7. Known Issues (remaining gaps, recent errors)
+8. Health Progression (ASCII chart)
+9. Cost Summary (by agent and phase)
+10. Council Review Results
+
+The handoff file is committed and pushed to the remote repository.
 
 ---
 
-## Chapter 6: Configuration Reference
+# Chapter 6: Configuration Reference
 
-### 6.1 Global Configuration (global-config.json)
+## 6.1 Global Configuration (global-config.json)
 
-**Location:** `%USERPROFILE%\.gsd-global\config\global-config.json`
+Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 
 ```json
 {
   "notifications": {
     "ntfy_topic": "auto",
-    "notify_on": [
-      "iteration_complete",
-      "converged",
-      "stalled",
-      "quota_exhausted",
-      "error"
-    ]
+    "notify_on": ["iteration_complete", "converged", "stalled", "quota_exhausted", "error"]
   },
   "patterns": {
     "backend": ".NET 8 with Dapper",
@@ -992,48 +1121,162 @@ On pipeline exit (converged, stalled, or max iterations), `New-DeveloperHandoff`
     "api": "Contract-first, API-first",
     "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"]
   },
-  "phase_order": [
-    "code-review",
-    "create-phases",
-    "research",
-    "plan",
-    "execute"
-  ]
+  "phase_order": ["code-review", "create-phases", "research", "plan", "execute"],
+  "council": {
+    "enabled": true,
+    "max_attempts": 2,
+    "consensus_threshold": 0.66,
+    "chunking": {
+      "enabled": true,
+      "max_chunk_size": 25,
+      "min_group_size": 5,
+      "strategy": "auto",
+      "cooldown_seconds": 5,
+      "min_requirements_to_chunk": 30
+    }
+  },
+  "quality_gates": {
+    "database_completeness": {
+      "enabled": true,
+      "require_seed_data": true,
+      "min_coverage_pct": 90
+    },
+    "security_compliance": {
+      "enabled": true,
+      "block_on_critical": true,
+      "warn_on_high": true
+    },
+    "spec_quality": {
+      "enabled": true,
+      "min_clarity_score": 70,
+      "check_cross_artifact": true
+    }
+  }
 }
 ```
 
-**notifications fields:**
+### notifications
 
 | Field | Type | Default | Description |
-|---|---|---|---|
-| ntfy_topic | string | "auto" | "auto" for per-project detection, or fixed topic string |
-| notify_on | string[] | (all events) | Which events trigger push notifications |
+|-------|------|---------|-------------|
+| `ntfy_topic` | string | "auto" | "auto" for per-project topics (gsd-{username}-{reponame}), or a specific string |
+| `notify_on` | string[] | (all events) | Events that trigger push notifications |
 
-Notification events: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `progress_response`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`, `validation_failed`, `validation_passed`
+Full event list: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `progress_response`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`, `validation_failed`, `validation_passed`
 
-**patterns fields:**
+### patterns
+
+Project technology patterns enforced by all pipelines, injected into agent prompts.
 
 | Field | Type | Description |
-|---|---|---|
-| backend | string | Backend framework and ORM |
-| database | string | Database access pattern |
-| frontend | string | Frontend framework |
-| api | string | API design approach |
-| compliance | string[] | Regulatory compliance requirements |
+|-------|------|-------------|
+| `backend` | string | Backend framework and ORM |
+| `database` | string | Database access pattern |
+| `frontend` | string | Frontend framework |
+| `api` | string | API design approach |
+| `compliance` | string[] | Regulatory compliance requirements |
 
-### 6.2 Agent Assignment (agent-map.json)
+### phase_order
 
-**Location:** `%USERPROFILE%\.gsd-global\config\agent-map.json`
+Defines the convergence loop phase sequence. Each phase maps to a specific agent and prompt template.
 
-Maps each convergence phase to a specific agent. Token budget allocation ensures Claude stays under ~11K tokens/iteration while Codex/Gemini handle bulk generation. The supervisor can dynamically reassign phases during recovery.
+### council
 
-### 6.3 Blueprint Configuration (blueprint-config.json)
+LLM Council configuration for multi-agent cross-validation.
 
-The blueprint configuration is embedded within the blueprint pipeline script and controls batch sizes, iteration limits, and stall detection for the Build-Verify loop.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Enable/disable all council reviews |
+| `max_attempts` | int | 2 | Max convergence council runs per pipeline |
+| `consensus_threshold` | float | 0.66 | Fraction of reviewers that must agree |
 
-### 6.4 Per-Project State Files
+Council types:
 
-**health-current.json:**
+| Type | Pipeline | Blocking | Reviewers | Synthesizer |
+|------|----------|----------|-----------|-------------|
+| convergence | Both | Yes (resets health to 99%) | Codex + Gemini | Claude |
+| post-research | Convergence | No (feedback only) | Codex + Gemini | Claude |
+| pre-execute | Convergence | No (feedback only) | Codex + Gemini | Claude |
+| post-blueprint | Blueprint | Yes (regenerates manifest) | Codex + Gemini | Claude |
+| stall-diagnosis | Both | N/A (diagnostic) | Codex + Gemini | Claude |
+| post-spec-fix | Both | Yes (retries resolution) | Codex + Gemini | Claude |
+
+### council.chunking
+
+For large projects, requirements are auto-chunked into smaller groups for focused reviews.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Enable/disable chunked reviews |
+| `max_chunk_size` | int | 25 | Max requirements per chunk |
+| `min_group_size` | int | 5 | Groups smaller than this get merged |
+| `strategy` | string | "auto" | Chunking strategy |
+| `cooldown_seconds` | int | 5 | Pause between chunks |
+| `min_requirements_to_chunk` | int | 30 | Skip chunking below this count |
+
+Strategies: **auto** (discovers best field), **field:X** (force group by field), **id-range** (sequential blocks).
+
+### quality_gates
+
+Controls three quality gate checks that run during pipeline execution.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `database_completeness.enabled` | bool | true | Enable DB completeness check |
+| `database_completeness.require_seed_data` | bool | true | Require seed data for every table |
+| `database_completeness.min_coverage_pct` | int | 90 | Minimum coverage % to pass |
+| `security_compliance.enabled` | bool | true | Enable security scan |
+| `security_compliance.block_on_critical` | bool | true | Critical violations are hard failures |
+| `security_compliance.warn_on_high` | bool | true | High severity shown as warnings |
+| `spec_quality.enabled` | bool | true | Enable spec quality gate |
+| `spec_quality.min_clarity_score` | int | 70 | Minimum clarity score (0-100) |
+| `spec_quality.check_cross_artifact` | bool | true | Run cross-artifact consistency check |
+
+## 6.2 Agent Assignment (agent-map.json)
+
+Location: `%USERPROFILE%\.gsd-global\config\agent-map.json`
+
+Phase-to-agent mapping with parallel execution configuration:
+
+```json
+{
+  "code-review": "claude",
+  "create-phases": "claude",
+  "research": "gemini",
+  "plan": "claude",
+  "execute": "codex",
+  "blueprint": "claude",
+  "build": "codex",
+  "verify": "claude",
+  "execute_parallel": {
+    "enabled": true,
+    "max_concurrent": 3,
+    "agent_pool": ["codex", "claude", "gemini"],
+    "strategy": "round-robin",
+    "fallback_to_sequential": true,
+    "subtask_timeout_minutes": 30
+  }
+}
+```
+
+### execute_parallel
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Master switch. false = monolithic behavior |
+| `max_concurrent` | int | 3 | Max parallel agent jobs per wave |
+| `agent_pool` | string[] | ["codex","claude","gemini"] | Agents to rotate through |
+| `strategy` | string | "round-robin" | "round-robin" or "all-same" |
+| `fallback_to_sequential` | bool | true | Fall back to monolithic if all fail |
+| `subtask_timeout_minutes` | int | 30 | Per-subtask watchdog timeout |
+
+## 6.3 Blueprint Configuration (blueprint-config.json)
+
+Created per-project during blueprint initialization. Contains the blueprint manifest path, batch size, and stall threshold.
+
+## 6.4 Per-Project State Files
+
+### health-current.json
 
 ```json
 {
@@ -1046,7 +1289,9 @@ The blueprint configuration is embedded within the blueprint pipeline script and
 }
 ```
 
-**engine-status.json** -- live engine state updated every 60 seconds:
+### engine-status.json
+
+Live engine state updated at every state transition and every 60 seconds:
 
 ```json
 {
@@ -1060,656 +1305,1150 @@ The blueprint configuration is embedded within the blueprint pipeline script and
   "health_score": 87.5,
   "last_heartbeat": "2026-03-02T22:27:00Z",
   "started_at": "2026-03-02T22:00:00Z",
-  "elapsed_minutes": 27
+  "elapsed_minutes": 27,
+  "sleep_until": null,
+  "sleep_reason": null,
+  "last_error": null,
+  "errors_this_iteration": 0,
+  "recovered_from_error": false
 }
 ```
 
-**token-usage.jsonl** -- append-only log of every agent call:
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | string | starting, running, sleeping, stalled, completed, converged |
+| `phase` | string | Current pipeline phase |
+| `agent` | string | Active agent ("claude", "codex", "gemini") |
+| `sleep_until` | string/null | When sleep ends (quota backoff) |
+| `sleep_reason` | string/null | Why sleeping (quota_backoff, rate_limit) |
+
+### final-validation.json
 
 ```json
 {
-  "timestamp": "2026-03-02T14:30:00Z",
-  "pipeline": "converge",
-  "iteration": 5,
-  "phase": "code-review",
-  "agent": "claude",
-  "batch_size": 8,
-  "success": true,
-  "tokens": {
-    "input": 45000,
-    "output": 3200,
-    "cached": 12000
-  },
-  "cost_usd": 0.183,
-  "duration_seconds": 120
+  "passed": true,
+  "hard_failures": [],
+  "warnings": ["NuGet vulnerabilities: 2 package(s) flagged"],
+  "iteration": 12,
+  "timestamp": "2026-03-03T14:30:00Z",
+  "checks": {
+    "dotnet_build": { "passed": true },
+    "npm_build": { "passed": true },
+    "dotnet_test": { "passed": true, "summary": ["Tests passed: 42"] },
+    "npm_test": { "passed": true },
+    "sql": { "passed": true },
+    "dotnet_audit": { "passed": false, "vulnerabilities": ["High: Package 1.2.3"] },
+    "npm_audit": { "passed": true }
+  }
 }
 ```
 
-**cost-summary.json** -- rolling totals by agent, phase, and run.
+### token-usage.jsonl
 
-**supervisor-state.json** -- tracks recovery attempts, strategies tried, and diagnoses.
+Append-only log (ground truth for cost data):
 
-**.gsd-checkpoint.json** -- crash recovery state (iteration, phase, health, batch_size).
+```json
+{"timestamp":"2026-03-02T14:30:00Z","pipeline":"converge","iteration":5,"phase":"code-review","agent":"claude","batch_size":8,"success":true,"is_fallback":false,"tokens":{"input":45000,"output":3200,"cached":12000},"cost_usd":0.183,"duration_seconds":120,"num_turns":4}
+```
 
-**requirements-matrix.json** -- every requirement with id, source, description, status, dependencies, and priority.
+### cost-summary.json
 
-**spec-consistency-report.json** -- conflicts found across specification documents, categorized by type (data_type, api_contract, navigation, business_rule, database, missing_ref).
+Rolling totals updated after each agent call:
 
-**final-validation.json** -- results of all 7 quality gate checks at 100% health.
+```json
+{
+  "project_start": "2026-03-01T10:00:00Z",
+  "last_updated": "2026-03-02T14:30:00Z",
+  "total_calls": 47,
+  "total_cost_usd": 12.45,
+  "total_tokens": { "input": 2100000, "output": 156000, "cached": 890000 },
+  "by_agent": {
+    "claude": { "calls": 28, "cost_usd": 7.20 },
+    "codex": { "calls": 12, "cost_usd": 3.90 },
+    "gemini": { "calls": 7, "cost_usd": 1.35 }
+  },
+  "by_phase": {
+    "code-review": { "calls": 10, "cost_usd": 2.10 },
+    "research": { "calls": 10, "cost_usd": 1.35 },
+    "plan": { "calls": 10, "cost_usd": 1.80 },
+    "execute": { "calls": 10, "cost_usd": 3.20 }
+  },
+  "runs": [
+    { "started": "2026-03-01T10:00:00Z", "ended": "2026-03-01T12:30:00Z", "calls": 25, "cost_usd": 6.00 }
+  ]
+}
+```
 
-### 6.5 Environment Variables
+### supervisor-state.json
+
+```json
+{
+  "pipeline": "converge",
+  "attempt": 2,
+  "max_attempts": 5,
+  "start_time": "2026-03-02T10:00:00Z",
+  "strategies_tried": [
+    {"category": "build_loop", "fix": "Added namespace constraints", "attempt": 1}
+  ],
+  "diagnoses": [
+    {"attempt": 1, "category": "build_loop", "root_cause": "DTO namespace mismatch"}
+  ]
+}
+```
+
+## 6.5 Environment Variables
+
+### API Key Variables
+
+| Variable | Used By | Expected Prefix | Key Source |
+|----------|---------|----------------|-----------|
+| `ANTHROPIC_API_KEY` | Claude Code | sk-ant- | console.anthropic.com |
+| `OPENAI_API_KEY` | Codex | sk- | platform.openai.com |
+| `GOOGLE_API_KEY` | Gemini | AIza | aistudio.google.com |
+
+### System Variables
 
 | Variable | Used By | Description |
-|---|---|---|
-| ANTHROPIC_API_KEY | Claude Code CLI | API key (sk-ant-...) |
-| OPENAI_API_KEY | Codex CLI | API key (sk-...) |
-| GOOGLE_API_KEY | Gemini CLI | API key (AIza...) |
-| USERPROFILE | All scripts | Home directory for .gsd-global |
-| USERNAME | Notifications | Auto-generates ntfy topic |
-| PATH | CLI wrappers | Must include .gsd-global\bin |
+|----------|---------|-------------|
+| `USERPROFILE` | All scripts | Home directory for .gsd-global |
+| `USERNAME` | Notifications | Auto-generates ntfy topic |
+| `PATH` | CLI wrappers | Must include .gsd-global\bin |
 
-### 6.6 Pricing Cache
+## 6.6 Pricing Cache
 
-**Location:** `%USERPROFILE%\.gsd-global\pricing-cache.json`
+Location: `%USERPROFILE%\.gsd-global\pricing-cache.json`
 
-Auto-fetched from LiteLLM open-source database. Freshness thresholds:
+Auto-generated by `gsd-costs`. Stores cached LLM pricing from the LiteLLM open-source database.
+
+### Supported Models
+
+| Cache Key | Model Name | Default Role |
+|-----------|-----------|--------------|
+| `claude_sonnet` | Claude Sonnet 4.6 | Review, Plan, Verify, Blueprint |
+| `claude_opus` | Claude Opus 4.6 | Premium alternative to Sonnet |
+| `claude_haiku` | Claude Haiku 4.5 | Economy alternative |
+| `codex` | GPT 5.3 Codex | Build, Execute |
+| `codex_gpt51` | GPT Codex 5.1 | Alternative code gen |
+| `gemini` | Gemini 3.1 Pro | Research, Spec-fix |
+
+### Cache Freshness
 
 | Age | Behavior |
-|---|---|
+|-----|----------|
 | < 14 days | Fresh -- used directly |
-| 14-60 days | Auto-refresh attempted silently |
-| > 60 days | Stale -- warning displayed, refresh attempted |
-| No cache | Fetches from web, falls back to hardcoded |
-
-Supported models: `claude_sonnet`, `claude_opus`, `claude_haiku`, `codex`, `codex_gpt51`, `gemini`.
-
-### 6.7 Supervisor Configuration
-
-| Constant | Default | Description |
-|---|---|---|
-| SUPERVISOR_MAX_ATTEMPTS | 5 | Recovery attempts before escalation |
-| SUPERVISOR_TIMEOUT_HOURS | 24 | Wall-clock time limit |
-| AGENT_WATCHDOG_MINUTES | 30 | Per-agent-call timeout |
-| RETRY_MAX | 3 | Retries per agent call |
-| MIN_BATCH_SIZE | 2 | Minimum batch after reduction |
-
-Default batch sizes:
-
-| Pipeline | Default | Description |
-|---|---|---|
-| Blueprint | 15 | Items per build cycle |
-| Convergence | 8 | Items per execute cycle |
+| 14-60 days | Aging -- auto-refresh attempted |
+| > 60 days | Stale -- warning displayed |
+| No cache | Fetches from web, falls back to hardcoded prices |
 
 ---
 
-## Chapter 7: Multi-Interface Support
+# Chapter 7: Multi-Interface Support
 
-### 7.1 Interface Types
+## 7.1 Interface Types
 
-The GSD Engine supports multi-interface projects where a single codebase serves multiple frontends:
+The engine detects and supports five interface types:
 
-| Interface | Folder | Example |
-|---|---|---|
-| Web | `design\web\v##\` | Web application (React) |
-| MCP | `design\mcp\v##\` | MCP Admin Portal |
-| Browser | `design\browser\v##\` | Browser Extension |
-| Mobile | `design\mobile\v##\` | Mobile App (React Native) |
-| Agent | `design\agent\v##\` | Remote Agent |
+| Type | Description | Detection Pattern |
+|------|-------------|-------------------|
+| `web` | Web application UI | `design/web/`, `design/figma/` |
+| `mcp` | Admin/management portal | `design/mcp/` |
+| `browser` | Browser extension | `design/browser/` |
+| `mobile` | iOS/Android mobile app | `design/mobile/` |
+| `agent` | Background agent/service | `design/agent/` |
 
-Detection: `Find-ProjectInterfaces` recursively scans up to 3 levels deep for any folder named `{type}` whose parent is `design`. The latest version folder (highest v## number) is used.
-
-### 7.2 Directory Structure
+## 7.2 Directory Structure
 
 ```
-your-repo\
-├── design\
-│   ├── web\v03\                  <- Web application designs
-│   │   ├── _analysis\            <- 12 Figma Make deliverables
-│   │   └── _stubs\               <- Controller, DTO, SQL stubs
-│   ├── mcp\v02\                  <- MCP Admin Portal designs
-│   │   ├── _analysis\
-│   │   └── _stubs\
-│   ├── browser\v01\              <- Browser Extension designs
-│   ├── mobile\v01\               <- Mobile App designs
-│   └── agent\v01\                <- Remote Agent designs
-├── docs\                         <- SDLC Phase A-E specs
-└── src\                          <- Generated code
+design\
+├── web\
+│   └── v01\                    # Version folder
+│       ├── _analysis\          # 12 Figma Make deliverables
+│       └── _stubs\             # Backend stubs (SQL)
+├── mcp\
+│   └── v01\
+│       ├── _analysis\
+│       └── _stubs\
+└── mobile\
+    └── v01\
+        ├── _analysis\
+        └── _stubs\
 ```
 
-### 7.3 Figma Make Integration
+## 7.3 Figma Make Integration
 
-Each interface version folder should contain `_analysis/` with 12 expected deliverable files:
+Each interface version folder should contain 12 analysis deliverables in `_analysis/`:
 
-1. **UI Contract** -- screen inventory with 5-state definitions
-2. **Component Hierarchy** -- parent-child component tree
-3. **Design Tokens** -- colors, fonts, spacing, breakpoints
-4. **Navigation Map** -- routes, transitions, guards
-5. **Data Binding Map** -- component-to-API field mapping
-6. **Interaction Matrix** -- user actions, triggers, responses
-7. **Accessibility Spec** -- ARIA labels, keyboard nav, focus management
-8. **Responsive Breakpoints** -- mobile, tablet, desktop layouts
-9. **Animation Spec** -- transitions, loading states, micro-interactions
-10. **Error State Inventory** -- error messages, boundaries, fallbacks
-11. **Storyboard** -- end-to-end user flows with data paths
-12. **API-SP Mapping** -- UI actions to API endpoints to stored procedures
+| # | File | Content |
+|---|------|---------|
+| 1 | `01-layout-hierarchy.md` | Page and component hierarchy |
+| 2 | `02-component-catalog.md` | Component inventory with props |
+| 3 | `03-navigation-map.md` | Route structure and navigation flows |
+| 4 | `04-design-tokens.md` | Colors, typography, spacing tokens |
+| 5 | `05-interaction-patterns.md` | Click, hover, drag behaviors |
+| 6 | `06-api-contracts.md` | API endpoint definitions |
+| 7 | `07-state-machines.md` | Component state transitions |
+| 8 | `08-accessibility-spec.md` | ARIA labels, keyboard navigation |
+| 9 | `09-responsive-breakpoints.md` | Breakpoint definitions |
+| 10 | `10-error-states.md` | Error handling UI patterns |
+| 11 | `11-api-to-sp-map.md` | API endpoint to stored procedure mapping |
+| 12 | `12-mock-data.md` | Mock data for development |
 
-The `_stubs/` folder contains generated backend stubs: controllers, DTOs, SQL scripts.
+And 3 backend stubs in `_stubs/`:
 
-### 7.4 Auto-Discovery
+| File | Content |
+|------|---------|
+| `01-tables.sql` | CREATE TABLE statements |
+| `02-stored-procedures.sql` | CREATE PROCEDURE statements |
+| `03-seed-data.sql` | INSERT/MERGE seed data |
 
-`Find-ProjectInterfaces` scans the repo:
+## 7.4 Auto-Discovery
 
-1. **Direct**: `{repo}\design\{type}\` (e.g., `design\web\`)
-2. **Recursive**: searches up to 3 levels deep for any folder named `{type}` whose parent is "design"
-3. Within each interface, finds the latest version folder (e.g., v03 over v02)
-4. Within each version, recursively discovers `_analysis/` and `_stubs/` folders
-5. Validates that expected deliverable files are present
+`Find-ProjectInterfaces` recursively scans the repository:
 
-The interface context is injected into every agent prompt so agents understand the full project scope.
+1. Checks `design/` folder for interface type subfolders
+2. Finds the latest version folder (highest `v##`)
+3. Detects `_analysis/` and `_stubs/` presence
+4. Returns a list of interface objects with type, path, version, and available deliverables
+
+The engine processes each interface independently, passing interface-specific context to all agent prompts.
 
 ---
 
-## Chapter 8: Script Reference
+# Chapter 8: Script Reference
 
-### 8.1 User Commands
+## 8.1 User Commands
 
-**gsd-assess** -- Scan codebase, detect interfaces, generate file map, run Claude assessment.
+### gsd-assess
+
+Scans codebase, detects interfaces, generates file map, classifies work.
 
 ```powershell
 gsd-assess              # Full assessment
-gsd-assess -MapOnly     # Regenerate file map only
-gsd-assess -DryRun      # Preview without executing
+gsd-assess -MapOnly     # File map only (no Claude call)
+gsd-assess -DryRun      # Preview mode
 ```
 
-**gsd-converge** -- 5-phase convergence loop (review, research, plan, execute, verify).
+Output: `.gsd/assessment/` with file inventories, pattern detection (framework, ORM, styling), spec coverage analysis, and work classification per item (skip, refactor, extend, build_new).
+
+### gsd-converge
+
+5-phase convergence loop. See Section 4.3 for full parameter reference.
+
+### gsd-blueprint
+
+3-phase blueprint pipeline. See Section 4.4 for full parameter reference.
+
+### gsd-status
+
+Health dashboard showing current score, iteration, phase, requirement breakdown, and costs.
+
+### gsd-costs
+
+Token cost estimator with pipeline comparison and client quoting. See Section 4.6 for full parameter reference.
+
+### gsd-init
+
+Initializes `.gsd/` folder structure without running any iterations. Creates all subdirectories and configuration templates.
+
+### gsd-remote
+
+Launches remote monitoring server and displays a QR code for phone access.
+
+## 8.2 Installation Scripts
+
+### install-gsd-all.ps1 (Master Installer)
+
+Orchestrates all 20 install/patch scripts in dependency order. Pre-checks for Git, Node.js, and CLI tools. Writes VERSION file. Reports pass/fail summary.
+
+Parameters: `-AnthropicKey`, `-OpenAIKey`, `-GoogleKey` for non-interactive API key setup.
+
+### install-gsd-prerequisites.ps1
+
+Environment validator. Checks/installs all required tools (PowerShell, Node.js, Git, .NET, Claude/Codex CLIs). Handles API key interactive prompts.
+
+Parameters: `-SkipOptional`, `-VerifyOnly`, `-Force`, `-SkipAuth`
+
+### install-gsd-global.ps1
+
+Core engine installer. Creates `~/.gsd-global/` directory structure, copies engine scripts, generates prompt templates, configures PowerShell profile with gsd-* commands.
+
+### install-gsd-blueprint.ps1
+
+Blueprint pipeline installer. Creates `~/.gsd-global/blueprint/` with pipeline script, prompts, and assess script. Installs Codex build prompt with security standards reference.
+
+### patch-gsd-partial-repo.ps1
+
+Adds `gsd-assess` standalone command, `Update-FileMap` function for file inventory generation, and partial repo handling prompts for both Claude and Codex.
+
+### patch-gsd-resilience.ps1
+
+Core resilience module. Creates `resilience.ps1` with: `Invoke-WithRetry` (retry + batch reduction), pre-flight validation (tools, .sln, git, disk), `New-Lock`/`Remove-Lock`, `Save-Checkpoint`/`Restore-Checkpoint`, health regression protection, structured error logging.
+
+### patch-gsd-hardening.ps1
+
+Hardening layer: JSON validation with rollback, quota detection with exponential backoff, network polling, per-iteration disk checks, agent boundary enforcement, CLI version checks, SQL linting, automatic test generation, heartbeat and notification system.
+
+### patch-gsd-final-validation.ps1
+
+Adds `Invoke-FinalValidation` (9 checks at 100% health) and `New-DeveloperHandoff` (generates comprehensive handoff document). Hard failures loop back; warnings are advisory.
+
+### patch-gsd-figma-make.ps1
+
+Multi-interface detection (`Find-ProjectInterfaces`), Figma Make `_analysis/` and `_stubs/` integration, per-interface prompts, known-limitations matrix.
+
+### final-patch-1-spec-check.ps1
+
+Adds `Invoke-SpecConsistencyCheck` -- pre-iteration spec auditor that detects contradictions in data types, API contracts, navigation, business rules, design systems, and database definitions. Blocks pipeline on critical conflicts.
+
+### final-patch-2-sql-cli.ps1
+
+SQL syntax validation via sqlcmd (parse-only mode), CLI version compatibility checking, enhanced `Test-SqlFiles` with pattern detection (string concatenation, missing TRY/CATCH, missing audit columns).
+
+### final-patch-3-storyboard-verify.ps1
+
+Creates `verify-storyboard.md` prompt that traces data flows end-to-end: component -> hook -> endpoint -> service -> stored procedure. Catches logic bugs that unit tests miss.
+
+### final-patch-4-blueprint-pipeline.ps1
+
+Complete blueprint pipeline with all features integrated: spec check, post-blueprint council, storyboard verification, supervisor override, Figma Make prompts, cost tracking, heartbeat, git commits.
+
+### final-patch-5-convergence-pipeline.ps1
+
+Complete convergence loop with all features: create-phases, 5-phase cycle, parallel execution, council gates (post-research, pre-execute, convergence), supervisor override, multi-interface context, cost tracking.
+
+### final-patch-6-assess-limitations.ps1
+
+Final `gsd-assess` script with multi-interface support, `KNOWN-LIMITATIONS.md` audit (16 closed gaps, 5 remaining), master installer copy.
+
+### final-patch-7-spec-resolve.ps1
+
+Adds `Invoke-SpecConflictResolution` -- uses Gemini to auto-resolve spec contradictions. Includes post-spec-fix council gate. Writes resolution summary and log.
+
+### patch-gsd-supervisor.ps1
+
+Self-healing supervisor: `Save-TerminalSummary`, `Invoke-SupervisorDiagnosis` (L1 pattern match, L2 AI diagnosis), `Invoke-SupervisorFix` (L3 AI fix), `New-EscalationReport`. Pattern memory across projects.
+
+### patch-false-converge-fix.ps1
+
+Bug fix: moves variable initialization before try block to prevent false convergence exit. Cleans orphaned profile code.
+
+### patch-gsd-council.ps1
+
+LLM Council system: `Invoke-LlmCouncil` with 6 council types, `Build-RequirementChunks` for large projects, prompt templates for Codex/Gemini reviewers and Claude synthesizer.
+
+### patch-gsd-parallel-execute.ps1
+
+Parallel sub-task execution: `Invoke-ParallelExecute` splits batches, dispatches round-robin, manages waves with cooldown, handles partial success, falls back to monolithic.
+
+### patch-gsd-resilience-hardening.ps1
+
+Token tracking on all attempts, auth detection fix (403 is rate limit not auth), cumulative quota cap (120 min), agent rotation after 3 consecutive failures.
+
+### patch-gsd-quality-gates.ps1
+
+Quality gates: `Test-DatabaseCompleteness` (zero-cost static scan), `Test-SecurityCompliance` (zero-cost regex scan), `Invoke-SpecQualityGate` (enhanced spec validation). Creates 5 shared prompt templates. Updates council reviews with security checklists.
+
+## 8.3 Standalone Utilities
+
+### setup-gsd-api-keys.ps1
+
+Manages API key environment variables. Stores as persistent User-level environment variables with prefix validation and masked display.
 
 ```powershell
-gsd-converge                          # Full convergence
-gsd-converge -SkipResearch            # Skip research phase
-gsd-converge -MaxIterations 5         # Limit iterations
-gsd-converge -ThrottleSeconds 60      # Slower, less quota pressure
-gsd-converge -AutoResolve             # Auto-fix spec conflicts
-gsd-converge -NoSupervisor            # Debug without supervisor
+.\scripts\setup-gsd-api-keys.ps1          # Interactive setup
+.\scripts\setup-gsd-api-keys.ps1 -Show    # Display masked status
+.\scripts\setup-gsd-api-keys.ps1 -Clear   # Remove all keys
 ```
 
-**gsd-blueprint** -- 3-phase spec-to-code pipeline (blueprint, build, verify).
+### setup-gsd-convergence.ps1
 
-```powershell
-gsd-blueprint                         # Full pipeline
-gsd-blueprint -BlueprintOnly          # Generate manifest only
-gsd-blueprint -BuildOnly              # Resume build
-gsd-blueprint -VerifyOnly             # Re-score only
+Per-project bootstrap. Creates `.gsd/` directory tree with 16 subdirectories, generates config files, prompt templates, and convergence orchestrator. Detects Figma version, references SDLC docs.
+
+### install-gsd-keybindings.ps1
+
+Adds VS Code keyboard shortcuts (Ctrl+Shift+G chord prefix) for blueprint, convergence, and status commands.
+
+### token-cost-calculator.ps1
+
+~1048 lines. Estimates API costs using dynamic pricing from LiteLLM. Supports 6 models, two pipelines, client quoting with configurable markup, actual vs estimated comparison.
+
+## 8.4 Key Internal Functions
+
+### Invoke-WithRetry
+
+```
+Invoke-WithRetry -Phase <string> -Agent <string> -PromptPath <string>
+    -OutputPath <string> [-BatchSize <int>] [-RetryMax <int>]
 ```
 
-**gsd-status** -- Health dashboard for current project.
+Wraps agent calls with retry logic, batch reduction, token tracking, and error logging. Returns structured result with success/failure, token counts, and cost.
 
-**gsd-costs** -- Token cost estimator with dynamic pricing, pipeline comparison, client quoting.
+### Update-FileMap
 
-```powershell
-gsd-costs                                    # Auto-detect from project
-gsd-costs -TotalItems 150 -ShowComparison    # Compare pipelines
-gsd-costs -ShowActual                        # View actual costs
-gsd-costs -ClientQuote -Markup 8             # Client quote
+```
+Update-FileMap -RepoRoot <string> -GsdDir <string>
 ```
 
-**gsd-init** -- Initialize .gsd/ folder without running iterations.
+Generates `.gsd/assessment/file-map.md` -- complete inventory of all source files with type classification and line counts.
 
-**gsd-remote** -- Launch Claude remote session with QR code for phone monitoring.
+### Save-Checkpoint / Restore-Checkpoint
 
-### 8.2 Installation Scripts
+```
+Save-Checkpoint -Pipeline <string> -Iteration <int> -Phase <string>
+    -Health <double> -BatchSize <int>
+Restore-Checkpoint
+```
 
-The 16 scripts run by the master installer in dependency order:
+Crash recovery. Saves state to `.gsd/.gsd-checkpoint.json`. Restore reads it and returns the checkpoint object.
 
-1. **install-gsd-global.ps1** -- API key setup (Step 0), global directory structure, convergence engine, profile functions, gsd-costs command, VS Code tasks.
+### Wait-ForQuotaReset
 
-2. **install-gsd-blueprint.ps1** -- Blueprint pipeline, assess script, prompt templates, gsd-blueprint/gsd-init commands.
+```
+Wait-ForQuotaReset [-MaxCycles <int>] [-InitialWaitMinutes <int>]
+```
 
-3. **patch-gsd-partial-repo.ps1** -- gsd-assess command, assessment prompts, file map generation, -MapOnly flag.
+Exponential backoff for quota exhaustion: 5 -> 10 -> 20 -> 40 -> 60 min cap. Sends ntfy notifications. Respects cumulative 120-minute cap.
 
-4. **patch-gsd-resilience.ps1** -- Resilience module: `Invoke-WithRetry` (with watchdog timeout), `Save-Checkpoint`, `Restore-Checkpoint`, lock management, adaptive batch sizing, agent fallback.
+### Test-NetworkAvailability
 
-5. **patch-gsd-hardening.ps1** -- Quota handling, network polling, boundary enforcement, push notifications, background heartbeat, command listener, cost tracking functions, engine status tracking.
+```
+Test-NetworkAvailability
+```
 
-6. **patch-gsd-final-validation.ps1** -- 7-check quality gate at 100% health, developer handoff report generator.
+Polls for internet connectivity at 30-second intervals. Blocks until connection restored.
 
-7. **patch-gsd-figma-make.ps1** -- Multi-interface detection (web/mcp/browser/mobile/agent), _analysis/_stubs discovery, interface context injection.
+### Invoke-FinalValidation
 
-8. **final-patch-1-spec-check.ps1** -- Spec consistency pre-check (data_type, api_contract, navigation, business_rule, database, missing_ref conflicts).
+```
+Invoke-FinalValidation -RepoRoot <string> -GsdDir <string> -Iteration <int>
+```
 
-9. **final-patch-2-sql-cli.ps1** -- SQL pattern validation, CLI version compatibility checks.
+Runs 9 validation checks at 100% health. Returns `@{ Passed; HardFailures; Warnings }`.
 
-10. **final-patch-3-storyboard-verify.ps1** -- Storyboard-aware verification prompt tracing data paths end-to-end.
+### Invoke-LlmCouncil
 
-11. **final-patch-4-blueprint-pipeline.ps1** -- Final blueprint pipeline with all integrations (file map, notifications, throttling, spec check, adaptive batch, validation, handoff, git traceability).
+```
+Invoke-LlmCouncil -CouncilType <string> -GsdDir <string> -Iteration <int>
+    -Health <double> [-ChunkedReview <bool>]
+```
 
-12. **final-patch-5-convergence-pipeline.ps1** -- Final convergence loop with all integrations.
+Multi-agent review gate. Dispatches to Codex + Gemini reviewers, Claude synthesizes verdict.
 
-13. **final-patch-6-assess-limitations.ps1** -- Final assess script with interface summary, known limitations documentation.
+### Invoke-SupervisorDiagnosis / Invoke-SupervisorFix
 
-14. **final-patch-7-spec-resolve.ps1** -- Spec conflict auto-resolution via Gemini (`--yolo`), falls back to Codex.
+```
+Invoke-SupervisorDiagnosis -GsdDir <string> -Attempt <int>
+Invoke-SupervisorFix -GsdDir <string> -Diagnosis <object>
+```
 
-15. **patch-gsd-supervisor.ps1** -- Self-healing supervisor: diagnosis, fix, pattern memory, escalation, supervisor wrappers for both pipelines.
+L2 diagnosis via Claude (reads errors, determines root cause). L3 fix via Claude (modifies prompts/specs/queue to resolve issue).
 
-16. **patch-false-converge-fix.ps1** -- Bug fix: false convergence exit when variables are null, orphaned profile code cleanup.
+### Test-DatabaseCompleteness
 
-### 8.3 Standalone Utilities
+```
+Test-DatabaseCompleteness -RepoRoot <string> -GsdDir <string>
+```
 
-- **setup-gsd-api-keys.ps1** -- Manage API keys (set/show/clear) for Anthropic, OpenAI, Google. Supports `-AnthropicKey`, `-OpenAIKey`, `-GoogleKey`, `-Show`, `-Clear` parameters.
-- **setup-gsd-convergence.ps1** -- Per-project convergence setup (legacy, superseded by global install).
-- **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords).
-- **token-cost-calculator.ps1** -- Cost estimator (also installed globally as `gsd-costs`).
+Zero-token static scan. Discovers API endpoints, stored procedures, tables, and seed data. Cross-references the full chain. Returns `@{ Passed; Coverage; MissingStoredProcs; MissingSeedData; Issues }`.
 
-### 8.4 Key Internal Functions
+### Test-SecurityCompliance
 
-**Invoke-WithRetry** -- Core agent call with retry, batch reduction, watchdog timeout, quota backoff, and fallback.
-Parameters: `-Agent` ("claude"/"codex"/"gemini"), `-Prompt`, `-Phase`, `-LogFile`, `-CurrentBatchSize`, `-GsdDir`, `-GeminiMode`
+```
+Test-SecurityCompliance -RepoRoot <string> -GsdDir <string>
+```
 
-**Update-FileMap** -- Generates file-map.json and file-map-tree.md. Excludes: node_modules, .git, bin, obj, dist, build, .gsd.
-Parameters: `-Root`, `-GsdPath`. Returns: path to file-map.json.
+Zero-token regex scan for OWASP patterns:
 
-**Save-Checkpoint / Restore-Checkpoint** -- Saves/restores pipeline state (iteration, phase, health, batch_size) for crash recovery.
+| Pattern | Severity | What It Catches |
+|---------|----------|-----------------|
+| String concat + SELECT | Critical | SQL injection |
+| dangerouslySetInnerHTML without DOMPurify | Critical | XSS |
+| eval() / new Function() | Critical | Code injection |
+| localStorage with token/password/secret | Critical | Secrets in browser storage |
+| Hardcoded connection strings | Critical | Exposed credentials |
+| BinaryFormatter | Critical | Deserialization CVE |
+| [HttpPost/Put/Delete] without [Authorize] | High | Missing auth |
+| CREATE TABLE without CreatedAt | Medium | Missing audit columns |
+| console.log with password/token/ssn | High | Sensitive data in logs |
 
-**Wait-ForQuotaReset** -- Adaptive backoff: 5min, 10, 20, 40, 60 cap. Max 24 cycles.
+Returns `@{ Passed; Violations; ViolationCount; Report }`.
 
-**Test-NetworkAvailability** -- Polls every 30s via `claude -p "PING"`. Max wait: 1 hour.
+### Invoke-SpecQualityGate
 
-**Save-GsdSnapshot** -- Creates git stash/commit as rollback point before destructive operations.
+```
+Invoke-SpecQualityGate -RepoRoot <string> -GsdDir <string>
+    [-SkipClarityCheck <bool>]
+```
 
-**Find-ProjectInterfaces** -- Recursively scans repo for `design/{type}/v##` folders, discovers _analysis/_stubs.
+Orchestrates spec validation: existing `Invoke-SpecConsistencyCheck` + Claude clarity scoring (1 call, ~2K tokens) + Claude cross-artifact consistency (1 call, ~2K tokens). Returns `@{ Passed; ClarityScore; ConsistencyPassed; Issues }`.
 
-**Invoke-SpecConsistencyCheck** -- Scans spec documents for contradictions. Blocks critical conflicts unless `-AutoResolve`.
+### Find-ProjectInterfaces
 
-**Invoke-FinalValidation** -- 7-check quality gate at 100% health. Returns structured results with hard failures and warnings.
+```
+Find-ProjectInterfaces -RepoRoot <string>
+```
 
-**New-DeveloperHandoff** -- Generates `developer-handoff.md` with 10 sections (build commands, DB setup, requirements, costs, etc.).
+Recursively scans `design/` for interface types. Returns array of interface objects with type, path, version, and available deliverables.
 
-**Invoke-SupervisorDiagnosis** -- Claude reads all logs and produces structured diagnosis (root cause, category, recommended fix).
+### Invoke-ParallelExecute
 
-**Invoke-SupervisorFix** -- Claude modifies project files to fix diagnosed root cause (error-context, prompt-hints, agent-override, queue).
+```
+Invoke-ParallelExecute -Requirements <array> -GsdDir <string>
+    -Iteration <int>
+```
 
-**Extract-TokensFromOutput** -- Parses CLI output (Claude JSON array, Codex JSONL, Gemini JSON) to extract token counts and cost.
+Splits requirements into independent sub-tasks, dispatches round-robin across agent pool, manages waves with cooldown, handles partial success.
 
-**Save-TokenUsage** -- Appends JSONL record to token-usage.jsonl and updates cost-summary.json.
+### Get-NextAvailableAgent / Set-AgentCooldown
 
-**Update-EngineStatus** -- Merge-on-write update to engine-status.json (state, phase, agent, heartbeat).
+```
+Get-NextAvailableAgent -PreferredAgent <string> -GsdDir <string>
+Set-AgentCooldown -Agent <string> -Minutes <int> -GsdDir <string>
+```
 
-**Local-ResolvePrompt** -- Resolves prompt template variables and appends supervisor context/hints.
+Agent rotation for quota management. Checks cooldown timestamps, returns next available agent from pool.
 
 ---
 
-## Chapter 9: Troubleshooting
+# Chapter 9: Troubleshooting
 
-### 9.1 Installation Issues
+## 9.1 Installation Issues
 
-| Problem | Fix |
-|---|---|
-| "running scripts is disabled" | `powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1` |
-| "gsd-assess is not recognized" | Restart terminal, or `. $PROFILE` |
-| "command claude not found" | `npm install -g @anthropic-ai/claude-code` then restart |
-| "command codex not found" | `npm install -g @openai/codex` then restart |
-| "command gemini not found" | Optional: `npm install -g @google/gemini-cli` |
-| Install fails partway | Re-run install-gsd-all.ps1 (idempotent) |
+### "running scripts is disabled on this system"
 
-### 9.2 Runtime Issues
-
-| Problem | Fix |
-|---|---|
-| "Another GSD process is running" | `Remove-Item .gsd/.gsd-lock -Force` |
-| "Quota exhausted, sleeping 60 min" | Automatic recovery. Use `-ThrottleSeconds 60` to prevent. Install Gemini for separate quota. |
-| "Network unavailable, polling" | Automatic recovery. Check internet connection. |
-| Codex exit code 2 | Check `codex --version`, ensure using `codex exec --full-auto`. Re-run installer. |
-| Health stuck / stalling | Use `-AutoResolve` for spec conflicts. Review `drift-report.md`. |
-| Health regression (score drops) | Automatic revert. Check logs for what caused the drop. |
-| JSON parsing errors | Automatic restore from .last-good backup. If corrupt: delete file, re-run. |
-| Agent boundary violation | Automatic revert. Review `current-assignment.md` for ambiguity. |
-
-### 9.3 Agent-Specific Issues
-
-**Claude Code**: If auth fails, run `claude` interactively to re-authenticate. For API keys: set `ANTHROPIC_API_KEY`. Check key validity at https://console.anthropic.com/settings/keys.
-
-**Codex CLI**: The `--approval-mode` flag was removed in recent versions. GSD uses `codex exec --full-auto`. If you see "unexpected argument '--approval-mode'" errors, re-run the installer to update all scripts.
-
-**Gemini CLI**: Uses Google OAuth (interactive) or `GOOGLE_API_KEY`. Exit code 44 = old sandbox issue, fixed in current version. If OAuth fails, try API key method instead.
-
-### 9.4 Spec Consistency Conflicts
-
-`Invoke-SpecConsistencyCheck` runs before each pipeline iteration and scans specification documents for contradictions. Results are written to `.gsd/spec-consistency-report.json`.
-
-**Conflict types:**
-
-| Type | Description | Example |
-|---|---|---|
-| data_type | Field type mismatch across specs | Phone: string in one spec, int in another |
-| api_contract | Endpoint definition conflicts | GET /users vs POST /users for same operation |
-| navigation | Route conflicts | Two screens claiming same URL |
-| business_rule | Logic contradictions | "Require 2FA" vs "Allow password-only" |
-| database | Schema conflicts | Column defined differently in two scripts |
-| missing_ref | Referenced item doesn't exist | Screen references API endpoint not defined |
-
-**Resolution:**
-- Use `-AutoResolve` flag to have Gemini auto-fix conflicts
-- Review `spec-consistency-report.json` for manual resolution
-- Critical conflicts block the pipeline; warnings are logged
-
-### 9.5 Reading Error Logs
-
-All errors are logged to `.gsd/logs/errors.jsonl` in structured format:
-
-```json
-{
-  "timestamp": "2026-03-02T14:30:00Z",
-  "category": "agent_crash",
-  "phase": "execute",
-  "iteration": 3,
-  "message": "codex exit code 2",
-  "resolution": "Batch reduced to 4"
-}
+```powershell
+powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 ```
 
-**Error categories:**
+### "gsd-assess is not recognized"
+
+Profile not loaded. Restart terminal or: `. $PROFILE`
+
+Verify profile exists:
+```powershell
+Test-Path $PROFILE
+cat $PROFILE | Select-String "gsd"
+```
+
+### "command claude not found" or "command codex not found"
+
+```powershell
+npm install -g @anthropic-ai/claude-code
+npm install -g @openai/codex
+```
+
+### "command gemini not found"
+
+Gemini is optional. Without it, the engine falls back to Codex for research:
+```powershell
+npm install -g @google/gemini-cli
+gemini    # First run authenticates
+```
+
+### Install script fails partway through
+
+The installer is idempotent. Re-run to pick up where it left off.
+
+## 9.2 Runtime Issues
+
+### Stale lock file
+
+If a previous run was killed abruptly:
+
+```powershell
+# Check lock age
+Get-Content .gsd\.gsd-lock
+
+# Remove manually if stale
+Remove-Item .gsd\.gsd-lock
+```
+
+Locks older than 120 minutes are automatically reclaimed.
+
+### Quota exhausted
+
+The engine handles this automatically:
+1. Exponential backoff (5-60 min cycles)
+2. After 3 consecutive failures: agent rotation
+3. Cumulative cap: 120 minutes total
+4. ntfy notification sent
+
+To manually reset:
+```powershell
+Remove-Item .gsd\supervisor\agent-cooldowns.json
+```
+
+### Network unavailable
+
+The engine polls every 30 seconds and resumes when connectivity returns.
+
+### Codex exit code 2
+
+Codex CLI returns exit code 2 for various errors. The engine:
+1. Logs the error
+2. Reduces batch size by 50%
+3. Retries up to 3 times
+4. Falls back to Claude if Codex continues failing
+
+### Health regression after iteration
+
+If health drops >5%:
+1. Changes are automatically reverted (git checkout)
+2. Previous checkpoint restored
+3. Batch size reduced
+4. ntfy notification sent
+
+## 9.3 Agent-Specific Issues
+
+### Claude Code authentication failure
+
+```powershell
+# Re-authenticate
+claude
+
+# Or set API key
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $env:ANTHROPIC_API_KEY, "User")
+```
+
+### Codex CLI flag changes
+
+The engine validates CLI versions at startup. If Codex CLI updates break flags:
+1. Check version: `codex --version`
+2. Update: `npm install -g @openai/codex`
+3. The engine will warn about untested versions
+
+### Gemini OAuth expired
+
+```powershell
+gemini    # Re-authenticate via browser
+```
+
+## 9.4 Spec Consistency Conflicts
+
+### Reading the report
+
+```powershell
+# View spec report
+Get-Content .gsd\health\spec-consistency-report.json | ConvertFrom-Json | Format-List
+
+# Or the markdown version
+Get-Content .gsd\health\spec-consistency-report.md
+```
+
+### Common conflict types
+
+| Type | Example | Resolution |
+|------|---------|------------|
+| Data type mismatch | Spec says `string`, API says `int` | Fix the authoritative source |
+| API contract conflict | Two specs define same endpoint differently | Gemini auto-resolve with `-AutoResolve` |
+| Navigation conflict | Two screens claim same route | Fix in Figma Make outputs |
+| Business rule conflict | Contradictory validation rules | Spec author decides |
+
+### Auto-resolution
+
+```powershell
+gsd-converge -AutoResolve    # Gemini resolves automatically
+```
+
+## 9.5 Quality Gate Issues
+
+### Database completeness check failing
+
+```
+ERROR: DB completeness: 65% (below 90% threshold)
+Missing stored procedures: usp_User_GetById, usp_Order_Create
+Missing seed data: Users, OrderStatuses
+```
+
+**Fix:** The engine automatically sets health to 99% and loops. The execute phase will generate the missing stored procedures and seed data.
+
+**Manual override:** Set `quality_gates.database_completeness.enabled = false` in `global-config.json`.
+
+### Security compliance violations
+
+```
+CRITICAL: SQL injection risk in UserRepository.cs:45
+CRITICAL: dangerouslySetInnerHTML without DOMPurify in Dashboard.tsx:112
+HIGH: Missing [Authorize] on OrderController
+```
+
+**Fix:** Critical violations block the pipeline. The execute phase will fix them on the next iteration.
+
+**Patterns detected:** SQL injection, XSS, eval(), localStorage secrets, hardcoded credentials, BinaryFormatter, missing auth, missing audit columns, sensitive data in logs.
+
+### Spec quality gate blocking pipeline
+
+```
+BLOCKED: Spec clarity score 58 (threshold: 70)
+Issues: 12 ambiguous requirements, 3 missing acceptance criteria
+```
+
+**Fix:** Improve spec quality before running pipeline. Or lower the threshold:
+```json
+"spec_quality": { "min_clarity_score": 50 }
+```
+
+### Cross-artifact consistency mismatches
+
+```
+Entity 'PatientRecord' in TypeScript differs from 'Patient_Record' in SQL
+Field 'dateOfBirth' missing from C# DTO
+```
+
+**Fix:** The engine reports these before code generation starts. Fix the Figma Make outputs to ensure consistency.
+
+## 9.6 Reading Error Logs
+
+```powershell
+# Recent errors
+Get-Content .gsd\logs\errors.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Select-Object -Last 10 |
+  Format-Table timestamp, category, phase, message -AutoSize
+```
+
+Error categories:
 
 | Category | Description |
-|---|---|
-| quota | API quota exhausted (sleeping) |
-| network | Network connectivity lost |
-| disk | Disk space critically low |
-| corrupt_json | JSON state file corrupted |
-| boundary_violation | Agent wrote outside allowed scope |
-| agent_crash | Agent CLI crashed (exit code != 0) |
-| health_regression | Health dropped >5% after iteration |
-| spec_conflict | Contradictions in specification documents |
-| watchdog_timeout | Agent hung, killed by watchdog |
-| build_fail | dotnet build or npm build failed |
-| fallback_success | Primary agent failed, fallback succeeded |
-| validation_fail | Final validation gate check failed |
-
-### 9.6 Notification Issues
-
-| Problem | Fix |
-|---|---|
-| Not receiving notifications | Verify topic name matches subscription exactly |
-| Wrong topic | Check `ntfy topic (auto):` line at startup, or use `-NtfyTopic` override |
-| No heartbeats | Heartbeats fire every 10 min. Short iterations skip them. |
-| "progress" command no response | Pipeline must be running. Post exact word "progress". |
-
-### 9.7 Supervisor Issues
-
-| Problem | Fix |
-|---|---|
-| Supervisor retrying same fix | Check `supervisor-state.json`. Built-in dedup should prevent this. |
-| "NEEDS HUMAN" notification | Read `escalation-report.md` for full diagnosis |
-| Stale prompt-hints | `Remove-Item .gsd/supervisor/prompt-hints.md -Force` |
-| Reset supervisor | `Remove-Item .gsd/supervisor/* -Force` |
-| Bypass supervisor | `gsd-converge -NoSupervisor` |
-
-### 9.8 Final Validation Issues
-
-| Problem | Fix |
-|---|---|
-| Stuck at 99% health | Check `.gsd/logs/final-validation.log` for which checks fail |
-| Build passes locally but fails in validation | Validation uses `--no-restore`. Ensure packages are restored. |
-| npm test hangs | Set `CI=true` in environment, or add `--watchAll=false` to test script |
-| All checks show SKIP | No .sln or package.json found. Normal for non-.NET/Node projects. |
-
-### 9.9 Cost Tracking Issues
-
-| Problem | Fix |
-|---|---|
-| Costs not being tracked | Re-run installer. Check CLI versions support JSON output. |
-| cost-summary.json corrupted | `Rebuild-CostSummary -GsdDir ".gsd"` |
-| -ShowActual shows no data | Run at least one pipeline iteration first |
+|----------|-------------|
+| `quota` | API quota exhausted |
+| `network` | Network connectivity lost |
+| `disk` | Insufficient disk space |
+| `corrupt_json` | Agent returned invalid JSON |
+| `boundary_violation` | Agent wrote to forbidden path |
+| `agent_crash` | Agent process crashed |
+| `health_regression` | Health dropped after iteration |
+| `spec_conflict` | Specification contradictions found |
+| `watchdog_timeout` | Agent exceeded 30-minute timeout |
+| `build_fail` | Compilation or build failed |
+| `fallback_success` | Primary agent failed, fallback succeeded |
+| `validation_fail` | Final validation check failed |
 
 ---
 
-## Chapter 10: Cost Management
+# Chapter 10: Cost Management
 
-### 10.1 Token Budget Per Iteration
+## 10.1 Token Budget Per Iteration
 
-**Convergence Pipeline:**
+### Convergence Pipeline
 
-| Phase | Agent | Est. Output Tokens | Monthly @ 20 iters |
-|---|---|---|---|
-| code-review | Claude | 2,000-5,000 | 40K-100K |
-| create-phases | Claude | 3,000-6,000 | one-time ~5K |
-| research | Gemini/Codex | 5,000-15,000 | unlimited |
-| plan | Claude | 1,500-4,000 | 30K-80K |
-| execute | Codex | 15,000-100,000+ | unlimited |
-| **Claude total** | | **~11K/iter** | **~220K/mo** |
-| **Codex/Gemini total** | | **~65K+/iter** | **unlimited** |
+| Phase | Agent | Input Tokens | Output Tokens | Cost (Sonnet) |
+|-------|-------|-------------|---------------|---------------|
+| Code-review | Claude | ~45,000 | ~3,000 | ~$0.18 |
+| Research | Gemini | ~30,000 | ~5,000 | ~$0.12 |
+| Plan | Claude | ~20,000 | ~2,000 | ~$0.09 |
+| Execute | Codex | ~40,000 | ~65,000 | ~$0.98 |
+| **Total per iteration** | | | | **~$1.37** |
 
-**Blueprint Pipeline:**
+### Blueprint Pipeline
 
-| Phase | Agent | Est. Output Tokens |
-|---|---|---|
-| blueprint | Claude | ~5,000 (one-time) |
-| build | Codex | ~80,000+ per iteration |
-| verify | Claude | ~3,000 per iteration |
+| Phase | Agent | Input Tokens | Output Tokens | Cost (Sonnet) |
+|-------|-------|-------------|---------------|---------------|
+| Verify | Claude | ~15,000 | ~2,000 | ~$0.08 |
+| Build | Codex | ~50,000 | ~80,000 | ~$1.21 |
+| **Total per iteration** | | | | **~$1.29** |
 
-### 10.2 Pre-Run Estimation
+Blueprint also has a one-time cost for the blueprint phase (~$0.35) and council reviews (~$0.30 each).
+
+## 10.2 Pre-Run Estimation
 
 ```powershell
-gsd-costs -TotalItems 150                    # Quick estimate
-gsd-costs -TotalItems 200 -ShowComparison    # Blueprint vs convergence
-gsd-costs -TotalItems 150 -Detailed          # Per-iteration breakdown
+# From existing blueprint
+gsd-costs -ProjectPath "C:\repos\my-app"
+
+# Manual estimate
+gsd-costs -TotalItems 150 -Pipeline blueprint
+
+# Compare pipelines
+gsd-costs -TotalItems 150 -ShowComparison
+
+# Detailed per-item breakdown
+gsd-costs -TotalItems 150 -Detailed
 ```
 
-**Token estimates per item type:**
+### Token Estimates Per Item Type
 
-| Item Type | Output Tokens |
-|---|---|
-| sql-migration | 1,000 |
-| stored-procedure | 2,000 |
-| controller | 5,000 |
-| service | 3,500 |
-| dto | 1,500 |
-| react-component | 4,000 |
-| hook | 2,500 |
-| middleware | 2,000 |
-| config | 1,500 |
-| test | 3,000 |
-| compliance | 2,000 |
+| Item Type | Output Tokens | Examples |
+|-----------|---------------|---------|
+| sql-migration | 1,000 | CREATE TABLE, ALTER TABLE |
+| stored-procedure | 2,000 | CRUD procedures |
+| controller | 5,000 | API controllers |
+| service | 3,500 | Business logic services |
+| dto | 1,500 | Data transfer objects |
+| component | 4,000 | React UI components |
+| hook | 2,500 | React hooks |
+| middleware | 2,000 | API middleware |
+| config | 1,500 | Configuration files |
+| test | 3,000 | Unit/integration tests |
+| compliance | 2,000 | Audit, logging, security |
+| routing | 1,500 | Route definitions |
+| (default) | 3,500 | Any unrecognized type |
 
-### 10.3 Live Cost Tracking
+## 10.3 Live Cost Tracking
 
 Costs are tracked automatically from the first pipeline run:
-- **token-usage.jsonl** -- append-only, survives crashes, one line per agent call
-- **cost-summary.json** -- rolling totals, can be rebuilt from JSONL
 
-View actual costs:
+- **token-usage.jsonl** -- Append-only log of every agent call (ground truth)
+- **cost-summary.json** -- Rolling totals by agent, phase, and run
+
+View at any time:
 
 ```powershell
+# Summary
 gsd-costs -ShowActual
+
+# Raw data
+Get-Content .gsd\costs\cost-summary.json | ConvertFrom-Json
+
+# Per-call detail
+Get-Content .gsd\costs\token-usage.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Select-Object timestamp, phase, agent, cost_usd |
+  Format-Table -AutoSize
 ```
 
-Shows: actual costs by agent, by phase, run history, estimated vs actual comparison.
+Token costs are tracked on ALL attempts (success and failure). When an agent returns error text instead of structured JSON, costs are estimated from the response size.
 
-### 10.4 Client Quoting
+## 10.4 Client Quoting
 
 ```powershell
-gsd-costs -TotalItems 300 -ClientQuote -Markup 8 -ClientName "Acme Corp"
+gsd-costs -TotalItems 150 -ClientQuote -Markup 7 -ClientName "Acme Corp"
 ```
 
-Three-tier pricing: Best case, Expected case, Worst case.
+### Complexity Tiers
 
-**Complexity tiers:**
+| Tier | Item Count | Suggested Markup | Rationale |
+|------|-----------|-----------------|-----------|
+| Standard | <= 100 | 5x | Simple projects, standard patterns |
+| Complex | <= 250 | 7x | Multi-interface, compliance requirements |
+| Enterprise | <= 500 | 7-10x | Large scale, multiple integrations |
+| Enterprise+ | > 500 | 10x | Maximum complexity |
 
-| Tier | Item Count | Suggested Markup |
-|---|---|---|
-| Standard | <=100 | 5x |
-| Complex | <=250 | 7x |
-| Enterprise | <=500 | 7-10x |
-| Enterprise+ | >500 | 10x |
+### Subscription Cost Comparison
 
-**Subscription cost comparison (for context):**
+The calculator compares API costs against subscription plans:
 
 | Service | Monthly Cost |
-|---|---|
+|---------|-------------|
 | Claude Pro | $20 |
 | Claude Max | $100-200 |
 | ChatGPT Plus | $20 |
 | ChatGPT Pro | $200 |
+| Gemini Advanced | $20 |
 | Minimum bundle (Pro tiers) | $60/month |
 
 ---
 
-## Appendices
+# Chapter 11: Quality Gates
 
-### Appendix A: Complete File Inventory
+## 11.1 Overview
 
-**Global installation (~/.gsd-global/):**
+The GSD Engine enforces three categories of quality gates that run at different points in the pipeline:
 
-| File | Description |
-|---|---|
-| bin/gsd-converge.cmd | Convergence loop CLI wrapper |
-| bin/gsd-blueprint.cmd | Blueprint pipeline CLI wrapper |
-| bin/gsd-status.cmd | Health dashboard CLI wrapper |
-| bin/gsd-remote.cmd | Remote monitoring CLI wrapper |
-| bin/gsd-costs.cmd | Token cost calculator CLI wrapper |
-| config/global-config.json | Notifications, patterns, phase order |
-| config/agent-map.json | Phase-to-agent assignments |
-| lib/modules/resilience.ps1 | Core resilience (retry, checkpoint, lock, costs, notifications) |
-| lib/modules/supervisor.ps1 | Self-healing supervisor system |
-| lib/modules/interfaces.ps1 | Multi-interface detection |
-| lib/modules/interface-wrapper.ps1 | Context builder for prompts |
-| prompts/claude/*.md | Claude prompt templates |
-| prompts/codex/*.md | Codex prompt templates |
-| prompts/gemini/*.md | Gemini prompt templates |
-| blueprint/scripts/blueprint-pipeline.ps1 | Blueprint pipeline |
-| blueprint/scripts/assess.ps1 | Assessment script |
-| scripts/convergence-loop.ps1 | Convergence engine |
-| scripts/supervisor-converge.ps1 | Supervisor wrapper (convergence) |
-| scripts/supervisor-blueprint.ps1 | Supervisor wrapper (blueprint) |
-| scripts/gsd-profile-functions.ps1 | PowerShell profile functions |
-| scripts/token-cost-calculator.ps1 | Cost estimator |
-| supervisor/pattern-memory.jsonl | Cross-project failure patterns |
-| pricing-cache.json | Cached LLM pricing |
-| KNOWN-LIMITATIONS.md | Scenario matrix |
-| VERSION | Version stamp |
+| Gate | When | Cost | Failure Action |
+|------|------|------|---------------|
+| Spec Quality Gate | Pipeline start (once) | ~$0.30 (2 Claude calls) | Blocks if clarity < 70 |
+| DB Completeness | Before final validation | $0 (static scan) | Hard failure if < 90% |
+| Security Compliance | Before final validation | $0 (regex scan) | Critical = hard failure |
+| Final Validation | At 100% health | $0 (build/test) | Hard failures loop back |
+| LLM Council | At 100% health | ~$0.50 (3 agent calls) | Blocks, resets to 99% |
 
-**Per-project (.gsd/):**
+## 11.2 Spec Quality Gate
 
-| File | Description |
-|---|---|
-| assessment/assessment-summary.md | Human-readable assessment findings |
-| assessment/work-classification.json | Skip/fix/build/review classification |
-| assessment/backend-inventory.json | C# controllers, services, DTOs |
-| assessment/database-inventory.json | Tables, stored procedures, views |
-| assessment/frontend-inventory.json | React screens, components, hooks |
-| assessment/file-inventory.json | Complete file catalog |
-| health/health-current.json | Current health score and breakdown |
-| health/health-history.jsonl | Score progression over iterations |
-| health/requirements-matrix.json | Every requirement with status |
-| health/drift-report.md | Gaps between specs and code |
-| health/review-current.md | Latest review findings |
-| health/engine-status.json | Live engine state |
-| health/final-validation.json | Quality gate results |
-| costs/token-usage.jsonl | Per-call token and cost log |
-| costs/cost-summary.json | Rolling cost totals |
-| supervisor/supervisor-state.json | Recovery attempt tracking |
-| supervisor/error-context.md | Injected error context |
-| supervisor/prompt-hints.md | Persistent agent constraints |
-| supervisor/escalation-report.md | Human intervention guide |
-| generation-queue/queue-current.json | Next batch items |
-| agent-handoff/current-assignment.md | Execute/build agent instructions |
-| logs/errors.jsonl | Categorized error log |
-| logs/iter{N}-{phase}.log | Per-iteration agent output |
-| blueprint/blueprint.json | Full project manifest |
-| file-map.json | Machine-readable repo inventory |
-| file-map-tree.md | Human-readable directory tree |
-| spec-consistency-report.json | Spec conflict analysis |
-| .gsd-checkpoint.json | Crash recovery state |
-| .gsd-lock | Concurrent run prevention |
+Runs once at pipeline start. Three checks:
 
-### Appendix B: Prompt Templates
+1. **Spec Consistency Check** (existing) -- Detects contradictions in data types, API contracts, navigation, business rules
+2. **Spec Clarity Check** (Claude) -- Scores specification quality 0-100:
+   - 90-100: PASS -- Specs are clear and complete
+   - 70-89: WARN -- Minor ambiguities, pipeline proceeds
+   - 0-69: BLOCK -- Too many ambiguities, fix specs first
+3. **Cross-Artifact Consistency** (Claude) -- After Figma Make, validates:
+   - Entity names identical across all 12 analysis files (case-sensitive)
+   - Field names match: TypeScript types = C# DTOs = SQL columns
+   - Every API endpoint has SP row in `11-api-to-sp-map.md`
+   - Every SP has table definition, every table has seed data
+   - Mock data IDs match seed data IDs, FK references consistent
 
-| Template | Agent | Purpose | Est. Output |
-|---|---|---|---|
-| claude/code-review.md | Claude | Scan repo vs matrix, score health | ~3K tokens |
-| claude/create-phases.md | Claude | Extract requirements from specs | ~5K tokens |
-| claude/plan.md | Claude | Select and prioritize next batch | ~3K tokens |
-| claude/assess.md | Claude | Analyze existing codebase | ~5K tokens |
-| claude/blueprint.md | Claude | Generate blueprint manifest | ~5K tokens |
-| claude/verify.md | Claude | Verify items against specs | ~3K tokens |
-| claude/verify-storyboard.md | Claude | Storyboard-aware verification | ~3K tokens |
-| codex/execute.md | Codex | Generate code for batch | ~50K+ tokens |
-| codex/build.md | Codex | Generate code from blueprint | ~80K+ tokens |
-| codex/research.md | Codex | Research codebase (fallback) | ~10K+ tokens |
-| gemini/research.md | Gemini | Research specs, Figma, codebase | ~10K+ tokens |
-| gemini/spec-fix.md | Gemini | Auto-resolve spec conflicts | ~2K tokens |
+## 11.3 Database Completeness
 
-### Appendix C: Notification Events
+Zero-token-cost static analysis verifying the full database chain:
 
-| Event | Priority | When |
-|---|---|---|
-| iteration_complete | default | Each iteration finishes |
-| converged | high | Health reaches 100% + validation passes |
-| stalled | high | Stall threshold reached |
-| quota_exhausted | high | Agent quota depleted |
-| error | high | Unrecoverable error |
-| heartbeat | low | Every 10 minutes (background) |
-| agent_timeout | high | Watchdog killed hung agent |
-| build_failed | default | Build validation failed |
-| regression_reverted | default | Health regression auto-reverted |
-| no_progress | default | Iteration with no health improvement |
-| execute_failed | default | Execute/build phase failed |
-| progress_response | min | Response to "progress" command |
-| supervisor_active | default | Supervisor activated |
-| supervisor_diagnosis | default | Diagnosis complete |
-| supervisor_fix | default | Fix applied |
-| supervisor_restart | default | Pipeline restarting |
-| supervisor_recovered | high | Recovery successful |
-| supervisor_escalation | urgent | All strategies exhausted |
-| validation_failed | high | Final validation gate failed |
-| validation_passed | high | Final validation gate passed |
+```
+API Endpoint --> Controller --> Repository --> Stored Procedure
+    --> Functions/Views --> Tables --> Seed Data
+```
 
-### Appendix D: Error Categories
+### Enhanced Tier Structure
 
-| Category | Description |
-|---|---|
-| quota | API quota exhausted, engine sleeping until reset |
-| network | Network connectivity lost, polling until restored |
-| disk | Disk space critically low |
-| corrupt_json | JSON state file corrupted, restored from backup |
-| boundary_violation | Agent wrote outside allowed scope, changes reverted |
-| agent_crash | Agent CLI crashed (exit code != 0) |
-| health_regression | Health dropped >5% after iteration, auto-reverted |
-| spec_conflict | Contradictions found in specification documents |
-| watchdog_timeout | Agent hung past timeout, process killed |
-| build_fail | dotnet build or npm build failed |
-| fallback_success | Primary agent failed, fallback agent succeeded |
-| validation_fail | Final validation gate check failed |
+| Tier | Layer | What's Checked |
+|------|-------|---------------|
+| 1 | Tables + Migrations + Indexes | CREATE TABLE statements exist for all entities |
+| 1.5 | Functions, Views, Computed Columns | Supporting database objects |
+| 2 | Stored Procedures | All CRUD + business logic SPs exist |
+| 2.5 | Seed Data Scripts | INSERT/MERGE per table group |
+| 3 | API Endpoints | Controllers with proper routes |
+| 4 | Frontend Components | React components match routes |
+| 5 | Integration | End-to-end wiring |
+| 6 | Compliance | Audit, encryption, access control |
 
-### Appendix E: Glossary
+### How It Works
 
-| Term | Definition |
-|---|---|
-| **Convergence** | Iterative loop that drives code toward 100% specification compliance |
-| **Blueprint** | Manifest listing every file a project needs, generated from specifications |
-| **Health Score** | Percentage of requirements satisfied (0-100%) |
-| **Iteration** | One complete cycle through all pipeline phases |
-| **Batch Size** | Number of items processed per execute/build phase |
-| **Stall Threshold** | Number of consecutive iterations with no health improvement before stopping |
-| **Supervisor** | Meta-loop that diagnoses and fixes pipeline failures automatically |
-| **Watchdog** | Timer that kills hung agent processes after 30 minutes |
-| **Checkpoint** | Saved pipeline state enabling crash recovery and resume |
-| **Drift Report** | Gap analysis between specifications and current code |
-| **Pattern Memory** | Cross-project database of failure patterns and their fixes |
-| **Final Validation** | 7-check quality gate triggered when health reaches 100% |
-| **Developer Handoff** | Auto-generated report with everything needed to run the project |
-| **ntfy** | Free push notification service used for mobile monitoring |
-| **Token** | Unit of text processed by an AI model (roughly 4 characters) |
-| **Agent Boundary** | Scope restrictions on what each AI agent can read and write |
-| **Spec Consistency** | Pre-check for contradictions across specification documents |
-| **Interface** | A distinct frontend type (web, mcp, browser, mobile, agent) |
-| **Figma Make** | Design analysis tool that produces 12 deliverable files per interface |
-| **Escalation** | When supervisor exhausts recovery attempts and alerts a human |
-| **Idempotent** | Safe to re-run without side effects; produces same result each time |
+1. Discovers API endpoints from `11-api-to-sp-map.md` or `[Http*]` attributes in `.cs` files
+2. Discovers stored procedures from `.sql` files matching `CREATE PROC`
+3. Discovers tables from `.sql` files matching `CREATE TABLE`
+4. Discovers seed data from `.sql` files matching `INSERT INTO` or `MERGE`
+5. Cross-references the chain: API -> SP -> Tables -> Seed data
+6. Writes `.gsd/assessment/db-completeness.json`
+7. Fails if coverage < 90% (configurable)
+
+## 11.4 Security Compliance
+
+Zero-token-cost regex scan of all source files:
+
+| Pattern | Severity | What It Catches |
+|---------|----------|-----------------|
+| String concatenation + SQL keywords | Critical | SQL injection |
+| `dangerouslySetInnerHTML` without DOMPurify | Critical | XSS |
+| `eval()` / `new Function()` | Critical | Code injection |
+| `localStorage` with token/password/secret | Critical | Secrets in browser |
+| Hardcoded connection strings | Critical | Exposed credentials |
+| `BinaryFormatter` | Critical | Deserialization CVE |
+| `[HttpPost]` without `[Authorize]` on class | High | Missing authentication |
+| `CREATE TABLE` without `CreatedAt` | Medium | Missing audit columns |
+| `console.log` with password/token/ssn | High | Sensitive data in logs |
+
+Critical violations are hard failures (block pipeline). High violations are warnings. All findings are written to `.gsd/assessment/security-compliance.json`.
+
+## 11.5 Security Standards Reference
+
+The engine enforces 88+ security rules organized by layer:
+
+### .NET 8 Backend (28 rules)
+
+- Authentication: `[Authorize]` on all controllers, JWT validation, CORS configuration
+- Data protection: Parameterized queries only, AES-256 for PHI, TLS 1.2+ enforced
+- Security headers: HSTS, X-Content-Type-Options, X-Frame-Options, CSP
+- Anti-CSRF: `[ValidateAntiForgeryToken]` on state-changing endpoints
+- Deserialization: No BinaryFormatter, whitelist-based JSON converters
+- SSRF: Validate and whitelist external URLs
+
+### SQL Server (18 rules)
+
+- Parameterized queries only (never string concatenation)
+- No dynamic SQL (`EXEC()` or `sp_executesql` with user input)
+- Row-level security where applicable
+- Audit triggers on all tables with PHI
+- Principle of least privilege for service accounts
+
+### React 18 (16 rules)
+
+- No `dangerouslySetInnerHTML` (use DOMPurify if unavoidable)
+- No `eval()` or `new Function()`
+- HTTPS only for all API calls
+- No secrets in localStorage (use httpOnly cookies)
+- CSP meta tags, input sanitization, XSS-safe rendering
+
+### Compliance (26 rules)
+
+- **HIPAA**: Encrypt PHI at rest (TDE) and in transit (TLS), audit log all PHI access, 6-year retention
+- **SOC 2**: Role-based access control, change management trails, monitoring
+- **PCI**: Tokenize card data, never store raw card numbers, network isolation
+- **GDPR**: Consent tracking, data export endpoint, data deletion endpoint
+
+## 11.6 Coding Conventions
+
+Enforced via agent prompts:
+
+### .NET Conventions
+
+- PascalCase for classes and methods
+- camelCase for parameters and local variables
+- _camelCase for private fields
+- Allman brace style (opening brace on new line)
+- SOLID principles enforced
+- One class per file
+
+### React Conventions
+
+- Functional components with hooks only
+- One component per file
+- Hooks at the top of the component
+- Props interface defined above component
+- Named exports (not default)
+
+### SQL Conventions
+
+- PascalCase singular table names (e.g., `Patient`, not `patients`)
+- `usp_Entity_Action` naming for stored procedures (e.g., `usp_Patient_GetById`)
+- SET NOCOUNT ON in all procedures
+- TRY/CATCH with THROW for error handling
+- Explicit column lists (never `SELECT *`)
 
 ---
 
-*Generated from GSD Autonomous Development Engine v1.1.0 source documentation and scripts.*
+# Appendices
 
-*To convert to Word document:*
-```
-pandoc docs/GSD-Developer-Guide.md -o GSD-Developer-Guide.docx --reference-doc=template.docx --toc --toc-depth=3
-```
+## Appendix A: Complete File Inventory
+
+### Global Engine Files (~/.gsd-global/)
+
+| Path | Description |
+|------|-------------|
+| `bin/gsd-converge.cmd` | Convergence loop CLI wrapper |
+| `bin/gsd-blueprint.cmd` | Blueprint pipeline CLI wrapper |
+| `bin/gsd-status.cmd` | Health dashboard CLI wrapper |
+| `bin/gsd-remote.cmd` | Remote monitoring CLI wrapper |
+| `bin/gsd-costs.cmd` | Token cost calculator CLI wrapper |
+| `config/global-config.json` | Global settings |
+| `config/agent-map.json` | Agent-to-phase mapping + parallel config |
+| `lib/modules/resilience.ps1` | Core resilience module (~2000+ lines) |
+| `lib/modules/interfaces.ps1` | Multi-interface detection |
+| `lib/modules/interface-wrapper.ps1` | Agent prompt context builder |
+| `scripts/convergence-loop.ps1` | 5-phase convergence engine |
+| `scripts/supervisor-converge.ps1` | Supervisor wrapper for convergence |
+| `scripts/gsd-profile-functions.ps1` | PowerShell profile functions |
+| `scripts/token-cost-calculator.ps1` | Token cost estimator |
+| `blueprint/scripts/blueprint-pipeline.ps1` | Blueprint generation + build loop |
+| `blueprint/scripts/supervisor-blueprint.ps1` | Supervisor wrapper for blueprint |
+| `blueprint/scripts/assess.ps1` | Assessment script |
+| `blueprint/prompts/codex/build.md` | Codex build prompt |
+| `blueprint/prompts/codex/partial-repo-guide.md` | Partial repo handling guide |
+| `prompts/claude/code-review.md` | Health scoring prompt |
+| `prompts/claude/plan.md` | Batch prioritization prompt |
+| `prompts/claude/verify.md` | Blueprint verification prompt |
+| `prompts/claude/verify-storyboard.md` | Data flow verification prompt |
+| `prompts/claude/assess.md` | Codebase assessment prompt |
+| `prompts/claude/spec-clarity-check.md` | Spec quality audit prompt |
+| `prompts/claude/cross-artifact-consistency.md` | Cross-reference validation prompt |
+| `prompts/codex/execute.md` | Code generation prompt |
+| `prompts/codex/execute-subtask.md` | Parallel sub-task prompt |
+| `prompts/gemini/research.md` | Technical research prompt |
+| `prompts/gemini/resolve-spec-conflicts.md` | Spec resolution prompt |
+| `prompts/council/*.md` | 14 council review templates |
+| `prompts/shared/security-standards.md` | 88+ OWASP security rules |
+| `prompts/shared/coding-conventions.md` | .NET/React/SQL conventions |
+| `prompts/shared/database-completeness-review.md` | DB chain verification rules |
+| `supervisor/pattern-memory.jsonl` | Cross-project failure patterns |
+| `pricing-cache.json` | LLM pricing data |
+| `KNOWN-LIMITATIONS.md` | Scenario matrix |
+| `VERSION` | Installed version |
+
+## Appendix B: Prompt Templates
+
+| Template | Agent | Purpose | Approx. Output |
+|----------|-------|---------|----------------|
+| `claude/code-review.md` | Claude | Score health, update statuses | ~3K tokens |
+| `claude/plan.md` | Claude | Prioritize batch, write instructions | ~2K tokens |
+| `claude/verify.md` | Claude | Binary file existence check | ~2K tokens |
+| `claude/verify-storyboard.md` | Claude | End-to-end data flow verification | ~3K tokens |
+| `claude/assess.md` | Claude | Codebase assessment | ~5K tokens |
+| `claude/spec-clarity-check.md` | Claude | Spec quality scoring | ~2K tokens |
+| `claude/cross-artifact-consistency.md` | Claude | Cross-reference validation | ~2K tokens |
+| `codex/execute.md` | Codex | Code generation (convergence) | ~65K tokens |
+| `codex/execute-subtask.md` | Codex | Parallel sub-task generation | ~20K tokens |
+| `codex/build.md` | Codex | Code generation (blueprint) | ~80K tokens |
+| `gemini/research.md` | Gemini | Technical research (read-only) | ~20K tokens |
+| `gemini/resolve-spec-conflicts.md` | Gemini | Spec contradiction resolution | ~5K tokens |
+| `council/codex-review.md` | Codex | Implementation quality review | ~2K tokens |
+| `council/gemini-review.md` | Gemini | Requirements alignment review | ~2K tokens |
+| `council/claude-synthesize.md` | Claude | Consensus synthesis | ~1K tokens |
+
+## Appendix C: Notification Events
+
+| Event | Trigger | Content |
+|-------|---------|---------|
+| `iteration_complete` | End of each iteration | Health score, iteration count, costs |
+| `no_progress` | Zero health improvement | Warning, stall count |
+| `execute_failed` | Execute phase failed all retries | Error details |
+| `build_failed` | Post-execute build check failed | Build errors |
+| `regression_reverted` | Health dropped >5% | Previous/new scores |
+| `converged` | 100% health + validation passed | Final costs, time elapsed |
+| `stalled` | Stall threshold reached | Health score, attempts |
+| `quota_exhausted` | All quota retries exhausted | Agent, wait time |
+| `error` | Unrecoverable error | Error category, message |
+| `heartbeat` | Every 60 seconds during agent calls | Phase, agent, health, costs |
+| `agent_timeout` | 30-minute watchdog triggered | Agent, phase |
+| `progress_response` | Response to "progress" command | Full status + costs |
+| `supervisor_active` | Supervisor recovery started | Attempt number |
+| `supervisor_diagnosis` | Root cause identified | Category, root cause |
+| `supervisor_fix` | Fix applied | Fix description |
+| `supervisor_restart` | Pipeline restarting | Attempt number |
+| `supervisor_recovered` | Supervisor fixed the issue | Total attempts |
+| `supervisor_escalation` | Max attempts exhausted | Escalation report |
+| `validation_failed` | Final validation check failed | Failed checks |
+| `validation_passed` | All validation checks passed | Summary |
+
+## Appendix D: Error Categories
+
+| Category | Description | Auto-Recovery |
+|----------|-------------|---------------|
+| `quota` | API quota exhausted | Exponential backoff + agent rotation |
+| `network` | Network connectivity lost | 30s polling until restored |
+| `disk` | Insufficient disk space | Alert, pause execution |
+| `corrupt_json` | Agent returned invalid JSON | Rollback, retry with smaller batch |
+| `boundary_violation` | Agent wrote to forbidden path | Revert changes, re-prompt |
+| `agent_crash` | Agent process crashed (exit code != 0) | Retry with batch reduction |
+| `health_regression` | Health dropped >5% after iteration | Git revert, restore checkpoint |
+| `spec_conflict` | Specification contradictions detected | Auto-resolve via Gemini or block |
+| `watchdog_timeout` | Agent exceeded 30-minute timeout | Kill process, retry |
+| `build_fail` | Compilation or build failed | Dispatch Codex to fix |
+| `fallback_success` | Primary agent failed, fallback worked | Log and continue |
+| `validation_fail` | Final validation check failed | Set health to 99%, loop back |
+
+## Appendix E: Glossary
+
+| Term | Definition |
+|------|-----------|
+| **Convergence** | The process of iteratively fixing code until it matches specifications (health reaches 100%) |
+| **Blueprint** | A manifest listing every file a project needs, generated from specs and Figma |
+| **Health Score** | Percentage of requirements satisfied (0-100%) |
+| **Iteration** | One complete pass through all pipeline phases |
+| **Batch Size** | Number of requirements addressed per execute/build cycle |
+| **Stall Threshold** | Consecutive zero-progress iterations before declaring stalled |
+| **Supervisor** | Outer recovery loop that diagnoses and fixes pipeline failures |
+| **Council** | Multi-agent review gate where Codex + Gemini review and Claude synthesizes verdict |
+| **Agent Override** | Supervisor-assigned phase-to-agent reassignment |
+| **Checkpoint** | Saved state for crash recovery |
+| **Pattern Memory** | Cross-project database of failure patterns and successful fixes |
+| **Escalation** | When supervisor exhausts all recovery attempts and needs human intervention |
+| **Figma Make** | Tool that generates 12 analysis deliverables and 3 SQL stubs from Figma designs |
+| **Quality Gate** | Automated check that must pass before pipeline proceeds |
+| **Spec Clarity Score** | 0-100 rating of specification quality (ambiguity, completeness, testability) |
+| **Token Budget** | Estimated token usage per phase/iteration for cost planning |
+| **Developer Handoff** | Auto-generated markdown document with everything needed to continue development |
+| **Drift Report** | Analysis of how requirements have changed since last iteration |
+| **Heartbeat** | 60-second periodic status update during long agent calls |
+| **Agent Cooldown** | Temporary lockout of an agent after consecutive quota failures |
+| **Chunked Review** | Breaking large requirement sets into smaller groups for focused council reviews |
+
+---
+
+## Appendix F: Constants and Defaults
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `SUPERVISOR_MAX_ATTEMPTS` | 5 | Max recovery attempts before escalation |
+| `SUPERVISOR_TIMEOUT_HOURS` | 24 | Wall-clock time limit for supervisor |
+| `AGENT_WATCHDOG_MINUTES` | 30 | Watchdog timeout per agent call |
+| `RETRY_MAX` | 3 | Max retries per agent call |
+| `MIN_BATCH_SIZE` | 2 | Minimum batch size after reduction |
+| `BATCH_REDUCTION_FACTOR` | 0.5 | Batch reduction on failure |
+| `RETRY_DELAY_SECONDS` | 10 | Delay between retries |
+| `LOCK_STALE_MINUTES` | 120 | Lock file age before auto-reclaim |
+| `HEALTH_REGRESSION_THRESHOLD` | 5 | Max % drop before revert |
+| `QUOTA_CUMULATIVE_MAX_MINUTES` | 120 | Total quota wait cap |
+| `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` | 3 | Failures before agent switch |
+| `HEARTBEAT_INTERVAL_SECONDS` | 60 | ntfy heartbeat frequency |
+
+### Default Batch Sizes
+
+| Pipeline | Default | Description |
+|----------|---------|-------------|
+| Blueprint (`-BatchSize`) | 15 | Items per build cycle |
+| Convergence (`-BatchSize`) | 8 | Items per execute cycle |
+
+---
+
+*Generated from GSD Engine v1.5.0 source documentation and scripts.*
+*Total scripts: 26 (1 master installer + 1 pre-flight + 20 installer scripts + 4 standalone utilities)*
