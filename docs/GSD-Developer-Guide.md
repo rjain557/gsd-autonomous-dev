@@ -15,6 +15,7 @@
 | 1.2.0 | March 2026 | LLM Council, parallel execution, resilience hardening |
 | 1.5.0 | March 2026 | Quality gates (DB completeness, security compliance, spec validation), chunked council reviews |
 | 1.6.0 | March 2026 | Multi-model LLM integration (4 REST agents), API/Database interface auto-detection, REST agent error handling |
+| 1.6.1 | March 2026 | Added Chapters 13-15: Coding Standards & Methodologies, Database Coding Standards, Compliance & Security Coding (88+ rules with IDs) |
 
 ---
 
@@ -3257,6 +3258,612 @@ Both agent types use the same retry/fallback/rotation infrastructure.
 
 ---
 
+# Chapter 13: Coding Standards & Methodologies
+
+The GSD engine enforces coding standards through agent prompts and council reviews. These standards are defined in `%USERPROFILE%\.gsd-global\prompts\shared\coding-conventions.md` and are checked by council reviewers at every review gate. Violations are flagged and the engine iterates until code conforms.
+
+## 13.1 .NET 8 / C# Naming Conventions
+
+| Element | Convention | Example |
+|---------|-----------|---------|
+| Classes, structs, enums | PascalCase | `UserService`, `OrderStatus` |
+| Interfaces | I + PascalCase | `IUserRepository`, `IAuthService` |
+| Methods, properties | PascalCase | `GetUserById()`, `IsActive` |
+| Parameters, locals | camelCase | `userId`, `orderTotal` |
+| Private fields | _camelCase | `_userRepository`, `_logger` |
+| Constants | PascalCase | `MaxLoginAttempts`, `DefaultPageSize` |
+| DTOs | PascalCase + Dto suffix | `UserResponseDto`, `CreateOrderRequestDto` |
+
+## 13.2 .NET Formatting Standards
+
+- **Indentation**: 4 spaces (never tabs)
+- **Max line length**: 120 characters
+- **Braces**: Allman style (opening brace on new line)
+- **Spacing**: One blank line between methods, two between classes
+- **Usings**: `using` directives outside namespace declarations
+- **Strings**: String interpolation `$"{name}"` over concatenation
+- **Null handling**: Null-conditional (`?.`) and null-coalescing (`??`) operators preferred
+
+## 13.3 .NET Architecture Patterns
+
+All .NET projects follow a layered architecture enforced by the engine:
+
+```
+Controller (thin, returns IActionResult)
+    ↓
+Service (IUserService → UserService, business logic)
+    ↓
+Repository (IUserRepository → UserRepository, Dapper + SPs)
+    ↓
+Stored Procedure (SQL Server)
+```
+
+**Rules**:
+- **Repository pattern**: `IUserRepository` → `UserRepository` using Dapper with stored procedures (never Entity Framework)
+- **Service layer**: `IUserService` → `UserService` containing all business logic
+- **Controllers**: Thin — delegate to services, return `IActionResult`, no business logic
+- **DTOs**: Separate request/response models — never expose database entities
+- **Dependency injection**: Constructor injection for all services, registered in `Program.cs`
+- **One class per file**: Filename must match class name exactly
+
+## 13.4 .NET Error Handling
+
+- Catch **specific** exceptions — never bare `catch (Exception)`
+- Use `using` statements or `using` declarations for `IDisposable` resources
+- `async/await` for all I/O-bound operations
+- `ILogger<T>` with structured logging (Serilog pattern)
+- Log levels used appropriately: Error, Warning, Information, Debug
+- `.ConfigureAwait(false)` in library code
+
+## 13.5 SOLID Principles
+
+The engine enforces SOLID principles in all generated code:
+
+| Principle | Rule | Enforcement |
+|-----------|------|-------------|
+| **Single Responsibility** | One class = one reason to change | Council review checks class scope |
+| **Open/Closed** | Extend via interfaces, not modification | Interface-first architecture |
+| **Liskov Substitution** | Derived types substitutable for base | Repository/service pattern |
+| **Interface Segregation** | Small, focused interfaces | Separate I*Repository per entity |
+| **Dependency Inversion** | Depend on abstractions, not concrete types | Constructor injection everywhere |
+
+## 13.6 React 18 Conventions
+
+### Component Structure Rules
+- **Functional components** with hooks ONLY (no class components)
+- One component per file, **named export**
+- Props interface defined **above** the component
+- Hooks at the **top** of component body
+- Event handlers named `handleXxx` (e.g., `handleSubmit`)
+
+### React Naming Conventions
+
+| Element | Convention | Example |
+|---------|-----------|---------|
+| Components | PascalCase | `UserProfile`, `OrderList` |
+| Files | PascalCase.tsx | `UserProfile.tsx` |
+| Hooks | use + PascalCase | `useAuth()`, `useOrders()` |
+| Props interfaces | ComponentName + Props | `UserProfileProps` |
+| CSS modules | camelCase | `styles.headerContainer` |
+| Constants | UPPER_SNAKE_CASE | `MAX_RETRIES`, `API_BASE_URL` |
+
+### React Patterns
+- Error boundaries at route level
+- Loading states / skeleton screens for all async operations
+- Input validation before API submission
+- Environment variables for API endpoints
+- Responsive design matching Figma breakpoints exactly
+- Accessibility: ARIA labels, keyboard navigation, focus management
+
+## 13.7 SQL Server Conventions
+
+### SQL Naming Conventions
+
+| Element | Convention | Example |
+|---------|-----------|---------|
+| Tables | PascalCase, singular | `User`, `OrderItem` |
+| Columns | PascalCase | `FirstName`, `CreatedAt` |
+| Stored procedures | usp_Entity_Action | `usp_User_GetById`, `usp_Order_Create` |
+| Views | vw_Description | `vw_ActiveUsers`, `vw_OrderSummary` |
+| Functions | fn_Description | `fn_CalculateTotal`, `fn_FormatDate` |
+| Indexes | IX_Table_Column(s) | `IX_User_Email`, `IX_Order_UserId` |
+| Primary keys | PK_Table | `PK_User`, `PK_Order` |
+| Foreign keys | FK_Child_Parent | `FK_OrderItem_Order` |
+
+### SQL Structure Rules
+- `SET NOCOUNT ON` at top of every SP
+- `BEGIN TRY / END TRY / BEGIN CATCH / THROW / END CATCH` in all SPs
+- Audit columns on every table: `CreatedAt`, `CreatedBy`, `ModifiedAt`, `ModifiedBy`
+- Explicit column lists (never `SELECT *`)
+- `IF EXISTS` for idempotent migrations
+- `GRANT EXECUTE ON [dbo].[usp_Entity_Action] TO [AppRole]`
+- Comments for complex business logic within SPs
+- Consistent parameter naming: `@EntityId`, `@UserId`, `@TenantId`
+
+### Seed Data Rules
+- `MERGE` or `IF NOT EXISTS` pattern for idempotency
+- Foreign key references must be consistent (no orphan IDs)
+- Realistic recent timestamps (not future dates)
+- Group INSERTs by entity with comments
+- Match Figma mock data exactly (same values, same IDs)
+
+---
+
+# Chapter 14: Database Coding Standards
+
+The GSD engine enforces a complete data chain from API endpoint through to seed data. These standards are defined in `%USERPROFILE%\.gsd-global\prompts\shared\database-completeness-review.md` and validated by `Test-DatabaseCompleteness` at every quality gate checkpoint.
+
+## 14.1 Required Data Chain
+
+Every data path must be complete end-to-end before the project is done:
+
+```
+API Endpoint → Controller Method → Repository/Service → Stored Procedure
+    → Functions/Views (if complex) → Tables → Seed Data
+```
+
+Every link in this chain must exist. Missing links = incomplete project. The engine's `Test-DatabaseCompleteness` function validates this chain statically at zero token cost.
+
+## 14.2 Enhanced Blueprint Tier Structure
+
+The blueprint pipeline generates code in tiers to ensure dependencies are built before dependents:
+
+| Tier | Name | Contents |
+|------|------|----------|
+| 1 | Database Foundation | Tables, migrations, indexes, constraints |
+| 1.5 | Database Functions & Views | Views for complex reads, scalar/table-valued functions |
+| 2 | Stored Procedures | All CRUD + business logic SPs |
+| 2.5 | Seed Data | INSERT scripts per table group, FK-consistent, matching Figma mock data |
+| 3 | API Layer | .NET 8 controllers, services, repositories, DTOs, validators |
+| 4 | Frontend Components | React 18 components matching Figma exactly |
+| 5 | Integration & Config | Routing, auth flows, middleware, DI, config files |
+| 6 | Compliance & Polish | Audit logging, encryption, RBAC, error boundaries, accessibility |
+
+## 14.3 Stored Procedure Patterns
+
+### Naming Convention
+```
+usp_Entity_Action
+    usp_User_GetById
+    usp_User_GetAll
+    usp_User_Create
+    usp_User_Update
+    usp_User_Delete
+    usp_User_Search
+```
+
+### Create (INSERT) Pattern
+```sql
+CREATE PROCEDURE [dbo].[usp_User_Create]
+    @FirstName NVARCHAR(100),
+    @LastName NVARCHAR(100),
+    @Email NVARCHAR(255),
+    @CreatedBy NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        INSERT INTO [dbo].[User] (FirstName, LastName, Email, CreatedAt, CreatedBy, ModifiedAt, ModifiedBy)
+        VALUES (@FirstName, @LastName, @Email, GETUTCDATE(), @CreatedBy, GETUTCDATE(), @CreatedBy);
+
+        SELECT SCOPE_IDENTITY() AS UserId;
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+GRANT EXECUTE ON [dbo].[usp_User_Create] TO [AppRole];
+GO
+```
+
+### Read (SELECT) Pattern
+```sql
+CREATE PROCEDURE [dbo].[usp_User_GetById]
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        SELECT UserId, FirstName, LastName, Email, CreatedAt, ModifiedAt
+        FROM [dbo].[User]
+        WHERE UserId = @UserId;
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+```
+
+### Update Pattern
+```sql
+CREATE PROCEDURE [dbo].[usp_User_Update]
+    @UserId INT,
+    @FirstName NVARCHAR(100),
+    @LastName NVARCHAR(100),
+    @Email NVARCHAR(255),
+    @ModifiedBy NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        UPDATE [dbo].[User]
+        SET FirstName = @FirstName,
+            LastName = @LastName,
+            Email = @Email,
+            ModifiedAt = GETUTCDATE(),
+            ModifiedBy = @ModifiedBy
+        WHERE UserId = @UserId;
+
+        SELECT @@ROWCOUNT AS RowsAffected;
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+```
+
+### Delete Pattern
+```sql
+CREATE PROCEDURE [dbo].[usp_User_Delete]
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        DELETE FROM [dbo].[User]
+        WHERE UserId = @UserId;
+
+        SELECT @@ROWCOUNT AS RowsAffected;
+    END TRY
+    BEGIN CATCH
+        THROW;
+    END CATCH
+END
+GO
+```
+
+## 14.4 Migration Patterns
+
+### Naming Convention
+```
+V001__CreateUserTables.sql
+V002__CreateOrderTables.sql
+V003__AddAuditTriggers.sql
+V004__SeedData.sql
+```
+
+### Table Creation Pattern
+```sql
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'User')
+BEGIN
+    CREATE TABLE [dbo].[User] (
+        UserId INT IDENTITY(1,1) NOT NULL,
+        FirstName NVARCHAR(100) NOT NULL,
+        LastName NVARCHAR(100) NOT NULL,
+        Email NVARCHAR(255) NOT NULL,
+        IsActive BIT NOT NULL DEFAULT 1,
+        CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        CreatedBy NVARCHAR(100) NOT NULL,
+        ModifiedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        ModifiedBy NVARCHAR(100) NOT NULL,
+        CONSTRAINT PK_User PRIMARY KEY CLUSTERED (UserId),
+        CONSTRAINT UQ_User_Email UNIQUE (Email)
+    );
+
+    CREATE NONCLUSTERED INDEX IX_User_Email ON [dbo].[User] (Email);
+    CREATE NONCLUSTERED INDEX IX_User_IsActive ON [dbo].[User] (IsActive) INCLUDE (FirstName, LastName, Email);
+END
+GO
+```
+
+**Rules**:
+- `IF NOT EXISTS` wrapping for idempotent execution
+- `IDENTITY(1,1)` for auto-increment primary keys
+- `DATETIME2` over `DATETIME` (higher precision)
+- `GETUTCDATE()` for all timestamps (never `GETDATE()`)
+- Audit columns on every table: `CreatedAt`, `CreatedBy`, `ModifiedAt`, `ModifiedBy`
+- Named constraints: `PK_Table`, `FK_Child_Parent`, `UQ_Table_Column`
+- Indexes on foreign keys and commonly queried columns
+
+## 14.5 Seed Data Standards
+
+### Idempotent Pattern
+```sql
+-- Users
+IF NOT EXISTS (SELECT 1 FROM [dbo].[User] WHERE Email = 'john.smith@example.com')
+BEGIN
+    INSERT INTO [dbo].[User] (FirstName, LastName, Email, CreatedAt, CreatedBy, ModifiedAt, ModifiedBy)
+    VALUES ('John', 'Smith', 'john.smith@example.com', '2026-01-15T10:00:00', 'seed', '2026-01-15T10:00:00', 'seed');
+END
+
+-- Orders (references Users)
+IF NOT EXISTS (SELECT 1 FROM [dbo].[Order] WHERE OrderNumber = 'ORD-2026-001')
+BEGIN
+    INSERT INTO [dbo].[Order] (UserId, OrderNumber, TotalAmount, Status, CreatedAt, CreatedBy, ModifiedAt, ModifiedBy)
+    VALUES (
+        (SELECT UserId FROM [dbo].[User] WHERE Email = 'john.smith@example.com'),
+        'ORD-2026-001', 149.99, 'Completed', '2026-01-20T14:30:00', 'seed', '2026-01-20T14:30:00', 'seed'
+    );
+END
+```
+
+**Rules**:
+- `IF NOT EXISTS` or `MERGE` pattern for idempotency — seed scripts must be safe to re-run
+- Foreign key references via subquery (not hardcoded IDs) for portability
+- Realistic recent timestamps (not future dates)
+- Group INSERTs by entity with header comments
+- Match Figma mock data exactly (same values from `_analysis/08-mock-data-catalog.md`)
+- No orphan IDs — every FK reference must resolve to an existing parent record
+
+## 14.6 Verification Rules
+
+The engine validates these 10 rules at every quality gate:
+
+| # | Rule | Failure Type |
+|---|------|-------------|
+| 1 | Every endpoint in `06-api-contracts.md` MUST have a stored procedure | Hard |
+| 2 | Every row in `11-api-to-sp-map.md` must be complete (no empty cells) | Hard |
+| 3 | Every stored procedure MUST reference tables that exist in migrations | Hard |
+| 4 | Complex queries (JOINs of 3+ tables) SHOULD use a view | Warning |
+| 5 | Reusable calculations SHOULD use scalar functions | Warning |
+| 6 | Every table MUST have seed data with realistic sample records | Hard (if require_seed_data=true) |
+| 7 | Seed data foreign keys MUST reference existing parent records | Hard |
+| 8 | Seed data values MUST match Figma mock data (from `08-mock-data-catalog.md`) | Warning |
+| 9 | No orphaned SPs (defined but unreachable from any API endpoint) | Warning |
+| 10 | No orphaned tables (defined but unreferenced by any SP) | Warning |
+
+## 14.7 Cross-Reference Sources
+
+| Source File | Purpose |
+|-------------|---------|
+| `_analysis/06-api-contracts.md` | All API endpoints with HTTP method, route, request/response |
+| `_analysis/11-api-to-sp-map.md` | Frontend Hook → API → Controller → SP → Tables chain |
+| `_analysis/08-mock-data-catalog.md` | Exact mock data values for seed scripts |
+| `_stubs/database/01-tables.sql` | Table structure stubs from Figma Make |
+| `_stubs/database/02-stored-procedures.sql` | SP signature stubs from Figma Make |
+| `_stubs/database/03-seed-data.sql` | Seed data stubs from Figma Make |
+
+## 14.8 View and Function Patterns
+
+### Views (vw_ prefix)
+Use views when a query JOINs 3 or more tables:
+
+```sql
+CREATE OR ALTER VIEW [dbo].[vw_OrderDetails]
+AS
+    SELECT
+        o.OrderId,
+        o.OrderNumber,
+        u.FirstName + ' ' + u.LastName AS CustomerName,
+        oi.ProductName,
+        oi.Quantity,
+        oi.UnitPrice,
+        (oi.Quantity * oi.UnitPrice) AS LineTotal
+    FROM [dbo].[Order] o
+    INNER JOIN [dbo].[User] u ON o.UserId = u.UserId
+    INNER JOIN [dbo].[OrderItem] oi ON o.OrderId = oi.OrderId;
+GO
+```
+
+### Scalar Functions (fn_ prefix)
+Use scalar functions for reusable calculations:
+
+```sql
+CREATE OR ALTER FUNCTION [dbo].[fn_CalculateOrderTotal]
+(
+    @OrderId INT
+)
+RETURNS DECIMAL(18,2)
+AS
+BEGIN
+    DECLARE @Total DECIMAL(18,2);
+    SELECT @Total = SUM(Quantity * UnitPrice)
+    FROM [dbo].[OrderItem]
+    WHERE OrderId = @OrderId;
+    RETURN ISNULL(@Total, 0);
+END
+GO
+```
+
+---
+
+# Chapter 15: Compliance & Security Coding
+
+The GSD engine enforces 88+ security rules across all technology layers. These standards are defined in `%USERPROFILE%\.gsd-global\prompts\shared\security-standards.md`, scanned by `Test-SecurityCompliance` at every quality gate, and checked by council reviewers. Each rule has a unique ID for traceability.
+
+## 15.1 .NET 8 Backend Security
+
+### Authentication & Authorization
+
+| ID | Rule |
+|----|------|
+| SEC-NET-01 | `[Authorize]` attribute on ALL controller classes |
+| SEC-NET-02 | `[ValidateAntiForgeryToken]` on POST/PUT/DELETE actions |
+| SEC-NET-03 | HttpOnly + Secure + SameSite=Strict on all cookies |
+| SEC-NET-04 | Session timeout max 60 minutes, no sliding expiration |
+| SEC-NET-05 | JWT: 15-min access token, 7-day refresh token, signed with RS256 |
+| SEC-NET-06 | Login throttling: rate limit on auth endpoints |
+| SEC-NET-07 | Identical error messages for bad username vs bad password |
+| SEC-NET-08 | ASP.NET Core Identity for auth — never custom implementations |
+| SEC-NET-09 | Verify user access to the specific resource, not just existence |
+
+### Input Validation
+
+| ID | Rule |
+|----|------|
+| SEC-NET-10 | Whitelist validation: accept known-good, reject everything else |
+| SEC-NET-11 | `SqlParameter` or Dapper `@params` for ALL database queries |
+| SEC-NET-12 | `IPAddress.TryParse()` and `Uri.CheckHostName()` for IP/URL input |
+| SEC-NET-13 | Never use `[AllowHtml]` without proven safe content |
+| SEC-NET-14 | FluentValidation or DataAnnotations on all request DTOs |
+
+### Data Protection & Cryptography
+
+| ID | Rule |
+|----|------|
+| SEC-NET-15 | AES-256 for PII/PHI encryption at rest (Data Protection API) |
+| SEC-NET-16 | TLS 1.2+ enforced in Program.cs — never SSL |
+| SEC-NET-17 | PBKDF2 or bcrypt for password hashing with unique salt |
+| SEC-NET-18 | SHA-512 for non-password hashing |
+| SEC-NET-19 | Never implement custom cryptography |
+| SEC-NET-20 | Keys in Azure Key Vault or DPAPI — never in code or config files |
+| SEC-NET-21 | Unique nonce for every encryption operation |
+| SEC-NET-22 | Connection strings in environment variables or secret manager |
+
+### Security Headers
+
+| ID | Rule |
+|----|------|
+| SEC-NET-23 | `X-Content-Type-Options: nosniff` |
+| SEC-NET-24 | `X-Frame-Options: DENY` |
+| SEC-NET-25 | `Content-Security-Policy: default-src 'self'` (strict, no inline scripts) |
+| SEC-NET-26 | `Strict-Transport-Security: max-age=15768000` (HSTS, 6 months) |
+| SEC-NET-27 | Remove server version headers |
+
+### Error Handling & Logging
+
+| ID | Rule |
+|----|------|
+| SEC-NET-28 | Catch specific exception types — never bare `catch (Exception)` |
+| SEC-NET-29 | `ILogger<T>` with structured logging (Serilog pattern) |
+| SEC-NET-30 | Never log passwords, tokens, API keys, SSN, card numbers, PHI |
+| SEC-NET-31 | Log context: userId, requestId, timestamp, operation |
+| SEC-NET-32 | Production: no debug flags, no stack traces in responses |
+| SEC-NET-33 | `async/await` for all I/O; `.ConfigureAwait(false)` in library code |
+
+### Deserialization & SSRF Prevention
+
+| ID | Rule |
+|----|------|
+| SEC-NET-34 | Never use `BinaryFormatter` (CVE risk) |
+| SEC-NET-35 | Use `System.Text.Json` or `DataContractSerializer` |
+| SEC-NET-36 | Validate integrity before deserializing untrusted data |
+| SEC-NET-37 | Validate/whitelist URLs before server-side HTTP requests |
+| SEC-NET-38 | Never auto-follow redirects to prevent internal resource access |
+
+## 15.2 SQL Server Security
+
+### Access Control
+
+| ID | Rule |
+|----|------|
+| SEC-SQL-01 | Stored procedures ONLY — no inline SQL from application layer |
+| SEC-SQL-02 | All parameters use `SqlDbType` with explicit size |
+| SEC-SQL-03 | No dynamic SQL (`sp_executesql`) with unvalidated input |
+| SEC-SQL-04 | Row-level security via WHERE clause on TenantId/OrgId |
+| SEC-SQL-05 | Least privilege: app account has EXECUTE only, never db_owner |
+| SEC-SQL-06 | Windows Integrated Auth when possible; SQL auth only with rotated passwords |
+
+### Structure & Patterns
+
+| ID | Rule |
+|----|------|
+| SEC-SQL-07 | `BEGIN TRY / END TRY / BEGIN CATCH / THROW / END CATCH` in all SPs |
+| SEC-SQL-08 | Audit columns on every table: CreatedAt, CreatedBy, ModifiedAt, ModifiedBy |
+| SEC-SQL-09 | Audit log INSERT on all INSERT/UPDATE/DELETE of sensitive data |
+| SEC-SQL-10 | Explicit column lists in SELECT — never `SELECT *` |
+| SEC-SQL-11 | Strong typing for all parameters (no sql_variant or NVARCHAR(MAX) for IDs) |
+| SEC-SQL-12 | IF EXISTS checks for idempotent migrations |
+| SEC-SQL-13 | GRANT EXECUTE permissions explicitly in each SP |
+| SEC-SQL-14 | Proper indexing on foreign keys and lookup columns |
+| SEC-SQL-15 | `SET NOCOUNT ON` at top of every SP |
+
+### Encryption & Backup
+
+| ID | Rule |
+|----|------|
+| SEC-SQL-16 | TDE (Transparent Data Encryption) for PHI/PII databases |
+| SEC-SQL-17 | TLS 1.2+ for all database connections |
+| SEC-SQL-18 | Encrypted backups stored separately with restricted access |
+
+## 15.3 React 18 Frontend Security
+
+### XSS Prevention
+
+| ID | Rule |
+|----|------|
+| SEC-FE-01 | No `dangerouslySetInnerHTML` without DOMPurify sanitization |
+| SEC-FE-02 | No `eval()` or `new Function()` anywhere |
+| SEC-FE-03 | JSX auto-escaping for all text content |
+| SEC-FE-04 | DOMPurify for any user-generated HTML rendering |
+
+### Data & Token Handling
+
+| ID | Rule |
+|----|------|
+| SEC-FE-05 | HTTPS only for all API calls (enforce in axios/fetch config) |
+| SEC-FE-06 | Never store tokens, PII, passwords in `localStorage` |
+| SEC-FE-07 | Use httpOnly + Secure + SameSite=Strict cookies for auth tokens |
+| SEC-FE-08 | `Authorization: Bearer <token>` header — never in URL parameters |
+| SEC-FE-09 | Token refresh/rotation mechanism |
+
+### Error Handling
+
+| ID | Rule |
+|----|------|
+| SEC-FE-10 | Error boundaries at route level — never expose stack traces |
+| SEC-FE-11 | User-friendly error messages, no technical details |
+| SEC-FE-12 | Remove `console.log` debug statements before production |
+| SEC-FE-13 | Never log sensitive data (tokens, passwords, SSN) to console |
+
+### Dependencies
+
+| ID | Rule |
+|----|------|
+| SEC-FE-14 | `npm audit` in CI/CD — fix high/critical vulnerabilities |
+| SEC-FE-15 | Exact version pinning in package.json |
+| SEC-FE-16 | Subresource Integrity (SRI) hashes for CDN-hosted libraries |
+
+## 15.4 HIPAA Compliance (Health Data)
+
+| ID | Rule |
+|----|------|
+| COMP-HIPAA-01 | PHI encrypted at rest (AES-256 / TDE) and in transit (TLS 1.2+) |
+| COMP-HIPAA-02 | Audit trail for all PHI access: who, what, when, from where |
+| COMP-HIPAA-03 | Role-based access control for PHI endpoints |
+| COMP-HIPAA-04 | Minimum necessary: grant only permissions needed for role |
+| COMP-HIPAA-05 | Data isolation by organization/practice |
+| COMP-HIPAA-06 | 6+ year log retention |
+| COMP-HIPAA-07 | Incident reporting within 24 hours |
+
+## 15.5 SOC 2 Compliance (Trust & Security)
+
+| ID | Rule |
+|----|------|
+| COMP-SOC2-01 | Change control: log all production changes with approval |
+| COMP-SOC2-02 | Security monitoring: failed logins, privilege escalation |
+| COMP-SOC2-03 | Incident response playbook documented |
+| COMP-SOC2-04 | Backup tested regularly, RTO/RPO targets defined |
+| COMP-SOC2-05 | Code review mandatory for all production changes |
+| COMP-SOC2-06 | Vulnerability scan + patch within SLA (critical: 24-48 hrs) |
+
+## 15.6 PCI DSS Compliance (Payment Card Data)
+
+| ID | Rule |
+|----|------|
+| COMP-PCI-01 | Never store raw card numbers — use payment processor tokens |
+| COMP-PCI-02 | Card data encrypted in transit (TLS 1.2+) and at rest (AES-256) |
+| COMP-PCI-03 | Isolate payment systems via firewall/VLAN |
+| COMP-PCI-04 | Multi-factor auth for admin access |
+| COMP-PCI-05 | Never log card numbers |
+| COMP-PCI-06 | Quarterly external penetration testing |
+
+## 15.7 GDPR Compliance (EU Privacy)
+
+| ID | Rule |
+|----|------|
+| COMP-GDPR-01 | APIs for data export, deletion, portability |
+| COMP-GDPR-02 | Explicit consent tracking for data processing |
+| COMP-GDPR-03 | Data minimization: collect only necessary data |
+| COMP-GDPR-04 | Privacy by design: encrypt PII by default |
+| COMP-GDPR-05 | Breach notification within 72 hours |
+| COMP-GDPR-06 | Data retention/deletion schedules enforced |
+
+---
+
 # Appendices
 
 ## Appendix A: Complete File Inventory
@@ -3427,5 +4034,6 @@ Both agent types use the same retry/fallback/rotation infrastructure.
 
 ---
 
-*Generated from GSD Engine v1.6.0 source documentation and scripts.*
+*Generated from GSD Engine v1.6.0 source documentation, scripts, and standards prompt templates.*
 *Total scripts: 27 (1 master installer + 1 pre-flight + 21 installer scripts + 4 standalone utilities)*
+*Chapters: 15 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR)*
