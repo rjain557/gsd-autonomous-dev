@@ -337,6 +337,8 @@ Controls 3-way parallel code review with agent rotation.
 
 Disable: set `partitioned_code_review.enabled` to `false`. The engine uses single-agent Claude review.
 
+**Gemini prerequisite**: Gemini CLI requires `experimental.plan: true` in its settings for `--approval-mode plan` (used during read-only review partitions). Run `gemini` once interactively and enable this setting, or partitioned reviews assigned to Gemini will fail.
+
 Rotation schedule (repeats every 3 iterations):
 
 | Iteration | Partition A | Partition B | Partition C |

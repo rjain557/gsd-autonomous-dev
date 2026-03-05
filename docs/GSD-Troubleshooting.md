@@ -562,6 +562,12 @@ The discovered endpoint count exceeds `max_endpoints` (default 50). This is a sa
 
 One or more partition review jobs failed (agent error, timeout, etc.). The engine automatically falls back to the original single-agent Claude review. Check `.gsd/logs/errors.jsonl` for the specific failure.
 
+Common causes:
+
+- **Gemini `--approval-mode plan` rejected**: Gemini CLI requires `experimental.plan: true` in its settings. Run `gemini` interactively, open Settings, and enable the experimental plan flag. Alternatively, re-run `patch-gsd-partitioned-code-review.ps1` to re-apply the resilience.ps1 gemini dispatch patch.
+- **API key leaked/revoked**: If Gemini returns "API key was reported as leaked", generate a new key at [Google AI Studio](https://aistudio.google.com/apikey) and update via `setup-gsd-api-keys.ps1 -GoogleKey "new-key"`.
+- **Long prompts truncated**: Prompts exceeding 8KB are automatically written to a temp file and piped via stdin. If an agent receives a malformed prompt, check `.gsd/logs/` for errors and ensure the temp directory has write access.
+
 ### Coverage matrix shows gaps
 
 The coverage matrix (`.gsd/code-review/coverage-matrix.json`) tracks which agent reviewed each requirement. Gaps occur when iterations are interrupted before all 3 rotation slots complete. The engine auto-fills gaps in subsequent iterations.
@@ -931,10 +937,27 @@ gemini
 .\scripts\setup-gsd-api-keys.ps1 -GoogleKey "AIza..."
 
 # Verify it works
-"Say READY" | gemini --approval-mode plan 2>&1
+"Say READY" | gemini -p - 2>&1
 ```
 
 If Gemini is down or unresponsive, the engine automatically falls back to Codex for research and spec-fix phases. No manual intervention required.
+
+### Gemini `--approval-mode plan` rejected
+
+Gemini CLI requires the experimental plan feature to be enabled. If you see `"Approval mode plan is only available when experimental.plan is enabled"`:
+
+1. Run `gemini` interactively
+2. Open Settings (or edit `~/.gemini/settings.json`)
+3. Set `experimental.plan: true`
+4. Re-test: `"Say READY" | gemini -p - --approval-mode plan 2>&1`
+
+### Gemini "API key was reported as leaked"
+
+Google has flagged/revoked the API key. Generate a new one:
+
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
+2. Create a new API key
+3. Update: `.\scripts\setup-gsd-api-keys.ps1 -GoogleKey "new-key"`
 
 ### Gemini exit code 44 (sandbox/Docker error)
 

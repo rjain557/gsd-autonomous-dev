@@ -280,9 +280,67 @@ Set-Content -Path (Join-Path $sharedDir "code-review-partition-B.md") -Value $te
 Set-Content -Path (Join-Path $sharedDir "code-review-partition-C.md") -Value $templateC -Encoding UTF8
 Write-Host "  [OK] Created 3 partition prompt templates" -ForegroundColor Green
 
-# ── 3. Add partitioned code review functions to resilience.ps1 ──
+# ── 2b. Ensure Invoke-WithRetry supports gemini dispatch ──
 
 $resilienceFile = Join-Path $GsdGlobalDir "lib\modules\resilience.ps1"
+if (Test-Path $resilienceFile) {
+    $resContent = Get-Content $resilienceFile -Raw
+
+    # Patch both Invoke-WithRetry definitions (original + enhanced) to add gemini + GeminiMode param
+    $patchCount = 0
+
+    # Pattern: add gemini dispatch after codex dispatch in Invoke-WithRetry
+    $oldCodexDispatch = @'
+            } elseif ($Agent -eq "codex") {
+                $output = codex exec --full-auto $effectivePrompt 2>&1
+                $exitCode = $LASTEXITCODE
+            }
+'@
+    $newCodexDispatch = @'
+            } elseif ($Agent -eq "codex") {
+                $output = codex exec --full-auto $effectivePrompt 2>&1
+                $exitCode = $LASTEXITCODE
+            } elseif ($Agent -eq "gemini") {
+                $geminiArgs = @("-p", $effectivePrompt)
+                if ($GeminiMode) { $geminiArgs += "--approval-mode"; $geminiArgs += $GeminiMode }
+                else { $geminiArgs += "--approval-mode"; $geminiArgs += "plan" }
+                $output = gemini @geminiArgs 2>&1
+                $exitCode = $LASTEXITCODE
+            }
+'@
+
+    if ($resContent -match 'Agent -eq "gemini"') {
+        Write-Host "  [SKIP] Invoke-WithRetry already has gemini dispatch" -ForegroundColor DarkGray
+    } elseif ($resContent.Contains($oldCodexDispatch)) {
+        $resContent = $resContent.Replace($oldCodexDispatch, $newCodexDispatch)
+        $patchCount++
+        Write-Host "  [OK] Added gemini dispatch to Invoke-WithRetry" -ForegroundColor Green
+    } else {
+        Write-Host "  [!!] Could not find codex dispatch anchor in Invoke-WithRetry" -ForegroundColor DarkYellow
+    }
+
+    # Also ensure GeminiMode parameter exists in both function signatures
+    $oldParamLine = '[string]$AllowedTools = "Read,Write,Edit,Bash,mcp__*"'
+    $newParamLine = '[string]$AllowedTools = "Read,Write,Edit,Bash,mcp__*",' + "`n" + '        [string]$GeminiMode = ""'
+
+    if ($resContent -match 'GeminiMode') {
+        Write-Host "  [SKIP] GeminiMode parameter already exists" -ForegroundColor DarkGray
+    } else {
+        # Replace all occurrences (both function definitions)
+        $resContent = $resContent.Replace($oldParamLine, $newParamLine)
+        $patchCount++
+        Write-Host "  [OK] Added GeminiMode parameter to Invoke-WithRetry" -ForegroundColor Green
+    }
+
+    if ($patchCount -gt 0) {
+        Set-Content -Path $resilienceFile -Value $resContent -Encoding UTF8
+    }
+}
+
+Write-Host ""
+
+# ── 3. Add partitioned code review functions to resilience.ps1 ──
+
 if (Test-Path $resilienceFile) {
     $existing = Get-Content $resilienceFile -Raw
 

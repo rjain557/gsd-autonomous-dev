@@ -18,7 +18,7 @@
 
 | Tool | Purpose | Install Command |
 |------|---------|----------------|
-| Gemini CLI | Three-model optimization (research, spec-fix) | `npm install -g @google/gemini-cli` |
+| Gemini CLI | Three-model optimization (research, spec-fix, partitioned review). After install, run `gemini` once interactively and enable `experimental.plan` in settings (required for `--approval-mode plan`). | `npm install -g @google/gemini-cli` |
 | sqlcmd | SQL syntax validation | `winget install Microsoft.SqlServer.SqlCmd` |
 | ntfy app | Mobile push notifications | iOS App Store / Google Play |
 

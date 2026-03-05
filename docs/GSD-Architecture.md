@@ -145,7 +145,7 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 | Phase | Agent | Mode | Why |
 |-------|-------|------|-----|
 | Review | Claude | `--allowedTools Read,Write,Bash` | Better at architectural analysis |
-| Research | **Gemini** | `--approval-mode plan` (read-only) | Saves Claude/Codex quota; falls back to Codex |
+| Research | **Gemini** | `--approval-mode plan` (read-only; requires `experimental.plan: true` in gemini settings) | Saves Claude/Codex quota; falls back to Codex |
 | Plan | Claude | `--allowedTools Read,Write,Bash` | Better at strategic planning |
 | Execute | Codex (or parallel pool) | `--full-auto` | Faster at bulk code generation; parallel mode round-robins across agents |
 | Verify | Claude | `--allowedTools Read,Write,Bash` | Better at spec compliance checking |
@@ -824,9 +824,10 @@ Pattern checks enforced on every iteration:
 ### CLI Version Validation
 
 Pre-flight checks for required tools:
+
 - claude (required)
 - codex (required)
-- gemini (optional - falls back to codex for research/spec-fix)
+- gemini (required for partitioned review; falls back to codex for research/spec-fix if unavailable)
 - dotnet (8.x)
 - node, npm
 - sqlcmd (optional)
@@ -1235,6 +1236,8 @@ This ensures every agent reviews every partition over 3 iterations, eliminating 
 - **Partition C**: Security, Compliance & UX
 
 Reviews validate against both spec documents and Figma deliverables.
+
+**Agent Dispatch**: `Invoke-WithRetry` handles all three agents (claude, codex, gemini) with the `-GeminiMode` parameter controlling Gemini's approval mode. Prompts exceeding 8KB are automatically written to a temp file and piped via stdin to avoid shell argument-length limits. The patch script auto-patches `resilience.ps1` (step 2b) to add gemini dispatch if missing.
 
 Configuration in `global-config.json` under `partitioned_code_review`:
 

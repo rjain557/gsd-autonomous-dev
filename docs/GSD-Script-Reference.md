@@ -501,7 +501,7 @@ Runtime smoke test: (1) `Test-SeedDataFkOrder` -- static scan of SQL seed files 
 
 ### patch-gsd-partitioned-code-review.ps1 (Script 33)
 
-Partitioned code review: (1) `Split-RequirementsIntoPartitions` -- divides requirements into 3 balanced groups. (2) `Get-SpecAndFigmaPaths` -- resolves spec and Figma deliverable paths for requirements. (3) `Invoke-PartitionedCodeReview` -- launches 3 parallel agents with rotation-based assignment, merges results. (4) `Merge-PartitionedReviews` -- combines partition results into single health score. (5) `Update-CoverageMatrix` -- tracks which agent reviewed which requirement. Output: `.gsd/code-review/coverage-matrix.json`.
+Partitioned code review: (1) `Split-RequirementsIntoPartitions` -- divides requirements into 3 balanced groups. (2) `Get-SpecAndFigmaPaths` -- resolves spec and Figma deliverable paths for requirements. (3) `Invoke-PartitionedCodeReview` -- launches 3 parallel agents with rotation-based assignment, merges results. (4) `Merge-PartitionedReviews` -- combines partition results into single health score. (5) `Update-CoverageMatrix` -- tracks which agent reviewed which requirement. Also auto-patches `resilience.ps1` (step 2b) to add gemini dispatch and `GeminiMode` parameter to `Invoke-WithRetry` if missing. Output: `.gsd/code-review/coverage-matrix.json`.
 
 ### patch-gsd-loc-cost-integration.ps1 (Script 34)
 
@@ -616,7 +616,7 @@ Generates `.gsd/supervisor/escalation-report.md` with all diagnostic data when a
 
 ### Invoke-WithRetry
 
-Calls an AI agent with retry logic, batch reduction, watchdog timeout, and quota-aware backoff. Each agent call runs in an isolated child process with a configurable watchdog timer (default: 30 minutes). If the agent hangs, the watchdog kills the process tree, halves the batch, sends a notification, and retries.
+Calls an AI agent with retry logic, batch reduction, watchdog timeout, and quota-aware backoff. Each agent call runs in an isolated child process with a configurable watchdog timer (default: 30 minutes). If the agent hangs, the watchdog kills the process tree, halves the batch, sends a notification, and retries. Prompts exceeding 8KB are automatically written to a temp file and piped via stdin to avoid shell argument-length limits.
 
 Parameters:
 
