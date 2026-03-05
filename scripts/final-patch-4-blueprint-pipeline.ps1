@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Final Integration Sub-Patch 4/6: Blueprint Pipeline - Fully Integrated
     Fixes GAP 9: Per-iteration disk checks in main loop
@@ -241,7 +241,7 @@ if ($needsBlueprint) {
         }
     } else { Write-Host "  [DRY RUN] claude -> blueprint" -ForegroundColor DarkYellow }
 
-    # ── POST-BLUEPRINT COUNCIL (validate blueprint before building) ──
+    # â”€â”€ POST-BLUEPRINT COUNCIL (validate blueprint before building) â”€â”€
     if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Post-blueprint council review..." -ForegroundColor Cyan
         $bpCouncil = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration 0 -Health 0 -Pipeline "blueprint" -CouncilType "post-blueprint"
@@ -497,6 +497,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     $bpFinalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $bpCompleteMsg = "$repoName | 100% in $Iteration iterations"
+    $bpLocCostSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($bpLocCostSummary) { $bpCompleteMsg += "`n$bpLocCostSummary" }
     $bpLocFinalLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
     if ($bpLocFinalLine) { $bpCompleteMsg += "`n$bpLocFinalLine" }
     if ($bpFinalCostLine) { $bpCompleteMsg += "`n$bpFinalCostLine" }
@@ -573,3 +575,4 @@ Write-Host "=========================================================" -Foregrou
 
 Set-Content -Path "$BpScriptDir\blueprint-pipeline.ps1" -Value $script -Encoding UTF8
 Write-Host "   [OK] blueprint-pipeline.ps1 (final)" -ForegroundColor DarkGreen
+

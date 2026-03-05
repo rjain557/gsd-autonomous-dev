@@ -4,6 +4,9 @@ clients/bwh/directorystructure.txt
 # Node
 node_modules/
 
+# Secrets
+keys/
+
 # OS
 .DS_Store
 Thumbs.db

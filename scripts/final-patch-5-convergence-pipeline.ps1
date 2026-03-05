@@ -148,6 +148,11 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     if (Test-Path $hintPath) {
         $resolved += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw)
     }
+    # LOC context: inject AI code generation metrics into review prompts
+    if ($templatePath -match "code-review" -and (Get-Command Get-LocContextForReview -ErrorAction SilentlyContinue)) {
+        $locCtx = Get-LocContextForReview -GsdDir $GsdDir
+        if ($locCtx) { $resolved += "`n`n$locCtx" }
+    }
     # Council: inject feedback from previous council review
     $councilFeedbackPath = Join-Path $GsdDir "supervisor\council-feedback.md"
     if (Test-Path $councilFeedbackPath) {
@@ -631,6 +636,9 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     $finalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $convergedMsg = "$repoName | 100% in $Iteration iterations"
+    # LOC vs Cost summary for final notification
+    $locCostSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostSummary) { $convergedMsg += "`n$locCostSummary" }
     $locFinalLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
     if ($locFinalLine) { $convergedMsg += "`n$locFinalLine" }
     if ($finalCostLine) { $convergedMsg += "`n$finalCostLine" }
@@ -640,6 +648,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
     $stalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $stalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
+    $locCostStalledSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostStalledSummary) { $stalledMsg += "`n$locCostStalledSummary" }
     $locStalledLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
     if ($locStalledLine) { $stalledMsg += "`n$locStalledLine" }
     if ($stalledCostLine) { $stalledMsg += "`n$stalledCostLine" }
@@ -649,6 +659,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
     $maxIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $maxIterMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
+    $locCostMaxSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostMaxSummary) { $maxIterMsg += "`n$locCostMaxSummary" }
     $locMaxLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
     if ($locMaxLine) { $maxIterMsg += "`n$locMaxLine" }
     if ($maxIterCostLine) { $maxIterMsg += "`n$maxIterCostLine" }
@@ -696,3 +708,5 @@ Write-Host "=========================================================" -Foregrou
 
 Set-Content -Path "$ScriptDir\convergence-loop.ps1" -Value $script -Encoding UTF8
 Write-Host "   [OK] convergence-loop.ps1 (final)" -ForegroundColor DarkGreen
+
+
