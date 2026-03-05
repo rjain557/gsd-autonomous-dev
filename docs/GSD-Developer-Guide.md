@@ -19,6 +19,7 @@
 | 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
 | 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
 | 2.1.0 | March 2026 | Runtime smoke tests (Script 32: DI validation, API endpoint checks, seed FK order). Partitioned code review (Script 33: 3-way parallel with agent rotation). LOC-cost integration (Script 34: baseline tracking, grand totals, cost-per-line in every notification). Maintenance mode (Script 35): `gsd-fix` (text/file/directory with screenshots), `gsd-update`, `--Scope`, `--Incremental`, `-BugDir`. Added Chapters 17.7-17.8, expanded Chapter 19, added Chapter 20. |
+| 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-agent parallel extraction with confidence scoring. `gsd-verify-requirements` standalone command. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
 
 ---
 
@@ -4864,6 +4865,124 @@ gsd-converge --Scope "source:v02_spec"
 
 ---
 
+# Chapter 21: Council-Based Requirements Verification
+
+## 21.1 Overview
+
+The standard Phase 0 (create-phases) uses a single Claude agent to extract requirements. Council-based verification uses ALL 3 agents (Claude, Codex, Gemini) independently, then synthesizes a merged, deduplicated, confidence-scored requirements matrix.
+
+### Why 3-Agent Extraction?
+
+- **Claude** focuses on architecture, compliance (HIPAA/SOC2/PCI/GDPR), and cross-cutting concerns
+- **Codex** focuses on implementation completeness, code patterns, and implied requirements from existing code
+- **Gemini** focuses on spec/Figma alignment, UI requirements, and missing UX states
+- Each agent catches gaps the others miss
+- Confidence scoring identifies which requirements are well-established vs. need human review
+
+## 21.2 Usage
+
+```powershell
+# Run standalone on any repo
+cd D:\vscode\your-project
+gsd-verify-requirements
+
+# Options
+gsd-verify-requirements -Sequential         # Run agents one at a time
+gsd-verify-requirements -DryRun             # Preview without running agents
+gsd-verify-requirements -SkipAgent gemini   # Skip unavailable agent
+gsd-verify-requirements -PreserveExisting   # Backup and merge into existing matrix
+```
+
+## 21.3 How It Works
+
+| Step | Agent | Action |
+|------|-------|--------|
+| 1. Extract | Claude, Codex, Gemini (parallel) | Each independently reads specs, Figma, and code |
+| 2. Synthesize | Claude | Merges, deduplicates, assigns confidence scores |
+| 3. Fallback | PowerShell | Local token-overlap merge if synthesis fails |
+
+### Confidence Scoring
+
+| Level | Agents Found | Meaning |
+|-------|-------------|---------|
+| High | 3 | All agents agree -- requirement is real |
+| Medium | 2 | Majority agree -- likely real |
+| Low | 1 | Single agent -- flagged for human review |
+
+## 21.4 Output Files
+
+| File | Description |
+|------|-------------|
+| `.gsd/health/requirements-matrix.json` | Merged matrix with `confidence` and `found_by` fields |
+| `.gsd/health/council-requirements-report.md` | Confidence breakdown and low-confidence items |
+| `.gsd/health/health-current.json` | Initial health score |
+| `.gsd/health/drift-report.md` | Not-started and partial requirements |
+| `.gsd/health/council-extract-{agent}.json` | Raw per-agent extraction outputs |
+
+## 21.5 Schema Extensions
+
+New fields added to each requirement (backward compatible):
+
+```json
+{
+  "id": "REQ-001",
+  "confidence": "high|medium|low",
+  "found_by": ["claude", "codex", "gemini"]
+}
+```
+
+New meta fields:
+
+```json
+{
+  "meta": {
+    "extraction_method": "council|single",
+    "agents_participated": ["claude", "codex", "gemini"],
+    "timestamp": "2026-03-05T10:00:00Z"
+  }
+}
+```
+
+## 21.6 Convergence Pipeline Integration
+
+When `council_requirements.enabled = true` in `global-config.json`, the convergence pipeline Phase 0 automatically uses council extraction instead of single-agent. Falls back to single-agent if council fails.
+
+### Configuration
+
+```json
+{
+  "council_requirements": {
+    "enabled": true,
+    "agents": ["claude", "codex", "gemini"],
+    "min_agents_for_merge": 2,
+    "timeout_seconds": 600,
+    "cooldown_between_agents": 5,
+    "fallback_to_single": true
+  }
+}
+```
+
+## 21.7 Error Handling
+
+| Scenario | Recovery |
+|----------|----------|
+| 1 agent fails | Proceed with 2; max confidence = "medium" |
+| 2 agents fail | Use single agent output; all confidence = "low" |
+| All agents fail | Fall back to single-agent create-phases |
+| Synthesis fails | Local PowerShell merge (token-overlap dedup) |
+
+## 21.8 Cost Estimate
+
+| Step | Agent | Est. Cost |
+|------|-------|-----------|
+| Extract | Claude | ~$0.07 |
+| Extract | Codex | ~$0.00 |
+| Extract | Gemini | ~$0.00 |
+| Synthesize | Claude | ~$0.07 |
+| **Total** | | **~$0.14** |
+
+---
+
 # Appendices
 
 ## Appendix A: Complete File Inventory
@@ -5044,6 +5163,6 @@ gsd-converge --Scope "source:v02_spec"
 
 ---
 
-*Generated from GSD Engine v2.0.0 source documentation, scripts, and standards prompt templates.*
-*Total scripts: 37 (1 master installer + 1 pre-flight + 31 installer scripts + 4 standalone utilities)*
-*Chapters: 19 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*
+*Generated from GSD Engine v2.2.0 source documentation, scripts, and standards prompt templates.*
+*Total scripts: 38 (1 master installer + 1 pre-flight + 32 installer scripts + 4 standalone utilities)*
+*Chapters: 21 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*

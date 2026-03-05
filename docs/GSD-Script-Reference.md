@@ -511,6 +511,25 @@ LOC-Cost integration: (1) `Save-LocBaseline` -- records starting git commit hash
 
 Maintenance mode: adds `gsd-fix` and `gsd-update` commands for post-delivery maintenance workflows. `gsd-fix` accepts plain text, files (`-File`), or directories with rich artifacts (`-BugDir` — screenshots, logs, repro files copied to `.gsd/supervisor/bug-artifacts/`). Supports `--Scope` parameter for targeted convergence and `--Incremental` for adding new requirements from updated specs without losing existing satisfied items.
 
+### patch-gsd-council-requirements.ps1 (Script 36)
+
+Council-based requirements verification: all 3 agents (Claude, Codex, Gemini) independently extract requirements from specs, Figma, and code, then Claude synthesizes a merged, deduplicated, confidence-scored `requirements-matrix.json`. (1) `Invoke-CouncilRequirements` -- dispatches 3 parallel PowerShell jobs, collects JSON outputs, runs Claude synthesis. (2) `Merge-CouncilRequirementsLocal` -- local PowerShell fallback merge using token-overlap deduplication when synthesis agent fails. (3) `gsd-verify-requirements` profile function -- standalone command for any repo. Confidence scoring: found by 3 agents = "high", 2 = "medium", 1 = "low" (flagged for review). Also patches convergence pipeline Phase 0 to use council extraction when `council_requirements.enabled = true` in `global-config.json`. Output: `.gsd/health/requirements-matrix.json` (with `confidence` and `found_by` fields), `.gsd/health/council-requirements-report.md`.
+
+Usage:
+
+```powershell
+# Install
+.\scripts\patch-gsd-council-requirements.ps1
+
+# Run standalone on any repo
+cd D:\vscode\your-project
+gsd-verify-requirements                     # 3-agent parallel extraction
+gsd-verify-requirements -Sequential         # One agent at a time
+gsd-verify-requirements -DryRun             # Preview without running
+gsd-verify-requirements -SkipAgent gemini   # Skip unavailable agent
+gsd-verify-requirements -PreserveExisting   # Merge into existing matrix
+```
+
 ### Optional standalone scripts
 
 These are NOT run by the installer but can be run manually:
