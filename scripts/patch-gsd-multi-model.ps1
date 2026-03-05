@@ -143,7 +143,7 @@ if (Test-Path $registryPath) {
             }
             kimi = [ordered]@{
                 type = "openai-compat"
-                endpoint = "https://api.moonshot.cn/v1/chat/completions"
+                endpoint = "https://api.moonshot.ai/v1/chat/completions"
                 api_key_env = "KIMI_API_KEY"
                 model_id = "kimi-k2.5"
                 max_tokens = 8192
@@ -165,7 +165,7 @@ if (Test-Path $registryPath) {
             }
             glm5 = [ordered]@{
                 type = "openai-compat"
-                endpoint = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+                endpoint = "https://api.z.ai/api/paas/v4/chat/completions"
                 api_key_env = "GLM_API_KEY"
                 model_id = "glm-5"
                 max_tokens = 8192
@@ -299,6 +299,12 @@ function Invoke-OpenAICompatibleAgent {
         return "error: Agent '$AgentName' not found in model-registry.json or not openai-compat type"
     }
 
+    # Check if agent is disabled in registry
+    if ($cfg.enabled -eq $false) {
+        $reason = if ($cfg.disabled_reason) { $cfg.disabled_reason } else { "disabled in model-registry.json" }
+        return "connection_failed: Agent '$AgentName' is disabled - $reason"
+    }
+
     # Resolve API key from environment (check Process, then User, then Machine store)
     $apiKey = [System.Environment]::GetEnvironmentVariable($cfg.api_key_env)
     if (-not $apiKey) {
@@ -309,6 +315,9 @@ function Invoke-OpenAICompatibleAgent {
     if (-not $apiKey) {
         return "unauthorized: $($cfg.api_key_env) environment variable not set"
     }
+
+    # Enforce TLS 1.2+ (required by many API providers, especially Chinese endpoints)
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
 
     # Build request body
     $requestBody = @{
@@ -385,6 +394,9 @@ function Invoke-OpenAICompatibleAgent {
             }
         } elseif ($statusCode -ge 500) {
             return "server_error: $errMsg (HTTP $statusCode)"
+        } elseif ($errMsg -match "(Unable to connect|No such host|name.*(not|could not).*resolve|ConnectFailure|connection refused|actively refused|unreachable|SocketException|NameResolutionFailure)") {
+            # Endpoint unreachable — fail fast, don't retry
+            return "connection_failed: endpoint unreachable for $AgentName ($($cfg.endpoint)) - $errMsg"
         } else {
             return "error: $errMsg"
         }

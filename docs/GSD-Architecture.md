@@ -203,9 +203,9 @@ CLI agent API keys are configured during installation (Step 0 of `install-gsd-gl
 
 | Environment Variable | Provider | Agent Name | Key Source |
 |---------------------|----------|-----------|-----------|
-| KIMI_API_KEY | Moonshot AI | kimi | https://platform.moonshot.cn |
+| KIMI_API_KEY | Moonshot AI | kimi | https://platform.moonshot.ai |
 | DEEPSEEK_API_KEY | DeepSeek | deepseek | https://platform.deepseek.com |
-| GLM_API_KEY | Zhipu AI | glm5 | https://open.bigmodel.cn |
+| GLM_API_KEY | Zhipu AI | glm5 | https://z.ai |
 | MINIMAX_API_KEY | MiniMax | minimax | https://platform.minimaxi.com |
 
 REST agent API keys are optional. Agents without keys are automatically excluded from the rotation pool. Set keys as User-level environment variables:

@@ -67,9 +67,9 @@ The engine supports 4 additional REST API agents that expand the rotation pool f
 
 | Environment Variable | Provider | Model | Key Source |
 |---------------------|----------|-------|-----------|
-| KIMI_API_KEY | Moonshot AI | Kimi K2.5 | https://platform.moonshot.cn |
+| KIMI_API_KEY | Moonshot AI | Kimi K2.5 | https://platform.moonshot.ai |
 | DEEPSEEK_API_KEY | DeepSeek | DeepSeek V3 | https://platform.deepseek.com |
-| GLM_API_KEY | Zhipu AI | GLM-5 | https://open.bigmodel.cn |
+| GLM_API_KEY | Zhipu AI | GLM-5 | https://z.ai |
 | MINIMAX_API_KEY | MiniMax | MiniMax M2.5 | https://platform.minimaxi.com |
 
 Set keys as persistent User-level environment variables:

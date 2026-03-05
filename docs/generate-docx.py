@@ -277,7 +277,7 @@ def create_title_page(doc):
     # Version & Date
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("Version 1.6.1  |  March 2026")
+    run = p.add_run("Version 1.7.0  |  March 2026")
     run.font.size = Pt(13)
     run.font.color.rgb = MED_GRAY
     run.font.name = "Calibri"

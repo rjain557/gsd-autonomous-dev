@@ -16,6 +16,7 @@
 | 1.5.0 | March 2026 | Quality gates (DB completeness, security compliance, spec validation), chunked council reviews |
 | 1.6.0 | March 2026 | Multi-model LLM integration (4 REST agents), API/Database interface auto-detection, REST agent error handling |
 | 1.6.1 | March 2026 | Added Chapters 13-15: Coding Standards & Methodologies, Database Coding Standards, Compliance & Security Coding (88+ rules with IDs) |
+| 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
 
 ---
 
@@ -3198,8 +3199,8 @@ Understanding each model's capabilities is essential for knowing why the engine 
 
 | Attribute | Detail |
 |-----------|--------|
-| **Strengths** | Good multilingual support, 128K context window, reliable for review tasks, cost-effective ($0.60/$2.50 per M) |
-| **Weaknesses** | May timeout on very large prompts, higher latency due to API location (China-based), less tested on complex architectural decisions |
+| **Strengths** | Good multilingual support, 128K context window, reliable for review tasks, cost-effective ($0.60/$2.50 per M), international endpoint via Cloudflare CDN |
+| **Weaknesses** | May timeout on very large prompts, requires API key from international platform (platform.moonshot.ai), less tested on complex architectural decisions |
 | **Pipeline Role** | Council reviewer, rotation fallback pool member |
 | **Fallback Behavior** | Routes to next available agent on failure; falls back to Claude for read-only phases |
 | **Best For** | Independent code review with a different perspective, diversifying the council review pool |
@@ -3219,7 +3220,7 @@ Understanding each model's capabilities is essential for knowing why the engine 
 | Attribute | Detail |
 |-----------|--------|
 | **Strengths** | Good general reasoning, 128K context window, balanced code analysis capabilities, reliable for structured tasks |
-| **Weaknesses** | Mid-range pricing ($1.00/$3.20 per M), less specialized than Claude for judgment or Codex for generation |
+| **Weaknesses** | Mid-range pricing ($1.00/$3.20 per M), international endpoint (api.z.ai) may require firewall whitelist (IPs: 128.14.69.x), less specialized than Claude for judgment or Codex for generation |
 | **Pipeline Role** | Council reviewer, rotation fallback pool member |
 | **Fallback Behavior** | Routes to next available agent on failure; falls back to Claude for read-only phases |
 | **Best For** | Expanding the council pool with another perspective, fallback when preferred agents are quota-exhausted |
@@ -3278,9 +3279,9 @@ All agents are configured in `model-registry.json`:
   "agents": {
     "kimi": {
       "type": "openai-compat",
-      "endpoint": "https://api.moonshot.cn/v1/chat/completions",
+      "endpoint": "https://api.moonshot.ai/v1/chat/completions",
       "api_key_env": "KIMI_API_KEY",
-      "model_id": "moonshot-v1-128k",
+      "model_id": "kimi-k2.5",
       "enabled": true,
       "pricing": { "input_per_m": 0.60, "output_per_m": 2.50 }
     }
@@ -3291,7 +3292,9 @@ All agents are configured in `model-registry.json`:
 
 **To add a new REST agent:** Add an entry to `agents` with type `openai-compat`, set the API key environment variable, add to `rotation_pool_default`.
 
-**To disable an agent:** Set `"enabled": false` in model-registry.json, or remove its API key environment variable.
+**To disable an agent:** Set `"enabled": false` in model-registry.json, remove from `rotation_pool_default`, and remove from `council.reviewers` in agent-map.json. You can optionally add `"disabled_reason"` to document why.
+
+> **Note:** Kimi uses the international endpoint (`api.moonshot.ai`, Cloudflare CDN). Get your API key from [platform.moonshot.ai](https://platform.moonshot.ai). GLM-5 uses the international endpoint (`api.z.ai`, ZenLayer CDN). Get your API key and subscription from [z.ai](https://z.ai). Both endpoints require API keys from their respective international platforms — keys from the Chinese platforms (.cn) will not work.
 
 ## 12.4 Model Cost Comparison
 
@@ -3352,20 +3355,29 @@ Both agent types use the same retry/fallback/rotation infrastructure.
 
 ### REST Agent Notes
 
-- **All REST agents**: API keys are optional and warn-only. If an API key is missing, that agent is excluded from the rotation pool automatically. No engine restart needed.
-- **Kimi K2.5**: Based in China — expect higher latency from US/EU locations. Use for council reviews where latency is acceptable.
-- **DeepSeek V3**: Aggressive rate limits — the engine rotates away after 1 consecutive failure. Best value for high-volume review tasks.
-- **GLM-5**: Solid general-purpose capabilities. Good fallback when other REST agents are rate-limited.
+- **All REST agents**: API keys are optional and warn-only. If an API key is missing, that agent is excluded from the rotation pool automatically. No engine restart needed. TLS 1.2+ is enforced on all REST calls.
+- **Kimi K2.5**: Uses international endpoint (`api.moonshot.ai`, Cloudflare CDN) for global accessibility. Requires API key from [platform.moonshot.ai](https://platform.moonshot.ai). Note: keys from the China platform (`platform.moonshot.cn`) may not work on the international endpoint.
+- **DeepSeek V3**: Aggressive rate limits — the engine rotates away after 1 consecutive failure. Best value for high-volume review tasks. Requires active billing credits (HTTP 402 if depleted).
+- **GLM-5**: Uses international endpoint (`api.z.ai`, ZenLayer CDN). Requires API key and subscription from [z.ai](https://z.ai). May require firewall whitelist for IPs 128.14.69.x on corporate networks.
 - **MiniMax M2.5**: Largest context window among REST agents (200K). Good for reviewing large requirement batches in council chunked reviews.
+
+### Connection Failure Detection
+
+REST agents that return `connection_failed:` errors (unreachable endpoints, DNS resolution failures, connection refused) trigger **immediate rotation** — no retries, no diagnosis overhead. The failed agent is placed on a 60-minute cooldown. This prevents the engine from wasting attempts on endpoints that will never respond.
+
+Error patterns detected: `Unable to connect`, `No such host`, `ConnectFailure`, `connection refused`, `actively refused`, `unreachable`, `SocketException`, `NameResolutionFailure`, `timed out`.
+
+Disabled agents (those with `"enabled": false` in model-registry.json) return `connection_failed:` immediately without making any HTTP calls.
 
 ### Rotation and Failover
 
 The engine uses a 7-agent rotation pool defined in `model-registry.json`. When any agent fails:
-1. `Get-FailureDiagnosis` classifies the error (rate_limit, quota_exhausted, unauthorized, timeout, server_error)
-2. For rate_limit/quota: `Set-AgentCooldown` places the agent on 30-minute cooldown
-3. `Get-NextAvailableAgent` selects the next agent not on cooldown
-4. For read-only phases (research, review, verify, plan, council): falls back to Claude
-5. For execution phases: retries with reduced batch
+1. `Get-FailureDiagnosis` classifies the error (rate_limit, quota_exhausted, unauthorized, timeout, server_error, connection_failed)
+2. For connection_failed: immediate rotation with 60-minute cooldown (no retries)
+3. For rate_limit/quota: `Set-AgentCooldown` places the agent on 30-minute cooldown
+4. `Get-NextAvailableAgent` selects the next agent not on cooldown (skips disabled agents)
+5. For read-only phases (research, review, verify, plan, council): falls back to Claude
+6. For execution phases: retries with reduced batch
 
 The rotation threshold is **1 consecutive failure** (reduced from 3 by the multi-model patch) for immediate failover across all 7 agents.
 

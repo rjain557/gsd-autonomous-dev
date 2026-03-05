@@ -160,7 +160,7 @@ Central configuration for all AI agents (CLI and REST API). Created by `patch-gs
     "gemini": { "type": "cli", "role": ["research", "spec-fix", "council-review"] },
     "kimi": {
       "type": "openai-compat",
-      "endpoint": "https://api.moonshot.cn/v1/chat/completions",
+      "endpoint": "https://api.moonshot.ai/v1/chat/completions",
       "api_key_env": "KIMI_API_KEY",
       "model_id": "kimi-k2.5",
       "max_tokens": 8192,
@@ -182,7 +182,7 @@ Central configuration for all AI agents (CLI and REST API). Created by `patch-gs
     },
     "glm5": {
       "type": "openai-compat",
-      "endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "endpoint": "https://api.z.ai/api/paas/v4/chat/completions",
       "api_key_env": "GLM_API_KEY",
       "model_id": "glm-5",
       "max_tokens": 8192,
@@ -867,9 +867,9 @@ Set manually via PowerShell. REST agents without keys are automatically excluded
 
 | Variable | Used By | Provider | Key Source |
 |----------|---------|----------|-----------|
-| KIMI_API_KEY | Kimi K2.5 | Moonshot AI | https://platform.moonshot.cn |
+| KIMI_API_KEY | Kimi K2.5 | Moonshot AI | https://platform.moonshot.ai |
 | DEEPSEEK_API_KEY | DeepSeek V3 | DeepSeek | https://platform.deepseek.com |
-| GLM_API_KEY | GLM-5 | Zhipu AI | https://open.bigmodel.cn |
+| GLM_API_KEY | GLM-5 | Zhipu AI | https://z.ai |
 | MINIMAX_API_KEY | MiniMax M2.5 | MiniMax | https://platform.minimaxi.com |
 
 Set REST agent keys (User-level, persists across sessions):
