@@ -210,9 +210,9 @@ Check current agent cooldowns:
 Get-Content .gsd\supervisor\agent-cooldowns.json | ConvertFrom-Json
 ```
 
-### "Network unavailable. Polling every 30s..."
+### "Network unavailable. Polling every 10s..."
 
-Network connectivity lost. The engine polls until back online (max 1 hour). Check your internet connection. If you are behind a firewall, ensure claude, codex, and gemini CLIs can reach their respective APIs.
+Network connectivity lost. The engine polls using a fast HTTP HEAD check (max 60 seconds, 6 polls x 10s), then skips and moves on. Check your internet connection. If you are behind a firewall, ensure claude, codex, and gemini CLIs can reach their respective APIs. The network check uses `api.anthropic.com` as the probe target (any HTTP response, including 4xx, confirms connectivity).
 
 ### Codex "exit code 2" with batch reduction to minimum
 

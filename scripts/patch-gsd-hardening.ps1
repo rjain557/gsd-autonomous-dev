@@ -71,8 +71,8 @@ $script:QUOTA_SLEEP_MAX = 60            # cap at 60 minutes
 $script:QUOTA_SLEEP_BACKOFF = 2         # double each cycle: 5, 10, 20, 40, 60, 60...
 $script:QUOTA_SLEEP_MINUTES = $script:QUOTA_SLEEP_INITIAL  # compat alias
 $script:QUOTA_MAX_SLEEPS = 24           # max total sleep cycles
-$script:NETWORK_POLL_SECONDS = 30
-$script:NETWORK_MAX_POLLS = 120        # max 1 hour of polling
+$script:NETWORK_POLL_SECONDS = 10
+$script:NETWORK_MAX_POLLS = 6          # max 60s of polling, then skip
 $script:DISK_MIN_FREE_GB = 0.5
 $script:JSON_BACKUP_SUFFIX = ".last-good"
 
@@ -258,17 +258,29 @@ function Wait-ForQuotaReset {
 function Wait-ForNetwork {
     <#
     .SYNOPSIS
-        Polls for internet connectivity. Returns true when online, false after timeout.
+        Polls for internet connectivity using fast HTTP check. Returns true when online, false after timeout.
+        Uses lightweight HTTP HEAD to api.anthropic.com instead of claude CLI (which can hang).
     #>
     param([string]$GsdDir)
 
-    # Quick check first
-    try {
-        $null = claude -p "PING" --max-turns 1 2>$null; if ($LASTEXITCODE -ne 0) { throw "offline" }
-        return $true
-    } catch {}
+    # Fast HTTP-based connectivity check (5s timeout, no CLI dependency)
+    function Test-NetworkFast {
+        try {
+            $null = Invoke-WebRequest -Uri "https://api.anthropic.com" -Method HEAD `
+                -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+            return $true
+        }
+        catch {
+            # Any HTTP response (even 4xx) means network is reachable
+            if ($_.Exception.Response) { return $true }
+            return $false
+        }
+    }
 
-    Write-Host "    Network unavailable. Polling every $($script:NETWORK_POLL_SECONDS)s..." -ForegroundColor Yellow
+    # Quick check first
+    if (Test-NetworkFast) { return $true }
+
+    Write-Host "    Network unavailable. Polling every $($script:NETWORK_POLL_SECONDS)s (max $($script:NETWORK_MAX_POLLS) polls)..." -ForegroundColor Yellow
     Write-GsdError -GsdDir $GsdDir -Category "network" -Phase "connectivity" -Iteration 0 `
         -Message "Network unavailable" -Resolution "Polling for connectivity"
 
@@ -277,18 +289,16 @@ function Wait-ForNetwork {
         $polls++
         Start-Sleep -Seconds $script:NETWORK_POLL_SECONDS
 
-        try {
-            $null = claude -p "PING" --max-turns 1 2>$null; if ($LASTEXITCODE -ne 0) { throw "offline" }
+        if (Test-NetworkFast) {
             Write-Host "    [OK] Network restored after $($polls * $script:NETWORK_POLL_SECONDS)s" -ForegroundColor Green
             return $true
-        } catch {
-            if ($polls % 10 -eq 0) {
-                Write-Host "    Still offline... ($polls polls)" -ForegroundColor DarkGray
-            }
+        }
+        else {
+            Write-Host "    Still offline... (poll $polls/$($script:NETWORK_MAX_POLLS))" -ForegroundColor DarkGray
         }
     }
 
-    Write-Host "    [XX] Network did not recover after $($script:NETWORK_MAX_POLLS * $script:NETWORK_POLL_SECONDS)s" -ForegroundColor Red
+    Write-Host "    [!!] Network did not recover after $($script:NETWORK_MAX_POLLS * $script:NETWORK_POLL_SECONDS)s - skipping" -ForegroundColor Red
     return $false
 }
 
