@@ -277,7 +277,7 @@ def create_title_page(doc):
     # Version & Date
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("Version 1.1.0  |  March 2026")
+    run = p.add_run("Version 1.6.1  |  March 2026")
     run.font.size = Pt(13)
     run.font.color.rgb = MED_GRAY
     run.font.name = "Calibri"
@@ -362,12 +362,38 @@ def create_toc(doc):
 
 # ── Document History ─────────────────────────────────────────────
 
-def create_doc_history(doc):
+def create_doc_history(doc, md_text):
+    """Read document history from the markdown file and render it."""
     p = doc.add_paragraph("Document History", style='Heading 1')
     # Override page break for this one heading
     p.paragraph_format.page_break_before = False
 
-    table = doc.add_table(rows=3, cols=3)
+    # Parse document history table from markdown
+    history_data = []
+    lines = md_text.split("\n")
+    in_history = False
+    for line in lines:
+        if line.strip() == "## Document History":
+            in_history = True
+            continue
+        if in_history:
+            if line.strip().startswith("|") and not re.match(r'^\s*\|[\s\-:|]+\|\s*$', line):
+                parts = line.strip().strip("|").split("|")
+                parts = [p.strip() for p in parts]
+                if len(parts) >= 3 and parts[0] != "Version":
+                    history_data.append(parts[:3])
+            elif line.strip() == "---" or (line.strip().startswith("#") and "Document History" not in line):
+                break
+
+    if not history_data:
+        # Fallback
+        history_data = [
+            ["1.0.0", "February 2026", "Initial release"],
+            ["1.6.1", "March 2026", "Latest release"],
+        ]
+
+    num_rows = 1 + len(history_data)
+    table = doc.add_table(rows=num_rows, cols=3)
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
     set_table_borders(table, color="CCCCCC")
 
@@ -385,13 +411,7 @@ def create_doc_history(doc):
         p.paragraph_format.space_after = Pt(4)
         set_cell_shading(cell, HEADER_BG)
 
-    data = [
-        ["1.0.0", "February 2026", "Initial release"],
-        ["1.1.0", "March 2026",
-         "Codex CLI update (codex exec --full-auto), multi-agent cost tracking, "
-         "supervisor pattern memory, false convergence fix, API key management"],
-    ]
-    for r, row_data in enumerate(data):
+    for r, row_data in enumerate(history_data):
         for c, val in enumerate(row_data):
             cell = table.rows[r + 1].cells[c]
             cell.text = ""
@@ -604,12 +624,13 @@ def process_markdown(doc, md_text):
             continue
 
         # Skip title/subtitle/meta lines already handled by title page
-        if line.strip() in (
-            "# GSD Autonomous Development Engine",
-            "## Developer Guide",
-            "**Version 1.1.0** | March 2026",
-            "*Confidential - Internal Use Only*",
-        ):
+        stripped = line.strip()
+        if (stripped.startswith("# GSD Autonomous Development Engine") or
+            stripped == "## Developer Guide" or
+            stripped.startswith("**Version") or
+            stripped.startswith("**Date:") or
+            stripped.startswith("**Classification:") or
+            stripped == "*Confidential - Internal Use Only*"):
             i += 1
             continue
 
@@ -619,14 +640,14 @@ def process_markdown(doc, md_text):
             continue
 
         # Skip markdown TOC
-        if line.strip() == "### Table of Contents":
+        if line.strip() in ("### Table of Contents", "## Table of Contents"):
             i += 1
             while i < len(lines) and (lines[i].strip().startswith("- [") or lines[i].strip() == ""):
                 i += 1
             continue
 
-        # Skip Document History (we create our own)
-        if line.strip() == "### Document History":
+        # Skip Document History (we create our own styled version)
+        if line.strip() in ("## Document History", "### Document History"):
             i += 1
             while i < len(lines) and (lines[i].strip().startswith("|") or lines[i].strip() == ""):
                 i += 1
@@ -673,17 +694,17 @@ def process_markdown(doc, md_text):
             list_number = 0  # Reset numbered list counter
 
             style_map = {
-                1: 'Heading 1',  # Not used (title page handles #)
-                2: 'Heading 1',  # ## -> Heading 1 (chapters)
-                3: 'Heading 2',  # ### -> Heading 2 (sections)
-                4: 'Heading 3',  # #### -> Heading 3 (sub-sections)
+                1: 'Heading 1',  # # -> Heading 1 (chapters: "Chapter 1:", "Appendices")
+                2: 'Heading 2',  # ## -> Heading 2 (sections: "1.1", "Appendix A:")
+                3: 'Heading 3',  # ### -> Heading 3 (sub-sections)
+                4: 'Heading 4',  # #### -> Heading 4 (sub-sub-sections)
             }
 
-            style_name = style_map.get(level, 'Heading 3')
+            style_name = style_map.get(level, 'Heading 4')
             p = doc.add_paragraph(text, style=style_name)
 
             # Add a blue bottom border under chapter headings
-            if level == 2:
+            if level == 1:
                 add_bottom_border(p, color="2B579A", size=8)
 
             i += 1
@@ -772,8 +793,8 @@ def main():
     # Table of Contents (auto-generated from headings)
     create_toc(doc)
 
-    # Document history
-    create_doc_history(doc)
+    # Document history (reads from markdown)
+    create_doc_history(doc, md_text)
 
     # Main content
     print("Processing markdown content...")

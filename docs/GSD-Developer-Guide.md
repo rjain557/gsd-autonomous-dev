@@ -1510,7 +1510,7 @@ design\
         └── _stubs\
 ```
 
-## 7.3 Figma Make Integration
+## 7.4 Figma Make Integration
 
 Each interface version folder should contain 12 analysis deliverables in `_analysis/`:
 
@@ -1696,11 +1696,15 @@ Parallel sub-task execution: `Invoke-ParallelExecute` splits batches, dispatches
 
 ### patch-gsd-resilience-hardening.ps1
 
-Token tracking on all attempts, auth detection fix (403 is rate limit not auth), cumulative quota cap (120 min), agent rotation after 3 consecutive failures.
+Token tracking on all attempts (success + failure + estimation), auth detection fix (403 is rate limit not auth), cumulative quota cap (120 min), agent rotation after 1 consecutive failure (reduced from 3 by multi-model patch).
 
 ### patch-gsd-quality-gates.ps1
 
 Quality gates: `Test-DatabaseCompleteness` (zero-cost static scan), `Test-SecurityCompliance` (zero-cost regex scan), `Invoke-SpecQualityGate` (enhanced spec validation). Creates 5 shared prompt templates. Updates council reviews with security checklists.
+
+### patch-gsd-multi-model.ps1
+
+Multi-model LLM integration: Adds 4 OpenAI-compatible REST agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5). Creates `model-registry.json` for registry-driven agent management. Adds `Invoke-OpenAICompatibleAgent` (REST adapter), `Test-IsOpenAICompatAgent` (registry lookup). Patches `Get-FailureDiagnosis` for REST agent HTTP error mapping (steps 13B/13C). Expands council reviewer pool, reduces rotation threshold from 3 to 1 consecutive failures, adds cooldown-aware supervisor routing. Generic council template `openai-compat-review.md`.
 
 ## 8.3 Standalone Utilities
 
@@ -3156,7 +3160,103 @@ The GSD Engine supports 7 AI agents across two types:
 | GLM-5 | Zhipu AI | REST | $1.00 | $3.20 | 128K | Council review, rotation fallback |
 | MiniMax M2.5 | MiniMax | REST | $0.29 | $1.20 | 200K | Council review, rotation fallback |
 
-## 12.2 Model Selection and Roles
+## 12.2 Model Strengths, Weaknesses, and Pipeline Roles
+
+Understanding each model's capabilities is essential for knowing why the engine assigns specific agents to specific phases. The GSD engine is designed to exploit each model's strengths while avoiding their weaknesses.
+
+### Claude (Anthropic) — The Judge
+
+| Attribute | Detail |
+|-----------|--------|
+| **Strengths** | Best-in-class reasoning, nuanced judgment, accurate scoring, strong architecture understanding, excellent at synthesizing multiple perspectives, handles complex multi-step analysis |
+| **Weaknesses** | Most expensive ($3.00/$15.00 per M), can be slower on large code generation tasks, quota limits can be reached quickly during heavy use |
+| **Pipeline Role** | Code review (scoring health), plan (prioritization), council synthesis (consensus verdict), supervisor diagnosis (root-cause analysis) |
+| **Fallback Behavior** | Last resort for all other agents — if any agent fails, Claude handles the phase |
+| **Best For** | Tasks requiring judgment, scoring, analysis, and decision-making where accuracy matters more than speed |
+
+### Codex (OpenAI) — The Builder
+
+| Attribute | Detail |
+|-----------|--------|
+| **Strengths** | Fast code generation, optimized for execution tasks, good at following structured instructions, `--full-auto` mode for autonomous operation, handles large batch sizes efficiently |
+| **Weaknesses** | Limited reasoning compared to Claude, loop detection can trigger early exit on complex tasks, may need batch size reduction for complex changes |
+| **Pipeline Role** | Execute phase (bulk code generation), build phase (blueprint pipeline), council reviewer, parallel sub-task execution |
+| **Fallback Behavior** | Falls back to Claude when exit code != 0 or loop detection triggers |
+| **Best For** | High-volume code generation, file creation, and structured modifications where speed matters |
+
+### Gemini (Google) — The Researcher
+
+| Attribute | Detail |
+|-----------|--------|
+| **Strengths** | Excellent in plan mode (read-only analysis), largest context window (1M tokens), strong at research and pattern analysis, saves Claude/Codex quota for judgment and execution |
+| **Weaknesses** | OAuth tokens can expire mid-run requiring re-authentication, optional (engine works without it), 403 errors sometimes misclassified as auth failures (engine handles this) |
+| **Pipeline Role** | Research phase (read-only plan mode analysis), spec conflict resolution (`--yolo` mode), council reviewer |
+| **Fallback Behavior** | Falls back to Codex. Engine continues without Gemini if not installed. |
+| **Best For** | Deep codebase analysis, spec understanding, and research where the large context window allows processing entire project state |
+
+### Kimi K2.5 (Moonshot AI) — The Multilingual Reviewer
+
+| Attribute | Detail |
+|-----------|--------|
+| **Strengths** | Good multilingual support, 128K context window, reliable for review tasks, cost-effective ($0.60/$2.50 per M) |
+| **Weaknesses** | May timeout on very large prompts, higher latency due to API location (China-based), less tested on complex architectural decisions |
+| **Pipeline Role** | Council reviewer, rotation fallback pool member |
+| **Fallback Behavior** | Routes to next available agent on failure; falls back to Claude for read-only phases |
+| **Best For** | Independent code review with a different perspective, diversifying the council review pool |
+
+### DeepSeek V3 (DeepSeek) — The Budget Option
+
+| Attribute | Detail |
+|-----------|--------|
+| **Strengths** | Cheapest option at $0.28/$0.42 per M tokens (5-35x cheaper than CLI agents), good code comprehension, strong at structured review tasks |
+| **Weaknesses** | Rate limits can be aggressive, 64K context window is smallest of all agents, may struggle with very large codebases in a single review |
+| **Pipeline Role** | Council reviewer, rotation fallback pool member, cost optimization for review-heavy pipelines |
+| **Fallback Behavior** | Routes to next available agent on rate limit; falls back to Claude for read-only phases |
+| **Best For** | Council reviews where cost is a priority, projects with many iterations where review costs accumulate |
+
+### GLM-5 (Zhipu AI) — The Generalist
+
+| Attribute | Detail |
+|-----------|--------|
+| **Strengths** | Good general reasoning, 128K context window, balanced code analysis capabilities, reliable for structured tasks |
+| **Weaknesses** | Mid-range pricing ($1.00/$3.20 per M), less specialized than Claude for judgment or Codex for generation |
+| **Pipeline Role** | Council reviewer, rotation fallback pool member |
+| **Fallback Behavior** | Routes to next available agent on failure; falls back to Claude for read-only phases |
+| **Best For** | Expanding the council pool with another perspective, fallback when preferred agents are quota-exhausted |
+
+### MiniMax M2.5 (MiniMax) — The Balanced Reviewer
+
+| Attribute | Detail |
+|-----------|--------|
+| **Strengths** | Balanced price/performance ($0.29/$1.20 per M), 200K context window (largest among REST agents), reliable council reviews |
+| **Weaknesses** | Less battle-tested than Claude/Codex, fewer edge-case handling capabilities |
+| **Pipeline Role** | Council reviewer, rotation fallback pool member |
+| **Fallback Behavior** | Routes to next available agent on failure; falls back to Claude for read-only phases |
+| **Best For** | Council reviews needing large context, cost-effective alternative when multiple reviews needed |
+
+### How Models Work Together in the Pipeline
+
+The 7-agent architecture is designed so that each model handles the work it does best:
+
+```
+ Code Review (Claude)     ← Judgment: score health, identify issues
+       ↓
+ Research (Gemini)         ← Analysis: read-only codebase scan (1M context)
+       ↓
+ Council Review            ← Multi-perspective: 2-5 independent agents review
+   (Codex + Gemini +         findings, Claude synthesizes consensus
+    REST agents)
+       ↓
+ Plan (Claude)             ← Prioritization: decide what to fix next
+       ↓
+ Execute (Codex)           ← Generation: write code at high speed
+       ↓                      Parallel: round-robin across agent pool
+ Validation                ← Quality: build, test, security, DB checks
+```
+
+**Cost optimization strategy**: Claude handles ~3K tokens per iteration (judgment). Codex handles ~70K tokens (generation). Gemini handles ~23K tokens (research). REST agents handle ~4K tokens each (council reviews at 5-35x lower cost). This assignment minimizes total cost while maximizing quality.
+
+### Phase-to-Agent Assignment Table
 
 | Phase | Primary Agent | Why | Fallback |
 |-------|--------------|-----|----------|
@@ -3167,11 +3267,7 @@ The GSD Engine supports 7 AI agents across two types:
 | Council Review | Codex + Gemini + REST | Independent multi-perspective review | Next available |
 | Council Synthesis | Claude | Best consensus reasoning | -- |
 | Supervisor Diagnosis | Claude | Best root-cause analysis | Next available (cooldown-aware) |
-
-REST agents (Kimi, DeepSeek, GLM-5, MiniMax) serve as:
-- **Council reviewers**: Expand the review pool for more diverse perspectives
-- **Rotation fallback**: When CLI agents hit quota limits, REST agents keep the pipeline moving
-- **Cost optimization**: DeepSeek V3 at $0.28/$0.42 is 5-35x cheaper than CLI agents for review tasks
+| Spec Resolution | Gemini | Read-only conflict analysis | Codex |
 
 ## 12.3 Model Configuration
 
@@ -3246,15 +3342,32 @@ REST agents are invoked via `Invoke-OpenAICompatibleAgent`. HTTP errors are mapp
 
 Both agent types use the same retry/fallback/rotation infrastructure.
 
-## 12.6 Model-Specific Tips
+## 12.6 Model-Specific Operational Notes
 
-- **Claude**: Most capable overall, most expensive. Best for judgment-heavy phases. Falls back to as last resort for all other agents.
-- **Codex**: Fast code generation but limited reasoning. Always use `--full-auto` mode. Has loop detection limits that can trigger early exit.
-- **Gemini**: Excellent research in plan mode (read-only). OAuth tokens can expire mid-run -- re-authenticate via browser if needed. Falls back to Codex.
-- **Kimi K2.5**: Good multilingual support. 128K context window. May timeout on very large prompts.
-- **DeepSeek V3**: Cheapest option at $0.28/$0.42 per M tokens. Good for code review tasks. Rate limits can be aggressive.
-- **GLM-5**: Good general reasoning. Chinese-origin model with strong English support.
-- **MiniMax M2.5**: Balanced price/performance. Good for council reviews. 200K context window.
+### CLI Agent Notes
+
+- **Claude**: Always the last-resort fallback. Never disable Claude — the engine requires it for synthesis and judgment phases. If Claude hits quota, the engine waits (exponential backoff) rather than substituting.
+- **Codex**: Must run with `--full-auto` mode for autonomous operation. If Codex triggers loop detection (exit code 2), the engine reduces batch size by 50% and retries. Monitor for loop detection in projects with circular dependencies.
+- **Gemini**: Requires `--approval-mode plan` for read-only research. Re-authenticate via browser (`gemini auth`) if OAuth expires mid-run. The engine automatically falls back to Codex if Gemini is unavailable.
+
+### REST Agent Notes
+
+- **All REST agents**: API keys are optional and warn-only. If an API key is missing, that agent is excluded from the rotation pool automatically. No engine restart needed.
+- **Kimi K2.5**: Based in China — expect higher latency from US/EU locations. Use for council reviews where latency is acceptable.
+- **DeepSeek V3**: Aggressive rate limits — the engine rotates away after 1 consecutive failure. Best value for high-volume review tasks.
+- **GLM-5**: Solid general-purpose capabilities. Good fallback when other REST agents are rate-limited.
+- **MiniMax M2.5**: Largest context window among REST agents (200K). Good for reviewing large requirement batches in council chunked reviews.
+
+### Rotation and Failover
+
+The engine uses a 7-agent rotation pool defined in `model-registry.json`. When any agent fails:
+1. `Get-FailureDiagnosis` classifies the error (rate_limit, quota_exhausted, unauthorized, timeout, server_error)
+2. For rate_limit/quota: `Set-AgentCooldown` places the agent on 30-minute cooldown
+3. `Get-NextAvailableAgent` selects the next agent not on cooldown
+4. For read-only phases (research, review, verify, plan, council): falls back to Claude
+5. For execution phases: retries with reduced batch
+
+The rotation threshold is **1 consecutive failure** (reduced from 3 by the multi-model patch) for immediate failover across all 7 agents.
 
 ---
 
