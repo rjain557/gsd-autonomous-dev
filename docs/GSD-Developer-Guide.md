@@ -18,6 +18,7 @@
 | 1.6.1 | March 2026 | Added Chapters 13-15: Coding Standards & Methodologies, Database Coding Standards, Compliance & Security Coding (88+ rules with IDs) |
 | 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
 | 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
+| 2.1.0 | March 2026 | Maintenance mode: `gsd-fix` command for quick bug fixes, `gsd-update` for incremental feature additions, `--Scope` parameter for targeted convergence, `--Incremental` flag for additive requirements. New prompt: create-phases-incremental.md. Added Chapter 20. |
 
 ---
 
@@ -1602,6 +1603,14 @@ Health dashboard showing current score, iteration, phase, requirement breakdown,
 
 Token cost estimator with pipeline comparison and client quoting. See Section 4.6 for full parameter reference.
 
+### gsd-fix
+
+Quick bug fix mode. Accepts bug descriptions as arguments or from a file, auto-creates `BUG-xxx` requirement entries in the matrix, writes error context for agent injection, and runs a short convergence cycle with small batch size. Options: `-File bugs.md` (load from file), `-Scope "source:bug_report"` (default scope), `-MaxIterations 5` (default), `-BatchSize 3` (default), `-DryRun`.
+
+### gsd-update
+
+Incremental feature update mode. Reads new/updated specs and adds requirements to the existing matrix without losing satisfied items. Uses `create-phases-incremental.md` prompt. Options: `-Scope "source:v02_spec"`, `-MaxIterations`, `-DryRun`.
+
 ### gsd-init
 
 Initializes `.gsd/` folder structure without running any iterations. Creates all subdirectories and configuration templates.
@@ -1747,6 +1756,10 @@ Agent intelligence: (1) `Update-AgentPerformanceScore` -- tracks efficiency (req
 ### patch-gsd-loc-tracking.ps1
 
 LOC tracking: (1) `Update-LocMetrics` -- captures `git diff --numstat` after each execute phase, tracks lines added/deleted/net per iteration with file-level detail. (2) `Get-LocNotificationText` -- compact LOC string for ntfy notifications. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Patches both pipeline scripts and heartbeat to include LOC in all ntfy messages. Adds LOC section to developer-handoff.md. Output: `.gsd/costs/loc-metrics.json`. Config: `loc_tracking` in global-config.json.
+
+### patch-gsd-maintenance-mode.ps1
+
+Maintenance mode for post-launch updates: (1) `gsd-fix` command -- accepts bug descriptions via CLI args or file, auto-creates `BUG-xxx` requirement entries with `source: bug_report`, writes error-context.md, runs short convergence cycle with small batch/iterations. (2) `gsd-update` command -- incremental feature addition using `create-phases-incremental.md` prompt that preserves existing satisfied requirements and adds new ones from updated specs. (3) `--Scope` parameter on `gsd-converge` -- filters plan phase to only select matching requirements (by source or ID) while code-review still sees everything. (4) `--Incremental` flag -- triggers additive Phase 0 that merges new requirements into existing matrix. Config: `maintenance_mode` in global-config.json.
 
 ## 8.3 Standalone Utilities
 
@@ -4483,6 +4496,245 @@ The developer handoff document includes a "Lines of Code (AI-Generated)" section
 
 ---
 
+# Chapter 20: Maintenance Mode (Post-Launch Updates)
+
+## 20.1 Overview
+
+After a project reaches 100% health and is published, the GSD Engine supports ongoing maintenance through three new capabilities:
+
+| Capability | Command | Use Case |
+|------------|---------|----------|
+| Bug fixes | `gsd-fix "description"` | Quick fix of production bugs |
+| Feature updates | `gsd-update` | Add new features from updated specs |
+| Scoped convergence | `gsd-converge --Scope "source:bug_report"` | Target specific requirement groups |
+
+All three build on the existing convergence pipeline with minimal new infrastructure.
+
+## 20.2 Bug Fix Mode (gsd-fix)
+
+The `gsd-fix` command is a shortcut for fixing production bugs. It auto-creates requirement entries in the matrix, writes error context for agent injection, and runs a short convergence cycle.
+
+### Usage
+
+```powershell
+# Fix a single bug
+gsd-fix "Login fails when email contains + character"
+
+# Fix multiple bugs
+gsd-fix "Login fails with +" "Report totals include voided records" "API returns 500 on null input"
+
+# Fix from a file (one bug per line, or markdown list)
+gsd-fix -File bugs.md
+
+# Dry run (preview without executing)
+gsd-fix "Login fails with +" -DryRun
+```
+
+### What gsd-fix Does
+
+1. Parses bug descriptions from arguments or file
+2. Creates requirement entries in `requirements-matrix.json`:
+   - `req_id`: `BUG-001`, `BUG-002`, etc.
+   - `source`: `bug_report`
+   - `status`: `not_started`
+   - `priority`: `critical`
+   - `spec_version`: `fix`
+3. Recalculates health score (drops from 100% based on new items)
+4. Writes bug details to `.gsd/supervisor/error-context.md` (injected into all agent prompts)
+5. Calls `gsd-converge` with fix-optimized defaults:
+   - `MaxIterations`: 5
+   - `BatchSize`: 3
+   - `SkipResearch`: true (saves tokens)
+   - `Scope`: `source:bug_report` (only fixes bugs, ignores feature requirements)
+
+### bugs.md File Format
+
+```markdown
+- Login fails when email contains '+' character
+- Report totals include voided records in SUM
+- API returns 500 when userId is null
+- Dashboard chart renders wrong date range
+```
+
+Or numbered:
+
+```
+1. Login fails when email contains '+' character
+2. Report totals include voided records
+```
+
+### Cost Estimate
+
+| Bugs | Iterations | Est. Cost |
+|------|-----------|-----------|
+| 1-3 | 3-5 | $4-8 |
+| 5-10 | 5-8 | $8-15 |
+
+## 20.3 Incremental Feature Updates (gsd-update)
+
+The `gsd-update` command adds new requirements from updated specs without losing existing satisfied items.
+
+### Workflow
+
+1. Create new spec version: `design/web/v02/_analysis/` with updated Figma Make 12-file set
+2. Run `gsd-update`
+3. The engine reads existing matrix, preserves all satisfied requirements, adds new ones
+4. Convergence runs on the merged matrix
+
+### Usage
+
+```powershell
+# Add new requirements and converge
+gsd-update
+
+# Add requirements then converge only new features
+gsd-update -Scope "source:v02_spec"
+
+# Preview what would be added
+gsd-update -DryRun
+```
+
+### Spec Versioning
+
+```
+design/
+  web/v01/              # Original release specs (keep for reference)
+    _analysis/          # Full 12-file set for v1.0
+  web/v02/              # Feature update
+    _analysis/          # Full 12-file set (v01 content + new features)
+```
+
+**Key rule**: Each version must contain the COMPLETE spec set, not just deltas. The engine reads the full `_analysis/` directory -- if v02 only has new feature specs, the engine loses context on existing functionality.
+
+### How Incremental Create-Phases Works
+
+The `create-phases-incremental.md` prompt instructs Claude to:
+
+1. Read the existing `requirements-matrix.json` completely
+2. Read the latest design specs
+3. Identify requirements in new specs NOT already in the matrix
+4. Append new requirements with `status: not_started` and `spec_version: v02`
+5. Preserve all existing entries (satisfied, partial, not_started)
+6. Recalculate health score with new totals
+
+### Cost Estimate
+
+| New Features | Iterations | Est. Cost |
+|-------------|-----------|-----------|
+| 5-10 | 8-15 | $12-25 |
+| 20-30 | 15-25 | $25-45 |
+| 50+ | 20-40 | $30-60 |
+
+## 20.4 Scoped Convergence (--Scope)
+
+The `--Scope` parameter filters which requirements the plan phase can select for each batch, while code-review still evaluates all requirements (to catch regressions).
+
+### Scope Syntax
+
+```powershell
+# By source field
+gsd-converge --Scope "source:v02_spec"         # Only v02 features
+gsd-converge --Scope "source:bug_report"        # Only bugs
+
+# By requirement ID
+gsd-converge --Scope "id:BUG-001,BUG-002,REQ-105"  # Specific items
+
+# Combined with other flags
+gsd-converge --Scope "source:bug_report" -MaxIterations 5 -BatchSize 3
+```
+
+### How Scope Works
+
+| Phase | Scope Applied? | Behavior |
+|-------|---------------|----------|
+| Code Review | No | Reviews ALL requirements (catches regressions) |
+| Research | No | Researches patterns for scoped items |
+| Plan | Yes | Only selects requirements matching scope for batch |
+| Execute | Yes (via plan) | Only executes scoped batch items |
+| Council | No | Reviews all code changes |
+
+### When to Use Scope
+
+| Situation | Scope Value |
+|-----------|-------------|
+| Fix only bugs after mixed bug+feature update | `source:bug_report` |
+| Work only on v02 features | `source:v02_spec` |
+| Fix 3 specific requirements | `id:REQ-101,REQ-102,REQ-103` |
+| Full convergence (default) | (empty, no scope) |
+
+## 20.5 Mixed Mode (Bugs + Features)
+
+When you have both bugs to fix and features to add:
+
+1. Add v02 specs to `design/web/v02/_analysis/`
+2. Run `gsd-update` to add feature requirements
+3. Run `gsd-fix "bug1" "bug2"` to add bug requirements
+4. Write priority instructions to `.gsd/supervisor/prompt-hints.md`:
+   ```
+   ## Priority Override
+   Fix ALL bug_report requirements BEFORE any v02_spec requirements.
+   Bugs are production-critical.
+   ```
+5. Run `gsd-converge` (no scope = work on everything, prompt-hints enforce priority)
+
+### Separate Cost Tracking
+
+To track costs separately for bugs vs features, run them as separate sessions:
+
+```powershell
+# Session 1: Fix bugs (note cost-summary.json before/after)
+gsd-converge --Scope "source:bug_report" -MaxIterations 5
+
+# Session 2: Build features
+gsd-converge --Scope "source:v02_spec"
+```
+
+## 20.6 Quick Reference
+
+| Situation | Command |
+|-----------|---------|
+| Brand new project | `gsd-blueprint` |
+| Existing code to fix | `gsd-converge` |
+| Production bugs | `gsd-fix "description"` |
+| New features from specs | `gsd-update` |
+| Targeted work | `gsd-converge --Scope "source:..."` |
+| Add requirements without rebuilding matrix | `gsd-converge --Incremental` |
+
+## 20.7 Configuration
+
+```json
+"maintenance_mode": {
+    "enabled": true,
+    "fix_defaults": {
+        "max_iterations": 5,
+        "batch_size": 3,
+        "skip_research": true
+    },
+    "scope_filter": {
+        "enabled": true,
+        "review_all_on_scope": true,
+        "scope_plan_and_execute": true
+    },
+    "incremental_phases": {
+        "enabled": true,
+        "preserve_satisfied": true,
+        "add_spec_version_tag": true
+    }
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `fix_defaults.max_iterations` | 5 | Max iterations for gsd-fix |
+| `fix_defaults.batch_size` | 3 | Batch size for gsd-fix |
+| `fix_defaults.skip_research` | true | Skip research phase for bug fixes |
+| `scope_filter.review_all_on_scope` | true | Code-review sees all requirements even when scoped |
+| `scope_filter.scope_plan_and_execute` | true | Plan/execute only work on scoped items |
+| `incremental_phases.preserve_satisfied` | true | Never modify satisfied requirements during incremental update |
+| `incremental_phases.add_spec_version_tag` | true | Tag new requirements with spec_version field |
+
+---
+
 # Appendices
 
 ## Appendix A: Complete File Inventory
@@ -4559,6 +4811,8 @@ The developer handoff document includes a "Lines of Code (AI-Generated)" section
 | `claude/code-review-differential.md` | Claude | Differential (changed files only) review | ~2K tokens |
 | `codex/fix-compile-errors.md` | Codex | Pre-execute compile error fix | ~5K tokens |
 | `shared/api-contract-validation.md` | Reference | API contract validation rules | N/A |
+| `claude/create-phases.md` | Claude | Phase 0: build requirements matrix from specs | ~5K tokens |
+| `claude/create-phases-incremental.md` | Claude | Phase 0: add new requirements to existing matrix | ~5K tokens |
 
 ## Appendix C: Notification Events
 

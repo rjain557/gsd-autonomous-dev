@@ -31,6 +31,9 @@ gsd-converge -ThrottleSeconds 60      # 60s delay between phases
 gsd-converge -AutoResolve             # Auto-fix spec conflicts via Gemini
 gsd-converge -ForceCodeReview         # Force code review even at 100% health
 gsd-converge -NtfyTopic "my-topic"    # Override notification topic
+gsd-converge -Scope "source:bug_report" # Only converge bug requirements
+gsd-converge -Scope "id:REQ-101,REQ-102" # Only converge specific items
+gsd-converge -Incremental              # Add new requirements from updated specs
 ```
 
 Parameters:
@@ -50,6 +53,54 @@ Parameters:
 | -NtfyTopic | (auto) | Override ntfy.sh notification topic |
 | -SupervisorAttempts | 5 | Max recovery attempts by supervisor before escalation |
 | -NoSupervisor | false | Bypass supervisor wrapper (run pipeline directly) |
+| -Scope | (empty) | Filter plan phase to matching requirements: `source:<value>` or `id:<id1>,<id2>` |
+| -Incremental | false | Add new requirements from updated specs without losing existing ones |
+
+### gsd-fix
+
+Quick bug fix mode. Injects bug descriptions into requirements matrix and runs a short convergence cycle.
+
+Usage:
+
+```powershell
+gsd-fix "Login fails with + in email"                    # Single bug
+gsd-fix "Bug 1" "Bug 2" "Bug 3"                          # Multiple bugs
+gsd-fix -File bugs.md                                     # Bugs from file
+gsd-fix -File bugs.md -DryRun                             # Preview
+gsd-fix "Login bug" -MaxIterations 3 -BatchSize 2         # Custom limits
+```
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| BugDescriptions | (required) | Bug descriptions as positional arguments |
+| -File | (none) | Path to file with bug descriptions (one per line) |
+| -Scope | source:bug_report | Scope filter for convergence |
+| -MaxIterations | 5 | Max convergence iterations |
+| -BatchSize | 3 | Items per execute cycle |
+| -DryRun | false | Preview without executing |
+
+### gsd-update
+
+Incremental feature update. Adds new requirements from updated specs while preserving existing satisfied items.
+
+Usage:
+
+```powershell
+gsd-update                                # Add new requirements and converge
+gsd-update -Scope "source:v02_spec"       # Only work on v02 features
+gsd-update -DryRun                        # Preview
+```
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -Scope | (empty) | Filter convergence to specific requirement sources |
+| -MaxIterations | 20 | Max iterations |
+| -BatchSize | 8 | Items per cycle |
+| -DryRun | false | Preview without executing |
 
 ### gsd-blueprint
 

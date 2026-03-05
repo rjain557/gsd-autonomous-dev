@@ -18,6 +18,8 @@ After running install-gsd-all.ps1, the engine creates:
     gsd-status.cmd              # Health status dashboard
     gsd-remote.cmd              # Remote monitoring launcher
     gsd-costs.cmd               # Token cost calculator
+    gsd-fix.cmd                 # Quick bug fix mode
+    gsd-update.cmd              # Incremental feature update
   config\
     global-config.json          # Global settings (notifications, patterns, phases)
     agent-map.json              # Agent-to-phase assignments, parallel config, council reviewers

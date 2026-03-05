@@ -283,6 +283,29 @@ Tracks AI-generated lines of code per iteration and computes cost-per-line metri
 
 Output: `.gsd/costs/loc-metrics.json` — per-iteration and cumulative LOC with cost-per-line.
 
+#### maintenance_mode
+
+Controls post-launch maintenance features: bug fix mode, incremental updates, and scoped convergence.
+
+```json
+"maintenance_mode": {
+    "enabled": true,
+    "fix_defaults": { "max_iterations": 5, "batch_size": 3, "skip_research": true },
+    "scope_filter": { "enabled": true, "review_all_on_scope": true, "scope_plan_and_execute": true },
+    "incremental_phases": { "enabled": true, "preserve_satisfied": true, "add_spec_version_tag": true }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fix_defaults.max_iterations` | int | Default max iterations for `gsd-fix` |
+| `fix_defaults.batch_size` | int | Default batch size for `gsd-fix` |
+| `fix_defaults.skip_research` | bool | Skip research phase for bug fixes (saves tokens) |
+| `scope_filter.review_all_on_scope` | bool | Code-review sees all requirements even when scoped |
+| `scope_filter.scope_plan_and_execute` | bool | Plan/execute restricted to scoped items |
+| `incremental_phases.preserve_satisfied` | bool | Never modify satisfied requirements during incremental |
+| `incremental_phases.add_spec_version_tag` | bool | Tag new requirements with spec_version field |
+
 ### Prompt Templates
 
 Quality gate prompt templates are stored in:
