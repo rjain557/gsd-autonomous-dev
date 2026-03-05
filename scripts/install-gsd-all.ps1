@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 31 scripts in correct order.
+    GSD Master Installer - Runs ALL 35 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -16,8 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GSD_VERSION = "2.0.0"
-$GSD_DATE = "2026-03-04"
+$GSD_VERSION = "2.1.0"
+$GSD_DATE = "2026-03-05"
 
 # Run prerequisites check first if the script exists
 $prereqScript = Join-Path $scriptDir "install-gsd-prerequisites.ps1"
@@ -98,12 +98,16 @@ $scripts = @(
     @{ File="patch-gsd-speed-optimizations.ps1"; Desc="Speed Optimizations (research skip, smart batch, prompt dedup)" }
     @{ File="patch-gsd-agent-intelligence.ps1";  Desc="Agent Intelligence (performance scoring, warm-start patterns)" }
     @{ File="patch-gsd-loc-tracking.ps1";        Desc="LOC Tracking (lines of code metrics, cost-per-line, ntfy integration)" }
+    @{ File="patch-gsd-runtime-smoke-test.ps1"; Desc="Runtime Smoke Test (DI validation, API endpoint 500 check, FK seed order)" }
+    @{ File="patch-gsd-partitioned-code-review.ps1"; Desc="Partitioned Code Review (3-way parallel, agent rotation, spec+Figma validation)" }
+    @{ File="patch-gsd-loc-cost-integration.ps1"; Desc="LOC-Cost Integration (running cost-per-line, code review LOC awareness, enhanced ntfy)" }
+    @{ File="patch-gsd-maintenance-mode.ps1";    Desc="Maintenance Mode (incremental create-phases, scoped convergence, post-launch fixes)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 30 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 35 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

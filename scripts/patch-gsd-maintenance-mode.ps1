@@ -22,9 +22,12 @@
 
     3. gsd-fix Helper Command:
        - Shortcut for bug fixes: gsd-fix "description" "description2" ...
-       - Or from file: gsd-fix -File bugs.md
+       - From file: gsd-fix -File bugs.md
+       - From directory with artifacts: gsd-fix -BugDir ./bugs/login-issue/
+         (directory can contain bug.md + screenshots, logs, repro files)
        - Auto-creates matrix entries with source=bug_report
-       - Writes error-context.md with bug details
+       - Copies artifacts to .gsd/supervisor/bug-artifacts/BUG-xxx/
+       - Writes error-context.md with bug details + inlined log snippets
        - Calls gsd-converge with small MaxIterations/BatchSize
 
     Config: maintenance_mode block in global-config.json
@@ -253,12 +256,14 @@ function gsd-fix {
         gsd-fix "Login fails when email has + character"
         gsd-fix "Login fails with +" "Report totals wrong"
         gsd-fix -File bugs.md
+        gsd-fix -BugDir ./bugs/login-issue/
         gsd-fix -File bugs.md -Scope "source:bug_report"
     #>
     param(
         [Parameter(ValueFromRemainingArguments=$true)]
         [string[]]$BugDescriptions,
         [string]$File = "",
+        [string]$BugDir = "",
         [string]$Scope = "source:bug_report",
         [int]$MaxIterations = 5,
         [int]$BatchSize = 3,
@@ -281,22 +286,56 @@ function gsd-fix {
 
     # Collect bug descriptions
     $bugs = @()
+    $artifactSources = @{}  # Maps bug index to source directory
+
+    # -- BugDir mode: read from a directory containing bug.md + artifacts --
+    if ($BugDir -and (Test-Path $BugDir)) {
+        $bugDirFull = (Resolve-Path $BugDir).Path
+        $mdFiles = Get-ChildItem -Path $bugDirFull -Filter "*.md" -File
+        if ($mdFiles.Count -eq 0) {
+            $mdFiles = Get-ChildItem -Path $bugDirFull -Filter "*.txt" -File
+        }
+        if ($mdFiles.Count -gt 0) {
+            foreach ($mdFile in $mdFiles) {
+                $content = Get-Content $mdFile.FullName -Raw
+                if ($content -match '^#\s+(.+)$') {
+                    $desc = $Matches[1].Trim()
+                } else {
+                    $desc = ($content -split "`n")[0].Trim()
+                }
+                if ($desc.Length -gt 5) {
+                    $bugIdx = $bugs.Count
+                    $bugs += $desc
+                    $artifactSources[$bugIdx] = $bugDirFull
+                }
+            }
+        } else {
+            Write-Host "  [WARN] No .md or .txt files found in $BugDir" -ForegroundColor Yellow
+        }
+        Write-Host "  [OK] Loaded $($bugs.Count) bug(s) from directory: $BugDir" -ForegroundColor Green
+    }
+
+    # -- File mode: one bug per line --
     if ($File -and (Test-Path $File)) {
         $fileContent = Get-Content $File -Raw
-        # Parse: one bug per line, or markdown list items
         $fileContent -split "`n" | ForEach-Object {
             $line = $_.Trim() -replace '^[-*]\s+', '' -replace '^\d+\.\s+', ''
             if ($line.Length -gt 5) { $bugs += $line }
         }
-        Write-Host "  [OK] Loaded $($bugs.Count) bugs from $File" -ForegroundColor Green
+        Write-Host "  [OK] Loaded bugs from $File" -ForegroundColor Green
     }
+
+    # -- CLI args --
     if ($BugDescriptions) {
         $bugs += $BugDescriptions
     }
 
     if ($bugs.Count -eq 0) {
         Write-Host "  [ERROR] No bug descriptions provided." -ForegroundColor Red
-        Write-Host "  Usage: gsd-fix `"description`" or gsd-fix -File bugs.md" -ForegroundColor Yellow
+        Write-Host "  Usage:" -ForegroundColor Yellow
+        Write-Host "    gsd-fix `"description`"" -ForegroundColor White
+        Write-Host "    gsd-fix -File bugs.md" -ForegroundColor White
+        Write-Host "    gsd-fix -BugDir ./bugs/login-issue/" -ForegroundColor White
         return
     }
 
@@ -322,7 +361,6 @@ function gsd-fix {
     $bugIndex = 0
 
     foreach ($bug in $bugs) {
-        $bugIndex++
         $maxId++
         $reqId = "BUG-$('{0:D3}' -f $maxId)"
 
@@ -338,7 +376,47 @@ function gsd-fix {
         }
         $newReqs += $newReq
         $errorCtx += "- **$reqId**: $bug`n"
-        Write-Host "  [+] $reqId : $bug" -ForegroundColor Cyan
+
+        # Copy artifacts if from BugDir
+        if ($artifactSources.ContainsKey($bugIndex)) {
+            $srcDir = $artifactSources[$bugIndex]
+            $artifactDest = Join-Path $gsdDir "supervisor\bug-artifacts\$reqId"
+            New-Item -ItemType Directory -Path $artifactDest -Force | Out-Null
+            Get-ChildItem -Path $srcDir -File | ForEach-Object {
+                Copy-Item -Path $_.FullName -Destination $artifactDest -Force
+            }
+            $artifactFiles = Get-ChildItem -Path $artifactDest -File
+            $errorCtx += "  Artifacts ($($artifactFiles.Count) files): ``$artifactDest``"
+            foreach ($af in $artifactFiles) {
+                $ext = $af.Extension.ToLower()
+                if ($ext -in '.png','.jpg','.jpeg','.gif','.bmp','.webp') {
+                    $errorCtx += "`n  - [Screenshot] $($af.Name)"
+                } elseif ($ext -in '.log','.txt') {
+                    $errorCtx += "`n  - [Log] $($af.Name)"
+                    $logLines = Get-Content $af.FullName -TotalCount 20
+                    $errorCtx += "`n    ``````"
+                    $errorCtx += "`n$($logLines -join "`n")"
+                    $errorCtx += "`n    ``````"
+                } else {
+                    $errorCtx += "`n  - [File] $($af.Name)"
+                }
+            }
+            $errorCtx += "`n"
+            Write-Host "  [+] $reqId : $bug (+ $($artifactFiles.Count) artifact files)" -ForegroundColor Cyan
+        } else {
+            Write-Host "  [+] $reqId : $bug" -ForegroundColor Cyan
+        }
+        $bugIndex++
+    }
+
+    # If BugDir has detailed markdown, append full content to error context
+    if ($BugDir -and (Test-Path $BugDir)) {
+        $bugDirFull = (Resolve-Path $BugDir).Path
+        $mdFiles = Get-ChildItem -Path $bugDirFull -Filter "*.md" -File
+        foreach ($mdFile in $mdFiles) {
+            $fullContent = Get-Content $mdFile.FullName -Raw
+            $errorCtx += "`n### Detailed Bug Report: $($mdFile.Name)`n`n$fullContent`n"
+        }
     }
 
     # Append to matrix
@@ -521,6 +599,7 @@ Write-Host ""
 Write-Host "  New commands:" -ForegroundColor Yellow
 Write-Host "    gsd-fix `"bug description`"                   Quick bug fix" -ForegroundColor White
 Write-Host "    gsd-fix -File bugs.md                        Fix from file" -ForegroundColor White
+Write-Host "    gsd-fix -BugDir ./bugs/login-issue/          Fix with screenshots/logs" -ForegroundColor White
 Write-Host "    gsd-update                                   Add features from new specs" -ForegroundColor White
 Write-Host "    gsd-converge -Scope `"source:bug_report`"      Scoped convergence" -ForegroundColor White
 Write-Host "    gsd-converge -Incremental                    Add new requirements" -ForegroundColor White

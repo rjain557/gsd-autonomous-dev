@@ -904,10 +904,15 @@ When health reaches 100%, the engine runs a final validation gate before declari
 | 7 | npm vulnerability audit | `npm audit --audit-level=high` | WARN | Flags high+ severity npm vulnerabilities |
 | 8 | Database completeness | `Test-DatabaseCompleteness` | HARD | Full chain API->SP->Table->Seed verified |
 | 9 | Security compliance | `Test-SecurityCompliance` | HARD/WARN | Critical=hard, High/Medium=warn |
+| 10 | Seed data FK order | `Test-SeedDataFkOrder` | HARD | INSERT statements ordered to satisfy FK constraints |
+| 11 | API endpoint discovery | `Find-ApiEndpoints` | -- | Discovers routes for smoke test (no pass/fail) |
+| 12 | Runtime smoke test | `Invoke-ApiSmokeTest` | HARD | Starts app, hits endpoints, checks for HTTP 500s |
+
+Checks 10-12 are added by the Runtime Smoke Test script (v2.1.0). See [Runtime Smoke Test](#runtime-smoke-test-patch-gsd-runtime-smoke-testps1) for details.
 
 ### Failure Handling
 
-- **Hard failures** (checks 1-4, 8, 9-critical): Set health to 99%, write failures to `.gsd/supervisor/error-context.md` so the next iteration's code review picks them up, loop continues to fix the issues
+- **Hard failures** (checks 1-4, 8, 9-critical, 10, 12): Set health to 99%, write failures to `.gsd/supervisor/error-context.md` so the next iteration's code review picks them up, loop continues to fix the issues
 - **Warnings** (checks 5-7, 9-high/medium): Included in the developer handoff report but do NOT block convergence
 - **Max 3 validation attempts**: If validation fails 3 times, the pipeline exits to avoid infinite loops
 - **Skipped checks**: If no .sln, no package.json, or no test projects exist, those checks are skipped (not a failure)
@@ -1173,6 +1178,126 @@ Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and ac
 - Summary can be rebuilt from JSONL via `Rebuild-CostSummary` if corrupted
 - Existing error detection (quota, rate limit, auth keywords) works on extracted text content
 
+## v2.1.0 New Capabilities (Scripts 32-35)
+
+### Runtime Smoke Test (patch-gsd-runtime-smoke-test.ps1)
+
+Wraps the existing `Invoke-FinalValidation` to add checks 8-10 after the original 7 checks, closing the gap between "code compiles + tests pass" and "code actually runs without 500 errors."
+
+| Function | Purpose |
+|----------|---------|
+| `Test-SeedDataFkOrder` | Static FK ordering scan of SQL seed files -- detects INSERT statements that would violate foreign key constraints due to ordering |
+| `Find-ApiEndpoints` | Discovers API routes from controller files and OpenAPI specs |
+| `Invoke-ApiSmokeTest` | Starts the application (`dotnet run`), waits for startup, hits discovered endpoints checking for HTTP 500 errors |
+| `Invoke-RuntimeSmokeTest` | Orchestrator that runs all 3 checks |
+
+The API smoke test detects three categories of runtime failure:
+- **DI container errors**: `Cannot resolve scoped service` (lifetime mismatch)
+- **FK constraint violations**: `SqlException: FK constraint` (seed data ordering)
+- **General 500s**: Any HTTP 500 response from discovered endpoints
+
+Prompt templates: `prompts/shared/health-endpoint.md`, `prompts/shared/di-service-lifetime.md`
+
+Configuration in `global-config.json` under `runtime_smoke_test`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | true | Enable/disable runtime smoke testing |
+| `startup_timeout_seconds` | 30 | Max wait for `dotnet run` to become responsive |
+| `max_endpoints` | 50 | Cap on endpoints to probe per run |
+| `block_on_500` | true | Whether 500 errors block convergence (reset health to 99%) |
+
+### Partitioned Code Review (patch-gsd-partitioned-code-review.ps1)
+
+Replaces single-agent Claude code review with 3-partition parallel review. Requirements are divided into three groups (A, B, C) and reviewed concurrently by different agents.
+
+| Function | Purpose |
+|----------|---------|
+| `Split-RequirementsIntoPartitions` | Divides requirements into 3 groups (A, B, C) |
+| `Get-SpecAndFigmaPaths` | Resolves spec documents and Figma deliverables for prompt context |
+| `Invoke-PartitionedCodeReview` | Launches 3 parallel PowerShell jobs (one per partition) |
+| `Merge-PartitionedReviews` | Combines 3 partition results into unified health score and review |
+| `Update-CoverageMatrix` | Tracks which agent has reviewed which requirement across iterations |
+
+**Rotation Matrix** (`iteration % 3` determines agent assignment):
+
+| Iteration | Partition A | Partition B | Partition C |
+|-----------|-------------|-------------|-------------|
+| 1, 4, 7 | Claude | Gemini | Codex |
+| 2, 5, 8 | Gemini | Codex | Claude |
+| 3, 6, 9 | Codex | Claude | Gemini |
+
+This ensures every agent reviews every partition over 3 iterations, eliminating single-agent blind spots.
+
+**Partition Focus Areas** (3 prompt templates):
+- **Partition A**: Implementation & Architecture
+- **Partition B**: Data Flow & Integration
+- **Partition C**: Security, Compliance & UX
+
+Reviews validate against both spec documents and Figma deliverables.
+
+Configuration in `global-config.json` under `partitioned_code_review`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | true | Enable/disable partitioned review |
+| `rotation_strategy` | "round-robin" | Agent rotation strategy |
+| `validate_against_figma` | true | Include Figma deliverables in review context |
+| `validate_against_spec` | true | Include spec documents in review context |
+
+Output files:
+- `.gsd/code-review/rotation-history.jsonl` -- append-only log of which agent reviewed which partition
+- `.gsd/code-review/coverage-matrix.json` -- current coverage state across all requirements
+
+Fallback: if partitioned review fails, falls back to single-agent Claude review.
+
+### LOC-Cost Integration (patch-gsd-loc-cost-integration.ps1)
+
+Connects LOC tracking with cost tracking and code review, providing cost-per-line metrics and injecting LOC context into agent prompts.
+
+| Function | Purpose |
+|----------|---------|
+| `Save-LocBaseline` | Records starting commit hash for LOC delta calculation |
+| `Complete-LocTracking` | Computes grand total LOC delta from baseline to HEAD |
+| `Get-LocCostSummaryText` | Multi-line LOC vs Cost summary for final ntfy notifications |
+| `Get-LocContextForReview` | LOC history table injected into code review prompts |
+| `Get-LocNotificationText` | Enhanced to always include cost-per-line (e.g., "LOC: +250 / -30 net 220 | 12 files | $0.003/line") |
+
+Integration points:
+- **Code review prompts**: LOC context injected into standard, differential, and partitioned (A/B/C) review prompts so reviewers see how much code was generated
+- **Template resolution**: `Local-ResolvePrompt` auto-injects LOC context for code-review phase
+- **Final notifications**: CONVERGED/STALLED/MAX_ITERATIONS ntfy messages include grand total LOC vs cost summary
+
+Uses the existing `loc_tracking` config block (no new configuration needed).
+
+### Maintenance Mode (patch-gsd-maintenance-mode.ps1)
+
+Adds post-launch maintenance capabilities for fixing bugs and adding features to already-converged projects.
+
+**New Commands**:
+
+| Command | Purpose |
+|---------|---------|
+| `gsd-fix` | Quick bug fix mode -- accepts bug descriptions, auto-creates BUG-xxx requirements, runs scoped convergence with reduced iterations |
+| `gsd-update` | Incremental feature addition from updated specs (v02+), preserves satisfied requirements |
+
+**New Parameters**:
+
+| Parameter | Description |
+|-----------|-------------|
+| `--Scope` | Filters plan/execute to specific requirements while code-review still sees all (enables regression detection) |
+| `--Incremental` | Additive Phase 0 that merges new requirements instead of rebuilding the matrix |
+
+Prompt template: `prompts/claude/create-phases-incremental.md`
+
+Configuration in `global-config.json` under `maintenance_mode`:
+
+| Key | Description |
+|-----|-------------|
+| `fix_defaults` | Default settings for gsd-fix (max iterations, batch size) |
+| `scope_filter` | Scope filtering behavior (plan/execute scoped, code-review unscoped) |
+| `incremental_phases` | Settings for incremental requirement merging |
+
 ## Known Automation Boundaries
 
 ### Fully Automated (no human intervention)
@@ -1195,7 +1320,10 @@ Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and ac
 - Pipeline stall/max iterations: supervisor root-causes via Claude, modifies prompts/specs/queue, restarts in new terminal (up to 5 attempts)
 - Compilation errors at 100% health: final validation gate detects, resets to 99%, loop auto-fixes (up to 3 attempts)
 - Test failures at 100% health: same as compilation errors -- auto-fix via validation retry loop
+- Runtime 500 errors at 100% health: smoke test detects DI/FK/endpoint failures, resets to 99%, loop auto-fixes
 - Developer handoff generation: auto-generated `developer-handoff.md` at pipeline exit with build commands, DB setup, requirements, costs
+- Bug fixes via `gsd-fix`: auto-creates BUG-xxx requirements, runs scoped convergence
+- Incremental feature addition via `gsd-update`: merges new requirements from updated specs
 
 ### Requires Human Intervention
 

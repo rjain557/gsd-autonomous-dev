@@ -283,6 +283,70 @@ Tracks AI-generated lines of code per iteration and computes cost-per-line metri
 
 Output: `.gsd/costs/loc-metrics.json` — per-iteration and cumulative LOC with cost-per-line.
 
+#### runtime_smoke_test
+
+Controls the runtime smoke test that runs as part of final validation (checks 8-10).
+
+```json
+"runtime_smoke_test": {
+    "enabled": true,
+    "startup_timeout_seconds": 30,
+    "max_endpoints": 50,
+    "block_on_500": true,
+    "block_on_di_error": true,
+    "block_on_fk_violation": true,
+    "skip_if_no_dotnet": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Master toggle for runtime smoke testing |
+| `startup_timeout_seconds` | int | 30 | Max seconds to wait for app startup |
+| `max_endpoints` | int | 50 | Max API endpoints to test (prevents runaway on large APIs) |
+| `block_on_500` | bool | true | Any HTTP 500 response is a hard failure (sets health to 99%) |
+| `block_on_di_error` | bool | true | DI container errors are hard failures |
+| `block_on_fk_violation` | bool | true | FK constraint violations are hard failures |
+| `skip_if_no_dotnet` | bool | true | Skip runtime test if no .NET project detected |
+
+Disable: set `runtime_smoke_test.enabled` to `false`. The engine falls back to original 7-check validation.
+
+#### partitioned_code_review
+
+Controls 3-way parallel code review with agent rotation.
+
+```json
+"partitioned_code_review": {
+    "enabled": true,
+    "rotation_strategy": "round-robin",
+    "validate_against_figma": true,
+    "validate_against_spec": true,
+    "fallback_to_single": true,
+    "parallel_timeout_minutes": 15
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Master toggle for partitioned review |
+| `rotation_strategy` | string | "round-robin" | Agent rotation strategy. "round-robin" rotates A/B/C across claude/gemini/codex every iteration |
+| `validate_against_figma` | bool | true | Include Figma deliverable paths in review prompts |
+| `validate_against_spec` | bool | true | Include spec document paths in review prompts |
+| `fallback_to_single` | bool | true | Fall back to single-agent Claude review if partitioned review fails |
+| `parallel_timeout_minutes` | int | 15 | Max time for parallel review jobs before timeout |
+
+Disable: set `partitioned_code_review.enabled` to `false`. The engine uses single-agent Claude review.
+
+Rotation schedule (repeats every 3 iterations):
+
+| Iteration | Partition A | Partition B | Partition C |
+|-----------|-------------|-------------|-------------|
+| 1, 4, 7 | Claude | Gemini | Codex |
+| 2, 5, 8 | Gemini | Codex | Claude |
+| 3, 6, 9 | Codex | Claude | Gemini |
+
+Output files: `.gsd/code-review/rotation-history.jsonl`, `.gsd/code-review/coverage-matrix.json`
+
 #### maintenance_mode
 
 Controls post-launch maintenance features: bug fix mode, incremental updates, and scoped convergence.

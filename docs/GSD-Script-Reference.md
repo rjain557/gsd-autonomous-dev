@@ -66,6 +66,7 @@ Usage:
 gsd-fix "Login fails with + in email"                    # Single bug
 gsd-fix "Bug 1" "Bug 2" "Bug 3"                          # Multiple bugs
 gsd-fix -File bugs.md                                     # Bugs from file
+gsd-fix -BugDir ./bugs/login-issue/                       # Bug with screenshots/logs
 gsd-fix -File bugs.md -DryRun                             # Preview
 gsd-fix "Login bug" -MaxIterations 3 -BatchSize 2         # Custom limits
 ```
@@ -76,6 +77,7 @@ Parameters:
 |-----------|---------|-------------|
 | BugDescriptions | (required) | Bug descriptions as positional arguments |
 | -File | (none) | Path to file with bug descriptions (one per line) |
+| -BugDir | (none) | Path to directory containing bug.md + artifacts (screenshots, logs, repro files) |
 | -Scope | source:bug_report | Scope filter for convergence |
 | -MaxIterations | 5 | Max convergence iterations |
 | -BatchSize | 3 | Items per execute cycle |
@@ -295,7 +297,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 21 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 27 scripts total (1 master installer + 1 pre-flight + 21 run by installer + 4 standalone utilities).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 35 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 41 scripts total (1 master installer + 1 pre-flight + 35 run by installer + 4 standalone utilities).
 
 Usage:
 
@@ -339,7 +341,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
-The master installer (`install-gsd-all.ps1`) runs these 21 scripts in order. Each is idempotent and safe to re-run.
+The master installer (`install-gsd-all.ps1`) runs these 35 scripts in order. Each is idempotent and safe to re-run.
 
 ### install-gsd-global.ps1 (Script 1)
 
@@ -492,6 +494,22 @@ Agent intelligence: (1) `Update-AgentPerformanceScore` + `Get-BestAgentForPhase`
 ### patch-gsd-loc-tracking.ps1 (Script 31)
 
 LOC tracking: (1) `Update-LocMetrics` -- captures git diff --numstat after each execute phase, tracks lines added/deleted/net per iteration with file-level detail. (2) `Get-LocNotificationText` -- compact LOC string for ntfy notifications. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Patches both pipeline scripts and heartbeat to include LOC in all ntfy messages. Adds LOC section to developer-handoff.md. Output: `.gsd/costs/loc-metrics.json`. Config: `loc_tracking` in global-config.json.
+
+### patch-gsd-runtime-smoke-test.ps1 (Script 32)
+
+Runtime smoke test: (1) `Test-SeedDataFkOrder` -- static scan of SQL seed files checking INSERT order vs FK constraints. (2) `Find-ApiEndpoints` -- discovers API routes from Controller files and OpenAPI spec. (3) `Invoke-ApiSmokeTest` -- starts the app via `dotnet run`, hits discovered endpoints, checks for 500s. (4) `Invoke-RuntimeSmokeTest` -- orchestrator that runs all three checks. Returns combined results with pass/fail, violations, and endpoint failure details.
+
+### patch-gsd-partitioned-code-review.ps1 (Script 33)
+
+Partitioned code review: (1) `Split-RequirementsIntoPartitions` -- divides requirements into 3 balanced groups. (2) `Get-SpecAndFigmaPaths` -- resolves spec and Figma deliverable paths for requirements. (3) `Invoke-PartitionedCodeReview` -- launches 3 parallel agents with rotation-based assignment, merges results. (4) `Merge-PartitionedReviews` -- combines partition results into single health score. (5) `Update-CoverageMatrix` -- tracks which agent reviewed which requirement. Output: `.gsd/code-review/coverage-matrix.json`.
+
+### patch-gsd-loc-cost-integration.ps1 (Script 34)
+
+LOC-Cost integration: (1) `Save-LocBaseline` -- records starting git commit hash for LOC tracking at pipeline start. (2) `Complete-LocTracking` -- computes grand total LOC diff from baseline commit to HEAD at pipeline end. (3) `Get-LocCostSummaryText` -- returns multi-line LOC vs Cost summary text for final ntfy notifications. (4) `Get-LocContextForReview` -- returns LOC history table for injection into code review prompts. Bridges LOC tracking and cost tracking for running cost-per-line metrics and enhanced notifications.
+
+### patch-gsd-maintenance-mode.ps1 (Script 35)
+
+Maintenance mode: adds `gsd-fix` and `gsd-update` commands for post-delivery maintenance workflows. Supports `--Scope` parameter for targeted fixes (e.g., `gsd-fix --Scope "source:bug_report"`) and `--Incremental` for adding new requirements from updated specs without re-running the full pipeline.
 
 ### Optional standalone scripts
 
@@ -1070,6 +1088,75 @@ Scans specification documents for contradictions. Blocks critical conflicts unle
 ### Invoke-SpecConflictResolution
 
 Uses Gemini (--yolo) to auto-resolve spec contradictions based on authoritative source priority. Falls back to Codex if Gemini is unavailable. Max 2 attempts per conflict.
+
+### Test-SeedDataFkOrder
+
+Static scan of SQL seed files checking INSERT order vs FK constraints. Parses seed `.sql` files and verifies that parent tables are inserted before child tables that reference them via foreign keys.
+
+Returns: `@{ passed=$bool; violations=@(array of table ordering issues); seed_files_scanned=int }`
+
+### Find-ApiEndpoints
+
+Discovers API routes from `*Controller*.cs` files (parsing `[Http*]` and `[Route]` attributes) and from OpenAPI spec files. Deduplicates across sources.
+
+Returns: array of endpoint objects with `method`, `route`, `source`
+
+### Invoke-ApiSmokeTest
+
+Starts the application via `dotnet run`, hits all discovered endpoints, and checks for HTTP 500 responses. Shuts down the app after testing.
+
+Returns: `@{ passed=$bool; endpoints_tested=int; failures=@(array with url, status_code, error_type, error_detail) }`
+
+### Invoke-RuntimeSmokeTest
+
+Orchestrator that runs `Test-SeedDataFkOrder` + `Find-ApiEndpoints` + `Invoke-ApiSmokeTest` in sequence. Returns combined results from all three checks.
+
+### Split-RequirementsIntoPartitions
+
+Divides requirements into 3 balanced groups for parallel code review. Balances by count and complexity to ensure roughly equal workload per partition.
+
+### Get-SpecAndFigmaPaths
+
+Resolves spec documents and Figma deliverable paths for a set of requirements. Scans the design directory structure for versioned specs and Figma exports matching the given requirement IDs.
+
+### Invoke-PartitionedCodeReview
+
+Launches 3 parallel code review agents (assigned via rotation from the agent pool), each reviewing one partition of requirements. Merges results into a single review output.
+
+Parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| -Iteration | Current iteration number |
+| -Matrix | Requirements matrix object |
+| -SpecPaths | Resolved spec document paths |
+| -FigmaPaths | Resolved Figma deliverable paths |
+
+### Merge-PartitionedReviews
+
+Combines 3 partition review results into a single unified health score and merged review text. Averages scores and concatenates findings, deduplicating overlapping concerns.
+
+### Update-CoverageMatrix
+
+Tracks which agent reviewed which requirement across iterations. Builds a coverage history to ensure review diversity over time.
+
+Output: `.gsd/code-review/coverage-matrix.json`
+
+### Save-LocBaseline
+
+Records the starting git commit hash for LOC tracking. Called at pipeline start to establish the baseline for measuring total lines of code changed during the run.
+
+### Complete-LocTracking
+
+Computes grand total LOC diff from the baseline commit (recorded by `Save-LocBaseline`) to HEAD. Called at pipeline end to capture the final LOC metrics for the entire run.
+
+### Get-LocCostSummaryText
+
+Returns multi-line LOC vs Cost summary text for inclusion in final ntfy notifications. Combines LOC metrics with cost data to show cost-per-added-line and cost-per-net-line.
+
+### Get-LocContextForReview
+
+Returns a LOC history table (lines added/deleted/net per iteration) for injection into code review prompts. Gives the review agent awareness of code churn patterns across iterations.
 
 ## VS Code Integration
 

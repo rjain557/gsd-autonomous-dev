@@ -18,7 +18,7 @@
 | 1.6.1 | March 2026 | Added Chapters 13-15: Coding Standards & Methodologies, Database Coding Standards, Compliance & Security Coding (88+ rules with IDs) |
 | 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
 | 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
-| 2.1.0 | March 2026 | Maintenance mode: `gsd-fix` command for quick bug fixes, `gsd-update` for incremental feature additions, `--Scope` parameter for targeted convergence, `--Incremental` flag for additive requirements. New prompt: create-phases-incremental.md. Added Chapter 20. |
+| 2.1.0 | March 2026 | Maintenance mode: `gsd-fix` command for quick bug fixes (text, files, or directories with screenshots/logs), `gsd-update` for incremental feature additions, `--Scope` parameter for targeted convergence, `--Incremental` flag for additive requirements. Rich bug input via `-BugDir` with artifact copying and multimodal support. New prompt: create-phases-incremental.md. Added Chapter 20. |
 
 ---
 
@@ -1605,7 +1605,7 @@ Token cost estimator with pipeline comparison and client quoting. See Section 4.
 
 ### gsd-fix
 
-Quick bug fix mode. Accepts bug descriptions as arguments or from a file, auto-creates `BUG-xxx` requirement entries in the matrix, writes error context for agent injection, and runs a short convergence cycle with small batch size. Options: `-File bugs.md` (load from file), `-Scope "source:bug_report"` (default scope), `-MaxIterations 5` (default), `-BatchSize 3` (default), `-DryRun`.
+Quick bug fix mode. Accepts bug descriptions as arguments, from a file, or from a directory containing rich artifacts. Auto-creates `BUG-xxx` requirement entries in the matrix, writes error context for agent injection, and runs a short convergence cycle with small batch size. Options: `-File bugs.md` (load from file), `-BugDir ./bugs/issue/` (directory with bug.md + screenshots/logs/files), `-Scope "source:bug_report"` (default scope), `-MaxIterations 5` (default), `-BatchSize 3` (default), `-DryRun`.
 
 ### gsd-update
 
@@ -4526,42 +4526,77 @@ gsd-fix "Login fails with +" "Report totals include voided records" "API returns
 # Fix from a file (one bug per line, or markdown list)
 gsd-fix -File bugs.md
 
+# Fix from a directory with screenshots, logs, and detailed markdown
+gsd-fix -BugDir ./bugs/login-issue/
+
 # Dry run (preview without executing)
 gsd-fix "Login fails with +" -DryRun
 ```
 
 ### What gsd-fix Does
 
-1. Parses bug descriptions from arguments or file
+1. Parses bug descriptions from arguments, file, or directory
 2. Creates requirement entries in `requirements-matrix.json`:
    - `req_id`: `BUG-001`, `BUG-002`, etc.
    - `source`: `bug_report`
    - `status`: `not_started`
    - `priority`: `critical`
    - `spec_version`: `fix`
-3. Recalculates health score (drops from 100% based on new items)
-4. Writes bug details to `.gsd/supervisor/error-context.md` (injected into all agent prompts)
-5. Calls `gsd-converge` with fix-optimized defaults:
+3. If `-BugDir` is used, copies all artifacts (screenshots, logs, files) to `.gsd/supervisor/bug-artifacts/BUG-xxx/`
+4. Recalculates health score (drops from 100% based on new items)
+5. Writes bug details to `.gsd/supervisor/error-context.md` (injected into all agent prompts):
+   - Screenshot references (Claude reads images during code-review/plan phases)
+   - Log file snippets (first 20 lines inlined for context)
+   - Full markdown bug report appended
+6. Calls `gsd-converge` with fix-optimized defaults:
    - `MaxIterations`: 5
    - `BatchSize`: 3
    - `SkipResearch`: true (saves tokens)
    - `Scope`: `source:bug_report` (only fixes bugs, ignores feature requirements)
 
-### bugs.md File Format
+### Input Modes
 
+**Mode 1: CLI Arguments** — Quick, one-line descriptions:
+```powershell
+gsd-fix "Login fails when email contains '+' character"
+```
+
+**Mode 2: Bug File** — One bug per line (plain text or markdown list):
 ```markdown
 - Login fails when email contains '+' character
 - Report totals include voided records in SUM
 - API returns 500 when userId is null
-- Dashboard chart renders wrong date range
 ```
 
-Or numbered:
+**Mode 3: Bug Directory** — Rich input with screenshots, logs, and files:
+```
+bugs/login-issue/
+  bug.md              # Detailed description with steps to reproduce
+  error-screenshot.png # Screenshot of the error
+  server.log          # Relevant log extract
+  repro.http          # HTTP request that triggers the bug
+```
 
+The `bug.md` file uses standard markdown. The first `# heading` becomes the bug description in the matrix. The full content (including image references) gets written to `error-context.md` for agent injection.
+
+```markdown
+# Login fails when email contains + character
+
+## Steps to Reproduce
+1. Enter email: user+tag@example.com
+2. Click Login
+3. See 400 Bad Request error
+
+![Error screenshot](error-screenshot.png)
+
+## Server Log
+See server.log — stack trace at line 42 shows URL encoding issue in AuthController.
+
+## Expected: Login succeeds
+## Actual: 400 Bad Request
 ```
-1. Login fails when email contains '+' character
-2. Report totals include voided records
-```
+
+Claude (multimodal) can read the screenshots during code-review and plan phases since they are referenced in the error context and stored in `.gsd/supervisor/bug-artifacts/BUG-xxx/`.
 
 ### Cost Estimate
 

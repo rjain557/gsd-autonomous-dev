@@ -520,6 +520,59 @@ The validation gate sets `CI=true` to prevent interactive watch mode (Jest, Vite
 2. **Test timeout**: Individual tests may be slow. The gate has a 5-minute overall timeout per check.
 3. **Database dependencies**: Tests requiring a running database will fail in the pipeline context.
 
+## Runtime Smoke Test Issues
+
+### "Runtime smoke test skipped: no .NET project detected"
+
+Normal behavior for non-.NET projects. The smoke test requires a .csproj file to start the application via `dotnet run`. For Node.js-only projects, runtime testing is skipped automatically.
+
+### API endpoints returning 500 but tests pass
+
+The runtime smoke test catches issues that unit tests miss:
+
+1. **DI container errors** (`Cannot resolve scoped service`): A service registered as `Scoped` is being injected into a `Singleton`. Fix: Change the lifetime registration or use `IServiceScopeFactory`.
+
+2. **FK constraint violations** (`SqlException: FK constraint`): Seed data INSERT order doesn't respect foreign key dependencies. Fix: Reorder INSERT statements so parent tables are populated before child tables.
+
+3. **General 500 errors**: The endpoint crashes at runtime despite compiling and passing tests. Check the error detail in `.gsd/health/final-validation.json` → `checks.runtime_smoke_test.failures`.
+
+### Runtime smoke test times out
+
+The app failed to start within the configured timeout (default 30s). Common causes:
+- Missing connection string or environment variable
+- Database not accessible
+- Port already in use
+
+Increase timeout: set `runtime_smoke_test.startup_timeout_seconds` in `global-config.json`.
+
+### "Too many endpoints, limiting to N"
+
+The discovered endpoint count exceeds `max_endpoints` (default 50). This is a safety limit. Increase via `runtime_smoke_test.max_endpoints` if needed.
+
+### Disabling runtime smoke test
+
+```json
+// In global-config.json
+"runtime_smoke_test": { "enabled": false }
+```
+
+## Partitioned Code Review Issues
+
+### "Partitioned review failed, falling back to single-agent"
+
+One or more partition review jobs failed (agent error, timeout, etc.). The engine automatically falls back to the original single-agent Claude review. Check `.gsd/logs/errors.jsonl` for the specific failure.
+
+### Coverage matrix shows gaps
+
+The coverage matrix (`.gsd/code-review/coverage-matrix.json`) tracks which agent reviewed each requirement. Gaps occur when iterations are interrupted before all 3 rotation slots complete. The engine auto-fills gaps in subsequent iterations.
+
+### Disabling partitioned review
+
+```json
+// In global-config.json
+"partitioned_code_review": { "enabled": false }
+```
+
 ## Developer Handoff Issues
 
 ### developer-handoff.md is empty or missing sections

@@ -111,7 +111,7 @@ cd gsd-autonomous-dev
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 ```
 
-This runs all 21 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for CLI agent API keys if they are not already configured.
+This runs all 35 install/patch scripts in dependency order. The installer also runs `install-gsd-prerequisites.ps1` first as a pre-flight check. On first run, `install-gsd-global.ps1` (Step 0) prompts for CLI agent API keys if they are not already configured.
 
 | Order | Script | What It Installs |
 |-------|--------|-----------------|
@@ -136,6 +136,20 @@ This runs all 21 install/patch scripts in dependency order. The installer also r
 | 19 | patch-gsd-resilience-hardening.ps1 | Resilience hardening (token tracking, auth fix, quota cap, agent rotation) |
 | 20 | patch-gsd-quality-gates.ps1 | Quality gates (DB completeness, security compliance, spec validation) |
 | 21 | patch-gsd-multi-model.ps1 | Multi-model LLM integration (Kimi, DeepSeek, GLM-5, MiniMax REST agents) |
+| 22 | patch-gsd-differential-review.ps1 | Differential code review (review only changed files, cache state) |
+| 23 | patch-gsd-pre-execute-gate.ps1 | Pre-execute compile gate (build validation before commit) |
+| 24 | patch-gsd-acceptance-tests.ps1 | Per-requirement acceptance tests (auto-generate + run per req) |
+| 25 | patch-gsd-api-contract-validation.ps1 | Contract-first API validation (controller vs OpenAPI spec) |
+| 26 | patch-gsd-visual-validation.ps1 | Visual validation (Figma screenshot diff via Playwright) |
+| 27 | patch-gsd-design-token-enforcement.ps1 | Design token enforcement (CSS/style hardcoded value scan) |
+| 28 | patch-gsd-compliance-engine.ps1 | Compliance engine (per-iteration audit, DB migration, PII tracking) |
+| 29 | patch-gsd-speed-optimizations.ps1 | Speed optimizations (research skip, smart batch, prompt dedup) |
+| 30 | patch-gsd-agent-intelligence.ps1 | Agent intelligence (performance scoring, warm-start patterns) |
+| 31 | patch-gsd-loc-tracking.ps1 | LOC tracking (lines of code metrics, cost-per-line, ntfy) |
+| 32 | patch-gsd-runtime-smoke-test.ps1 | Runtime smoke test (DI validation, API 500 check, FK seed order) |
+| 33 | patch-gsd-partitioned-code-review.ps1 | Partitioned code review (3-way parallel, agent rotation) |
+| 34 | patch-gsd-loc-cost-integration.ps1 | LOC-Cost integration (cost-per-line, review LOC awareness, ntfy) |
+| 35 | patch-gsd-maintenance-mode.ps1 | Maintenance mode (gsd-fix, gsd-update, --Scope, --Incremental) |
 
 Optional standalone scripts (not run by installer):
 - **setup-gsd-api-keys.ps1** -- manage CLI agent API key environment variables (set, show, clear)
@@ -143,7 +157,7 @@ Optional standalone scripts (not run by installer):
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
 - **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
 
-The repository contains 27 scripts total: 1 master installer, 1 pre-flight check, 21 scripts run by installer (19 core patches + 1 bug fix + 1 resilience hardening), and 4 standalone utilities.
+The repository contains 41 scripts total: 1 master installer, 1 pre-flight check, 35 scripts run by installer (31 core patches + 1 bug fix + 1 resilience hardening + 1 maintenance mode + 1 LOC-cost integration), and 4 standalone utilities.
 
 ### Step 3: Restart Terminal
 
@@ -223,8 +237,9 @@ When the engine reaches 100% health (all requirements matched), it runs a **fina
 2. **Test execution**: Runs `dotnet test` and/or `npm test` -- must pass (if tests exist)
 3. **SQL validation**: Checks SQL patterns -- advisory only
 4. **Vulnerability audit**: Checks NuGet and npm dependencies -- advisory only
+5. **Runtime smoke test**: Starts the application, hits API endpoints, checks for 500 errors, DI container errors, and FK constraint violations -- must pass
 
-If compilation or tests fail, health is set to 99% and the engine automatically loops to fix the issues (up to 3 validation attempts).
+If compilation, tests, or runtime smoke tests fail, health is set to 99% and the engine automatically loops to fix the issues (up to 3 validation attempts).
 
 When the pipeline exits (converged, stalled, or max iterations), it generates `developer-handoff.md` in the repository root with build commands, database setup, environment configuration, requirements status, validation results, known issues, and cost summary.
 
