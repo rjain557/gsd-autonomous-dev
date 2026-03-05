@@ -243,9 +243,9 @@ const { chromium } = require('playwright');
                         }
 
                         if ($sizeDiff -gt $maxDiffPct) {
-                            Write-Host "    [DIFF] $componentName: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Yellow
+                            Write-Host "    [DIFF] ${componentName}: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Yellow
                         } else {
-                            Write-Host "    [OK] $componentName: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Green
+                            Write-Host "    [OK] ${componentName}: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Green
                         }
                     } else {
                         $result.Components += @{
@@ -253,7 +253,7 @@ const { chromium } = require('playwright');
                             status   = "capture_failed"
                             diff_pct = -1
                         }
-                        Write-Host "    [FAIL] $componentName: screenshot capture failed" -ForegroundColor Red
+                        Write-Host "    [FAIL] ${componentName}: screenshot capture failed" -ForegroundColor Red
                     }
 
                     Remove-Item $scriptPath -ErrorAction SilentlyContinue

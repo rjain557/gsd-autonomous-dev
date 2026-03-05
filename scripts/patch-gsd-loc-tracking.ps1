@@ -169,7 +169,7 @@ function Update-LocMetrics {
 
     $netLines = $totalAdded - $totalDeleted
 
-    Write-Host "  [LOC] Iteration $Iteration: +$totalAdded / -$totalDeleted (net $netLines) | $filesChanged files" -ForegroundColor Cyan
+    Write-Host "  [LOC] Iteration ${Iteration}: +$totalAdded / -$totalDeleted (net $netLines) | $filesChanged files" -ForegroundColor Cyan
 
     # Load or create metrics file
     $costsDir = Join-Path $GsdDir "costs"

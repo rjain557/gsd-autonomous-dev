@@ -513,7 +513,7 @@ Maintenance mode: adds `gsd-fix` and `gsd-update` commands for post-delivery mai
 
 ### patch-gsd-council-requirements.ps1 (Script 36)
 
-Council-based requirements verification: all 3 agents (Claude, Codex, Gemini) independently extract requirements from specs, Figma, and code, then Claude synthesizes a merged, deduplicated, confidence-scored `requirements-matrix.json`. (1) `Invoke-CouncilRequirements` -- dispatches 3 parallel PowerShell jobs, collects JSON outputs, runs Claude synthesis. (2) `Merge-CouncilRequirementsLocal` -- local PowerShell fallback merge using token-overlap deduplication when synthesis agent fails. (3) `gsd-verify-requirements` profile function -- standalone command for any repo. Confidence scoring: found by 3 agents = "high", 2 = "medium", 1 = "low" (flagged for review). Also patches convergence pipeline Phase 0 to use council extraction when `council_requirements.enabled = true` in `global-config.json`. Output: `.gsd/health/requirements-matrix.json` (with `confidence` and `found_by` fields), `.gsd/health/council-requirements-report.md`.
+Council-based requirements verification with 3-phase parallel pipeline: (1) **EXTRACT** -- spec files are partitioned across agents (round-robin), each agent processes its 1/3 in chunks of ~10 files via `Start-Job` background jobs running simultaneously. (2) **CROSS-VERIFY** -- a different agent verifies each extraction in parallel (Claude extracts → Codex verifies, Codex extracts → Gemini verifies, Gemini extracts → Claude verifies). (3) **SYNTHESIZE** -- Claude merges all verified outputs into a deduplicated, confidence-scored `requirements-matrix.json`. Confidence: confirmed by both extractor AND verifier = "high", added/corrected by verifier = "medium", unverified = "low". Functions: `Invoke-CouncilRequirements` (parallel dispatch + polling progress), `Merge-CouncilRequirementsLocal` (local PowerShell fallback via token-overlap dedup), `Get-SpecFiles` (scans docs/ + design/), `Split-IntoChunks`. Profile command: `gsd-verify-requirements`. Ntfy push notifications at every phase transition and chunk completion with token cost breakdown. Patches convergence pipeline Phase 0 when `council_requirements.enabled = true`. Output: `.gsd/health/requirements-matrix.json`, `.gsd/health/council-extract-{agent}.json`, `.gsd/health/council-verify-{agent}-by-{verifier}.json`, `.gsd/health/council-requirements-report.md`.
 
 Usage:
 
@@ -523,11 +523,12 @@ Usage:
 
 # Run standalone on any repo
 cd D:\vscode\your-project
-gsd-verify-requirements                     # 3-agent parallel extraction
-gsd-verify-requirements -Sequential         # One agent at a time
+gsd-verify-requirements                     # All 3 agents in parallel
 gsd-verify-requirements -DryRun             # Preview without running
-gsd-verify-requirements -SkipAgent gemini   # Skip unavailable agent
+gsd-verify-requirements -SkipAgent claude   # Skip agent (e.g., quota exhausted)
+gsd-verify-requirements -SkipVerify         # Extract only, skip cross-verification
 gsd-verify-requirements -PreserveExisting   # Merge into existing matrix
+gsd-verify-requirements -ChunkSize 5        # Smaller chunks (default: 10)
 ```
 
 ### Optional standalone scripts

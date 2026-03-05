@@ -372,6 +372,34 @@ Controls post-launch maintenance features: bug fix mode, incremental updates, an
 | `incremental_phases.preserve_satisfied` | bool | Never modify satisfied requirements during incremental |
 | `incremental_phases.add_spec_version_tag` | bool | Tag new requirements with spec_version field |
 
+#### council_requirements
+
+Controls the 3-phase parallel council requirements extraction pipeline (`gsd-verify-requirements` command and convergence Phase 0 integration).
+
+```json
+"council_requirements": {
+    "enabled": true,
+    "agents": ["claude", "codex", "gemini"],
+    "min_agents_for_merge": 2,
+    "chunk_size": 10,
+    "timeout_seconds": 600,
+    "cooldown_between_agents": 5,
+    "fallback_to_single": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Enable council extraction in convergence Phase 0 |
+| `agents` | string[] | ["claude","codex","gemini"] | Agents to use (partitioned round-robin) |
+| `min_agents_for_merge` | int | 2 | Minimum agents required to produce valid output |
+| `chunk_size` | int | 10 | Spec files per LLM call (smaller = less tokens per call) |
+| `timeout_seconds` | int | 600 | Timeout per chunk (total timeout = chunks × timeout + 120s) |
+| `cooldown_between_agents` | int | 5 | Seconds between sequential chunks within each agent |
+| `fallback_to_single` | bool | true | Fall back to single-agent create-phases if council fails |
+
+Prompt templates: `%USERPROFILE%\.gsd-global\prompts\council\requirements-extract-chunk.md`, `requirements-verify.md`, `requirements-synthesize.md`, `requirements-synthesize-partial.md`.
+
 ### Prompt Templates
 
 Quality gate prompt templates are stored in:

@@ -19,7 +19,7 @@
 | 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
 | 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
 | 2.1.0 | March 2026 | Runtime smoke tests (Script 32: DI validation, API endpoint checks, seed FK order). Partitioned code review (Script 33: 3-way parallel with agent rotation). LOC-cost integration (Script 34: baseline tracking, grand totals, cost-per-line in every notification). Maintenance mode (Script 35): `gsd-fix` (text/file/directory with screenshots), `gsd-update`, `--Scope`, `--Incremental`, `-BugDir`. Added Chapters 17.7-17.8, expanded Chapter 19, added Chapter 20. |
-| 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-agent parallel extraction with confidence scoring. `gsd-verify-requirements` standalone command. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
+| 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-phase parallel pipeline -- partitioned extract (each agent processes 1/3 of specs in chunks via `Start-Job`), cross-verification (different agent checks each extraction), Claude synthesis. Live progress monitoring (disk polling every 15s + heartbeat). Ntfy push notifications at every phase with token cost breakdown. `gsd-verify-requirements` standalone command with `-SkipAgent`, `-SkipVerify`, `-ChunkSize`. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
 
 ---
 
@@ -4938,15 +4938,15 @@ gsd-converge --Scope "source:v02_spec"
 
 ## 21.1 Overview
 
-The standard Phase 0 (create-phases) uses a single Claude agent to extract requirements. Council-based verification uses ALL 3 agents (Claude, Codex, Gemini) independently, then synthesizes a merged, deduplicated, confidence-scored requirements matrix.
+The standard Phase 0 (create-phases) uses a single Claude agent to extract requirements. Council-based verification uses a 3-phase parallel pipeline: partitioned extract, cross-verify, and synthesize. Each agent processes 1/3 of the spec files, then a different agent checks their work before Claude synthesizes the final matrix.
 
-### Why 3-Agent Extraction?
+### Why Partitioned Extract + Cross-Verify?
 
-- **Claude** focuses on architecture, compliance (HIPAA/SOC2/PCI/GDPR), and cross-cutting concerns
-- **Codex** focuses on implementation completeness, code patterns, and implied requirements from existing code
-- **Gemini** focuses on spec/Figma alignment, UI requirements, and missing UX states
-- Each agent catches gaps the others miss
-- Confidence scoring identifies which requirements are well-established vs. need human review
+- **Parallel execution**: All agents run simultaneously via `Start-Job` -- 2-3x faster than sequential
+- **Partitioned workload**: Each agent reads only 1/3 of specs, chunked into batches of ~10 files -- fits within per-request token limits and avoids quota exhaustion
+- **Cross-verification**: A different agent reviews each extraction, catching missed requirements and false positives
+- **Agent specialization**: Claude focuses on architecture/compliance, Codex on implementation/patterns, Gemini on spec/Figma alignment
+- **Confidence scoring**: Requirements confirmed by both extractor AND verifier = "high", added by verifier = "medium", unverified = "low"
 
 ## 21.2 Usage
 
@@ -4956,37 +4956,51 @@ cd D:\vscode\your-project
 gsd-verify-requirements
 
 # Options
-gsd-verify-requirements -Sequential         # Run agents one at a time
-gsd-verify-requirements -DryRun             # Preview without running agents
-gsd-verify-requirements -SkipAgent gemini   # Skip unavailable agent
+gsd-verify-requirements -DryRun             # Preview file counts without running agents
+gsd-verify-requirements -SkipAgent claude   # Skip agent (e.g., quota exhausted)
+gsd-verify-requirements -SkipVerify         # Extract only, skip cross-verification phase
 gsd-verify-requirements -PreserveExisting   # Backup and merge into existing matrix
+gsd-verify-requirements -ChunkSize 5        # Smaller chunks per LLM call (default: 10)
 ```
 
 ## 21.3 How It Works
 
-| Step | Agent | Action |
-|------|-------|--------|
-| 1. Extract | Claude, Codex, Gemini (parallel) | Each independently reads specs, Figma, and code |
-| 2. Synthesize | Claude | Merges, deduplicates, assigns confidence scores |
-| 3. Fallback | PowerShell | Local token-overlap merge if synthesis fails |
+| Phase | Agents | Action | Execution |
+|-------|--------|--------|-----------|
+| 1. EXTRACT | Claude, Codex, Gemini | Each processes 1/3 of spec files in chunks of ~10 | Parallel (`Start-Job`) |
+| 2. CROSS-VERIFY | Codex→checks Claude, Gemini→checks Codex, Claude→checks Gemini | Reads extraction + same source files, adds missed, corrects statuses, flags false positives | Parallel (`Start-Job`) |
+| 3. SYNTHESIZE | Claude | Merges all verified outputs, deduplicates, assigns confidence scores | Sequential |
+| Fallback | PowerShell | Local token-overlap merge if synthesis agent fails | Sequential |
+
+### Cross-Verification Chain
+
+```
+Claude extracts  →  Codex verifies
+Codex extracts   →  Gemini verifies
+Gemini extracts  →  Claude verifies
+```
+
+Each verifier can: confirm requirements, add missed ones, correct statuses, and flag false positives.
 
 ### Confidence Scoring
 
-| Level | Agents Found | Meaning |
-|-------|-------------|---------|
-| High | 3 | All agents agree -- requirement is real |
-| Medium | 2 | Majority agree -- likely real |
-| Low | 1 | Single agent -- flagged for human review |
+| Level | Criteria | Meaning |
+|-------|----------|---------|
+| High | Confirmed by both extractor AND verifier | Requirement is real |
+| Medium | Added or corrected by verifier | Likely real, verifier caught it |
+| Low | Unverified (verifier failed/skipped) | Flagged for human review |
 
 ## 21.4 Output Files
 
 | File | Description |
 |------|-------------|
-| `.gsd/health/requirements-matrix.json` | Merged matrix with `confidence` and `found_by` fields |
+| `.gsd/health/requirements-matrix.json` | Final merged matrix with `confidence`, `found_by`, `verified_by` fields |
+| `.gsd/health/council-extract-{agent}.json` | Combined per-agent extraction (all chunks merged) |
+| `.gsd/health/council-extract-{agent}-chunk{N}.json` | Individual chunk outputs |
+| `.gsd/health/council-verify-{agent}-by-{verifier}.json` | Cross-verification results |
 | `.gsd/health/council-requirements-report.md` | Confidence breakdown and low-confidence items |
 | `.gsd/health/health-current.json` | Initial health score |
 | `.gsd/health/drift-report.md` | Not-started and partial requirements |
-| `.gsd/health/council-extract-{agent}.json` | Raw per-agent extraction outputs |
 
 ## 21.5 Schema Extensions
 
@@ -4996,7 +5010,8 @@ New fields added to each requirement (backward compatible):
 {
   "id": "REQ-001",
   "confidence": "high|medium|low",
-  "found_by": ["claude", "codex", "gemini"]
+  "found_by": ["claude", "codex", "gemini"],
+  "verified_by": "codex"
 }
 ```
 
@@ -5012,7 +5027,25 @@ New meta fields:
 }
 ```
 
-## 21.6 Convergence Pipeline Integration
+## 21.6 Progress Monitoring and Notifications
+
+The council pipeline sends **ntfy push notifications** at every phase transition and on chunk completion, with token cost breakdown:
+
+| Event | Priority | Example Message |
+|-------|----------|-----------------|
+| Phase 1 start | default | "2 agents (codex, gemini) extracting from 195 spec files in parallel" |
+| Chunk progress | low | "codex chunk 3/10 done (47 reqs so far)" |
+| Phase 1 done | default | "codex OK \| gemini OK" + cost breakdown |
+| Phase 2 start | default | "2 extractions being cross-verified in parallel" |
+| Phase 2 done | default | "Cross-verification complete" + cost |
+| Phase 3 start | default | "Merging 2 agent outputs into requirements matrix" |
+| Final result | high | "Requirements matrix: 245 requirements" + full cost |
+
+The terminal also shows live progress by polling for chunk output files on disk every 15 seconds, plus heartbeat messages every 60 seconds showing agent job states.
+
+The ntfy topic is auto-initialized to `gsd-{username}-{reponame}` or read from `global-config.json` → `notifications.ntfy_topic`.
+
+## 21.7 Convergence Pipeline Integration
 
 When `council_requirements.enabled = true` in `global-config.json`, the convergence pipeline Phase 0 automatically uses council extraction instead of single-agent. Falls back to single-agent if council fails.
 
@@ -5024,6 +5057,7 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
     "enabled": true,
     "agents": ["claude", "codex", "gemini"],
     "min_agents_for_merge": 2,
+    "chunk_size": 10,
     "timeout_seconds": 600,
     "cooldown_between_agents": 5,
     "fallback_to_single": true
@@ -5031,24 +5065,29 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
 }
 ```
 
-## 21.7 Error Handling
+## 21.8 Error Handling
 
 | Scenario | Recovery |
 |----------|----------|
-| 1 agent fails | Proceed with 2; max confidence = "medium" |
-| 2 agents fail | Use single agent output; all confidence = "low" |
+| 1 agent fails extraction | Proceed with remaining; cross-verify what completed |
+| Agent job times out | Check disk for partial output; recover if chunks were written |
+| Verifier fails | Extraction accepted as-is (unverified, confidence = "low") |
 | All agents fail | Fall back to single-agent create-phases |
-| Synthesis fails | Local PowerShell merge (token-overlap dedup) |
+| Synthesis fails | Local PowerShell merge (token-overlap Jaccard dedup) |
+| Gemini CLI error | Uses `--approval-mode yolo` (not `full`). Check `~/.gemini/settings.json` if errors persist |
 
-## 21.8 Cost Estimate
+## 21.9 Cost Estimate
 
-| Step | Agent | Est. Cost |
-|------|-------|-----------|
-| Extract | Claude | ~$0.07 |
-| Extract | Codex | ~$0.00 |
-| Extract | Gemini | ~$0.00 |
+| Phase | Agent | Est. Cost (200 spec files) |
+|-------|-------|-----------|
+| Extract | Claude (1/3 files, ~7 chunks) | ~$0.50 |
+| Extract | Codex (1/3 files, ~7 chunks) | ~$0.00 |
+| Extract | Gemini (1/3 files, ~7 chunks) | ~$0.00 |
+| Cross-Verify | 3 verifications | ~$0.30 |
 | Synthesize | Claude | ~$0.07 |
-| **Total** | | **~$0.14** |
+| **Total** | | **~$0.87** |
+
+Note: Costs scale with spec file count. Chunking into batches of 10 keeps each LLM call within token limits. Use `-SkipAgent claude` to reduce costs when Claude quota is exhausted (Codex + Gemini are free/cheap).
 
 ---
 
