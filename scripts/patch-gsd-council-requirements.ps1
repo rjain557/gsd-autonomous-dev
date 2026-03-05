@@ -779,12 +779,31 @@ function Invoke-CouncilRequirements {
                 }
             }
 
-            # Show heartbeat if no new chunks appeared
-            $anyNew = $false
-            foreach ($aName in $lastSeen.Keys) { if ($lastSeen[$aName] -gt 0) { $anyNew = $true } }
-            if (-not $anyNew -and ($elapsed % 60) -lt $pollInterval) {
-                $states = @($extractJobs | ForEach-Object { "$($_.Agent.Name)=$($_.Job.State)" })
-                Write-Host "    [HEARTBEAT] ${elapsed}s elapsed -- $($states -join ', ')" -ForegroundColor DarkGray
+            # Show per-agent heartbeat every 60s with chunk counts and working indicators
+            if (($elapsed % 60) -lt $pollInterval) {
+                $statusParts = @()
+                foreach ($ej in $extractJobs) {
+                    $aName = $ej.Agent.Name
+                    $totalExpected = [math]::Ceiling($partitions[$aName].Count / $chunkSize)
+                    $doneChunks = $lastSeen[$aName]
+                    $state = $ej.Job.State
+                    if ($state -eq "Running") {
+                        # Check for log files as "working" indicator (log created before chunk completes)
+                        $logFiles = @(Get-ChildItem -Path $logDir -Filter "council-requirements-$aName-chunk*.log" -ErrorAction SilentlyContinue)
+                        $activeChunk = $logFiles.Count
+                        if ($activeChunk -gt $doneChunks) {
+                            $statusParts += "${aName}: chunk $doneChunks/$totalExpected done (working on chunk $activeChunk)"
+                        } else {
+                            # Check if agent process is alive
+                            $agentProc = Get-Process -Name $aName -ErrorAction SilentlyContinue
+                            $procStatus = if ($agentProc) { "process alive" } else { "waiting" }
+                            $statusParts += "${aName}: chunk $doneChunks/$totalExpected done ($procStatus)"
+                        }
+                    } else {
+                        $statusParts += "${aName}: $state ($doneChunks/$totalExpected)"
+                    }
+                }
+                Write-Host "    [HEARTBEAT] ${elapsed}s -- $($statusParts -join ' | ')" -ForegroundColor DarkGray
             }
         }
 
