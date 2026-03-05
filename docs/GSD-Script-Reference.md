@@ -297,7 +297,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 35 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 41 scripts total (1 master installer + 1 pre-flight + 35 run by installer + 4 standalone utilities).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 36 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 42 scripts total (1 master installer + 1 pre-flight + 36 run by installer + 4 standalone utilities).
 
 Usage:
 

@@ -1,6 +1,6 @@
 # GSD Autonomous Development Engine - Developer Guide
 
-**Version:** 2.0.0
+**Version:** 2.2.0
 **Date:** March 2026
 **Classification:** Confidential - Internal Use Only
 
@@ -60,6 +60,9 @@ Supporting utilities:
 | `gsd-init` | Initialize `.gsd/` folder without running iterations |
 | `gsd-remote` | Launch remote monitoring with QR code |
 | `gsd-costs` | Estimate API costs, compare pipelines, generate client quotes |
+| `gsd-fix` | Quick bug fix mode with text, file, or directory input |
+| `gsd-update` | Incremental feature addition from updated specs |
+| `gsd-verify-requirements` | Council-based 3-agent requirements verification |
 
 ---
 
@@ -1620,11 +1623,25 @@ Initializes `.gsd/` folder structure without running any iterations. Creates all
 
 Launches remote monitoring server and displays a QR code for phone access.
 
+### gsd-verify-requirements
+
+Council-based requirements verification. All 3 agents independently extract requirements, then Claude synthesizes a merged, deduplicated, confidence-scored matrix.
+
+```powershell
+gsd-verify-requirements                     # 3-agent parallel extraction
+gsd-verify-requirements -Sequential         # One agent at a time
+gsd-verify-requirements -DryRun             # Preview without running
+gsd-verify-requirements -SkipAgent gemini   # Skip unavailable agent
+gsd-verify-requirements -PreserveExisting   # Merge into existing matrix
+```
+
+Output: `.gsd/health/requirements-matrix.json` with `confidence` and `found_by` fields. See Chapter 21 for details.
+
 ## 8.2 Installation Scripts
 
 ### install-gsd-all.ps1 (Master Installer)
 
-Orchestrates all 20 install/patch scripts in dependency order. Pre-checks for Git, Node.js, and CLI tools. Writes VERSION file. Reports pass/fail summary.
+Orchestrates all 36 install/patch scripts in dependency order. Pre-checks for Git, Node.js, and CLI tools. Writes VERSION file. Reports pass/fail summary.
 
 Parameters: `-AnthropicKey`, `-OpenAIKey`, `-GoogleKey` for non-interactive API key setup.
 
@@ -1758,9 +1775,25 @@ Agent intelligence: (1) `Update-AgentPerformanceScore` -- tracks efficiency (req
 
 LOC tracking: (1) `Update-LocMetrics` -- captures `git diff --numstat` after each execute phase, tracks lines added/deleted/net per iteration with file-level detail. (2) `Get-LocNotificationText` -- compact LOC string for ntfy notifications. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Patches both pipeline scripts and heartbeat to include LOC in all ntfy messages. Adds LOC section to developer-handoff.md. Output: `.gsd/costs/loc-metrics.json`. Config: `loc_tracking` in global-config.json.
 
+### patch-gsd-runtime-smoke-test.ps1
+
+Runtime smoke tests: (1) `Test-SeedDataFkOrder` -- static scan of SQL seed files checking INSERT order vs FK constraints. (2) `Find-ApiEndpoints` -- discovers API routes from Controller files and OpenAPI spec. (3) `Invoke-ApiSmokeTest` -- starts the app via `dotnet run`, hits discovered endpoints, checks for 500s. (4) `Invoke-RuntimeSmokeTest` -- orchestrator running all three checks. Creates `health-endpoint.md` and `di-service-lifetime.md` prompt templates. Config: `runtime_smoke_test` in global-config.json.
+
+### patch-gsd-partitioned-code-review.ps1
+
+Partitioned code review: (1) `Split-RequirementsIntoPartitions` -- divides requirements into 3 balanced groups. (2) `Get-SpecAndFigmaPaths` -- resolves spec and Figma deliverable paths. (3) `Invoke-PartitionedCodeReview` -- launches 3 parallel agents with rotation-based assignment, merges results. (4) `Merge-PartitionedReviews` -- combines partition results into single health score. (5) `Update-CoverageMatrix` -- tracks which agent reviewed which requirement. Auto-patches `Invoke-WithRetry` for gemini dispatch if missing. Creates partition-specific prompt templates. Output: `.gsd/code-review/coverage-matrix.json`. Config: `partitioned_code_review` in global-config.json.
+
+### patch-gsd-loc-cost-integration.ps1
+
+LOC-Cost integration: (1) `Save-LocBaseline` -- records starting git commit hash for LOC tracking at pipeline start. (2) `Complete-LocTracking` -- computes grand total LOC diff from baseline commit to HEAD at pipeline end. (3) `Get-LocCostSummaryText` -- returns multi-line LOC vs Cost summary for final ntfy notifications. (4) `Get-LocContextForReview` -- returns LOC history table for injection into code review prompts. Bridges LOC tracking and cost tracking for running cost-per-line metrics and enhanced notifications.
+
 ### patch-gsd-maintenance-mode.ps1
 
 Maintenance mode for post-launch updates: (1) `gsd-fix` command -- accepts bug descriptions via CLI args or file, auto-creates `BUG-xxx` requirement entries with `source: bug_report`, writes error-context.md, runs short convergence cycle with small batch/iterations. (2) `gsd-update` command -- incremental feature addition using `create-phases-incremental.md` prompt that preserves existing satisfied requirements and adds new ones from updated specs. (3) `--Scope` parameter on `gsd-converge` -- filters plan phase to only select matching requirements (by source or ID) while code-review still sees everything. (4) `--Incremental` flag -- triggers additive Phase 0 that merges new requirements into existing matrix. Config: `maintenance_mode` in global-config.json.
+
+### patch-gsd-council-requirements.ps1
+
+Council-based requirements verification: All 3 agents independently extract requirements from specs, Figma, and code, then Claude synthesizes a merged, deduplicated, confidence-scored `requirements-matrix.json`. (1) `Invoke-CouncilRequirements` -- dispatches 3 parallel jobs, collects JSON outputs, runs Claude synthesis with fallback to local merge. (2) `Merge-CouncilRequirementsLocal` -- PowerShell fallback using token-overlap Jaccard similarity deduplication. (3) `gsd-verify-requirements` profile function -- standalone command for any repo. Creates 5 prompt templates in `prompts/council/`. Patches convergence pipeline Phase 0 to use council when `council_requirements.enabled = true`. Config: `council_requirements` in global-config.json.
 
 ## 8.3 Standalone Utilities
 
@@ -2059,6 +2092,42 @@ Set-AgentCooldown -Agent <string> -Minutes <int> -GsdDir <string>
 ```
 
 Agent rotation for quota management. Checks cooldown timestamps, returns next available agent from pool.
+
+### Test-SeedDataFkOrder / Invoke-RuntimeSmokeTest
+
+```
+Test-SeedDataFkOrder -RepoRoot <string> -GsdDir <string>
+Invoke-RuntimeSmokeTest -RepoRoot <string> -GsdDir <string>
+```
+
+Static FK order validation and full runtime smoke test orchestrator (seed FK check + endpoint discovery + HTTP 500 detection). See Section 17.7.
+
+### Split-RequirementsIntoPartitions / Invoke-PartitionedCodeReview
+
+```
+Split-RequirementsIntoPartitions -Matrix <object>
+Invoke-PartitionedCodeReview -Iteration <int> -Matrix <object>
+```
+
+3-partition parallel code review with agent rotation. Splits requirements into balanced groups, dispatches simultaneously, merges results. See Section 17.8.
+
+### Save-LocBaseline / Complete-LocTracking
+
+```
+Save-LocBaseline -GsdDir <string>
+Complete-LocTracking -GsdDir <string>
+```
+
+Pipeline-level LOC tracking: records starting commit at launch, computes grand total diff at completion. See Section 19.2.
+
+### Invoke-CouncilRequirements / Merge-CouncilRequirementsLocal
+
+```
+Invoke-CouncilRequirements -RepoRoot <string> -GsdDir <string>
+Merge-CouncilRequirementsLocal -GsdDir <string>
+```
+
+3-agent parallel requirements extraction with confidence scoring. `Merge-CouncilRequirementsLocal` provides PowerShell fallback using Jaccard similarity deduplication when the synthesis agent fails. See Chapter 21.
 
 ---
 
@@ -5022,7 +5091,7 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
 | `prompts/codex/execute-subtask.md` | Parallel sub-task prompt |
 | `prompts/gemini/research.md` | Technical research prompt |
 | `prompts/gemini/resolve-spec-conflicts.md` | Spec resolution prompt |
-| `prompts/council/*.md` | 14 council review templates |
+| `prompts/council/*.md` | 19 council review + requirements templates |
 | `prompts/shared/security-standards.md` | 88+ OWASP security rules |
 | `prompts/shared/coding-conventions.md` | .NET/React/SQL conventions |
 | `prompts/shared/database-completeness-review.md` | DB chain verification rules |
@@ -5061,6 +5130,11 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
 | `shared/api-contract-validation.md` | Reference | API contract validation rules | N/A |
 | `claude/create-phases.md` | Claude | Phase 0: build requirements matrix from specs | ~5K tokens |
 | `claude/create-phases-incremental.md` | Claude | Phase 0: add new requirements to existing matrix | ~5K tokens |
+| `council/requirements-extract-claude.md` | Claude | Architecture & compliance requirements extraction | ~5K tokens |
+| `council/requirements-extract-codex.md` | Codex | Implementation & code gap requirements extraction | ~5K tokens |
+| `council/requirements-extract-gemini.md` | Gemini | Spec & Figma alignment requirements extraction | ~5K tokens |
+| `council/requirements-synthesize.md` | Claude | 3-agent merge, dedup, and confidence scoring | ~5K tokens |
+| `council/requirements-synthesize-partial.md` | Claude | 2-agent fallback synthesis (max medium confidence) | ~5K tokens |
 
 ## Appendix C: Notification Events
 
@@ -5164,5 +5238,5 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
 ---
 
 *Generated from GSD Engine v2.2.0 source documentation, scripts, and standards prompt templates.*
-*Total scripts: 38 (1 master installer + 1 pre-flight + 32 installer scripts + 4 standalone utilities)*
+*Total scripts: 42 (1 master installer + 1 pre-flight + 36 installer scripts + 4 standalone utilities)*
 *Chapters: 21 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*
