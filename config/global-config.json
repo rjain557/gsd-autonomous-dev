@@ -1,0 +1,59 @@
+﻿{
+    "max_iterations":  20,
+    "phase_order":  [
+                        "code-review",
+                        "create-phases",
+                        "research",
+                        "plan",
+                        "execute"
+                    ],
+    "stall_threshold":  3,
+    "figma":  {
+                  "auto_detect_latest":  true,
+                  "version_pattern":  "^v(\\d+)$",
+                  "base_path":  "design\\figma"
+              },
+    "version":  "1.0.0",
+    "batch_size_min":  3,
+    "notifications":  {
+                          "notify_on":  [
+                                            "iteration_complete",
+                                            "converged",
+                                            "stalled",
+                                            "quota_exhausted",
+                                            "error"
+                                        ],
+                          "ntfy_topic":  "auto"
+                      },
+    "project_gsd_dir":  ".gsd",
+    "batch_size_max":  8,
+    "target_health":  100,
+    "sdlc_docs":  {
+                      "path":  "docs",
+                      "phases":  [
+                                     "Phase-A",
+                                     "Phase-B",
+                                     "Phase-C",
+                                     "Phase-D",
+                                     "Phase-E"
+                                 ]
+                  },
+    "quality_gates": {
+        "database_completeness": { "enabled": true, "require_seed_data": true, "min_coverage_pct": 90 },
+        "security_compliance": { "enabled": true, "block_on_critical": true, "warn_on_high": true },
+        "spec_quality": { "enabled": true, "min_clarity_score": 70, "check_cross_artifact": true }
+    },
+    "patterns":  {
+                     "api":  "Contract-first, API-first",
+                     "backend":  ".NET 8 with Dapper",
+                     "database":  "SQL Server stored procedures only",
+                     "frontend":  "React 18",
+                     "compliance":  [
+                                        "HIPAA",
+                                        "SOC 2",
+                                        "PCI",
+                                        "GDPR"
+                                    ]
+                 }
+}
+

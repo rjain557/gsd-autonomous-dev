@@ -1,0 +1,124 @@
+﻿{
+    "phases":  {
+                   "code-review":  {
+                                       "outputs":  [
+                                                       "health-current.json",
+                                                       "requirements-matrix.json (status updates)",
+                                                       "drift-report.md",
+                                                       "review-current.md"
+                                                   ],
+                                       "agent":  "claude-code",
+                                       "estimated_output_tokens":  "2000-5000",
+                                       "reason":  "Judgment-heavy analysis. Output is a score + short findings list. Low token usage.",
+                                       "inputs":  [
+                                                      "full repo scan",
+                                                      "requirements-matrix.json",
+                                                      "specs",
+                                                      "figma mapping"
+                                                  ]
+                                   },
+                   "create-phases":  {
+                                         "outputs":  [
+                                                         "requirements-matrix.json (full build)",
+                                                         "phase dependency graph",
+                                                         "figma-mapping.md"
+                                                     ],
+                                         "agent":  "claude-code",
+                                         "estimated_output_tokens":  "3000-6000",
+                                         "reason":  "Architecture decisions. Creates phase structure and requirement decomposition. Needs high intelligence, low output volume.",
+                                         "inputs":  [
+                                                        "docs\\ (SDLC specs Phase A-E)",
+                                                        "design\\figma\\v## (latest)",
+                                                        "existing codebase structure"
+                                                    ]
+                                     },
+                   "research":  {
+                                    "inputs":  [
+                                                   "requirements-matrix.json",
+                                                   "specs",
+                                                   "figma designs",
+                                                   "existing code",
+                                                   "external references"
+                                               ],
+                                    "estimated_output_tokens":  "5000-15000",
+                                    "agent":  "gemini",
+                                    "outputs":  [
+                                                    "research-findings.md",
+                                                    "pattern-analysis.md",
+                                                    "dependency-map.json",
+                                                    "tech-decisions.md"
+                                                ],
+                                    "reason":  "Reads many files, searches patterns, explores codebase and docs. Gemini saves Claude/Codex quota. Falls back to Codex if unavailable.",
+                                    "mode":  "--approval-mode plan"
+                                },
+                   "spec-fix":  {
+                                    "inputs":  [
+                                                   "spec-conflicts/conflicts-to-resolve.json",
+                                                   "spec-consistency-report.json",
+                                                   "docs/"
+                                               ],
+                                    "estimated_output_tokens":  "2000-5000",
+                                    "agent":  "gemini",
+                                    "outputs":  [
+                                                    "spec-conflicts/resolution-summary.md",
+                                                    "updated docs files"
+                                                ],
+                                    "reason":  "Resolves spec contradictions. Gemini saves Claude/Codex quota for code generation.",
+                                    "mode":  "--yolo"
+                                },
+                   "plan":  {
+                                "outputs":  [
+                                                "queue-current.json",
+                                                "current-assignment.md"
+                                            ],
+                                "agent":  "claude-code",
+                                "estimated_output_tokens":  "1500-4000",
+                                "reason":  "Prioritization and dependency ordering. Short output: a ranked queue of what to build next. High judgment, low tokens.",
+                                "inputs":  [
+                                               "requirements-matrix.json",
+                                               "research findings",
+                                               "drift-report.md"
+                                           ]
+                            },
+                   "execute":  {
+                                   "outputs":  [
+                                                   "source code files (created/modified)",
+                                                   "handoff-log.jsonl entry"
+                                               ],
+                                   "agent":  "codex",
+                                   "estimated_output_tokens":  "15000-100000+",
+                                   "reason":  "BULK CODE GENERATION. This is where 80% of tokens go. Creates/modifies many files. Codex has no token cap - let it run.",
+                                   "inputs":  [
+                                                  "current-assignment.md",
+                                                  "queue-current.json",
+                                                  "specs",
+                                                  "figma mapping",
+                                                  "phase standards"
+                                              ]
+                               }
+               },
+    "description":  "Claude for reasoning (review/plan/verify). Codex for code execution. Gemini for research + spec-fix (saves Claude/Codex quota).",
+    "version":  "1.0.0",
+    "token_budget_summary":  {
+                                 "codex_monthly_estimate":  "unlimited (full-auto mode, execute only)",
+                                 "gemini_per_iteration":  "5000-15000 tokens (research + spec-fix)",
+                                 "claude_code_per_iteration":  "6500-15000 tokens (review + create-phases + plan)",
+                                 "optimization":  "Three-model strategy: Claude thinks, Codex codes, Gemini researches. Each uses independent quota.",
+                                 "codex_per_iteration":  "15000-100000+ tokens (execute only)",
+                                 "gemini_monthly_estimate":  "unlimited (Gemini Ultra plan)",
+                                 "claude_code_monthly_estimate":  "~150K-300K tokens for 20 iterations"
+                             },
+    "strategy":  "three-model-optimized",
+    "execute_parallel":  {
+                             "enabled":  true,
+                             "max_concurrent":  3,
+                             "agent_pool":  [
+                                                "codex",
+                                                "claude",
+                                                "gemini"
+                                            ],
+                             "strategy":  "round-robin",
+                             "fallback_to_sequential":  true,
+                             "subtask_timeout_minutes":  30
+                         }
+}

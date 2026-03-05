@@ -1,0 +1,70 @@
+﻿{
+    "interfaces":  {
+                       "figma_make_analysis_dir":  "_analysis",
+                       "types":  [
+                                     "web",
+                                     "mcp",
+                                     "browser",
+                                     "mobile",
+                                     "agent"
+                                 ],
+                       "version_pattern":  "^v(\\d+)$",
+                       "auto_detect_latest":  true,
+                       "figma_make_stubs_dir":  "_stubs",
+                       "base_path":  "design"
+                   },
+    "version":  "2.0.0",
+    "defaults":  {
+                     "batch_size":  15,
+                     "target_health":  100,
+                     "max_iterations":  30,
+                     "stall_threshold":  3
+                 },
+    "figma_make_deliverables":  {
+                                    "analysis":  [
+                                                     "01-screen-inventory.md",
+                                                     "02-component-inventory.md",
+                                                     "03-design-system.md",
+                                                     "04-navigation-routing.md",
+                                                     "05-data-types.md",
+                                                     "06-api-contracts.md",
+                                                     "07-hooks-state.md",
+                                                     "08-mock-data-catalog.md",
+                                                     "09-storyboards.md",
+                                                     "10-screen-state-matrix.md",
+                                                     "11-api-to-sp-map.md",
+                                                     "12-implementation-guide.md"
+                                                 ],
+                                    "stubs":  [
+                                                  "backend/Controllers/*.cs",
+                                                  "backend/Models/*.cs",
+                                                  "database/01-tables.sql",
+                                                  "database/02-stored-procedures.sql",
+                                                  "database/03-seed-data.sql"
+                                              ]
+                                },
+    "patterns":  {
+                     "backend":  ".NET 8 with Dapper",
+                     "compliance":  [
+                                        "HIPAA",
+                                        "SOC 2",
+                                        "PCI",
+                                        "GDPR"
+                                    ],
+                     "api":  "Contract-first, API-first",
+                     "frontend_mobile":  "React Native or MAUI",
+                     "database":  "SQL Server stored procedures only",
+                     "frontend_web":  "React 18"
+                 },
+    "sdlc_docs":  {
+                      "path":  "docs",
+                      "phases":  [
+                                     "Phase-A",
+                                     "Phase-B",
+                                     "Phase-C",
+                                     "Phase-D",
+                                     "Phase-E"
+                                 ]
+                  },
+    "engine":  "blueprint-pipeline"
+}
