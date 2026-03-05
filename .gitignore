@@ -1,0 +1,9 @@
+# Large data files (exceed GitHub 50MB recommendation)
+clients/bwh/directorystructure.txt
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
