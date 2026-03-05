@@ -573,6 +573,63 @@ The coverage matrix (`.gsd/code-review/coverage-matrix.json`) tracks which agent
 "partitioned_code_review": { "enabled": false }
 ```
 
+## LOC-Cost Integration Issues
+
+### Cost-per-line not showing in notifications
+
+The per-iteration notification shows LOC but no cost-per-line. Causes:
+1. **No cost data yet**: Cost-per-line requires at least one completed iteration with token tracking. The first iteration may not have cost data.
+2. **`cost-summary.json` missing**: Check that `.gsd/costs/cost-summary.json` exists. If missing, cost tracking may not be initialized.
+
+### LOC counts seem wrong or missing
+
+1. **Baseline missing**: `Save-LocBaseline` must run at pipeline start. If the pipeline was interrupted before this function ran, grand totals will be unavailable. Re-running the pipeline will create the baseline.
+2. **Files filtered out**: Check `loc_tracking.include_extensions` in global-config.json. Only files matching these extensions are counted.
+3. **`loc-metrics.json` empty**: The file is created after the first execute phase. If no execute phases have run, it won't exist.
+
+### LOC context not appearing in code review prompts
+
+The code review agent should see a LOC history table. If missing:
+1. **`Get-LocContextForReview` not available**: Re-run `patch-gsd-loc-cost-integration.ps1` (Script 34).
+2. **No LOC data yet**: LOC context is only injected after at least one iteration has LOC metrics.
+
+## Maintenance Mode Issues
+
+### gsd-fix "No .gsd directory found"
+
+Run `gsd-init` first to create the `.gsd/` directory structure before using `gsd-fix`.
+
+### gsd-fix -BugDir not finding bugs
+
+The `-BugDir` parameter looks for `.md` files first, then `.txt` files as fallback. The first `# heading` in the markdown file becomes the bug description. Ensure:
+1. The directory contains at least one `.md` or `.txt` file
+2. The file has a heading or first line longer than 5 characters
+
+### Artifacts not being copied
+
+When using `-BugDir`, artifacts are copied to `.gsd/supervisor/bug-artifacts/BUG-xxx/`. If the copy fails:
+1. Check that the source directory is readable
+2. Check disk space
+3. Verify `.gsd/supervisor/` directory exists (created automatically)
+
+### --Scope not filtering requirements
+
+The scope filter only affects the plan and execute phases. Code review always sees ALL requirements (by design, for regression detection). Scope syntax:
+- `source:bug_report` — filter by source field
+- `id:BUG-001,BUG-002` — filter by specific requirement IDs
+
+### --Incremental not preserving satisfied items
+
+The incremental Phase 0 uses `create-phases-incremental.md` which instructs Claude to preserve all existing requirements. If satisfied items are lost:
+1. **Matrix was empty**: Incremental mode requires a non-empty matrix. If the matrix is empty, standard Phase 0 runs instead.
+2. **Claude overwrote the matrix**: Check `.gsd/logs/phase0-incremental.log` for the Claude output. The prompt explicitly says "DO NOT remove or modify any requirement with status satisfied".
+
+### gsd-update not detecting new specs
+
+`gsd-update` calls `gsd-converge --Incremental` which triggers the incremental Phase 0. Claude reads the design directory for the latest version. Ensure:
+1. New specs are in the correct directory (e.g., `design/web/v02/_analysis/`)
+2. Each version contains the COMPLETE spec set, not just deltas
+
 ## Developer Handoff Issues
 
 ### developer-handoff.md is empty or missing sections

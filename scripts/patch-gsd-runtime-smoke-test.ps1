@@ -710,7 +710,7 @@ function Invoke-ApiSmokeTest {
                             $errorSummary = "HTTP $statusCode"
                         }
 
-                        $result.Failures += "$errorSummary: GET $($ep.Path) (from $($ep.Source))"
+                        $result.Failures += "${errorSummary}: GET $($ep.Path) (from $($ep.Source))"
                         Write-Host "    [FAIL] GET $($ep.Path) -> $statusCode ($errorSummary)" -ForegroundColor Red
                     } elseif ($statusCode -eq 401 -or $statusCode -eq 403) {
                         # Auth-protected endpoints are expected to reject anonymous requests

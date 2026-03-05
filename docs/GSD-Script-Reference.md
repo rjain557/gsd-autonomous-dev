@@ -509,7 +509,7 @@ LOC-Cost integration: (1) `Save-LocBaseline` -- records starting git commit hash
 
 ### patch-gsd-maintenance-mode.ps1 (Script 35)
 
-Maintenance mode: adds `gsd-fix` and `gsd-update` commands for post-delivery maintenance workflows. Supports `--Scope` parameter for targeted fixes (e.g., `gsd-fix --Scope "source:bug_report"`) and `--Incremental` for adding new requirements from updated specs without re-running the full pipeline.
+Maintenance mode: adds `gsd-fix` and `gsd-update` commands for post-delivery maintenance workflows. `gsd-fix` accepts plain text, files (`-File`), or directories with rich artifacts (`-BugDir` — screenshots, logs, repro files copied to `.gsd/supervisor/bug-artifacts/`). Supports `--Scope` parameter for targeted convergence and `--Incremental` for adding new requirements from updated specs without losing existing satisfied items.
 
 ### Optional standalone scripts
 

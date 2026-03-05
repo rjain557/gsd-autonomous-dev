@@ -18,7 +18,7 @@
 | 1.6.1 | March 2026 | Added Chapters 13-15: Coding Standards & Methodologies, Database Coding Standards, Compliance & Security Coding (88+ rules with IDs) |
 | 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
 | 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
-| 2.1.0 | March 2026 | Maintenance mode: `gsd-fix` command for quick bug fixes (text, files, or directories with screenshots/logs), `gsd-update` for incremental feature additions, `--Scope` parameter for targeted convergence, `--Incremental` flag for additive requirements. Rich bug input via `-BugDir` with artifact copying and multimodal support. New prompt: create-phases-incremental.md. Added Chapter 20. |
+| 2.1.0 | March 2026 | Runtime smoke tests (Script 32: DI validation, API endpoint checks, seed FK order). Partitioned code review (Script 33: 3-way parallel with agent rotation). LOC-cost integration (Script 34: baseline tracking, grand totals, cost-per-line in every notification). Maintenance mode (Script 35): `gsd-fix` (text/file/directory with screenshots), `gsd-update`, `--Scope`, `--Incremental`, `-BugDir`. Added Chapters 17.7-17.8, expanded Chapter 19, added Chapter 20. |
 
 ---
 
@@ -4344,6 +4344,84 @@ Scans for hardcoded CSS values that should use design tokens:
 
 Allowed exceptions: `#000`, `#fff`, `transparent`, `inherit`, `currentColor`, and any line using `var(--xxx)`.
 
+## 17.7 Runtime Smoke Tests
+
+After the static validation gates, runtime smoke tests catch errors that only surface when the application actually starts:
+
+| Check | What It Catches | Cost |
+|-------|----------------|------|
+| **Seed Data FK Order** | INSERT ordering violations — parent tables must be inserted before child tables | Free (static scan) |
+| **API Endpoint Discovery** | Discovers all GET endpoints from `[Http*]` attributes and OpenAPI spec | Free (static scan) |
+| **API Smoke Test** | Starts the app via `dotnet run`, hits every GET endpoint, checks for HTTP 500s | Free (no LLM calls) |
+| **Health Endpoint** | Verifies `/api/health` returns healthy status with DB connectivity | Free |
+
+**How it runs:**
+1. `Test-SeedDataFkOrder` scans SQL seed files for FK constraint violations (static, zero-cost)
+2. `Find-ApiEndpoints` discovers routes from Controller files and OpenAPI spec
+3. `Invoke-ApiSmokeTest` starts the application, hits discovered endpoints, reports 500s
+4. `Invoke-RuntimeSmokeTest` orchestrates all three checks and returns combined results
+
+**Configuration:** `runtime_smoke_test` in global-config.json
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | true | Enable/disable runtime smoke tests |
+| `startup_timeout_seconds` | 30 | Max time to wait for app startup |
+| `request_timeout_seconds` | 10 | Timeout per endpoint request |
+| `max_endpoints_to_test` | 50 | Cap on endpoints to test |
+| `health_endpoint` | /api/health | Required health check endpoint |
+| `fail_on_any_500` | true | Treat any 500 as a hard failure |
+| `seed_fk_check_enabled` | true | Enable FK order validation |
+
+**Prompt templates:** `health-endpoint.md` (mandates `/api/health`), `di-service-lifetime.md` (prevents scoped-from-root DI errors)
+
+## 17.8 Partitioned Code Review
+
+Replaces single-agent code review with a 3-partition parallel review system. Each iteration, requirements are split into three groups and reviewed simultaneously by different agents.
+
+**Partition Focus Areas:**
+
+| Partition | Focus | Review Emphasis |
+|-----------|-------|----------------|
+| A | Implementation & Architecture | DI patterns, SOLID, contracts, error handling |
+| B | Data Flow & Integration | E2E chains, API wiring, seed data, migrations |
+| C | Security, Compliance & UX | OWASP, HIPAA, Figma match, accessibility |
+
+**Agent Rotation:** Assignments rotate every iteration for full coverage:
+
+```
+Iter 1: A=Claude   B=Gemini  C=Codex
+Iter 2: A=Gemini   B=Codex   C=Claude
+Iter 3: A=Codex    B=Claude  C=Gemini
+(repeats every 3 iterations)
+```
+
+After 3 iterations, every requirement has been reviewed by all 3 LLMs. Coverage tracked in `.gsd/code-review/coverage-matrix.json`.
+
+**How it works:**
+1. `Split-RequirementsIntoPartitions` divides requirements into 3 balanced groups
+2. 3 agents run simultaneously, each with a partition-specific prompt
+3. `Merge-PartitionedReviews` combines results into single health score
+4. `Update-CoverageMatrix` records which agent reviewed which requirement
+
+**Fallback:** If fewer than 3 requirements or if all partitions fail, falls back to single Claude review automatically.
+
+**Configuration:** `partitioned_code_review` in global-config.json
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | true | Enable partitioned review |
+| `partition_count` | 3 | Number of partitions (always 3) |
+| `rotation_enabled` | true | Rotate agent assignments each iteration |
+| `merge_strategy` | strict_union | How to merge partition results |
+| `timeout_seconds` | 300 | Per-partition timeout |
+| `fallback_to_single` | true | Fall back to single agent on failure |
+| `cooldown_between_agents` | 5 | Seconds between agent launches |
+
+**Prompt templates:** `code-review-partition-A.md`, `code-review-partition-B.md`, `code-review-partition-C.md` (in `prompts/shared/`)
+
+**Output files:** `.gsd/code-review/coverage-matrix.json`, `.gsd/code-review/rotation-history.jsonl`
+
 ---
 
 # Chapter 18: Compliance Engine and Agent Intelligence
@@ -4430,7 +4508,7 @@ The LOC tracking system measures AI-generated lines of code per iteration, corre
 
 ## 19.2 How It Works
 
-After each execute phase commit, `Update-LocMetrics` runs `git diff --numstat HEAD~1 HEAD` to capture:
+**Per-iteration tracking:** After each execute phase commit, `Update-LocMetrics` runs `git diff --numstat HEAD~1 HEAD` to capture:
 
 | Metric | Description |
 |--------|-------------|
@@ -4440,6 +4518,18 @@ After each execute phase commit, `Update-LocMetrics` runs `git diff --numstat HE
 | Files Changed | Number of source files touched |
 
 **Filtering:** Only source files matching `include_extensions` are counted. Paths matching `exclude_paths` (node_modules, .gsd, dist, bin, etc.) are excluded.
+
+**Grand total tracking:** At pipeline start, `Save-LocBaseline` records the current git commit hash. At pipeline end, `Complete-LocTracking` computes a grand total diff from the baseline commit to HEAD, avoiding cumulative drift from per-iteration counting.
+
+**Code review awareness:** `Get-LocContextForReview` injects a LOC history table into code review prompts, giving the review agent visibility into code churn patterns across iterations. This helps identify low-productivity iterations.
+
+| Function | When It Runs | What It Does |
+|----------|-------------|-------------|
+| `Update-LocMetrics` | After each execute phase | Per-iteration LOC diff |
+| `Save-LocBaseline` | Pipeline start | Records starting commit hash |
+| `Complete-LocTracking` | Pipeline end | Grand total LOC from baseline to HEAD |
+| `Get-LocContextForReview` | Before code review | Injects LOC history into review prompts |
+| `Get-LocCostSummaryText` | Final notification | Multi-line LOC vs Cost summary |
 
 ## 19.3 Cost-per-Line Calculation
 
@@ -4454,22 +4544,26 @@ Cost per Net Line   = total_cost_usd / cumulative_lines_net
 
 ## 19.4 Notification Integration
 
-LOC metrics appear in all ntfy notification types:
+LOC metrics appear in all ntfy notification types, including cost-per-line on every iteration:
 
-**Per-iteration:**
+**Per-iteration** (includes cost-per-line via `Get-LocNotificationText`):
 ```
 Iter 3 Complete
 my-project | Health: 65% (+12%) | Batch: 5
 Cost: $0.45 run / $1.23 total | 89K tok
-LOC: +250 / -30 net 220 | 12 files
+LOC: +250 / -30 net 220 | 12 files | $0.003/line
 ```
 
-**Completion (cumulative):**
+**Completion** (grand totals via `Get-LocCostSummaryText`):
 ```
 CONVERGED!
 my-project | 100% in 8 iterations
-LOC total: +3200 / -180 net 3020 | 95 files | $0.0015/line
-Cost: $0.52 run / $4.50 total | 312K tok
+--- LOC vs Cost ---
+Lines: +3,200 / -180 net 3,020
+Files: 95 | Iterations: 8
+Total cost: $4.50
+Cost/added line: $0.0014
+Productivity: 716 lines/$
 ```
 
 ## 19.5 Developer Handoff LOC Section
