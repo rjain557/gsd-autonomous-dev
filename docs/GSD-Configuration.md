@@ -259,6 +259,30 @@ Controls agent performance scoring and warm-start features.
 }
 ```
 
+#### loc_tracking
+
+Tracks AI-generated lines of code per iteration and computes cost-per-line metrics.
+
+```json
+"loc_tracking": {
+    "enabled": true,
+    "include_extensions": [".cs", ".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".html", ".sql", ".json", ".md", ".ps1", ".py", ".yaml", ".yml"],
+    "exclude_paths": [".gsd/", "node_modules/", "bin/", "obj/", "dist/", "build/", ".vs/", ".idea/", "*.min.*", "*.bundle.*", "package-lock.json", "yarn.lock"],
+    "track_per_file": true,
+    "cost_per_line": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | bool | Master toggle for LOC tracking |
+| `include_extensions` | array | Source file extensions to count (others excluded) |
+| `exclude_paths` | array | Path patterns to exclude from counting |
+| `track_per_file` | bool | Include per-file breakdown (top 20) in each iteration |
+| `cost_per_line` | bool | Cross-reference cost-summary.json to compute $/line |
+
+Output: `.gsd/costs/loc-metrics.json` — per-iteration and cumulative LOC with cost-per-line.
+
 ### Prompt Templates
 
 Quality gate prompt templates are stored in:

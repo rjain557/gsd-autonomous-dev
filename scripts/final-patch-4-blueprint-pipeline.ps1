@@ -423,6 +423,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $bpIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir } else { "" }
     $bpIterMsg = "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize"
     if ($bpIterCostLine) { $bpIterMsg += "`n$bpIterCostLine" }
+    # LOC tracking
+    if (Get-Command Update-LocMetrics -ErrorAction SilentlyContinue) {
+        Update-LocMetrics -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Iteration $Iteration -Pipeline "blueprint"
+    }
+    $bpLocLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir } else { "" }
+    if ($bpLocLine) { $bpIterMsg += "`n$bpLocLine" }
     Send-GsdNotification -Title "Blueprint Iter $Iteration" -Message $bpIterMsg -Tags "chart_with_upwards_trend"
     $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
@@ -491,6 +497,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     $bpFinalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $bpCompleteMsg = "$repoName | 100% in $Iteration iterations"
+    $bpLocFinalLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($bpLocFinalLine) { $bpCompleteMsg += "`n$bpLocFinalLine" }
     if ($bpFinalCostLine) { $bpCompleteMsg += "`n$bpFinalCostLine" }
     Send-GsdNotification -Title "BLUEPRINT COMPLETE!" -Message $bpCompleteMsg -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
@@ -498,6 +506,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
     $bpStalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $bpStalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
+    $bpLocStalledLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($bpLocStalledLine) { $bpStalledMsg += "`n$bpLocStalledLine" }
     if ($bpStalledCostLine) { $bpStalledMsg += "`n$bpStalledCostLine" }
     Send-GsdNotification -Title "BLUEPRINT STALLED" -Message $bpStalledMsg -Tags "warning" -Priority "high"
 } else {
@@ -505,6 +515,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
     $bpMaxCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $bpMaxMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
+    $bpLocMaxLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($bpLocMaxLine) { $bpMaxMsg += "`n$bpLocMaxLine" }
     if ($bpMaxCostLine) { $bpMaxMsg += "`n$bpMaxCostLine" }
     Send-GsdNotification -Title "Blueprint Max Iterations" -Message $bpMaxMsg -Tags "warning" -Priority "high"
 }

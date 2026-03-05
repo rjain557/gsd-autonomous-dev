@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 30 scripts in correct order.
+    GSD Master Installer - Runs ALL 31 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -97,6 +97,7 @@ $scripts = @(
     @{ File="patch-gsd-compliance-engine.ps1";   Desc="Compliance Engine (per-iteration audit, DB migration, PII tracking)" }
     @{ File="patch-gsd-speed-optimizations.ps1"; Desc="Speed Optimizations (research skip, smart batch, prompt dedup)" }
     @{ File="patch-gsd-agent-intelligence.ps1";  Desc="Agent Intelligence (performance scoring, warm-start patterns)" }
+    @{ File="patch-gsd-loc-tracking.ps1";        Desc="LOC Tracking (lines of code metrics, cost-per-line, ntfy integration)" }
 )
 
 Write-Host ""

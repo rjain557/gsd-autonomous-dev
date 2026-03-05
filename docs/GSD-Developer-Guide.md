@@ -1744,6 +1744,10 @@ Five speed optimizations: (1) `Test-ShouldSkipResearch` -- skip research when he
 
 Agent intelligence: (1) `Update-AgentPerformanceScore` -- tracks efficiency (requirements/1K tokens) and reliability (1 - regression rate) per agent. `Get-BestAgentForPhase` -- data-driven agent routing. (2) `Save-ProjectPatterns` + `Get-WarmStartPatterns` -- caches detected patterns by project type (dotnet-react, dotnet-api, react-spa) for warm-starting new projects. Global cache at `~/.gsd-global/intelligence/`. Config: `agent_intelligence` in global-config.json.
 
+### patch-gsd-loc-tracking.ps1
+
+LOC tracking: (1) `Update-LocMetrics` -- captures `git diff --numstat` after each execute phase, tracks lines added/deleted/net per iteration with file-level detail. (2) `Get-LocNotificationText` -- compact LOC string for ntfy notifications. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Patches both pipeline scripts and heartbeat to include LOC in all ntfy messages. Adds LOC section to developer-handoff.md. Output: `.gsd/costs/loc-metrics.json`. Config: `loc_tracking` in global-config.json.
+
 ## 8.3 Standalone Utilities
 
 ### setup-gsd-api-keys.ps1
@@ -1998,6 +2002,23 @@ Get-OptimalBatchSize -GsdDir <string> -GlobalDir <string>
 ```
 
 Calculates optimal batch size from historical token usage data. Formula: `floor(context_limit * 0.7 / avg_tokens_per_requirement)`. Bounded by min_batch and max_batch config.
+
+### Update-LocMetrics
+
+```
+Update-LocMetrics -RepoRoot <string> -GsdDir <string> -GlobalDir <string>
+    -Iteration <int> [-Pipeline <string>]
+```
+
+Captures `git diff --numstat HEAD~1 HEAD` after each execute phase commit. Tracks lines added, deleted, net, and files changed per iteration. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Saves to `.gsd/costs/loc-metrics.json`.
+
+### Get-LocNotificationText
+
+```
+Get-LocNotificationText -GsdDir <string> [-Cumulative]
+```
+
+Returns compact LOC string for ntfy notifications. Without `-Cumulative`, shows last iteration metrics. With `-Cumulative`, shows pipeline totals with cost-per-line.
 
 ### Find-ProjectInterfaces
 
@@ -4388,6 +4409,84 @@ When starting a new project, `Get-WarmStartPatterns` loads patterns from the mos
 
 ---
 
+# Chapter 19: LOC Tracking and Cost-per-Line Metrics
+
+## 19.1 Overview
+
+The LOC tracking system measures AI-generated lines of code per iteration, correlating them with API costs to produce cost-per-line metrics. This data appears in:
+
+- **ntfy notifications** (per-iteration and completion messages)
+- **Developer handoff** (LOC section with per-iteration breakdown)
+- **loc-metrics.json** (machine-readable data for dashboards)
+
+## 19.2 How It Works
+
+After each execute phase commit, `Update-LocMetrics` runs `git diff --numstat HEAD~1 HEAD` to capture:
+
+| Metric | Description |
+|--------|-------------|
+| Lines Added | New lines of code created by AI |
+| Lines Deleted | Lines removed or replaced by AI |
+| Net Lines | Added minus Deleted (net codebase growth) |
+| Files Changed | Number of source files touched |
+
+**Filtering:** Only source files matching `include_extensions` are counted. Paths matching `exclude_paths` (node_modules, .gsd, dist, bin, etc.) are excluded.
+
+## 19.3 Cost-per-Line Calculation
+
+When `cost_per_line` is enabled, the system cross-references `cost-summary.json`:
+
+```
+Cost per Added Line = total_cost_usd / cumulative_lines_added
+Cost per Net Line   = total_cost_usd / cumulative_lines_net
+```
+
+**Example:** If a pipeline run costs $4.50 and produces 3,000 net lines of code, the cost per net line is $0.0015 (~$1.50 per 1,000 lines).
+
+## 19.4 Notification Integration
+
+LOC metrics appear in all ntfy notification types:
+
+**Per-iteration:**
+```
+Iter 3 Complete
+my-project | Health: 65% (+12%) | Batch: 5
+Cost: $0.45 run / $1.23 total | 89K tok
+LOC: +250 / -30 net 220 | 12 files
+```
+
+**Completion (cumulative):**
+```
+CONVERGED!
+my-project | 100% in 8 iterations
+LOC total: +3200 / -180 net 3020 | 95 files | $0.0015/line
+Cost: $0.52 run / $4.50 total | 312K tok
+```
+
+## 19.5 Developer Handoff LOC Section
+
+The developer handoff document includes a "Lines of Code (AI-Generated)" section with:
+
+- Cumulative metrics table (added, deleted, net, files, iterations)
+- Cost-per-line calculations
+- Per-iteration LOC breakdown table
+
+## 19.6 Configuration
+
+```json
+"loc_tracking": {
+    "enabled": true,
+    "include_extensions": [".cs", ".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".html", ".sql", ".json", ".md"],
+    "exclude_paths": [".gsd/", "node_modules/", "bin/", "obj/", "dist/", "build/", "package-lock.json"],
+    "track_per_file": true,
+    "cost_per_line": true
+}
+```
+
+**Output:** `.gsd/costs/loc-metrics.json`
+
+---
+
 # Appendices
 
 ## Appendix A: Complete File Inventory
@@ -4567,5 +4666,5 @@ When starting a new project, `Get-WarmStartPatterns` loads patterns from the mos
 ---
 
 *Generated from GSD Engine v2.0.0 source documentation, scripts, and standards prompt templates.*
-*Total scripts: 36 (1 master installer + 1 pre-flight + 30 installer scripts + 4 standalone utilities)*
-*Chapters: 18 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*
+*Total scripts: 37 (1 master installer + 1 pre-flight + 31 installer scripts + 4 standalone utilities)*
+*Chapters: 19 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*

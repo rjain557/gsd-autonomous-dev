@@ -521,6 +521,12 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $iterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir } else { "" }
     $iterMsg = "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize"
     if ($iterCostLine) { $iterMsg += "`n$iterCostLine" }
+    # LOC tracking
+    if (Get-Command Update-LocMetrics -ErrorAction SilentlyContinue) {
+        Update-LocMetrics -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Iteration $Iteration -Pipeline "convergence"
+    }
+    $locLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir } else { "" }
+    if ($locLine) { $iterMsg += "`n$locLine" }
     Send-GsdNotification -Title "Iter $Iteration Complete" -Message $iterMsg -Tags "chart_with_upwards_trend"
     $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
@@ -625,6 +631,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     $finalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $convergedMsg = "$repoName | 100% in $Iteration iterations"
+    $locFinalLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locFinalLine) { $convergedMsg += "`n$locFinalLine" }
     if ($finalCostLine) { $convergedMsg += "`n$finalCostLine" }
     Send-GsdNotification -Title "CONVERGED!" -Message $convergedMsg -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
@@ -632,6 +640,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
     $stalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $stalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
+    $locStalledLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locStalledLine) { $stalledMsg += "`n$locStalledLine" }
     if ($stalledCostLine) { $stalledMsg += "`n$stalledCostLine" }
     Send-GsdNotification -Title "STALLED" -Message $stalledMsg -Tags "warning" -Priority "high"
 } else {
@@ -639,6 +649,8 @@ if ($FinalHealth -ge $TargetHealth) {
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
     $maxIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
     $maxIterMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
+    $locMaxLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locMaxLine) { $maxIterMsg += "`n$locMaxLine" }
     if ($maxIterCostLine) { $maxIterMsg += "`n$maxIterCostLine" }
     Send-GsdNotification -Title "MAX ITERATIONS" -Message $maxIterMsg -Tags "warning" -Priority "high"
 }

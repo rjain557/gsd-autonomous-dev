@@ -400,6 +400,24 @@ Read from patch-gsd-compliance-engine.ps1 and patch-gsd-agent-intelligence.ps1.
 
 ---
 
+#### CHAPTER 19: LOC TRACKING AND COST-PER-LINE METRICS
+
+Read from patch-gsd-loc-tracking.ps1 and the LOC-related changes in final-patch-5-convergence-pipeline.ps1 and final-patch-4-blueprint-pipeline.ps1.
+
+**19.1 Overview** — Purpose of LOC tracking: measure AI-generated code output, correlate with API costs, surface metrics in notifications and developer handoff.
+
+**19.2 How It Works** — Update-LocMetrics: git diff --numstat parsing, source file filtering (include_extensions, exclude_paths), per-iteration and cumulative tracking, file-level detail (top 20 files by lines added).
+
+**19.3 Cost-per-Line Calculation** — Cross-reference with cost-summary.json: cost_per_added_line, cost_per_net_line formulas, example calculation.
+
+**19.4 Notification Integration** — Get-LocNotificationText: per-iteration format ("LOC: +250 / -30 net 220 | 12 files"), cumulative format with cost-per-line. Patched into: per-iteration notifications, completion, stalled, max-iterations, heartbeat.
+
+**19.5 Developer Handoff LOC Section** — LOC metrics table in developer-handoff.md: cumulative metrics, cost-per-line, per-iteration breakdown table.
+
+**19.6 Configuration** — loc_tracking block in global-config.json: enabled, include_extensions, exclude_paths, track_per_file, cost_per_line. Output: .gsd/costs/loc-metrics.json.
+
+---
+
 #### APPENDICES
 
 **Appendix A: Complete File Inventory**
@@ -432,7 +450,7 @@ Read ALL `$script:` constants from resilience.ps1, plus config defaults from glo
 6. **Diagrams**: Use text-based box diagrams with Unicode box-drawing characters
 7. **Color scheme**: Professional blue (#2B579A) for headings and table headers
 8. **Cross-references**: Use "See Section X.X" format
-9. **Total target**: 120-180 pages (expanded with speed optimizations, validation gates, compliance engine, and agent intelligence chapters)
+9. **Total target**: 120-180 pages (expanded with speed optimizations, validation gates, compliance engine, agent intelligence, and LOC tracking chapters)
 
 ### Output
 

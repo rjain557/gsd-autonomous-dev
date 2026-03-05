@@ -438,6 +438,10 @@ Five speed optimizations: (1) `Test-ShouldSkipResearch` -- conditional research 
 
 Agent intelligence: (1) `Update-AgentPerformanceScore` + `Get-BestAgentForPhase` -- efficiency and reliability scoring per agent, data-driven routing. (2) `Save-ProjectPatterns` + `Get-WarmStartPatterns` -- cross-project pattern caching by project type. Creates `~/.gsd-global/intelligence/` directory. Config: `agent_intelligence` in global-config.json.
 
+### patch-gsd-loc-tracking.ps1 (Script 31)
+
+LOC tracking: (1) `Update-LocMetrics` -- captures git diff --numstat after each execute phase, tracks lines added/deleted/net per iteration with file-level detail. (2) `Get-LocNotificationText` -- compact LOC string for ntfy notifications. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Patches both pipeline scripts and heartbeat to include LOC in all ntfy messages. Adds LOC section to developer-handoff.md. Output: `.gsd/costs/loc-metrics.json`. Config: `loc_tracking` in global-config.json.
+
 ### Optional standalone scripts
 
 These are NOT run by the installer but can be run manually:

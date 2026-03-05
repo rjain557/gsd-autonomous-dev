@@ -1377,6 +1377,8 @@ function Send-HeartbeatIfDue {
         if ($GsdDir) {
             $costLine = Get-CostNotificationText -GsdDir $GsdDir
             if ($costLine) { $msg += "`n$costLine" }
+            $locLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+            if ($locLine) { $msg += "`n$locLine" }
         }
         Send-GsdNotification -Title "Working: $Phase" `
             -Message $msg -Tags "hourglass_flowing_sand" -Priority "low"
