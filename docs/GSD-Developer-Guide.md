@@ -1,6 +1,6 @@
 # GSD Autonomous Development Engine - Developer Guide
 
-**Version:** 1.6.0
+**Version:** 2.0.0
 **Date:** March 2026
 **Classification:** Confidential - Internal Use Only
 
@@ -17,6 +17,7 @@
 | 1.6.0 | March 2026 | Multi-model LLM integration (4 REST agents), API/Database interface auto-detection, REST agent error handling |
 | 1.6.1 | March 2026 | Added Chapters 13-15: Coding Standards & Methodologies, Database Coding Standards, Compliance & Security Coding (88+ rules with IDs) |
 | 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
+| 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
 
 ---
 
@@ -1707,6 +1708,42 @@ Quality gates: `Test-DatabaseCompleteness` (zero-cost static scan), `Test-Securi
 
 Multi-model LLM integration: Adds 4 OpenAI-compatible REST agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5). Creates `model-registry.json` for registry-driven agent management. Adds `Invoke-OpenAICompatibleAgent` (REST adapter), `Test-IsOpenAICompatAgent` (registry lookup). Patches `Get-FailureDiagnosis` for REST agent HTTP error mapping (steps 13B/13C). Expands council reviewer pool, reduces rotation threshold from 3 to 1 consecutive failures, adds cooldown-aware supervisor routing. Generic council template `openai-compat-review.md`.
 
+### patch-gsd-differential-review.ps1
+
+Differential code review: Reviews only files changed since last iteration using git diff. Adds `Get-DifferentialContext` and `Save-ReviewedCommit` to resilience.ps1. Creates `code-review-differential.md` prompt template. Maintains cache at `.gsd/cache/reviewed-files.json`. Falls back to full review if >50% files changed or cache expired. Config: `differential_review` in global-config.json.
+
+### patch-gsd-pre-execute-gate.ps1
+
+Pre-execute compile gate: Runs `dotnet build` + `npm run build` BEFORE committing code. If build fails, sends errors back to executing agent for immediate fix (same context window). Max 2 fix attempts. Adds `Invoke-PreExecuteGate` to resilience.ps1. Creates `fix-compile-errors.md` prompt template. Config: `pre_execute_gate` in global-config.json.
+
+### patch-gsd-acceptance-tests.ps1
+
+Per-requirement acceptance tests: Auto-generates and runs tests per requirement. Plan phase outputs `acceptance_test` field per requirement (file_exists, pattern_match, build_check, dotnet_test, npm_test). Adds `Test-RequirementAcceptance` to resilience.ps1. Results saved to `.gsd/tests/acceptance-results.json`. Config: `acceptance_tests` in global-config.json.
+
+### patch-gsd-api-contract-validation.ps1
+
+Contract-first API validation: Zero-cost static scan validating controllers against OpenAPI specs (`06-api-contracts.md`). Checks route coverage, HTTP methods, parameter types, [Authorize] compliance, inline SQL detection, SP mapping. Adds `Test-ApiContractCompliance` to resilience.ps1. Creates `api-contract-validation.md` reference. Config: `api_contract_validation` in global-config.json.
+
+### patch-gsd-visual-validation.ps1
+
+Visual validation: Compares generated React components against Figma exported screenshots using Playwright. Reports pixel diff percentage per component, flags >15% deviation. Falls back to component-match heuristic if Playwright unavailable. Adds `Invoke-VisualValidation` to resilience.ps1. Config: `visual_validation` in global-config.json.
+
+### patch-gsd-design-token-enforcement.ps1
+
+Design token enforcement: Zero-cost regex scan detecting hardcoded CSS values (colors, font sizes, spacing, border radii). Cross-references against design tokens file. Allows CSS custom properties (`var(--xxx)`). Adds `Test-DesignTokenCompliance` to resilience.ps1. Config: `design_token_enforcement` in global-config.json.
+
+### patch-gsd-compliance-engine.ps1
+
+Compliance engine with three sub-systems: (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules scanning every iteration (SQL injection, XSS, eval, hardcoded secrets, missing [Authorize], PII in logs, HIPAA/SOC2/PCI/GDPR patterns). (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data referential integrity. (3) `Invoke-PiiFlowAnalysis` -- traces PII fields through API->controller->SP->table, checks logging/encryption/UI masking. All zero-cost static scans. Config: `compliance_engine` in global-config.json.
+
+### patch-gsd-speed-optimizations.ps1
+
+Five speed optimizations: (1) `Test-ShouldSkipResearch` -- skip research when health improving and no new requirements. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- git-diff-based file map updates. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} and {{CODING_CONVENTIONS}} template variables. (5) Token budget headers and inter-agent handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
+
+### patch-gsd-agent-intelligence.ps1
+
+Agent intelligence: (1) `Update-AgentPerformanceScore` -- tracks efficiency (requirements/1K tokens) and reliability (1 - regression rate) per agent. `Get-BestAgentForPhase` -- data-driven agent routing. (2) `Save-ProjectPatterns` + `Get-WarmStartPatterns` -- caches detected patterns by project type (dotnet-react, dotnet-api, react-spa) for warm-starting new projects. Global cache at `~/.gsd-global/intelligence/`. Config: `agent_intelligence` in global-config.json.
+
 ## 8.3 Standalone Utilities
 
 ### setup-gsd-api-keys.ps1
@@ -1866,6 +1903,101 @@ Test-IsOpenAICompatAgent -AgentName <string>
 ```
 
 Checks model-registry.json to determine if a given agent name is an openai-compat REST agent. Returns `$true` for kimi, deepseek, glm5, minimax (when registered and enabled).
+
+### Get-DifferentialContext
+
+```
+Get-DifferentialContext -GsdDir <string> -GlobalDir <string> -Iteration <int> -RepoRoot <string>
+```
+
+Computes git diff since last reviewed commit. Returns `UseDifferential` flag, `DiffContent` (truncated to 50KB), and `ChangedFiles` list. Falls back to full review if cache expired, >50% files changed, or first run.
+
+### Invoke-PreExecuteGate
+
+```
+Invoke-PreExecuteGate -RepoRoot <string> -GsdDir <string> -GlobalDir <string>
+    -Iteration <int> -Health <decimal> [-ExecuteAgent <string>]
+```
+
+Runs dotnet build + npm build before git commit. On failure, sends errors to executing agent for fix. Returns `Passed` flag, `FixApplied` indicator, and `Errors` text.
+
+### Test-RequirementAcceptance
+
+```
+Test-RequirementAcceptance -GsdDir <string> -GlobalDir <string>
+    -RepoRoot <string> -Iteration <int>
+```
+
+Runs acceptance tests from queue-current.json `acceptance_test` fields. Supports file_exists, pattern_match, build_check, dotnet_test, npm_test. Saves results to `.gsd/tests/acceptance-results.json`.
+
+### Test-ApiContractCompliance
+
+```
+Test-ApiContractCompliance -RepoRoot <string> -GsdDir <string> -GlobalDir <string>
+```
+
+Zero-cost static scan validating controllers against 06-api-contracts.md. Checks route coverage, HTTP methods, [Authorize], inline SQL, SP mapping. Returns blocking issues and warnings.
+
+### Invoke-VisualValidation
+
+```
+Invoke-VisualValidation -RepoRoot <string> -GsdDir <string>
+    -GlobalDir <string> -Iteration <int>
+```
+
+Screenshots React components via Playwright, compares against Figma exports. Falls back to component-match heuristic when Playwright unavailable. Reports pixel diff percentage per component.
+
+### Test-DesignTokenCompliance
+
+```
+Test-DesignTokenCompliance -RepoRoot <string> -GsdDir <string> -GlobalDir <string>
+```
+
+Scans CSS/SCSS/TSX for hardcoded colors, font sizes, spacing, border radii. Cross-references against design tokens file. Allows CSS custom properties and configured exceptions.
+
+### Invoke-PerIterationCompliance
+
+```
+Invoke-PerIterationCompliance -RepoRoot <string> -GsdDir <string>
+    -GlobalDir <string> -Iteration <int>
+```
+
+Structured rule engine scanning 20+ SEC-*/COMP-* compliance rules every iteration. Reports critical/high/medium violations with file paths and line numbers.
+
+### Test-DatabaseMigrationIntegrity
+
+```
+Test-DatabaseMigrationIntegrity -RepoRoot <string> -GsdDir <string> -GlobalDir <string>
+```
+
+Zero-cost SQL file scan for FK consistency (referenced tables exist), index coverage (WHERE columns indexed), and seed data integrity (INSERT targets exist).
+
+### Invoke-PiiFlowAnalysis
+
+```
+Invoke-PiiFlowAnalysis -RepoRoot <string> -GsdDir <string> -GlobalDir <string>
+```
+
+Traces PII fields through codebase. Checks for PII in log output (critical), unencrypted PII storage (high), and unmasked PII in UI (high). Configurable PII field registry.
+
+### Update-AgentPerformanceScore
+
+```
+Update-AgentPerformanceScore -GsdDir <string> -GlobalDir <string>
+    -Agent <string> -Phase <string> -TokensUsed <int>
+    -RequirementsSatisfied <int> -RequirementsRegressed <int> -Iteration <int>
+```
+
+Tracks per-agent efficiency (requirements/1K tokens) and reliability (1 - regression rate). Stores scores in `.gsd/intelligence/agent-scores.json` and global `~/.gsd-global/intelligence/agent-scores-global.json`.
+
+### Get-OptimalBatchSize
+
+```
+Get-OptimalBatchSize -GsdDir <string> -GlobalDir <string>
+    -CurrentBatchSize <int> -Iteration <int>
+```
+
+Calculates optimal batch size from historical token usage data. Formula: `floor(context_limit * 0.7 / avg_tokens_per_requirement)`. Bounded by min_batch and max_batch config.
 
 ### Find-ProjectInterfaces
 
@@ -3989,6 +4121,273 @@ The GSD engine enforces 88+ security rules across all technology layers. These s
 
 ---
 
+# Chapter 16: Speed Optimizations
+
+## 16.1 Overview
+
+Version 2.0.0 introduces five speed optimizations that reduce wall-clock time per iteration by 30-50% while maintaining quality. All optimizations are configurable via `speed_optimizations` in global-config.json.
+
+## 16.2 Differential Code Review
+
+Instead of re-reviewing the entire codebase every iteration, the engine reviews only files changed since the last successful review.
+
+**How it works:**
+1. After each code-review, `Save-ReviewedCommit` stores the current git commit hash in `.gsd/cache/reviewed-files.json`
+2. Before next code-review, `Get-DifferentialContext` computes `git diff` since that commit
+3. If <50% of files changed, uses `code-review-differential.md` prompt (focused on diff only)
+4. If >50% changed or cache expired, falls back to full review
+
+**Configuration:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `differential_review.enabled` | true | Enable differential review |
+| `differential_review.max_diff_pct` | 50 | Max % files changed before full review |
+| `differential_review.cache_ttl_iterations` | 10 | Rebuild cache every N iterations |
+
+**Estimated savings:** 40-60% of code-review tokens, 30% faster per iteration.
+
+## 16.3 Conditional Research Skip
+
+Skips the research phase when health is improving and no new "not_started" requirements are in the batch.
+
+**Logic:**
+- If `health_delta >= min_health_delta` AND batch has zero `not_started` items: skip research
+- Always runs research on first iteration
+- Always runs research when health is stalled or declining
+
+**Configuration:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `speed_optimizations.conditional_research_skip.enabled` | true | Enable skip |
+| `speed_optimizations.conditional_research_skip.min_health_delta` | 1 | Min health improvement to skip |
+
+**Estimated savings:** 5-15K tokens and 60-90s on 50%+ of iterations.
+
+## 16.4 Smart Batch Sizing
+
+Calculates optimal batch size from historical token usage instead of using a fixed default.
+
+**Formula:** `optimal = floor(context_limit * utilization_target / avg_tokens_per_requirement)`
+
+The engine tracks `avg_tokens_per_requirement` from cost-summary.json across iterations and adjusts automatically.
+
+**Configuration:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `speed_optimizations.smart_batch_sizing.enabled` | true | Enable smart sizing |
+| `speed_optimizations.smart_batch_sizing.context_limit_tokens` | 128000 | Model context window |
+| `speed_optimizations.smart_batch_sizing.utilization_target` | 0.7 | Target utilization |
+| `speed_optimizations.smart_batch_sizing.min_batch` | 2 | Floor |
+| `speed_optimizations.smart_batch_sizing.max_batch` | 12 | Ceiling |
+
+## 16.5 Prompt Template Deduplication
+
+Security standards and coding conventions are injected via template variables instead of being duplicated across prompts.
+
+**Template variables:**
+- `{{SECURITY_STANDARDS}}` -- resolved from `prompts/shared/security-standards.md`
+- `{{CODING_CONVENTIONS}}` -- resolved from `prompts/shared/coding-conventions.md`
+
+The `Resolve-PromptWithDedup` function handles injection during prompt resolution.
+
+## 16.6 Token Budget Headers
+
+All prompt templates now include explicit output constraints and inter-agent handoff protocols:
+
+```
+## Output Constraints
+- Maximum output: 3000 tokens
+- Format: JSON + markdown (no prose)
+
+## Input Context
+You will receive: requirements-matrix.json
+Previous phase output: execute phase committed code to git
+```
+
+This prevents token bloat and gives agents clear expectations about input format.
+
+---
+
+# Chapter 17: Validation Gates Reference
+
+## 17.1 Complete Validation Gate Inventory
+
+Version 2.0.0 provides 14 validation gates across the pipeline lifecycle:
+
+| # | Gate | Type | Cost | When | Blocking |
+|---|------|------|------|------|----------|
+| 1 | Test-PreFlight | CLI/project checks | Free | Pre-pipeline | Yes |
+| 2 | Test-DiskSpace | Disk check | Free | Pre-iteration | Yes |
+| 3 | Invoke-SpecQualityGate | Spec clarity + consistency | ~$0.30 | Pre-pipeline | Configurable |
+| 4 | Invoke-PerIterationCompliance | SEC-*/COMP-* rule scan | Free | Every iteration | Critical only |
+| 5 | Test-ApiContractCompliance | Controller vs OpenAPI | Free | Post-execute | Configurable |
+| 6 | Test-DesignTokenCompliance | CSS hardcoded values | Free | Post-execute | Configurable |
+| 7 | Invoke-PreExecuteGate | dotnet build + npm build | Free | Pre-commit | Yes (with fix) |
+| 8 | Test-RequirementAcceptance | Per-requirement tests | Free | Post-execute | Configurable |
+| 9 | Invoke-VisualValidation | Figma screenshot diff | Free | Post-execute | Configurable |
+| 10 | Test-DatabaseMigrationIntegrity | FK/index/seed checks | Free | Post-execute | High severity |
+| 11 | Invoke-PiiFlowAnalysis | PII flow tracking | Free | Post-execute | Critical only |
+| 12 | Test-HealthRegression | Health drop >5% | Free | Post-iteration | Yes (revert) |
+| 13 | Invoke-FinalValidation | Build/test/audit suite | Free | At 100% health | Hard failures |
+| 14 | Invoke-LlmCouncil | Multi-agent review | ~$0.50 | At 100% health | Block vote |
+
+## 17.2 Pre-Execute Compile Gate
+
+The pre-execute gate ensures only code that compiles gets committed to git.
+
+**Flow:**
+1. Execute phase generates code
+2. `Invoke-PreExecuteGate` runs `dotnet build` + `npm run build`
+3. If build fails: sends errors to executing agent via `fix-compile-errors.md` prompt
+4. Agent fixes in-place (same context window = cheaper fix)
+5. Re-validates after fix
+6. Max 2 fix attempts, then commits as-is for next iteration
+
+**Configuration:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `pre_execute_gate.enabled` | true | Enable gate |
+| `pre_execute_gate.max_fix_attempts` | 2 | Fix attempts before fallthrough |
+| `pre_execute_gate.include_tests` | false | Also run tests pre-commit |
+
+## 17.3 Per-Requirement Acceptance Tests
+
+Each requirement can define an acceptance test in queue-current.json:
+
+```json
+{
+  "req_id": "REQ-042",
+  "acceptance_test": {
+    "type": "pattern_match",
+    "file": "src/Controllers/UserController.cs",
+    "patterns": ["[Authorize]", "[HttpGet]"]
+  }
+}
+```
+
+**Test types:**
+
+| Type | What It Checks | Cost |
+|------|---------------|------|
+| `file_exists` | Target files were created | Free |
+| `pattern_match` | Generated code contains required patterns | Free |
+| `build_check` | Project compiles after changes | Free |
+| `dotnet_test` | Specific .NET test class passes | Free |
+| `npm_test` | Specific frontend test passes | Free |
+
+## 17.4 Contract-First API Validation
+
+Zero-cost static scan that validates controllers against `06-api-contracts.md`:
+
+| Check | Severity | Description |
+|-------|----------|-------------|
+| Missing endpoint | Blocking | Documented endpoint has no controller action |
+| Wrong HTTP method | Blocking | Route exists but method attribute doesn't match |
+| Missing [Authorize] | Warning | Controller has no auth attribute |
+| Inline SQL | Blocking | Direct SQL instead of stored procedure |
+| Undocumented SP | Warning | SP in map not referenced in controllers |
+
+## 17.5 Visual Validation
+
+Compares generated React components against Figma design exports:
+
+**With Playwright installed:** Full screenshot capture and pixel comparison
+**Without Playwright:** Component-match heuristic (checks if component files exist for each design screenshot)
+
+Place Figma exports as PNG files in `design/screenshots/` with filenames matching component names.
+
+## 17.6 Design Token Enforcement
+
+Scans for hardcoded CSS values that should use design tokens:
+
+| Pattern | Type | Example Violation |
+|---------|------|-------------------|
+| Hex colors | color | `color: #3498db` instead of `var(--primary)` |
+| RGB/RGBA | color | `background: rgb(52,152,219)` |
+| Pixel font-size | typography | `font-size: 14px` instead of `var(--text-sm)` |
+| Pixel spacing | spacing | `margin: 16px` instead of `var(--space-4)` |
+| Pixel border-radius | border | `border-radius: 8px` instead of `var(--radius-md)` |
+
+Allowed exceptions: `#000`, `#fff`, `transparent`, `inherit`, `currentColor`, and any line using `var(--xxx)`.
+
+---
+
+# Chapter 18: Compliance Engine and Agent Intelligence
+
+## 18.1 Per-Iteration Compliance Audit
+
+Unlike the quality gates that run only at 100% health, the compliance engine scans every iteration with a structured rule engine.
+
+**Rule categories:**
+
+| Category | Rule IDs | Count | Examples |
+|----------|----------|-------|----------|
+| Network Security | SEC-NET-01 to SEC-NET-08 | 8 | SQL injection, XSS, eval, hardcoded secrets |
+| SQL Security | SEC-SQL-01 to SEC-SQL-03 | 3 | String concatenation, dynamic SQL |
+| Frontend Security | SEC-FE-01 to SEC-FE-02 | 2 | Missing CSRF, unvalidated redirect |
+| HIPAA | COMP-HIPAA-01 to COMP-HIPAA-02 | 2 | PII in logs, unencrypted PII |
+| SOC 2 | COMP-SOC2-01 | 1 | Missing audit log |
+| PCI | COMP-PCI-01 to COMP-PCI-02 | 2 | Card data in logs, unmasked display |
+
+**Output:** `.gsd/validation/compliance-scan.json` with pass/fail per rule ID, severity, and violation details.
+
+## 18.2 Database Migration Validation
+
+Three zero-cost SQL file scans:
+
+1. **Foreign Key Consistency:** Every `REFERENCES` clause points to a table defined in `CREATE TABLE`
+2. **Index Coverage:** Every column used in `WHERE` clauses has an index or is a primary key
+3. **Seed Data Integrity:** Every `INSERT INTO` targets a table that exists in `CREATE TABLE`
+
+**Output:** `.gsd/validation/db-migration-results.json`
+
+## 18.3 PII Flow Tracking
+
+Traces configurable PII field names through the entire codebase:
+
+| Check | Severity | What It Detects |
+|-------|----------|-----------------|
+| PII in logs | Critical | `_logger.LogInfo(user.SSN)` |
+| Unencrypted PII | High | `user.SSN = value` without Encrypt/Hash |
+| Unmasked PII in UI | High | `{user.ssn}` in JSX without mask function |
+
+**Default PII fields:** email, ssn, social_security, date_of_birth, dob, phone, address, name, first_name, last_name, credit_card, card_number, cvv, password, secret, token
+
+**Output:** `.gsd/validation/pii-flow-results.json`
+
+## 18.4 Agent Performance Scoring
+
+The engine tracks two metrics per agent:
+
+- **Efficiency:** `requirements_satisfied / (tokens_used / 1000)` -- how many requirements an agent satisfies per 1K tokens
+- **Reliability:** `1 - (regressions / total_satisfied)` -- how often agent's work survives the next code review
+
+**Overall score:** `reliability * 0.6 + min(1, efficiency) * 0.4`
+
+`Get-BestAgentForPhase` uses these scores to recommend the best agent for each phase, after collecting enough samples (configurable `min_samples`, default 3).
+
+**Output:** `.gsd/intelligence/agent-scores.json` (per-project), `~/.gsd-global/intelligence/agent-scores-global.json` (cross-project)
+
+## 18.5 Warm-Start for New Projects
+
+When a project reaches 100% health, `Save-ProjectPatterns` caches its detected patterns by project type:
+
+| Project Type | Detection | Example |
+|-------------|-----------|---------|
+| `dotnet-react` | .sln + package.json with "react" | Full-stack web app |
+| `dotnet-api` | .sln without React | Backend API |
+| `react-spa` | package.json with "react", no .sln | Frontend SPA |
+
+When starting a new project, `Get-WarmStartPatterns` loads patterns from the most recent project of the same type, giving the create-phases phase a head start.
+
+**Cache location:** `~/.gsd-global/intelligence/pattern-cache.json`
+
+---
+
 # Appendices
 
 ## Appendix A: Complete File Inventory
@@ -4032,6 +4431,11 @@ The GSD engine enforces 88+ security rules across all technology layers. These s
 | `prompts/shared/security-standards.md` | 88+ OWASP security rules |
 | `prompts/shared/coding-conventions.md` | .NET/React/SQL conventions |
 | `prompts/shared/database-completeness-review.md` | DB chain verification rules |
+| `prompts/shared/api-contract-validation.md` | API contract validation rules |
+| `prompts/claude/code-review-differential.md` | Differential code review prompt |
+| `prompts/codex/fix-compile-errors.md` | Pre-execute compile fix prompt |
+| `intelligence/agent-scores-global.json` | Cross-project agent performance scores |
+| `intelligence/pattern-cache.json` | Warm-start pattern cache by project type |
 | `supervisor/pattern-memory.jsonl` | Cross-project failure patterns |
 | `pricing-cache.json` | LLM pricing data |
 | `KNOWN-LIMITATIONS.md` | Scenario matrix |
@@ -4057,6 +4461,9 @@ The GSD engine enforces 88+ security rules across all technology layers. These s
 | `council/gemini-review.md` | Gemini | Requirements alignment review | ~2K tokens |
 | `council/claude-synthesize.md` | Claude | Consensus synthesis | ~1K tokens |
 | `council/openai-compat-review.md` | REST agents | Generic implementation quality review | ~2K tokens |
+| `claude/code-review-differential.md` | Claude | Differential (changed files only) review | ~2K tokens |
+| `codex/fix-compile-errors.md` | Codex | Pre-execute compile error fix | ~5K tokens |
+| `shared/api-contract-validation.md` | Reference | API contract validation rules | N/A |
 
 ## Appendix C: Notification Events
 
@@ -4159,6 +4566,6 @@ The GSD engine enforces 88+ security rules across all technology layers. These s
 
 ---
 
-*Generated from GSD Engine v1.6.0 source documentation, scripts, and standards prompt templates.*
-*Total scripts: 27 (1 master installer + 1 pre-flight + 21 installer scripts + 4 standalone utilities)*
-*Chapters: 15 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR)*
+*Generated from GSD Engine v2.0.0 source documentation, scripts, and standards prompt templates.*
+*Total scripts: 36 (1 master installer + 1 pre-flight + 30 installer scripts + 4 standalone utilities)*
+*Chapters: 18 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*

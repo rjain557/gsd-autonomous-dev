@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 21 scripts in correct order.
+    GSD Master Installer - Runs ALL 30 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -16,7 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GSD_VERSION = "1.5.0"
+$GSD_VERSION = "2.0.0"
 $GSD_DATE = "2026-03-04"
 
 # Run prerequisites check first if the script exists
@@ -88,12 +88,21 @@ $scripts = @(
     @{ File="patch-gsd-resilience-hardening.ps1"; Desc="Resilience Hardening (token tracking, auth fix, quota cap, agent rotation)" }
     @{ File="patch-gsd-quality-gates.ps1";       Desc="Quality Gates (DB completeness, security standards, spec validation)" }
     @{ File="patch-gsd-multi-model.ps1";        Desc="Multi-Model LLM Integration (Kimi K2.5, DeepSeek, GLM-5, MiniMax via REST API)" }
+    @{ File="patch-gsd-differential-review.ps1"; Desc="Differential Code Review (review only changed files, cache state)" }
+    @{ File="patch-gsd-pre-execute-gate.ps1";    Desc="Pre-Execute Compile Gate (build validation before commit)" }
+    @{ File="patch-gsd-acceptance-tests.ps1";    Desc="Per-Requirement Acceptance Tests (auto-generate + run per req)" }
+    @{ File="patch-gsd-api-contract-validation.ps1"; Desc="Contract-First API Validation (controller vs OpenAPI spec)" }
+    @{ File="patch-gsd-visual-validation.ps1";   Desc="Visual Validation (Figma screenshot diff via Playwright)" }
+    @{ File="patch-gsd-design-token-enforcement.ps1"; Desc="Design Token Enforcement (CSS/style hardcoded value scan)" }
+    @{ File="patch-gsd-compliance-engine.ps1";   Desc="Compliance Engine (per-iteration audit, DB migration, PII tracking)" }
+    @{ File="patch-gsd-speed-optimizations.ps1"; Desc="Speed Optimizations (research skip, smart batch, prompt dedup)" }
+    @{ File="patch-gsd-agent-intelligence.ps1";  Desc="Agent Intelligence (performance scoring, warm-start patterns)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 21 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 30 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

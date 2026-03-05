@@ -348,6 +348,58 @@ Read from model-registry.json, patch-gsd-multi-model.ps1, and token-cost-calcula
 
 ---
 
+#### CHAPTER 16: SPEED OPTIMIZATIONS
+
+Read from patch-gsd-differential-review.ps1 and patch-gsd-speed-optimizations.ps1.
+
+**16.1 Overview** — Summary table of all speed optimizations with estimated savings
+
+**16.2 Differential Code Review** — How Get-DifferentialContext + Save-ReviewedCommit work, git diff integration, cache management, fallback thresholds, code-review-differential.md prompt. Config: differential_review in global-config.json.
+
+**16.3 Conditional Research Skip** — When research is skipped (health improving, no new requirements), Test-ShouldSkipResearch logic, estimated savings per iteration
+
+**16.4 Smart Batch Sizing** — Get-OptimalBatchSize formula (context_limit * 0.7 / avg_tokens_per_req), historical data tracking, min/max bounds
+
+**16.5 Prompt Template Deduplication** — {{SECURITY_STANDARDS}} and {{CODING_CONVENTIONS}} template variables, Resolve-PromptWithDedup function, single source of truth principle
+
+**16.6 Token Budget Headers** — Output Constraints and Input Context blocks added to all prompts, inter-agent handoff protocol
+
+---
+
+#### CHAPTER 17: VALIDATION GATES REFERENCE
+
+Read from patch-gsd-pre-execute-gate.ps1, patch-gsd-acceptance-tests.ps1, patch-gsd-api-contract-validation.ps1, patch-gsd-visual-validation.ps1, patch-gsd-design-token-enforcement.ps1, and existing quality gate scripts.
+
+**17.1 Complete Validation Gate Inventory** — Master table of ALL 14 validation gates: name, type, cost, when they run, blocking behavior
+
+**17.2 Pre-Execute Compile Gate** — Invoke-PreExecuteGate flow: build before commit, fix-compile-errors.md prompt, max fix attempts, fallthrough behavior. Config: pre_execute_gate in global-config.json.
+
+**17.3 Per-Requirement Acceptance Tests** — Test-RequirementAcceptance: 5 test types (file_exists, pattern_match, build_check, dotnet_test, npm_test), queue-current.json acceptance_test field schema, results storage. Config: acceptance_tests in global-config.json.
+
+**17.4 Contract-First API Validation** — Test-ApiContractCompliance: 6 validation checks (route coverage, HTTP methods, parameter types, [Authorize], inline SQL, SP mapping), 06-api-contracts.md cross-reference. Config: api_contract_validation in global-config.json.
+
+**17.5 Visual Validation** — Invoke-VisualValidation: Playwright screenshot capture, Figma export comparison, pixel diff threshold, component-match fallback. Config: visual_validation in global-config.json.
+
+**17.6 Design Token Enforcement** — Test-DesignTokenCompliance: hardcoded value detection (colors, fonts, spacing, borders), design token cross-reference, allowed exceptions. Config: design_token_enforcement in global-config.json.
+
+---
+
+#### CHAPTER 18: COMPLIANCE ENGINE AND AGENT INTELLIGENCE
+
+Read from patch-gsd-compliance-engine.ps1 and patch-gsd-agent-intelligence.ps1.
+
+**18.1 Per-Iteration Compliance Audit** — Invoke-PerIterationCompliance: structured rule engine with 20+ SEC-*/COMP-* rules, every-iteration scanning, severity levels (critical/high/medium), rule results table. Config: compliance_engine.per_iteration_audit in global-config.json.
+
+**18.2 Database Migration Validation** — Test-DatabaseMigrationIntegrity: FK consistency, index coverage, seed data referential integrity, zero-cost SQL scan. Config: compliance_engine.db_migration in global-config.json.
+
+**18.3 PII Flow Tracking** — Invoke-PiiFlowAnalysis: configurable PII field registry, logging check (critical), encryption check (high), UI masking check (high), flow tracing across API/controller/SP/table. Config: compliance_engine.pii_tracking in global-config.json.
+
+**18.4 Agent Performance Scoring** — Update-AgentPerformanceScore + Get-BestAgentForPhase: efficiency metric (requirements/1K tokens), reliability metric (1 - regression rate), overall score formula, min_samples threshold, data-driven agent routing. Output: agent-scores.json. Config: agent_intelligence.performance_scoring in global-config.json.
+
+**18.5 Warm-Start for New Projects** — Save-ProjectPatterns + Get-WarmStartPatterns: project type detection (dotnet-react, dotnet-api, react-spa), global pattern cache, cross-project pattern sharing. Output: ~/.gsd-global/intelligence/pattern-cache.json. Config: agent_intelligence.warm_start in global-config.json.
+
+---
+
 #### APPENDICES
 
 **Appendix A: Complete File Inventory**
@@ -380,7 +432,7 @@ Read ALL `$script:` constants from resilience.ps1, plus config defaults from glo
 6. **Diagrams**: Use text-based box diagrams with Unicode box-drawing characters
 7. **Color scheme**: Professional blue (#2B579A) for headings and table headers
 8. **Cross-references**: Use "See Section X.X" format
-9. **Total target**: 100-150 pages (expanded with new standards chapters)
+9. **Total target**: 120-180 pages (expanded with speed optimizations, validation gates, compliance engine, and agent intelligence chapters)
 
 ### Output
 

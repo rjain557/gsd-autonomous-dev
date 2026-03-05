@@ -402,6 +402,42 @@ New/modified constants:
 |----------|-----------|-----------|-------------|
 | QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE | 3 | 1 | Rotate immediately on first quota hit (7 agents available) |
 
+### patch-gsd-differential-review.ps1 (Script 22)
+
+Differential code review: reviews only files changed since last iteration via git diff. Adds `Get-DifferentialContext` (computes diff, checks cache, validates thresholds) and `Save-ReviewedCommit` (stores reviewed commit hash) to resilience.ps1. Creates `code-review-differential.md` prompt template. Maintains cache at `.gsd/cache/reviewed-files.json`. Falls back to full review if >50% files changed or cache TTL expired. Config: `differential_review` in global-config.json.
+
+### patch-gsd-pre-execute-gate.ps1 (Script 23)
+
+Pre-execute compile gate: runs `dotnet build` + `npm run build` BEFORE git commit. Adds `Invoke-PreExecuteGate` to resilience.ps1. On failure, sends errors to executing agent via `fix-compile-errors.md` prompt. Agent fixes in-place (same context window). Max 2 fix attempts. Creates `fix-compile-errors.md` prompt template. Config: `pre_execute_gate` in global-config.json.
+
+### patch-gsd-acceptance-tests.ps1 (Script 24)
+
+Per-requirement acceptance tests. Adds `Test-RequirementAcceptance` to resilience.ps1. Enhances plan.md to require `acceptance_test` field per requirement. Supports 5 test types: file_exists, pattern_match, build_check, dotnet_test, npm_test. Results: `.gsd/tests/acceptance-results.json` and `acceptance-history.jsonl`. Config: `acceptance_tests` in global-config.json.
+
+### patch-gsd-api-contract-validation.ps1 (Script 25)
+
+Contract-first API validation: zero-cost static scan of controllers against `06-api-contracts.md`. Adds `Test-ApiContractCompliance` to resilience.ps1. Checks: route coverage, HTTP methods, parameter types, [Authorize], inline SQL, SP mapping. Creates `api-contract-validation.md` reference. Results: `.gsd/validation/api-contract-results.json`. Config: `api_contract_validation` in global-config.json.
+
+### patch-gsd-visual-validation.ps1 (Script 26)
+
+Visual validation: Figma screenshot comparison via Playwright. Adds `Invoke-VisualValidation` to resilience.ps1. Captures component screenshots, compares against Figma exports in `design/screenshots/`. Reports pixel diff %. Falls back to component-match heuristic without Playwright. Results: `.gsd/validation/visual-results.json`. Config: `visual_validation` in global-config.json.
+
+### patch-gsd-design-token-enforcement.ps1 (Script 27)
+
+Design token enforcement: zero-cost regex scan for hardcoded CSS values. Adds `Test-DesignTokenCompliance` to resilience.ps1. Scans CSS/SCSS/TSX for hardcoded colors, font sizes, spacing, border radii. Cross-references design tokens file. Results: `.gsd/validation/design-token-results.json`. Config: `design_token_enforcement` in global-config.json.
+
+### patch-gsd-compliance-engine.ps1 (Script 28)
+
+Compliance engine: three sub-systems. (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules, per-iteration scanning. (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data integrity. (3) `Invoke-PiiFlowAnalysis` -- PII field tracking through codebase, checks logging/encryption/UI masking. All zero-cost static scans. Results: `.gsd/validation/compliance-scan.json`, `db-migration-results.json`, `pii-flow-results.json`. Config: `compliance_engine` in global-config.json.
+
+### patch-gsd-speed-optimizations.ps1 (Script 29)
+
+Five speed optimizations: (1) `Test-ShouldSkipResearch` -- conditional research skip when health improving. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- git-diff-based file map. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} / {{CODING_CONVENTIONS}} template variables. (5) Token budgets and handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
+
+### patch-gsd-agent-intelligence.ps1 (Script 30)
+
+Agent intelligence: (1) `Update-AgentPerformanceScore` + `Get-BestAgentForPhase` -- efficiency and reliability scoring per agent, data-driven routing. (2) `Save-ProjectPatterns` + `Get-WarmStartPatterns` -- cross-project pattern caching by project type. Creates `~/.gsd-global/intelligence/` directory. Config: `agent_intelligence` in global-config.json.
+
 ### Optional standalone scripts
 
 These are NOT run by the installer but can be run manually:

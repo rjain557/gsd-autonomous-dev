@@ -132,6 +132,133 @@ Controls the three quality gate checks that run during pipeline execution.
 
 Disable any gate: set `enabled: false`. Skip spec quality gate: use `-SkipSpecCheck` pipeline parameter.
 
+#### differential_review
+
+Controls differential code review (review only changed files).
+
+```json
+"differential_review": {
+    "enabled": true,
+    "max_diff_pct": 50,
+    "cache_ttl_iterations": 10
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Enable differential review |
+| `max_diff_pct` | int | 50 | Fall back to full review if >N% files changed |
+| `cache_ttl_iterations` | int | 10 | Rebuild cache every N iterations |
+
+#### pre_execute_gate
+
+Controls the pre-execute compile gate (build validation before commit).
+
+```json
+"pre_execute_gate": {
+    "enabled": true,
+    "max_fix_attempts": 2,
+    "include_tests": false
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Enable pre-execute gate |
+| `max_fix_attempts` | int | 2 | Fix attempts before fallthrough |
+| `include_tests` | bool | false | Also run tests pre-commit |
+
+#### acceptance_tests
+
+Controls per-requirement acceptance test execution.
+
+```json
+"acceptance_tests": {
+    "enabled": true,
+    "block_on_failure": false,
+    "test_types": ["file_exists", "pattern_match", "build_check", "dotnet_test", "npm_test"],
+    "max_test_time_seconds": 60
+}
+```
+
+#### api_contract_validation
+
+Controls contract-first API validation.
+
+```json
+"api_contract_validation": {
+    "enabled": true,
+    "block_on_missing": true,
+    "warn_on_undocumented": true,
+    "scan_patterns": ["*Controller*.cs", "*controller*.ts", "*routes*.ts"]
+}
+```
+
+#### visual_validation
+
+Controls Figma screenshot diff validation.
+
+```json
+"visual_validation": {
+    "enabled": true,
+    "max_diff_pct": 15,
+    "screenshot_dir": "design/screenshots",
+    "viewport_width": 1280,
+    "viewport_height": 720,
+    "block_on_high_diff": false,
+    "playwright_timeout_ms": 30000
+}
+```
+
+#### design_token_enforcement
+
+Controls design token compliance scanning.
+
+```json
+"design_token_enforcement": {
+    "enabled": true,
+    "block_on_violation": false,
+    "scan_extensions": [".css", ".scss", ".tsx", ".jsx", ".ts"],
+    "allowed_raw_colors": ["#000000", "#ffffff", "transparent", "inherit", "currentColor"]
+}
+```
+
+#### compliance_engine
+
+Controls per-iteration compliance audit, DB migration validation, and PII tracking.
+
+```json
+"compliance_engine": {
+    "per_iteration_audit": { "enabled": true, "block_on_critical": true },
+    "db_migration": { "enabled": true, "check_foreign_keys": true, "check_index_coverage": true, "check_seed_integrity": true },
+    "pii_tracking": { "enabled": true, "pii_fields": ["email","ssn","phone","address","credit_card","password"], "check_logging": true, "check_encryption": true, "check_ui_masking": true }
+}
+```
+
+#### speed_optimizations
+
+Controls speed optimization features.
+
+```json
+"speed_optimizations": {
+    "conditional_research_skip": { "enabled": true, "skip_when_health_improving": true, "min_health_delta": 1 },
+    "smart_batch_sizing": { "enabled": true, "context_limit_tokens": 128000, "utilization_target": 0.7, "min_batch": 2, "max_batch": 12 },
+    "incremental_file_map": { "enabled": true },
+    "prompt_deduplication": { "enabled": true, "inject_security_standards": true, "inject_coding_conventions": true }
+}
+```
+
+#### agent_intelligence
+
+Controls agent performance scoring and warm-start features.
+
+```json
+"agent_intelligence": {
+    "performance_scoring": { "enabled": true, "min_samples": 3, "recalculate_interval": 5 },
+    "warm_start": { "enabled": true, "cache_patterns": true, "share_across_projects": true }
+}
+```
+
 ### Prompt Templates
 
 Quality gate prompt templates are stored in:
