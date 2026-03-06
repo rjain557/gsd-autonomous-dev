@@ -374,12 +374,12 @@ Controls post-launch maintenance features: bug fix mode, incremental updates, an
 
 #### council_requirements
 
-Controls the 3-phase parallel council requirements extraction pipeline (`gsd-verify-requirements` command and convergence Phase 0 integration).
+Controls the 3-phase parallel council requirements extraction pipeline using 4 agents (`gsd-verify-requirements` command and convergence Phase 0 integration). DeepSeek participates via REST API for cost-efficient cross-verification.
 
 ```json
 "council_requirements": {
     "enabled": true,
-    "agents": ["claude", "codex", "gemini"],
+    "agents": ["claude", "codex", "gemini", "deepseek"],
     "min_agents_for_merge": 2,
     "chunk_size": 10,
     "timeout_seconds": 600,
@@ -391,7 +391,7 @@ Controls the 3-phase parallel council requirements extraction pipeline (`gsd-ver
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | true | Enable council extraction in convergence Phase 0 |
-| `agents` | string[] | ["claude","codex","gemini"] | Agents to use (partitioned round-robin) |
+| `agents` | string[] | ["claude","codex","gemini","deepseek"] | Agents to use (partitioned round-robin) |
 | `min_agents_for_merge` | int | 2 | Minimum agents required to produce valid output |
 | `chunk_size` | int | 10 | Spec files per LLM call (smaller = less tokens per call) |
 | `timeout_seconds` | int | 600 | Timeout per chunk (total timeout = chunks × timeout + 120s) |

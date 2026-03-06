@@ -8,15 +8,16 @@
 
     Phase 1 - EXTRACT (partitioned, chunked):
     - PowerShell scans docs/ and design/ for spec files
-    - Files are divided into 3 equal partitions (one per agent)
+    - Files are divided into 4 equal partitions (one per agent)
     - Each partition is chunked into batches of ~10 files per LLM call
     - Each agent processes its chunks sequentially, appending results
 
     Phase 2 - VERIFY (cross-agent):
     - A DIFFERENT agent reviews each extraction against the original files
-    - Claude extracts -> Codex verifies
-    - Codex extracts -> Gemini verifies
-    - Gemini extracts -> Claude verifies
+    - Claude extracts -> DeepSeek verifies
+    - Codex extracts -> Claude verifies
+    - Gemini extracts -> Codex verifies
+    - DeepSeek extracts -> Gemini verifies
     - Verifier can: add missed requirements, correct statuses, flag false positives
 
     Phase 3 - SYNTHESIZE:
@@ -48,7 +49,7 @@ if (-not (Test-Path "$GsdGlobalDir\lib\modules\resilience.ps1")) {
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host "  GSD Council Requirements Verification" -ForegroundColor Cyan
-Write-Host "  Partitioned Extract + Cross-Verify (3 agents)" -ForegroundColor Cyan
+Write-Host "  Partitioned Extract + Cross-Verify (4 agents)" -ForegroundColor Cyan
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -64,7 +65,7 @@ if (Test-Path $configPath) {
     if (-not $config.council_requirements) {
         $config | Add-Member -NotePropertyName "council_requirements" -NotePropertyValue ([PSCustomObject]@{
             enabled                = $true
-            agents                 = @("claude", "codex", "gemini")
+            agents                 = @("claude", "codex", "gemini", "deepseek")
             min_agents_for_merge   = 2
             chunk_size             = 10
             timeout_seconds        = 600
@@ -321,9 +322,9 @@ Write-Host "  [OK] Created requirements-synthesize.md" -ForegroundColor Green
 
 # Partial synthesis template
 $synthesizePartial = @'
-# Council Requirements Synthesis -- Partial ({{AGENT_COUNT}} of 3 agents)
+# Council Requirements Synthesis -- Partial ({{AGENT_COUNT}} of 4 agents)
 
-You are merging requirement extractions. Only {{AGENT_COUNT}} of 3 agents succeeded.
+You are merging requirement extractions. Only {{AGENT_COUNT}} of 4 agents succeeded.
 
 ## Agent Extractions
 {{AGENT_OUTPUTS}}
@@ -354,8 +355,8 @@ $councilReqCode = @'
 
 # ===============================================================
 # GSD COUNCIL REQUIREMENTS MODULE - appended to resilience.ps1
-# Partitioned extract + cross-verify: each agent reads 1/3,
-# then a different agent verifies the extraction
+# Partitioned extract + cross-verify: each agent reads 1/4,
+# then a different agent verifies the extraction (4-agent ring)
 # ===============================================================
 
 function Get-SpecFiles {
@@ -417,8 +418,8 @@ function Invoke-CouncilRequirements {
     <#
     .SYNOPSIS
         Two-phase council requirements: partitioned extract + cross-verify.
-        Phase 1: Each agent extracts from 1/3 of specs (chunked).
-        Phase 2: A different agent verifies each extraction.
+        Phase 1: Each agent extracts from 1/4 of specs (chunked, 4 agents).
+        Phase 2: A different agent verifies each extraction (cross-model ring).
         Phase 3: Claude synthesizes all verified outputs.
     .RETURNS
         @{ Success = bool; MatrixPath = string; AgentsSucceeded = int; Error = string }
@@ -475,11 +476,13 @@ function Invoke-CouncilRequirements {
         } catch {}
     }
 
-    # Agent definitions with cross-verify assignments
+    # Agent definitions with cross-verify assignments (4-agent ring)
+    # Each agent's extraction is verified by a different model family
     $agents = @(
-        @{ Name = "claude";  Prefix = "CL";  Verifier = "codex";  AllowedTools = "Read,Write,Bash"; GeminiMode = $null }
-        @{ Name = "codex";   Prefix = "CX";  Verifier = "gemini"; AllowedTools = $null;             GeminiMode = $null }
-        @{ Name = "gemini";  Prefix = "GM";  Verifier = "claude"; AllowedTools = $null;             GeminiMode = "--approval-mode yolo" }
+        @{ Name = "claude";   Prefix = "CL";  Verifier = "deepseek"; AllowedTools = "Read,Write,Bash"; GeminiMode = $null;                    IsRestApi = $false }
+        @{ Name = "codex";    Prefix = "CX";  Verifier = "claude";   AllowedTools = $null;             GeminiMode = $null;                    IsRestApi = $false }
+        @{ Name = "gemini";   Prefix = "GM";  Verifier = "codex";    AllowedTools = $null;             GeminiMode = "--approval-mode yolo";   IsRestApi = $false }
+        @{ Name = "deepseek"; Prefix = "DS";  Verifier = "gemini";   AllowedTools = $null;             GeminiMode = $null;                    IsRestApi = $true  }
     )
 
     # Filter out skipped agent and adjust verifier chain
@@ -495,14 +498,27 @@ function Invoke-CouncilRequirements {
         Write-Host "  [SKIP] $SkipAgent excluded -- running with $($agents.Count) agents" -ForegroundColor DarkYellow
     }
 
-    # Check CLI availability
+    # Check agent availability (CLI agents via Get-Command, REST API agents via registry)
     $availableAgents = @()
     foreach ($agent in $agents) {
-        $cliAvailable = $null -ne (Get-Command $agent.Name -ErrorAction SilentlyContinue)
-        if ($cliAvailable) {
-            $availableAgents += $agent
+        if ($agent.IsRestApi) {
+            # REST API agent -- check via model registry
+            $restAvailable = $false
+            if (Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) {
+                $restAvailable = Test-IsOpenAICompatAgent -AgentName $agent.Name
+            }
+            if ($restAvailable) {
+                $availableAgents += $agent
+            } else {
+                Write-Host "  [!!] $($agent.Name) REST API not configured -- skipping" -ForegroundColor DarkYellow
+            }
         } else {
-            Write-Host "  [!!] $($agent.Name) CLI not found -- skipping" -ForegroundColor DarkYellow
+            $cliAvailable = $null -ne (Get-Command $agent.Name -ErrorAction SilentlyContinue)
+            if ($cliAvailable) {
+                $availableAgents += $agent
+            } else {
+                Write-Host "  [!!] $($agent.Name) CLI not found -- skipping" -ForegroundColor DarkYellow
+            }
         }
     }
     $agents = $availableAgents
@@ -894,7 +910,13 @@ function Invoke-CouncilRequirements {
             if ($agent.Name -notin $completedAgents) { continue }
 
             $verifierName = $agent.Verifier
-            $verifierAvailable = $null -ne (Get-Command $verifierName -ErrorAction SilentlyContinue)
+            $verifierAgent = $agents | Where-Object { $_.Name -eq $verifierName }
+            $verifierIsRest = if ($verifierAgent) { $verifierAgent.IsRestApi } else { $false }
+            $verifierAvailable = if ($verifierIsRest) {
+                (Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent -AgentName $verifierName)
+            } else {
+                $null -ne (Get-Command $verifierName -ErrorAction SilentlyContinue)
+            }
             if (-not $verifierAvailable) {
                 Write-Host "    [SKIP] Cannot verify $($agent.Name) -- $verifierName not available" -ForegroundColor DarkYellow
                 continue
@@ -1306,7 +1328,7 @@ function Merge-CouncilRequirementsLocal {
             if ($p -and $priorityRank.ContainsKey($p) -and $priorityRank[$p] -gt $priorityRank[$bestPriority]) { $bestPriority = $p }
         }
         $foundBy = @($group | ForEach-Object { $_.Agent } | Select-Object -Unique)
-        $confidence = switch ($foundBy.Count) { 3 { "high" } 2 { "medium" } default { "low" } }
+        $confidence = switch ($foundBy.Count) { { $_ -ge 3 } { "high" } 2 { "medium" } default { "low" } }
 
         $id = "REQ-{0:D3}" -f $reqNum
         $mergedReqs += [PSCustomObject]@{
@@ -1433,11 +1455,12 @@ function gsd-verify-requirements {
     <#
     .SYNOPSIS
         Partitioned extract + cross-verify requirements extraction.
-        Each of 3 agents reads 1/3 of spec files, then a different agent verifies.
+        Each of 4 agents (claude, codex, gemini, deepseek) reads 1/4 of spec files,
+        then a different agent verifies each extraction.
     .EXAMPLE
         gsd-verify-requirements
         gsd-verify-requirements -DryRun
-        gsd-verify-requirements -SkipAgent gemini
+        gsd-verify-requirements -SkipAgent deepseek
         gsd-verify-requirements -ChunkSize 5
         gsd-verify-requirements -SkipVerify
     #>
@@ -1498,6 +1521,18 @@ function gsd-verify-requirements {
             Write-Host "  [OK] $cli available" -ForegroundColor Green
         } else {
             Write-Host "  [!!] $cli not found (optional)" -ForegroundColor DarkYellow
+        }
+    }
+    # Check DeepSeek REST API availability
+    if ("deepseek" -ne $SkipAgent) {
+        $dsAvailable = $false
+        if (Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) {
+            $dsAvailable = Test-IsOpenAICompatAgent -AgentName "deepseek"
+        }
+        if ($dsAvailable) {
+            Write-Host "  [OK] deepseek available (REST API)" -ForegroundColor Green
+        } else {
+            Write-Host "  [!!] deepseek REST API not configured (optional)" -ForegroundColor DarkYellow
         }
     }
     Write-Host ""

@@ -1625,13 +1625,13 @@ Launches remote monitoring server and displays a QR code for phone access.
 
 ### gsd-verify-requirements
 
-Council-based requirements verification. All 3 agents independently extract requirements, then Claude synthesizes a merged, deduplicated, confidence-scored matrix.
+Council-based requirements verification. All 4 agents (Claude, Codex, Gemini, DeepSeek) independently extract requirements from 1/4 of spec files each, cross-verify each other's work, then Claude synthesizes a merged, deduplicated, confidence-scored matrix.
 
 ```powershell
-gsd-verify-requirements                     # 3-agent parallel extraction
+gsd-verify-requirements                     # 4-agent parallel extraction
 gsd-verify-requirements -Sequential         # One agent at a time
 gsd-verify-requirements -DryRun             # Preview without running
-gsd-verify-requirements -SkipAgent gemini   # Skip unavailable agent
+gsd-verify-requirements -SkipAgent deepseek # Skip unavailable agent
 gsd-verify-requirements -PreserveExisting   # Merge into existing matrix
 ```
 
@@ -1793,7 +1793,7 @@ Maintenance mode for post-launch updates: (1) `gsd-fix` command -- accepts bug d
 
 ### patch-gsd-council-requirements.ps1
 
-Council-based requirements verification: All 3 agents independently extract requirements from specs, Figma, and code, then Claude synthesizes a merged, deduplicated, confidence-scored `requirements-matrix.json`. (1) `Invoke-CouncilRequirements` -- dispatches 3 parallel jobs, collects JSON outputs, runs Claude synthesis with fallback to local merge. (2) `Merge-CouncilRequirementsLocal` -- PowerShell fallback using token-overlap Jaccard similarity deduplication. (3) `gsd-verify-requirements` profile function -- standalone command for any repo. Creates 5 prompt templates in `prompts/council/`. Patches convergence pipeline Phase 0 to use council when `council_requirements.enabled = true`. Config: `council_requirements` in global-config.json.
+Council-based requirements verification: All 4 agents (Claude, Codex, Gemini, DeepSeek) independently extract requirements from specs, Figma, and code, with cross-verification where each extraction is verified by a different model family (Claude→DeepSeek verifies, Codex→Claude verifies, Gemini→Codex verifies, DeepSeek→Gemini verifies). Claude synthesizes a merged, deduplicated, confidence-scored `requirements-matrix.json`. (1) `Invoke-CouncilRequirements` -- dispatches 4 parallel jobs, collects JSON outputs, runs cross-verification ring, then Claude synthesis with fallback to local merge. (2) `Merge-CouncilRequirementsLocal` -- PowerShell fallback using token-overlap Jaccard similarity deduplication. (3) `gsd-verify-requirements` profile function -- standalone command for any repo. Creates 5 prompt templates in `prompts/council/`. Patches convergence pipeline Phase 0 to use council when `council_requirements.enabled = true`. Config: `council_requirements` in global-config.json.
 
 ## 8.3 Standalone Utilities
 
@@ -4938,15 +4938,16 @@ gsd-converge --Scope "source:v02_spec"
 
 ## 21.1 Overview
 
-The standard Phase 0 (create-phases) uses a single Claude agent to extract requirements. Council-based verification uses a 3-phase parallel pipeline: partitioned extract, cross-verify, and synthesize. Each agent processes 1/3 of the spec files, then a different agent checks their work before Claude synthesizes the final matrix.
+The standard Phase 0 (create-phases) uses a single Claude agent to extract requirements. Council-based verification uses a 3-phase parallel pipeline: partitioned extract, cross-verify, and synthesize. Each of 4 agents processes 1/4 of the spec files, then a different agent from a different model family checks their work before Claude synthesizes the final matrix.
 
 ### Why Partitioned Extract + Cross-Verify?
 
-- **Parallel execution**: All agents run simultaneously via `Start-Job` -- 2-3x faster than sequential
-- **Partitioned workload**: Each agent reads only 1/3 of specs, chunked into batches of ~10 files -- fits within per-request token limits and avoids quota exhaustion
-- **Cross-verification**: A different agent reviews each extraction, catching missed requirements and false positives
-- **Agent specialization**: Claude focuses on architecture/compliance, Codex on implementation/patterns, Gemini on spec/Figma alignment
-- **Confidence scoring**: Requirements confirmed by both extractor AND verifier = "high", added by verifier = "medium", unverified = "low"
+- **Parallel execution**: All 4 agents run simultaneously via `Start-Job` -- 3-4x faster than sequential
+- **Partitioned workload**: Each agent reads only 1/4 of specs, chunked into batches of ~10 files -- fits within per-request token limits and avoids quota exhaustion
+- **Cross-verification**: A different agent from a different model family reviews each extraction, catching missed requirements and false positives
+- **Agent specialization**: Claude focuses on architecture/compliance, Codex on implementation/patterns, Gemini on spec/Figma alignment, DeepSeek on reasoning/completeness
+- **Confidence scoring**: Requirements found by 3+ agents = "high", found by 2 = "medium", found by 1 = "low"
+- **Cost efficiency**: DeepSeek at $0.28/$0.42 per M tokens adds a 4th perspective at minimal cost
 
 ## 21.2 Usage
 
@@ -4967,20 +4968,21 @@ gsd-verify-requirements -ChunkSize 5        # Smaller chunks per LLM call (defau
 
 | Phase | Agents | Action | Execution |
 |-------|--------|--------|-----------|
-| 1. EXTRACT | Claude, Codex, Gemini | Each processes 1/3 of spec files in chunks of ~10 | Parallel (`Start-Job`) |
-| 2. CROSS-VERIFY | Codex→checks Claude, Gemini→checks Codex, Claude→checks Gemini | Reads extraction + same source files, adds missed, corrects statuses, flags false positives | Parallel (`Start-Job`) |
+| 1. EXTRACT | Claude, Codex, Gemini, DeepSeek | Each processes 1/4 of spec files in chunks of ~10 | Parallel (`Start-Job`) |
+| 2. CROSS-VERIFY | DeepSeek→checks Claude, Claude→checks Codex, Codex→checks Gemini, Gemini→checks DeepSeek | Reads extraction + same source files, adds missed, corrects statuses, flags false positives | Parallel (`Start-Job`) |
 | 3. SYNTHESIZE | Claude | Merges all verified outputs, deduplicates, assigns confidence scores | Sequential |
 | Fallback | PowerShell | Local token-overlap merge if synthesis agent fails | Sequential |
 
-### Cross-Verification Chain
+### Cross-Verification Ring (4-agent)
 
 ```
-Claude extracts  →  Codex verifies
-Codex extracts   →  Gemini verifies
-Gemini extracts  →  Claude verifies
+Claude extracts   →  DeepSeek verifies
+Codex extracts    →  Claude verifies
+Gemini extracts   →  Codex verifies
+DeepSeek extracts →  Gemini verifies
 ```
 
-Each verifier can: confirm requirements, add missed ones, correct statuses, and flag false positives.
+Each verifier can: confirm requirements, add missed ones, correct statuses, and flag false positives. The ring ensures every extraction is verified by a different model family for maximum diversity of perspective.
 
 ### Confidence Scoring
 
@@ -5055,7 +5057,7 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
 {
   "council_requirements": {
     "enabled": true,
-    "agents": ["claude", "codex", "gemini"],
+    "agents": ["claude", "codex", "gemini", "deepseek"],
     "min_agents_for_merge": 2,
     "chunk_size": 10,
     "timeout_seconds": 600,
@@ -5172,8 +5174,9 @@ Note: Costs scale with spec file count. Chunking into batches of 10 keeps each L
 | `council/requirements-extract-claude.md` | Claude | Architecture & compliance requirements extraction | ~5K tokens |
 | `council/requirements-extract-codex.md` | Codex | Implementation & code gap requirements extraction | ~5K tokens |
 | `council/requirements-extract-gemini.md` | Gemini | Spec & Figma alignment requirements extraction | ~5K tokens |
-| `council/requirements-synthesize.md` | Claude | 3-agent merge, dedup, and confidence scoring | ~5K tokens |
-| `council/requirements-synthesize-partial.md` | Claude | 2-agent fallback synthesis (max medium confidence) | ~5K tokens |
+| `council/requirements-extract-deepseek.md` | DeepSeek | Reasoning & completeness requirements extraction | ~5K tokens |
+| `council/requirements-synthesize.md` | Claude | 4-agent merge, dedup, and confidence scoring | ~5K tokens |
+| `council/requirements-synthesize-partial.md` | Claude | Partial fallback synthesis (2-3 agents, max medium confidence) | ~5K tokens |
 
 ## Appendix C: Notification Events
 
