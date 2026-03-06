@@ -6,7 +6,7 @@
 .DESCRIPTION
     Calculates estimated token usage and equivalent API costs for all 3 LLMs:
       - Claude (Opus 4.6)    : Blueprint + Verify phases
-      - Codex (GPT 5.3)     : Build phase (code generation)
+      - Codex (GPT 5.4)     : Build phase (code generation)
       - Gemini (3.1 Pro)    : Research + Spec-fix phases
 
     Supports two modes:
@@ -119,8 +119,8 @@ $FallbackPricing = @{
         claude_sonnet = @{ Name = "Claude Sonnet 4.6";              InputPerM = 3.00;  OutputPerM = 15.00; CacheReadPerM = 0.30  }
         claude_opus   = @{ Name = "Claude Opus 4.6";                InputPerM = 5.00;  OutputPerM = 25.00; CacheReadPerM = 0.50  }
         claude_haiku  = @{ Name = "Claude Haiku 4.5";               InputPerM = 1.00;  OutputPerM = 5.00;  CacheReadPerM = 0.10  }
-        codex         = @{ Name = "GPT 5.3 Codex";                   InputPerM = 1.75;  OutputPerM = 14.00; CacheReadPerM = 0.175 }
-        codex_gpt51   = @{ Name = "GPT-5.1 Codex";                  InputPerM = 1.25;  OutputPerM = 10.00; CacheReadPerM = 0.00  }
+        codex         = @{ Name = "GPT 5.4 Codex";                   InputPerM = 1.75;  OutputPerM = 14.00; CacheReadPerM = 0.175 }
+        codex_gpt53   = @{ Name = "GPT 5.3 Codex";                  InputPerM = 1.75;  OutputPerM = 14.00; CacheReadPerM = 0.175 }
         gemini        = @{ Name = "Gemini 3.1 Pro";                  InputPerM = 2.00;  OutputPerM = 12.00; CacheReadPerM = 0.50  }
     }
 }
@@ -148,8 +148,8 @@ function Get-ProviderPricing {
         @{ CacheKey = "claude_opus";   LiteLLMKeys = @("claude-opus-4-6","claude-opus-4-5","claude-opus-4-1"); NamePrefix = "Claude Opus" }
         @{ CacheKey = "claude_sonnet"; LiteLLMKeys = @("claude-sonnet-4-6","claude-sonnet-4-5","claude-sonnet-4"); NamePrefix = "Claude Sonnet" }
         @{ CacheKey = "claude_haiku";  LiteLLMKeys = @("claude-haiku-4-5","claude-3-5-haiku-latest"); NamePrefix = "Claude Haiku" }
-        @{ CacheKey = "codex";         LiteLLMKeys = @("gpt-5.3-codex","codex-mini-latest"); NamePrefix = "GPT 5.3 Codex" }
-        @{ CacheKey = "codex_gpt51";   LiteLLMKeys = @("gpt-5.1-codex","gpt-5-codex"); NamePrefix = "GPT Codex" }
+        @{ CacheKey = "codex";         LiteLLMKeys = @("gpt-5.4-codex","codex-mini-latest"); NamePrefix = "GPT 5.4 Codex" }
+        @{ CacheKey = "codex_gpt53";   LiteLLMKeys = @("gpt-5.3-codex","gpt-5-codex"); NamePrefix = "GPT 5.3 Codex" }
         @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3.1 Pro" }
     )
 

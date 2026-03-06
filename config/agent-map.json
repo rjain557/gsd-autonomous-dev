@@ -97,7 +97,7 @@
                                               ]
                                }
                },
-    "description":  "Claude for reasoning (review/plan/verify). Codex for code execution. Gemini for research + spec-fix (saves Claude/Codex quota).",
+    "description":  "Claude for reasoning (review/plan/verify). Codex (GPT 5.4) for code execution. Gemini for research + spec-fix (saves Claude/Codex quota).",
     "version":  "1.0.0",
     "token_budget_summary":  {
                                  "codex_monthly_estimate":  "unlimited (full-auto mode, execute only)",
