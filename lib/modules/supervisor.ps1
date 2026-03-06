@@ -3,11 +3,19 @@
 # Dot-source: . "$env:USERPROFILE\.gsd-global\lib\modules\supervisor.ps1"
 # ===============================================================
 
+# 10b: Module loading guard - prevent re-sourcing
+if ($script:SUPERVISOR_MODULE_LOADED) { return }
+$script:SUPERVISOR_MODULE_LOADED = $true
+
 # -- Configuration --
 $script:SUPERVISOR_MAX_ATTEMPTS = 5
 $script:SUPERVISOR_TIMEOUT_HOURS = 24
 $script:SUPERVISOR_DIAGNOSIS_TIMEOUT_MIN = 10
 $script:SUPERVISOR_FIX_TIMEOUT_MIN = 15
+
+# 5a/5d: Caches for expensive lookups
+$script:PipelineExitCache = @{ Data = $null; Timestamp = [datetime]::MinValue }
+$script:PatternMemoryCache = @{ Data = $null; FileModTime = [datetime]::MinValue }
 
 # ===========================================
 # STATE MANAGEMENT
@@ -57,14 +65,26 @@ function Get-SupervisorState {
 }
 
 function Get-PipelineExitReason {
+    <# 5a: Cached with timestamp check - files change at most once per pipeline run #>
     param([string]$GsdDir)
     $path = Join-Path $GsdDir "supervisor\last-run-summary.json"
+    $enginePath = Join-Path $GsdDir "health\engine-status.json"
+
+    # Check if either file has been modified since last cache
+    $latestMod = [datetime]::MinValue
+    if (Test-Path $path) { $latestMod = (Get-Item $path).LastWriteTime }
+    if (Test-Path $enginePath) {
+        $eMod = (Get-Item $enginePath).LastWriteTime
+        if ($eMod -gt $latestMod) { $latestMod = $eMod }
+    }
+    if ($script:PipelineExitCache.Data -and $latestMod -le $script:PipelineExitCache.Timestamp) {
+        return $script:PipelineExitCache.Data
+    }
+
     $result = $null
     if (Test-Path $path) {
         try { $result = Get-Content $path -Raw | ConvertFrom-Json } catch {}
     }
-    # Enrich with engine-status.json if available
-    $enginePath = Join-Path $GsdDir "health\engine-status.json"
     if (Test-Path $enginePath) {
         try {
             $engine = Get-Content $enginePath -Raw | ConvertFrom-Json
@@ -73,7 +93,6 @@ function Get-PipelineExitReason {
                 $result | Add-Member -NotePropertyName "engine_last_error" -NotePropertyValue $engine.last_error -Force
                 $result | Add-Member -NotePropertyName "engine_last_heartbeat" -NotePropertyValue $engine.last_heartbeat -Force
             } else {
-                # No summary but engine status exists - build result from engine state
                 $result = @{
                     exit_reason = $engine.state
                     final_health = $engine.health_score
@@ -87,6 +106,8 @@ function Get-PipelineExitReason {
             }
         } catch {}
     }
+
+    $script:PipelineExitCache = @{ Data = $result; Timestamp = $latestMod }
     return $result
 }
 
@@ -95,7 +116,11 @@ function Get-PipelineExitReason {
 # ===========================================
 
 function Get-ErrorStatistics {
-    param([string]$GsdDir)
+    <# 5b: Added -Since parameter to only parse recent entries for long-running pipelines #>
+    param(
+        [string]$GsdDir,
+        [datetime]$Since = [datetime]::MinValue
+    )
     $errFile = Join-Path $GsdDir "logs\errors.jsonl"
     $stats = @{
         ErrorCounts = @{}
@@ -106,9 +131,26 @@ function Get-ErrorStatistics {
     }
     if (-not (Test-Path $errFile)) { return $stats }
 
-    $errors = Get-Content $errFile -ErrorAction SilentlyContinue | ForEach-Object {
+    # 5b: If Since is specified, only read recent lines (heuristic: tail 200 for efficiency)
+    $rawLines = if ($Since -gt [datetime]::MinValue) {
+        Get-Content $errFile -Tail 200 -ErrorAction SilentlyContinue
+    } else {
+        Get-Content $errFile -ErrorAction SilentlyContinue
+    }
+
+    $errors = $rawLines | ForEach-Object {
         try { $_ | ConvertFrom-Json } catch {}
     }
+
+    # Filter by timestamp if Since was provided
+    if ($Since -gt [datetime]::MinValue) {
+        $errors = $errors | Where-Object {
+            $ts = $null
+            if ($_.timestamp) { try { $ts = [datetime]::Parse($_.timestamp) } catch {} }
+            $null -eq $ts -or $ts -ge $Since
+        }
+    }
+
     $stats.TotalErrors = ($errors | Measure-Object).Count
 
     foreach ($e in $errors) {
@@ -143,23 +185,25 @@ function Get-StuckRequirements {
 }
 
 function Get-HealthTrajectory {
+    <# 5c: Stream from end of file using Get-Content -Tail instead of reading all entries #>
     param([string]$GsdDir)
-    # Check both convergence and blueprint health history locations
     $histPaths = @(
         (Join-Path $GsdDir "health\health-history.jsonl"),
         (Join-Path $GsdDir "blueprint\health-history.jsonl")
     )
-    $entries = @()
+    $recentEntries = @()
     foreach ($p in $histPaths) {
         if (Test-Path $p) {
-            $entries += Get-Content $p -ErrorAction SilentlyContinue | ForEach-Object {
+            # 5c: Only read last 10 lines from each file - we only need last 5 total
+            $recentEntries += Get-Content $p -Tail 10 -ErrorAction SilentlyContinue | ForEach-Object {
                 try { $_ | ConvertFrom-Json } catch {}
             }
         }
     }
-    if ($entries.Count -lt 2) { return @{ Trend = "insufficient_data"; Entries = $entries } }
+    if ($recentEntries.Count -lt 2) { return @{ Trend = "insufficient_data"; Entries = $recentEntries } }
 
-    $last5 = $entries | Select-Object -Last 5
+    # Sort by iteration/timestamp and take last 5
+    $last5 = $recentEntries | Sort-Object { if ($_.iteration) { $_.iteration } else { 0 } } | Select-Object -Last 5
     $healthValues = $last5 | ForEach-Object { [double]$_.health_score }
     $avgDelta = 0
     for ($i = 1; $i -lt $healthValues.Count; $i++) {
@@ -172,7 +216,7 @@ function Get-HealthTrajectory {
              elseif ([math]::Abs($avgDelta) -le 1) { "flat" }
              else { "unknown" }
 
-    return @{ Trend = $trend; AvgDelta = [math]::Round($avgDelta, 2); Entries = $entries; Last5 = $last5 }
+    return @{ Trend = $trend; AvgDelta = [math]::Round($avgDelta, 2); Entries = $recentEntries; Last5 = $last5 }
 }
 
 function Invoke-Layer1Classification {
@@ -226,19 +270,26 @@ function Invoke-SupervisorDiagnosis {
     $repoRoot = (Get-Location).Path
     $repoName = Split-Path $repoRoot -Leaf
 
-    # Gather diagnostic files
-    $diagContext = "# Supervisor Diagnosis Request (Attempt $AttemptNumber)`n`n"
-    $diagContext += "## Pipeline Exit Summary`n"
-    $diagContext += "- Pipeline: $Pipeline`n- Exit reason: $($Summary.exit_reason)`n"
-    $diagContext += "- Final health: $($Summary.final_health)%`n- Iteration: $($Summary.final_iteration)`n"
-    $diagContext += "- Stall count: $($Summary.stall_count)`n- Batch size: $($Summary.batch_size)`n`n"
+    # 5e: Use StringBuilder for large context assembly (10-50x faster for large strings)
+    $sb = [System.Text.StringBuilder]::new(8192)
+    [void]$sb.AppendLine("# Supervisor Diagnosis Request (Attempt $AttemptNumber)")
+    [void]$sb.AppendLine()
+    [void]$sb.AppendLine("## Pipeline Exit Summary")
+    [void]$sb.AppendLine("- Pipeline: $Pipeline")
+    [void]$sb.AppendLine("- Exit reason: $($Summary.exit_reason)")
+    [void]$sb.AppendLine("- Final health: $($Summary.final_health)%")
+    [void]$sb.AppendLine("- Iteration: $($Summary.final_iteration)")
+    [void]$sb.AppendLine("- Stall count: $($Summary.stall_count)")
+    [void]$sb.AppendLine("- Batch size: $($Summary.batch_size)")
+    [void]$sb.AppendLine()
 
-    $diagContext += "## Error Statistics (Layer 1)`n"
-    $diagContext += "- Total errors: $($Stats.TotalErrors)`n"
-    $diagContext += "- Layer 1 classification: $Layer1Category`n"
-    $diagContext += "- Error counts by type: $(($Stats.ErrorCounts.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join ', ')`n"
-    $diagContext += "- Phase failures: $(($Stats.PhaseFailures.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join ', ')`n"
-    $diagContext += "- Agent failures: $(($Stats.AgentFailures.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join ', ')`n`n"
+    [void]$sb.AppendLine("## Error Statistics (Layer 1)")
+    [void]$sb.AppendLine("- Total errors: $($Stats.TotalErrors)")
+    [void]$sb.AppendLine("- Layer 1 classification: $Layer1Category")
+    [void]$sb.AppendLine("- Error counts by type: $(($Stats.ErrorCounts.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join ', ')")
+    [void]$sb.AppendLine("- Phase failures: $(($Stats.PhaseFailures.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join ', ')")
+    [void]$sb.AppendLine("- Agent failures: $(($Stats.AgentFailures.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }) -join ', ')")
+    [void]$sb.AppendLine()
 
     # Read stall diagnosis if exists
     $stallDiagPaths = @(
@@ -247,7 +298,9 @@ function Invoke-SupervisorDiagnosis {
     )
     foreach ($p in $stallDiagPaths) {
         if (Test-Path $p) {
-            $diagContext += "## Existing Stall Diagnosis`n$(Get-Content $p -Raw)`n`n"
+            [void]$sb.AppendLine("## Existing Stall Diagnosis")
+            [void]$sb.AppendLine((Get-Content $p -Raw))
+            [void]$sb.AppendLine()
         }
     }
 
@@ -257,11 +310,12 @@ function Invoke-SupervisorDiagnosis {
         $recentLogs = Get-ChildItem $logDir -Filter "iter*.log" -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 3
         foreach ($log in $recentLogs) {
-            $content = Get-Content $log.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content) {
-                # Truncate to last 200 lines to keep prompt reasonable
-                $lines = $content -split "`n" | Select-Object -Last 200
-                $diagContext += "## Log: $($log.Name) (last 200 lines)`n$($lines -join "`n")`n`n"
+            # 5c-style: read only tail of log files
+            $lines = Get-Content $log.FullName -Tail 200 -ErrorAction SilentlyContinue
+            if ($lines) {
+                [void]$sb.AppendLine("## Log: $($log.Name) (last 200 lines)")
+                [void]$sb.AppendLine(($lines -join "`n"))
+                [void]$sb.AppendLine()
             }
         }
     }
@@ -269,9 +323,13 @@ function Invoke-SupervisorDiagnosis {
     # Read recent errors.jsonl entries
     $errFile = Join-Path $GsdDir "logs\errors.jsonl"
     if (Test-Path $errFile) {
-        $recentErrs = Get-Content $errFile -ErrorAction SilentlyContinue | Select-Object -Last 20
-        $diagContext += "## Recent Errors (errors.jsonl)`n$($recentErrs -join "`n")`n`n"
+        $recentErrs = Get-Content $errFile -Tail 20 -ErrorAction SilentlyContinue
+        [void]$sb.AppendLine("## Recent Errors (errors.jsonl)")
+        [void]$sb.AppendLine(($recentErrs -join "`n"))
+        [void]$sb.AppendLine()
     }
+
+    $diagContext = $sb.ToString()
 
     $prompt = @"
 You are a GSD pipeline failure analyst. Read the diagnostic data below and produce a root-cause analysis.
@@ -348,10 +406,27 @@ Write your analysis to: $GsdDir\supervisor\diagnosis-$AttemptNumber.md
 
     if (Test-Path $diagFile) {
         $diagContent = Get-Content $diagFile -Raw -ErrorAction SilentlyContinue
-        # Try to extract JSON block from Claude's output
-        if ($diagContent -match '(?s)\{[^{}]*"root_cause"[^{}]*\}') {
+        # 5f: Proper JSON extraction with bracket matching (handles nested objects)
+        $jsonBlock = $null
+        $jsonStartIdx = $diagContent.IndexOf('"root_cause"')
+        if ($jsonStartIdx -ge 0) {
+            # Walk backwards to find the opening brace
+            $braceStart = $diagContent.LastIndexOf('{', $jsonStartIdx)
+            if ($braceStart -ge 0) {
+                $depth = 0
+                for ($ci = $braceStart; $ci -lt $diagContent.Length; $ci++) {
+                    if ($diagContent[$ci] -eq '{') { $depth++ }
+                    elseif ($diagContent[$ci] -eq '}') { $depth--; if ($depth -eq 0) { $jsonBlock = $diagContent.Substring($braceStart, $ci - $braceStart + 1); break } }
+                }
+            }
+        }
+        # Fallback to simple regex if bracket matching fails
+        if (-not $jsonBlock -and $diagContent -match '(?s)\{[^{}]*"root_cause"[^{}]*\}') {
+            $jsonBlock = $Matches[0]
+        }
+        if ($jsonBlock) {
             try {
-                $parsed = $Matches[0] | ConvertFrom-Json
+                $parsed = $jsonBlock | ConvertFrom-Json
                 $diagnosis.RootCause = $parsed.root_cause
                 $diagnosis.Category = if ($parsed.category) { $parsed.category } else { $Layer1Category }
                 $diagnosis.FailingPhase = $parsed.failing_phase
@@ -589,18 +664,25 @@ function Save-FailurePattern {
 }
 
 function Find-KnownFix {
+    <# 5d: Cached with file-modified-time check #>
     param([string]$Category, [string]$RootCause)
     $memoryFile = Join-Path $env:USERPROFILE ".gsd-global\supervisor\pattern-memory.jsonl"
     if (-not (Test-Path $memoryFile)) { return $null }
 
-    $patterns = Get-Content $memoryFile -ErrorAction SilentlyContinue | ForEach-Object {
-        try { $_ | ConvertFrom-Json } catch {}
+    # 5d: Check cache freshness
+    $fileMod = (Get-Item $memoryFile).LastWriteTime
+    if (-not $script:PatternMemoryCache.Data -or $fileMod -gt $script:PatternMemoryCache.FileModTime) {
+        $script:PatternMemoryCache.Data = Get-Content $memoryFile -ErrorAction SilentlyContinue | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch {}
+        }
+        $script:PatternMemoryCache.FileModTime = $fileMod
     }
+
+    $patterns = $script:PatternMemoryCache.Data
 
     # Find successful fixes for this category
     $matches = $patterns | Where-Object { $_.success -eq $true -and $_.category -eq $Category }
     if ($matches) {
-        # Return most recent successful fix for this category
         return $matches | Select-Object -Last 1
     }
     return $null

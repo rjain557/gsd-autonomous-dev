@@ -32,17 +32,27 @@ DOCX_PATH = os.path.join(SCRIPT_DIR, "GSD-Developer-Guide.docx")
 # Track numbered list counters
 _num_counter = [0]
 
+# 9a: Cache W_NSDECLS at module level (~50 calls saved)
+W_NSDECLS = nsdecls("w")
+
+# 9b: Pre-compiled regex for inline markdown parsing (single pass)
+_INLINE_RE = re.compile(
+    r'(\*\*(.+?)\*\*)'    # bold
+    r'|(`([^`]+)`)'        # inline code
+    r'|(\[([^\]]+)\]\(([^)]+)\))'  # link
+)
+
 
 # ── Utility helpers ──────────────────────────────────────────────
 
 def set_cell_shading(cell, color_hex):
-    shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{color_hex}" w:val="clear"/>')
+    shading = parse_xml(f'<w:shd {W_NSDECLS} w:fill="{color_hex}" w:val="clear"/>')
     cell._element.get_or_add_tcPr().append(shading)
 
 
 def set_paragraph_shading(paragraph, color_hex):
     pPr = paragraph._element.get_or_add_pPr()
-    shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{color_hex}" w:val="clear"/>')
+    shading = parse_xml(f'<w:shd {W_NSDECLS} w:fill="{color_hex}" w:val="clear"/>')
     pPr.append(shading)
 
 
@@ -50,7 +60,7 @@ def add_bottom_border(paragraph, color="2B579A", size=6):
     """Add a bottom border line to a paragraph."""
     pPr = paragraph._element.get_or_add_pPr()
     pBdr = parse_xml(
-        f'<w:pBdr {nsdecls("w")}>'
+        f'<w:pBdr {W_NSDECLS}>'
         f'<w:bottom w:val="single" w:sz="{size}" w:space="1" w:color="{color}"/>'
         f'</w:pBdr>'
     )
@@ -60,9 +70,9 @@ def add_bottom_border(paragraph, color="2B579A", size=6):
 def set_table_borders(table, color="CCCCCC", size=4):
     """Set uniform thin borders on a table."""
     tbl = table._tbl
-    tblPr = tbl.tblPr if tbl.tblPr is not None else parse_xml(f'<w:tblPr {nsdecls("w")}/>')
+    tblPr = tbl.tblPr if tbl.tblPr is not None else parse_xml(f'<w:tblPr {W_NSDECLS}/>')
     borders = parse_xml(
-        f'<w:tblBorders {nsdecls("w")}>'
+        f'<w:tblBorders {W_NSDECLS}>'
         f'<w:top w:val="single" w:sz="{size}" w:space="0" w:color="{color}"/>'
         f'<w:left w:val="single" w:sz="{size}" w:space="0" w:color="{color}"/>'
         f'<w:bottom w:val="single" w:sz="{size}" w:space="0" w:color="{color}"/>'
@@ -74,53 +84,49 @@ def set_table_borders(table, color="CCCCCC", size=4):
     tblPr.append(borders)
 
 
+# 9c: Helper to apply common run properties (reduces repetition)
+def _apply_run_style(run, name="Calibri", size=Pt(11), color=BLACK, bold=False, underline=False):
+    run.font.name = name
+    run.font.size = size
+    run.font.color.rgb = color
+    if bold:
+        run.bold = True
+    if underline:
+        run.underline = True
+
+
 def parse_inline(paragraph, text, base_size=Pt(11), base_color=BLACK):
-    """Parse inline markdown: **bold**, `code`, [links](url)."""
-    i = 0
-    while i < len(text):
-        # Bold
-        if text[i:i+2] == "**":
-            end = text.find("**", i + 2)
-            if end != -1:
-                run = paragraph.add_run(text[i+2:end])
-                run.bold = True
-                run.font.name = "Calibri"
-                run.font.size = base_size
-                run.font.color.rgb = base_color
-                i = end + 2
-                continue
-        # Inline code
-        if text[i] == "`":
-            end = text.find("`", i + 1)
-            if end != -1:
-                run = paragraph.add_run(text[i+1:end])
-                run.font.name = "Consolas"
-                run.font.size = Pt(9)
-                run.font.color.rgb = DARK_GRAY
-                rPr = run._element.get_or_add_rPr()
-                shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{CODE_BG}" w:val="clear"/>')
-                rPr.append(shading)
-                i = end + 1
-                continue
-        # Link [text](url)
-        link_match = re.match(r'\[([^\]]+)\]\(([^)]+)\)', text[i:])
-        if link_match:
-            run = paragraph.add_run(link_match.group(1))
-            run.font.name = "Calibri"
-            run.font.size = base_size
-            run.font.color.rgb = BLUE
-            run.underline = True
-            i += link_match.end()
-            continue
-        # Collect plain text
-        j = i + 1
-        while j < len(text) and text[j] not in ('*', '`', '['):
-            j += 1
-        run = paragraph.add_run(text[i:j])
-        run.font.name = "Calibri"
-        run.font.size = base_size
-        run.font.color.rgb = base_color
-        i = j
+    """Parse inline markdown: **bold**, `code`, [links](url).
+    9b: Uses single regex pass instead of character-by-character scanning."""
+    last_end = 0
+    for m in _INLINE_RE.finditer(text):
+        # Add plain text before this match
+        if m.start() > last_end:
+            run = paragraph.add_run(text[last_end:m.start()])
+            _apply_run_style(run, size=base_size, color=base_color)
+
+        if m.group(2) is not None:
+            # Bold: **text**
+            run = paragraph.add_run(m.group(2))
+            _apply_run_style(run, size=base_size, color=base_color, bold=True)
+        elif m.group(4) is not None:
+            # Inline code: `text`
+            run = paragraph.add_run(m.group(4))
+            _apply_run_style(run, name="Consolas", size=Pt(9), color=DARK_GRAY)
+            rPr = run._element.get_or_add_rPr()
+            shading = parse_xml(f'<w:shd {W_NSDECLS} w:fill="{CODE_BG}" w:val="clear"/>')
+            rPr.append(shading)
+        elif m.group(6) is not None:
+            # Link: [text](url)
+            run = paragraph.add_run(m.group(6))
+            _apply_run_style(run, size=base_size, color=BLUE, underline=True)
+
+        last_end = m.end()
+
+    # Add remaining plain text after last match
+    if last_end < len(text):
+        run = paragraph.add_run(text[last_end:])
+        _apply_run_style(run, size=base_size, color=base_color)
 
 
 # ── Style Setup ──────────────────────────────────────────────────
@@ -206,15 +212,15 @@ def add_headers_footers(doc):
         run.font.color.rgb = MED_GRAY
         run.font.name = "Calibri"
 
-        fldChar1 = parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="begin"/>')
+        fldChar1 = parse_xml(f'<w:fldChar {W_NSDECLS} w:fldCharType="begin"/>')
         run1 = p.add_run()
         run1._element.append(fldChar1)
-        instrText = parse_xml(f'<w:instrText {nsdecls("w")} xml:space="preserve"> PAGE </w:instrText>')
+        instrText = parse_xml(f'<w:instrText {W_NSDECLS} xml:space="preserve"> PAGE </w:instrText>')
         run2 = p.add_run()
         run2._element.append(instrText)
         run2.font.size = Pt(8)
         run2.font.color.rgb = MED_GRAY
-        fldChar2 = parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="end"/>')
+        fldChar2 = parse_xml(f'<w:fldChar {W_NSDECLS} w:fldCharType="end"/>')
         run3 = p.add_run()
         run3._element.append(fldChar2)
 
@@ -334,17 +340,17 @@ def create_toc(doc):
     # Insert TOC field
     p = doc.add_paragraph()
     run = p.add_run()
-    fldChar1 = parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="begin"/>')
+    fldChar1 = parse_xml(f'<w:fldChar {W_NSDECLS} w:fldCharType="begin"/>')
     run._element.append(fldChar1)
 
     run2 = p.add_run()
     instrText = parse_xml(
-        f'<w:instrText {nsdecls("w")} xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText>'
+        f'<w:instrText {W_NSDECLS} xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText>'
     )
     run2._element.append(instrText)
 
     run3 = p.add_run()
-    fldChar2 = parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="separate"/>')
+    fldChar2 = parse_xml(f'<w:fldChar {W_NSDECLS} w:fldCharType="separate"/>')
     run3._element.append(fldChar2)
 
     # Placeholder text
@@ -354,7 +360,7 @@ def create_toc(doc):
     run4.font.name = "Calibri"
 
     run5 = p.add_run()
-    fldChar3 = parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="end"/>')
+    fldChar3 = parse_xml(f'<w:fldChar {W_NSDECLS} w:fldCharType="end"/>')
     run5._element.append(fldChar3)
 
     doc.add_page_break()

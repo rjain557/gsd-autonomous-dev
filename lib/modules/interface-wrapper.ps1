@@ -1,4 +1,4 @@
-﻿# ===============================================================
+# ===============================================================
 # GSD Interface-Aware Pipeline Wrapper
 # Dot-source this in pipeline scripts to get interface detection
 # Usage: . "$env:USERPROFILE\.gsd-global\lib\modules\interface-wrapper.ps1"
@@ -7,21 +7,50 @@
 # Load interface module
 . "$env:USERPROFILE\.gsd-global\lib\modules\interfaces.ps1"
 
+# 3b: Template cache for prompt resolution
+$script:TemplateCache = @{}
+
 function Initialize-ProjectInterfaces {
     <#
     .SYNOPSIS
         Detects interfaces, selects correct prompts (Figma Make vs standard),
         and builds the interface context block for prompt injection.
+        3a: Supports -IfStale to skip re-detection if interface-map.json is fresh.
+        3b: Does NOT call Show-InterfaceSummary - caller decides when to display.
     #>
     param(
         [string]$RepoRoot,
-        [string]$GsdDir
+        [string]$GsdDir,
+        [int]$StaleMinutes = 5
     )
 
-    $interfaces = Find-ProjectInterfaces -RepoRoot $RepoRoot
+    $mapDir = Join-Path $GsdDir "blueprint"
+    $mapFile = Join-Path $mapDir "interface-map.json"
 
-    # Display summary
-    Show-InterfaceSummary -Interfaces $interfaces
+    # 3a: Check freshness - skip re-detection if interface-map.json is recent
+    if ((Test-Path $mapFile)) {
+        $mapAge = (Get-Date) - (Get-Item $mapFile).LastWriteTime
+        if ($mapAge.TotalMinutes -lt $StaleMinutes) {
+            # Load cached result
+            try {
+                $cached = Get-Content $mapFile -Raw | ConvertFrom-Json
+                $interfaces = Find-ProjectInterfaces -RepoRoot $RepoRoot
+                $interfaceContext = Build-InterfacePromptContext -Interfaces $interfaces
+                $hasAnyAnalysis = ($interfaces | Where-Object { $_.HasAnalysis }).Count -gt 0
+                return @{
+                    Interfaces = $interfaces
+                    Context = $interfaceContext
+                    UseFigmaMakePrompts = $hasAnyAnalysis
+                    InterfaceCount = $interfaces.Count
+                    FromCache = $true
+                }
+            } catch {
+                # Fall through to full detection on parse error
+            }
+        }
+    }
+
+    $interfaces = Find-ProjectInterfaces -RepoRoot $RepoRoot
 
     # Build prompt context
     $interfaceContext = Build-InterfacePromptContext -Interfaces $interfaces
@@ -46,15 +75,15 @@ function Initialize-ProjectInterfaces {
         scan_timestamp = (Get-Date -Format "o")
     } | ConvertTo-Json -Depth 4
 
-    $mapDir = Join-Path $GsdDir "blueprint"
     if (-not (Test-Path $mapDir)) { New-Item -ItemType Directory -Path $mapDir -Force | Out-Null }
-    Set-Content -Path (Join-Path $mapDir "interface-map.json") -Value $interfaceMap -Encoding UTF8
+    Set-Content -Path $mapFile -Value $interfaceMap -Encoding UTF8
 
     return @{
         Interfaces = $interfaces
         Context = $interfaceContext
         UseFigmaMakePrompts = $hasAnyAnalysis
         InterfaceCount = $interfaces.Count
+        FromCache = $false
     }
 }
 
@@ -89,6 +118,7 @@ function Resolve-PromptWithInterfaces {
     <#
     .SYNOPSIS
         Resolves a prompt template, injecting interface context.
+        6b: Caches template file reads since they don't change during a run.
     #>
     param(
         [string]$TemplatePath,
@@ -100,6 +130,11 @@ function Resolve-PromptWithInterfaces {
         [int]$BatchSize = 15
     )
 
-    $text = Get-Content $TemplatePath -Raw
+    # 6b: Cache template reads
+    if (-not $script:TemplateCache[$TemplatePath]) {
+        $script:TemplateCache[$TemplatePath] = Get-Content $TemplatePath -Raw
+    }
+    $text = $script:TemplateCache[$TemplatePath]
+
     return $text.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{BATCH_SIZE}}", "$BatchSize").Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext).Replace("{{FIGMA_PATH}}", "(see interface context above)").Replace("{{FIGMA_VERSION}}", "(multi-interface)")
 }

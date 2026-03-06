@@ -57,12 +57,36 @@ if (-not (Test-Path $HealthFile)) {
         ConvertTo-Json | Set-Content $HealthFile -Encoding UTF8
 }
 
+# 6a: Cached health read with 2-second TTL
+$script:HealthCache = @{ Value = -1; Timestamp = [datetime]::MinValue }
 function Get-Health {
-    try { return [double](Get-Content $HealthFile -Raw | ConvertFrom-Json).health } catch { return 0 }
+    $now = Get-Date
+    if (($now - $script:HealthCache.Timestamp).TotalSeconds -lt 2 -and $script:HealthCache.Value -ge 0) {
+        return $script:HealthCache.Value
+    }
+    try {
+        $val = [double](Get-Content $HealthFile -Raw | ConvertFrom-Json).health
+        $script:HealthCache = @{ Value = $val; Timestamp = $now }
+        return $val
+    } catch { return 0 }
 }
 function Has-Blueprint {
     if (-not (Test-Path $BlueprintFile)) { return $false }
     try { return (Get-Content $BlueprintFile -Raw | ConvertFrom-Json).tiers.Count -gt 0 } catch { return $false }
+}
+
+# 6g: DRY helper for git commit (used 4+ times in pipeline)
+function New-GsdCommit {
+    param([string]$Subject, [string]$Body = "")
+    git add -A
+    if ($Body) {
+        $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+        "$Subject`n`n$Body" | Set-Content $commitMsgFile -Encoding UTF8
+        git commit -F $commitMsgFile --no-verify 2>$null
+        Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+    } else {
+        git commit -m $Subject --no-verify 2>$null
+    }
 }
 
 # ========================================
@@ -94,6 +118,10 @@ $hasStoryboards = $false
 if (Get-Command Initialize-ProjectInterfaces -ErrorAction SilentlyContinue) {
     Write-Host ""
     $ifaceResult = Initialize-ProjectInterfaces -RepoRoot $RepoRoot -GsdDir $GsdDir
+    # 3b: Show-InterfaceSummary moved out of Initialize-ProjectInterfaces - caller decides
+    if ($ifaceResult.Interfaces.Count -gt 0 -and (Get-Command Show-InterfaceSummary -ErrorAction SilentlyContinue)) {
+        Show-InterfaceSummary -Interfaces $ifaceResult.Interfaces
+    }
     $InterfaceContext = $ifaceResult.Context
     $UseFigmaMake = $ifaceResult.UseFigmaMakePrompts
 
@@ -151,9 +179,13 @@ if (Get-Command Start-EngineStatusHeartbeat -ErrorAction SilentlyContinue) {
     Start-EngineStatusHeartbeat -GsdDir $GsdDir
 }
 
-# Helper to resolve prompts with interface context
+# 6b: Template cache for prompt resolution (templates don't change during a run)
+$script:LocalTemplateCache = @{}
 function Local-ResolvePrompt($templatePath, $iter, $health) {
-    $text = Get-Content $templatePath -Raw
+    if (-not $script:LocalTemplateCache[$templatePath]) {
+        $script:LocalTemplateCache[$templatePath] = Get-Content $templatePath -Raw
+    }
+    $text = $script:LocalTemplateCache[$templatePath]
     $resolved = $text.Replace("{{ITERATION}}", "$iter").Replace("{{HEALTH}}", "$health").Replace("{{GSD_DIR}}", $GsdDir).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{BATCH_SIZE}}", "$CurrentBatchSize").Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext).Replace("{{FIGMA_PATH}}", "(see interface context)").Replace("{{FIGMA_VERSION}}", "(multi-interface)")
     # Inject file map reference so agents always know repo structure
     $fileMapPath = Join-Path $GsdDir "file-map.json"
@@ -342,7 +374,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             -LogFile "$GsdDir\logs\iter${Iteration}-2-build.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
-            # Build commit message from verify/health findings for GitHub traceability
+            # 6g: DRY commit helper
             $bpHealthContent = if (Test-Path $HealthFile) { (Get-Content $HealthFile -Raw).Trim() } else { "" }
             $driftPath = Join-Path $GsdDir "health\drift-report.md"
             $commitSubject = "blueprint: iter $Iteration (health: ${Health}%)"
@@ -352,15 +384,8 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             } elseif ($bpHealthContent) {
                 $commitBody = "Verify results:`n$bpHealthContent"
             }
-            if ($commitBody) {
-                if ($commitBody.Length -gt 4000) { $commitBody = $commitBody.Substring(0, 4000) + "`n... (truncated)" }
-                $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
-                "$commitSubject`n`n$commitBody" | Set-Content $commitMsgFile -Encoding UTF8
-                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
-                Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
-            } else {
-                git add -A; git commit -m $commitSubject --no-verify 2>$null
-            }
+            if ($commitBody -and $commitBody.Length -gt 4000) { $commitBody = $commitBody.Substring(0, 4000) + "`n... (truncated)" }
+            New-GsdCommit -Subject $commitSubject -Body $commitBody
             git push 2>$null
             # Update file map after each iteration so agents see current structure
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
@@ -422,7 +447,8 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     Write-Host ""; Start-Sleep -Seconds 2
 }
 
-        # Quality gate checks before final validation
+        # 6d: Bug fix - assign $FinalHealth BEFORE quality gate checks (was used uninitialized)
+    $FinalHealth = Get-Health
     if ($FinalHealth -ge $TargetHealth -and -not $DryRun) {
         if (Get-Command Test-DatabaseCompleteness -ErrorAction SilentlyContinue) {
             $dbResult = Test-DatabaseCompleteness -RepoRoot $RepoRoot -GsdDir $GsdDir
@@ -488,16 +514,11 @@ $FinalHealth = Get-Health
 if ($FinalHealth -ge $TargetHealth) {
     Write-Host "  [PARTY] COMPLETE - ${FinalHealth}% in $Iteration iterations" -ForegroundColor Green
     if (-not $DryRun) {
+        # 6g: DRY commit helper
         $bpHealthContent = if (Test-Path $HealthFile) { (Get-Content $HealthFile -Raw).Trim() } else { "" }
         $commitSubject = "blueprint: COMPLETE at ${FinalHealth}% in $Iteration iterations"
-        if ($bpHealthContent) {
-            $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
-            "$commitSubject`n`nFinal health:`n$bpHealthContent" | Set-Content $commitMsgFile -Encoding UTF8
-            git add -A; git commit -F $commitMsgFile --no-verify 2>$null
-            Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
-        } else {
-            git add -A; git commit -m $commitSubject --no-verify 2>$null
-        }
+        $commitBody = if ($bpHealthContent) { "Final health:`n$bpHealthContent" } else { "" }
+        New-GsdCommit -Subject $commitSubject -Body $commitBody
         git tag "blueprint-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null
         git push --tags 2>$null
     }
@@ -528,8 +549,9 @@ if ($FinalHealth -ge $TargetHealth) {
     Send-GsdNotification -Title "Blueprint Max Iterations" -Message $bpMaxMsg -Tags "warning" -Priority "high"
 }
 
+# 6f: Use -Tail 30 to limit health progression display
 if (Test-Path $HealthLog) {
-    $entries = Get-Content $HealthLog -ErrorAction SilentlyContinue | ForEach-Object { try { $_ | ConvertFrom-Json } catch {} }
+    $entries = Get-Content $HealthLog -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { try { $_ | ConvertFrom-Json } catch {} }
     if ($entries.Count -gt 0) {
         Write-Host ""; Write-Host "  Progression:" -ForegroundColor DarkGray
         foreach ($e in $entries) {
@@ -564,7 +586,8 @@ Write-Host "=========================================================" -Foregrou
             -Pipeline "blueprint" -ExitReason $exitReason `
             -FinalHealth $FinalHealth -Iteration $Iteration -ValidationResult $validationResult
         if ($handoffPath -and (Test-Path $handoffPath)) {
-            git add $handoffPath; git commit -m "blueprint: developer handoff report" --no-verify 2>$null
+            # 6g: DRY commit helper
+            New-GsdCommit -Subject "blueprint: developer handoff report"
             git push 2>$null
         }
     }

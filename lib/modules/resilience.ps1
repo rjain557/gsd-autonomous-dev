@@ -9,6 +9,7 @@
 # -- Configuration --
 $script:RETRY_MAX = 3
 $script:RETRY_DELAY_SECONDS = 10
+$script:RETRY_DELAY_MAX_SECONDS = 120    # 4c: Cap for exponential backoff
 $script:BATCH_REDUCTION_FACTOR = 0.5
 $script:MIN_BATCH_SIZE = 2
 $script:BUILD_TIMEOUT_SECONDS = 300
@@ -17,6 +18,24 @@ $script:AGENT_WATCHDOG_MINUTES = 30     # Kill hung agent after this many minute
 $script:LOCK_STALE_MINUTES = 120
 $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE = 1  # Rotate immediately on first quota failure
 $script:QUOTA_CUMULATIVE_MAX_MINUTES = 15           # Give up after 15 min total waiting
+
+# 10d: Cache available optional features at startup
+$script:AvailableFeatures = @{}
+function Test-GsdFeature {
+    <# 10d: Cached feature check - avoids 20+ Get-Command calls per iteration #>
+    param([string]$CommandName)
+    if (-not $script:AvailableFeatures.ContainsKey($CommandName)) {
+        $script:AvailableFeatures[$CommandName] = $null -ne (Get-Command $CommandName -ErrorAction SilentlyContinue)
+    }
+    return $script:AvailableFeatures[$CommandName]
+}
+
+# 4c: Exponential backoff helper
+function Get-RetryDelay {
+    param([int]$AttemptNumber)
+    $delay = $script:RETRY_DELAY_SECONDS * [math]::Pow(2, [math]::Max(0, $AttemptNumber - 1))
+    return [math]::Min($delay, $script:RETRY_DELAY_MAX_SECONDS)
+}
 
 # ===========================================
 # PRE-FLIGHT VALIDATION
@@ -34,19 +53,20 @@ function Test-PreFlight {
     Write-Host "  Pre-flight checks..." -ForegroundColor DarkGray
 
     # -- Required tools --
+    # 4a: Use Get-Command instead of Invoke-Expression (no process spawn, no injection risk)
     $tools = @(
-        @{ Name="claude"; Cmd="claude --version" },
-        @{ Name="codex"; Cmd="codex --version" },
-        @{ Name="gemini"; Cmd="gemini --version" },
-        @{ Name="git"; Cmd="git --version" }
+        @{ Name="claude"; Optional=$false },
+        @{ Name="codex";  Optional=$false },
+        @{ Name="gemini"; Optional=$true },
+        @{ Name="git";    Optional=$false }
     )
     foreach ($tool in $tools) {
-        try {
-            $null = Invoke-Expression $tool.Cmd 2>&1
+        $cmd = Get-Command $tool.Name -ErrorAction SilentlyContinue
+        if ($cmd) {
             Write-Host "    [OK] $($tool.Name) available" -ForegroundColor DarkGreen
-        } catch {
-            if ($tool.Name -eq "gemini") {
-                $warnings += "gemini CLI not found - research/spec-fix will fall back to codex"
+        } else {
+            if ($tool.Optional) {
+                $warnings += "$($tool.Name) CLI not found - research/spec-fix will fall back to codex"
                 Write-Host "    [!!]  $($tool.Name) not found (optional)" -ForegroundColor DarkYellow
             } else {
                 $errors += "$($tool.Name) CLI not found in PATH"
@@ -460,7 +480,9 @@ exit `$LASTEXITCODE
                 )
                 $result.FinalBatchSize = $CurrentBatchSize
                 Write-Host "    [!!]  Watchdog killed $Agent after $($script:AGENT_WATCHDOG_MINUTES)m -> batch $CurrentBatchSize. Retrying..." -ForegroundColor DarkYellow
-                Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
+                # 4c: Exponential backoff
+                $retryDelay = Get-RetryDelay -AttemptNumber $i
+                Start-Sleep -Seconds $retryDelay
                 continue
             }
 
@@ -473,7 +495,9 @@ exit `$LASTEXITCODE
                     )
                     $result.FinalBatchSize = $CurrentBatchSize
                     $reason = "token limit"
-                    Write-Host "    [!!]  $reason -> batch $CurrentBatchSize. Retry in $($script:RETRY_DELAY_SECONDS)s..." -ForegroundColor DarkYellow
+                    # 4c: Exponential backoff
+                    $retryDelay = Get-RetryDelay -AttemptNumber $i
+                    Write-Host "    [!!]  $reason -> batch $CurrentBatchSize. Retry in ${retryDelay}s..." -ForegroundColor DarkYellow
                 } else {
                     # Non-token failure -> diagnose root cause and attempt fallback
                     $reason = if ($isTimeout) { "timeout" } else { "exit code $exitCode" }
@@ -497,7 +521,9 @@ exit `$LASTEXITCODE
                         }
                     }
 
-                    Write-Host "    Retry $($i+1)/$MaxAttempts in $($script:RETRY_DELAY_SECONDS)s (batch unchanged: $CurrentBatchSize)..." -ForegroundColor DarkYellow
+                    # 4c: Exponential backoff
+                    $retryDelay = Get-RetryDelay -AttemptNumber $i
+                    Write-Host "    Retry $($i+1)/$MaxAttempts in ${retryDelay}s (batch unchanged: $CurrentBatchSize)..." -ForegroundColor DarkYellow
                 }
 
                 # Log the failure
@@ -512,7 +538,9 @@ exit `$LASTEXITCODE
                 } | ConvertTo-Json -Compress
                 Add-Content -Path (Join-Path $GsdDir "logs\errors.jsonl") -Value $errorEntry -Encoding UTF8
 
-                Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
+                # 4c: Exponential backoff
+                $retryDelay = Get-RetryDelay -AttemptNumber $i
+                Start-Sleep -Seconds $retryDelay
                 continue
             }
 
@@ -537,8 +565,9 @@ exit `$LASTEXITCODE
             Add-Content -Path (Join-Path $GsdDir "logs\errors.jsonl") -Value $errorEntry -Encoding UTF8
 
             if ($i -lt $MaxAttempts) {
-                # Don't reduce batch for exceptions - retry at same size
-                Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
+                # 4c: Exponential backoff
+                $retryDelay = Get-RetryDelay -AttemptNumber $i
+                Start-Sleep -Seconds $retryDelay
             }
         }
     }
@@ -557,16 +586,22 @@ exit `$LASTEXITCODE
 # ===========================================
 
 function Invoke-BuildValidation {
+    <#
+    .SYNOPSIS
+        4f: Capped auto-fix attempts with final error state logging.
+    #>
     param(
         [string]$RepoRoot,
         [string]$GsdDir,
         [int]$Iteration,
-        [switch]$AutoFix
+        [switch]$AutoFix,
+        [int]$MaxAutoFixAttempts = 2   # 4f: Cap auto-fix attempts
     )
 
     Write-Host "  Build validation..." -ForegroundColor DarkGray
     $buildErrors = @()
     $fixAttempted = $false
+    $autoFixCount = 0
 
     # -- Find .sln --
     $slnFile = Get-ChildItem -Path $RepoRoot -Filter "*.sln" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -588,8 +623,10 @@ function Invoke-BuildValidation {
                 $buildOutput | Out-File -FilePath $buildErrorFile -Encoding UTF8
                 $buildErrors += "dotnet: $errorCount compilation errors"
 
-                if ($AutoFix) {
-                    Write-Host "    [SYNC] Auto-fix: sending build errors to Codex..." -ForegroundColor DarkYellow
+                # 4f: Cap auto-fix attempts
+                if ($AutoFix -and $autoFixCount -lt $MaxAutoFixAttempts) {
+                    $autoFixCount++
+                    Write-Host "    [SYNC] Auto-fix ($autoFixCount/$MaxAutoFixAttempts): sending build errors to Codex..." -ForegroundColor DarkYellow
                     $fixAttempted = $true
 
                     $fixPrompt = @"
@@ -614,8 +651,15 @@ Rules:
                         $buildErrors = $buildErrors | Where-Object { $_ -notmatch "^dotnet:" }
                         git add -A; git commit -m "gsd: auto-fix dotnet build errors (iter $Iteration)" --no-verify 2>$null
                     } else {
-                        Write-Host "    [!!]  Auto-fix partial - some errors remain" -ForegroundColor DarkYellow
+                        # 4f: Log final error state
+                        $remainingErrors = ($rebuildOutput | Where-Object { $_ -match "(error CS|error MSB)" } | Measure-Object).Count
+                        Write-Host "    [!!]  Auto-fix partial - $remainingErrors errors remain after attempt $autoFixCount" -ForegroundColor DarkYellow
+                        Write-GsdError -GsdDir $GsdDir -Category "build_fail" -Phase "build-validation" -Iteration $Iteration `
+                            -Message "dotnet auto-fix incomplete: $remainingErrors errors after $autoFixCount attempts" `
+                            -Resolution "Manual intervention may be needed" 2>$null
                     }
+                } elseif ($AutoFix -and $autoFixCount -ge $MaxAutoFixAttempts) {
+                    Write-Host "    [!!]  Auto-fix cap reached ($MaxAutoFixAttempts attempts) - skipping" -ForegroundColor DarkYellow
                 }
             } else {
                 Write-Host "    [OK] dotnet build passed" -ForegroundColor DarkGreen
@@ -656,8 +700,10 @@ Rules:
                     $npmOutput | Out-File -FilePath $npmErrorFile -Encoding UTF8
                     $buildErrors += "npm: $tsErrorCount build errors"
 
-                    if ($AutoFix) {
-                        Write-Host "    [SYNC] Auto-fix: sending npm errors to Codex..." -ForegroundColor DarkYellow
+                    # 4f: Cap auto-fix attempts
+                    if ($AutoFix -and $autoFixCount -lt $MaxAutoFixAttempts) {
+                        $autoFixCount++
+                        Write-Host "    [SYNC] Auto-fix ($autoFixCount/$MaxAutoFixAttempts): sending npm errors to Codex..." -ForegroundColor DarkYellow
                         $fixAttempted = $true
 
                         $fixPrompt = @"
@@ -682,8 +728,15 @@ Rules:
                             $buildErrors = $buildErrors | Where-Object { $_ -notmatch "^npm:" }
                             git add -A; git commit -m "gsd: auto-fix npm build errors (iter $Iteration)" --no-verify 2>$null
                         } else {
-                            Write-Host "    [!!]  Auto-fix partial - some npm errors remain" -ForegroundColor DarkYellow
+                            # 4f: Log final error state
+                            $remainingNpm = ($reNpmOutput | Where-Object { $_ -match "(TS\d{4}|SyntaxError|Module not found)" } | Measure-Object).Count
+                            Write-Host "    [!!]  Auto-fix partial - $remainingNpm npm errors remain after attempt $autoFixCount" -ForegroundColor DarkYellow
+                            Write-GsdError -GsdDir $GsdDir -Category "build_fail" -Phase "build-validation" -Iteration $Iteration `
+                                -Message "npm auto-fix incomplete: $remainingNpm errors after $autoFixCount attempts" `
+                                -Resolution "Manual intervention may be needed" 2>$null
                         }
+                    } elseif ($AutoFix -and $autoFixCount -ge $MaxAutoFixAttempts) {
+                        Write-Host "    [!!]  Auto-fix cap reached ($MaxAutoFixAttempts attempts) - skipping npm" -ForegroundColor DarkYellow
                     }
                 } else {
                     Write-Host "    [OK] npm build passed" -ForegroundColor DarkGreen
@@ -738,8 +791,8 @@ function Test-HealthRegression {
                 git -C $RepoRoot stash pop 2>$null
                 Write-Host "    [OK] Reverted to pre-iteration state" -ForegroundColor Green
             } else {
-                # Try reverting last commit
-                git -C $RepoRoot reset --hard HEAD~1 2>$null
+                # 4e: Use git revert instead of reset --hard (preserves history, safer)
+                git -C $RepoRoot revert HEAD --no-edit 2>$null
                 Write-Host "    [OK] Reverted last commit" -ForegroundColor Green
             }
         } catch {
@@ -757,6 +810,12 @@ function Test-HealthRegression {
 # ===========================================
 
 function New-GitSnapshot {
+    <#
+    .SYNOPSIS
+        Creates a git restore point before each iteration.
+        4b: Uses git stash create (creates reflog entry without modifying working tree)
+        instead of stash push + pop which thrashes the working tree.
+    #>
     param(
         [string]$RepoRoot,
         [int]$Iteration,
@@ -765,8 +824,12 @@ function New-GitSnapshot {
 
     try {
         git -C $RepoRoot add -A 2>$null
-        git -C $RepoRoot stash push -m "gsd-pre-iter-$Iteration-$Pipeline" 2>$null
-        git -C $RepoRoot stash pop 2>$null
+        # git stash create makes a commit object without modifying index/working tree
+        $stashRef = git -C $RepoRoot stash create "gsd-pre-iter-$Iteration-$Pipeline" 2>$null
+        if ($stashRef) {
+            # Store the ref so Test-HealthRegression can find it
+            git -C $RepoRoot stash store -m "gsd-pre-iter-$Iteration-$Pipeline" $stashRef 2>$null
+        }
     } catch {
         # Non-fatal - just means we can't revert this iteration if needed
     }
@@ -1821,7 +1884,9 @@ function Invoke-WithRetry {
                     $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * $script:BATCH_REDUCTION_FACTOR))
                     $result.FinalBatchSize = $CurrentBatchSize
                     $reason = "token limit"
-                    Write-Host "    [!!]  $reason -> batch $CurrentBatchSize. Retry in $($script:RETRY_DELAY_SECONDS)s..." -ForegroundColor DarkYellow
+                    # 4c: Exponential backoff
+                    $retryDelay = Get-RetryDelay -AttemptNumber $i
+                    Write-Host "    [!!]  $reason -> batch $CurrentBatchSize. Retry in ${retryDelay}s..." -ForegroundColor DarkYellow
                     Write-GsdError -GsdDir $GsdDir -Category "agent_crash" -Phase $Phase -Iteration $i `
                         -Message "$Agent $reason" -Resolution "Batch reduced to $CurrentBatchSize"
                 } else {
@@ -1869,12 +1934,16 @@ function Invoke-WithRetry {
                         }
                     }
 
-                    Write-Host "    Retry $($i+1)/$MaxAttempts in $($script:RETRY_DELAY_SECONDS)s (batch unchanged: $CurrentBatchSize)..." -ForegroundColor DarkYellow
+                    # 4c: Exponential backoff
+                    $retryDelay = Get-RetryDelay -AttemptNumber $i
+                    Write-Host "    Retry $($i+1)/$MaxAttempts in ${retryDelay}s (batch unchanged: $CurrentBatchSize)..." -ForegroundColor DarkYellow
                     Write-GsdError -GsdDir $GsdDir -Category "agent_crash" -Phase $Phase -Iteration $i `
                         -Message "$Agent $reason ($($recovery.Diagnosis))" `
                         -Resolution "Retrying at same batch $CurrentBatchSize"
                 }
-                Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
+                # 4c: Exponential backoff
+                $retryDelay = Get-RetryDelay -AttemptNumber $i
+                Start-Sleep -Seconds $retryDelay
                 continue
             }
 
@@ -1919,8 +1988,9 @@ function Invoke-WithRetry {
             Write-Host "    [XX] Exception: $($_.Exception.Message)" -ForegroundColor Red
 
             if ($i -lt $MaxAttempts) {
-                # Don't reduce batch for exceptions - retry at same size
-                Start-Sleep -Seconds $script:RETRY_DELAY_SECONDS
+                # 4c: Exponential backoff - don't reduce batch for exceptions
+                $retryDelay = Get-RetryDelay -AttemptNumber $i
+                Start-Sleep -Seconds $retryDelay
             }
         }
     }

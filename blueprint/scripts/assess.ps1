@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     GSD Assess - Multi-Interface Edition with File Map
 #>
@@ -23,10 +23,12 @@ Write-Host "  GSD Codebase Assessment - Multi-Interface" -ForegroundColor Cyan
 Write-Host "=========================================================" -ForegroundColor Cyan
 
 # Detect and display interfaces
+# 3b: Show-InterfaceSummary called explicitly by caller
 $InterfaceContext = ""
 if (Get-Command Initialize-ProjectInterfaces -ErrorAction SilentlyContinue) {
     $ifaceResult = Initialize-ProjectInterfaces -RepoRoot $RepoRoot -GsdDir $GsdDir
     $InterfaceContext = $ifaceResult.Context
+    # 7c: Consolidated interface display (no duplication)
     if ($ifaceResult.Interfaces.Count -gt 0 -and (Get-Command Show-InterfaceSummary -ErrorAction SilentlyContinue)) {
         Show-InterfaceSummary -Interfaces $ifaceResult.Interfaces
     } else {
@@ -38,11 +40,11 @@ if (Get-Command Initialize-ProjectInterfaces -ErrorAction SilentlyContinue) {
     Write-Host "  Expected: design\web\v##, design\mcp\v##, etc." -ForegroundColor DarkGray
 }
 
-# Count source files
-$sourceFiles = @(Get-ChildItem -Path $RepoRoot -Recurse -File -ErrorAction SilentlyContinue |
+# 7a: Use -Include parameter to filter at filesystem level (faster than Where-Object)
+$sourceExtensions = @("*.cs","*.sql","*.ts","*.tsx","*.js","*.jsx","*.css","*.scss","*.json","*.md","*.html","*.xml","*.yaml","*.yml","*.csproj","*.sln")
+$sourceFiles = @(Get-ChildItem -Path $RepoRoot -Recurse -File -Include $sourceExtensions -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.FullName -notmatch '(node_modules|\.git|bin[\\/]|obj[\\/]|packages|dist|build|\.gsd|_analysis|_stubs)' -and
-        $_.Extension -match '\.(cs|sql|tsx?|jsx?|css|scss|json|md|html|xml|yaml|yml|csproj|sln)$'
+        $_.FullName -notmatch '(node_modules|\.git|bin[\\/]|obj[\\/]|packages|dist|build|\.gsd|_analysis|_stubs)'
     })
 
 Write-Host "  $($sourceFiles.Count) source files to assess" -ForegroundColor Yellow
@@ -52,10 +54,18 @@ $sourceFiles | Group-Object Extension | Sort-Object Count -Descending | Select-O
 Write-Host ""
 
 # Generate file map
+# 7b: Only generate if not fresh (check freshness)
 $fileMapPath = $null
 if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
-    $fileMapPath = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
-    Write-Host ""
+    $existingMap = Join-Path $GsdDir "file-map.json"
+    $mapIsFresh = (Test-Path $existingMap) -and ((Get-Date) - (Get-Item $existingMap).LastWriteTime).TotalMinutes -lt 5
+    if (-not $mapIsFresh) {
+        $fileMapPath = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
+        Write-Host ""
+    } else {
+        $fileMapPath = $existingMap
+        Write-Host "  File map is fresh (<5min), skipping regeneration" -ForegroundColor DarkGray
+    }
 }
 
 if ($MapOnly) {
@@ -81,6 +91,7 @@ if (-not $DryRun) {
     Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "assess" `
         -LogFile "$GsdDir\logs\assessment.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
 
+    # 7b: Only refresh file map after assessment (not before AND after)
     if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
         Write-Host "  Refreshing file map..." -ForegroundColor DarkGray
         $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
@@ -115,4 +126,3 @@ if (-not $DryRun) {
     Write-Host "  [DRY RUN] Would assess $($sourceFiles.Count) files" -ForegroundColor DarkYellow
 }
 Write-Host ""
-
