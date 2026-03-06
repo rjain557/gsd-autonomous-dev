@@ -243,7 +243,7 @@ function gsd-verify-requirements {
     Write-Host "  Repo: $repoRoot" -ForegroundColor White
     Write-Host ""
 
-    $cliChecks = @("claude", "codex", "gemini") | Where-Object { $_ -ne $SkipAgent }
+    $cliChecks = @("claude", "codex", "gemini", "kimi") | Where-Object { $_ -ne $SkipAgent }
     foreach ($cli in $cliChecks) {
         $available = $null -ne (Get-Command $cli -ErrorAction SilentlyContinue)
         if ($available) {
