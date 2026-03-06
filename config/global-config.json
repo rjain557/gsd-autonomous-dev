@@ -81,8 +81,12 @@
     "min_interfaces": 2,
     "agents": [
       "claude",
+      "codex",
       "gemini",
-      "codex"
+      "kimi",
+      "deepseek",
+      "glm5",
+      "minimax"
     ],
     "rotation_strategy": "round-robin",
     "validate_against_figma": true,
@@ -99,7 +103,11 @@
     "agents": [
       "claude",
       "codex",
-      "gemini"
+      "gemini",
+      "kimi",
+      "deepseek",
+      "glm5",
+      "minimax"
     ],
     "min_agents_for_merge": 2,
     "chunk_size": 10,

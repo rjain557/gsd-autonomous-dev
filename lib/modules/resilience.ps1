@@ -4596,7 +4596,7 @@ function Build-ChunkContext {
 function Invoke-LlmCouncil {
     <#
     .SYNOPSIS
-        Multi-agent council review: 2 agents (Codex + Gemini) review independently,
+        Multi-agent council review: 6 independent reviewers (Codex, Gemini, Kimi, Deepseek, GLM5, Minimax),
         Claude synthesizes a consensus verdict on project readiness.
     .PARAMETER CouncilType
         convergence (default) - 2-agent review at 100% health (Codex + Gemini)
@@ -4692,54 +4692,32 @@ function Invoke-LlmCouncil {
 
     $sharedContext = $context -join "`n"
 
-    # ── 2. PARALLEL AGENT REVIEWS (Codex + Gemini only, Claude synthesizes) ──
-    # Select agents and templates based on council type
-    switch ($CouncilType) {
-        "post-research" {
-            $agents = @(
-                @{ Name = "codex";  Template = "post-research-codex.md";  Mode = ""; AllowedTools = "" }
-                @{ Name = "gemini"; Template = "post-research-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
-            )
-            $phaseName = "council-post-research"
-        }
-        "pre-execute" {
-            $agents = @(
-                @{ Name = "codex";  Template = "pre-execute-codex.md";  Mode = ""; AllowedTools = "" }
-                @{ Name = "gemini"; Template = "pre-execute-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
-            )
-            $phaseName = "council-pre-execute"
-        }
-        "post-blueprint" {
-            $agents = @(
-                @{ Name = "codex";  Template = "post-blueprint-codex.md";  Mode = ""; AllowedTools = "" }
-                @{ Name = "gemini"; Template = "post-blueprint-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
-            )
-            $phaseName = "council-post-blueprint"
-        }
-        "stall-diagnosis" {
-            $agents = @(
-                @{ Name = "codex";  Template = "stall-codex.md";  Mode = ""; AllowedTools = "" }
-                @{ Name = "gemini"; Template = "stall-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
-            )
-            $phaseName = "council-stall-diagnosis"
-        }
-        "post-spec-fix" {
-            $agents = @(
-                @{ Name = "codex";  Template = "post-spec-fix-codex.md";  Mode = ""; AllowedTools = "" }
-                @{ Name = "gemini"; Template = "post-spec-fix-gemini.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
-            )
-            $phaseName = "council-post-spec-fix"
-        }
-        default {
-            # "convergence" -- 2-agent review (claude + gemini), claude synthesizes
-            # codex swapped out due to persistent quota exhaustion / hanging
-            $agents = @(
-                @{ Name = "claude";  Template = "claude-review.md";  Mode = ""; AllowedTools = "" }
-                @{ Name = "gemini"; Template = "gemini-review.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
-            )
-            $phaseName = "council-review"
-        }
+    # ── 2. PARALLEL AGENT REVIEWS (Full pool reviews, Claude synthesizes) ──
+    # Load config to get council agents
+    $configPath = Join-Path $globalDir "config\global-config.json"
+    $councilAgents = @("codex", "gemini", "kimi", "deepseek", "glm5", "minimax") # Default pool
+    if (Test-Path $configPath) {
+        try {
+            $cfg = Get-Content $configPath -Raw | ConvertFrom-Json
+            if ($cfg.council_requirements.agents) {
+                $councilAgents = @($cfg.council_requirements.agents | Where-Object { $_ -ne "claude" })
+            }
+        } catch { }
     }
+
+    $agents = @()
+    foreach ($aName in $councilAgents) {
+        $templateName = switch ($CouncilType) {
+            "post-research"   { if (Test-Path "$promptDir\post-research-$aName.md") { "post-research-$aName.md" } else { "post-research-gemini.md" } }
+            "pre-execute"     { if (Test-Path "$promptDir\pre-execute-$aName.md") { "pre-execute-$aName.md" } else { "pre-execute-gemini.md" } }
+            "post-blueprint"  { if (Test-Path "$promptDir\post-blueprint-$aName.md") { "post-blueprint-$aName.md" } else { "post-blueprint-gemini.md" } }
+            "stall-diagnosis" { if (Test-Path "$promptDir\stall-$aName.md") { "stall-$aName.md" } else { "stall-gemini.md" } }
+            "post-spec-fix"   { if (Test-Path "$promptDir\post-spec-fix-$aName.md") { "post-spec-fix-$aName.md" } else { "post-spec-fix-gemini.md" } }
+            default           { if (Test-Path "$promptDir\$aName-review.md") { "$aName-review.md" } else { "gemini-review.md" } }
+        }
+        $agents += @{ Name = $aName; Template = $templateName; Mode = if ($aName -eq "gemini") { "--approval-mode plan" } else { "" }; AllowedTools = "" }
+    }
+    $phaseName = "council-$CouncilType"
 
     # ── CHUNKING DECISION ──
     $useChunking = $false
@@ -4899,106 +4877,84 @@ function Invoke-LlmCouncil {
 
     } else {
         # ── MONOLITHIC PATH (non-convergence or chunking disabled) ──
-        Write-Host "  [SCALES] Dispatching $($agents.Count) independent reviews ($CouncilType)..." -ForegroundColor DarkGray
+        Write-Host "  [SCALES] Dispatching $($agents.Count) independent background reviews ($CouncilType)..." -ForegroundColor Cyan
 
-        $reviews = @{}
+        $councilJobs = @{}
+        $cooldown = if ($cfg.council_requirements.cooldown_between_agents) { [int]$cfg.council_requirements.cooldown_between_agents } else { 5 }
 
         foreach ($agent in $agents) {
             $templatePath = Join-Path $promptDir $agent.Template
             if (-not (Test-Path $templatePath)) {
                 Write-Host "    [WARN] Missing template: $templatePath -- skipping $($agent.Name)" -ForegroundColor DarkYellow
-                $reviews[$agent.Name] = @{ Success = $false; Output = "Template not found" }
                 continue
             }
 
-            $prompt = (Get-Content $templatePath -Raw)
-            $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir).Replace("{{REPO_ROOT}}", $RepoRoot)
+            $prompt = (Get-Content $templatePath -Raw).Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir).Replace("{{REPO_ROOT}}", $RepoRoot) 
             $prompt += "`n`n$sharedContext"
 
-            Write-Host "    $($agent.Name.ToUpper()) reviewing..." -ForegroundColor DarkGray
-
-            $retryParams = @{
-                Agent          = $agent.Name
-                Prompt         = $prompt
-                Phase          = $phaseName
-                LogFile        = "$logDir\council-$CouncilType-$($agent.Name).log"
-                MaxAttempts    = 2
-                CurrentBatchSize = 1
-                GsdDir         = $GsdDir
-            }
-            if ($agent.AllowedTools) { $retryParams["AllowedTools"] = $agent.AllowedTools }
-            if ($agent.Mode) { $retryParams["GeminiMode"] = $agent.Mode }
-
-            $result = Invoke-WithRetry @retryParams
-            $reviews[$agent.Name] = $result
-
-            if ($result.Success) {
-                Write-Host "    $($agent.Name.ToUpper()) review complete" -ForegroundColor DarkGreen
-            } else {
-                Write-Host "    $($agent.Name.ToUpper()) review failed: $($result.Error)" -ForegroundColor DarkYellow
-            }
-        }
-
-        # Count successful reviews
-        $successCount = ($reviews.Values | Where-Object { $_.Success }).Count
-        if ($successCount -lt 1) {
-            Write-Host "  [SCALES] All reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
-            $fallbackResult = @{
-                Approved = $true
-                Findings = @{
-                    approved   = $true
-                    confidence = 50
-                    votes      = @{}
-                    concerns   = @("Council quorum not met ($successCount/2 reviewers responded)")
-                    strengths  = @()
-                    reason     = "Auto-approved: insufficient council quorum"
+            $logFile = "$logDir\council-$CouncilType-$($agent.Name).log"
+            $jobParams = @{
+                ScriptBlock = {
+                    param($GlobalDir, $Agent, $Prompt, $Phase, $LogFile, $GsdDir, $AllowedTools, $GeminiMode)
+                    . "$GlobalDir\lib\modules\resilience.ps1"
+                    Invoke-WithRetry -Agent $Agent -Prompt $Prompt -Phase $Phase -LogFile $LogFile -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir -AllowedTools $AllowedTools -GeminiMode $GeminiMode
                 }
-                Report = ""
+                ArgumentList = @($globalDir, $agent.Name, $prompt, $phaseName, $logFile, $GsdDir, $agent.AllowedTools, $agent.Mode)
             }
-            $fallbackResult.Findings | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $councilDir "council-review.json") -Encoding UTF8
-            return $fallbackResult
+
+            $councilJobs[$agent.Name] = Start-Job @jobParams
+            if ($cooldown -gt 0) { Start-Sleep -Seconds $cooldown }
         }
 
-        # ── 3. SYNTHESIS (Claude reads all reviews) ──
-        Write-Host "  [SCALES] Synthesizing council verdict..." -ForegroundColor DarkGray
+        # Wait for monolithic reviews
+        $timeout = if ($cfg.council_requirements.timeout_seconds) { [int]$cfg.council_requirements.timeout_seconds } else { 600 }
+        Write-Host "  [SCALES] Waiting for $($councilJobs.Count) council reviews..." -ForegroundColor DarkGray
 
-        $synthesisPrompt = ""
+        $successCount = 0
+        foreach ($agentName in $councilJobs.Keys) {
+            $job = $councilJobs[$agentName]
+            try {
+                $jobResult = $job | Wait-Job -Timeout $timeout | Receive-Job -ErrorAction SilentlyContinue
+                if ($job.State -eq "Completed" -and $jobResult.Success) {
+                    $successCount++
+                    Write-Host "    [PASS] $agentName review complete" -ForegroundColor DarkGreen
+                } else {
+                    Write-Host "    [FAIL] $agentName review failed" -ForegroundColor Red
+                }
+            } catch {
+                Write-Host "    [FAIL] $agentName review: $($_.Exception.Message)" -ForegroundColor Red
+            } finally {
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # ── MONOLITHIC SYNTHESIS ──
+        Write-Host "  [SCALES] Synthesizing $successCount verdicts via CLAUDE..." -ForegroundColor Cyan
+
         $synthTemplatePath = Join-Path $promptDir "synthesize.md"
         if (Test-Path $synthTemplatePath) {
-            $synthesisPrompt = (Get-Content $synthTemplatePath -Raw)
-            $synthesisPrompt = $synthesisPrompt.Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir)
+            $synthesisPrompt = (Get-Content $synthTemplatePath -Raw).Replace("{{ITERATION}}", "$Iteration").Replace("{{HEALTH}}", "$Health").Replace("{{GSD_DIR}}", $GsdDir)
         } else {
             $synthesisPrompt = "You are the synthesis judge. Read all reviews below. Produce a JSON verdict."
         }
 
-        # Append each agent's review log
-        foreach ($agentEntry in $agents) {
-            $agentName = $agentEntry.Name
+        foreach ($agentName in $councilJobs.Keys) {
             $logPath = "$logDir\council-$CouncilType-$agentName.log"
             if (Test-Path $logPath) {
                 $logContent = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
                 if ($logContent -and $logContent.Length -gt 3000) { $logContent = $logContent.Substring(0, 3000) + "`n... (truncated)" }
-                if ($logContent) {
-                    $synthesisPrompt += "`n`n## $($agentName.ToUpper()) Review`n$logContent"
-                }
+                if ($logContent) { $synthesisPrompt += "`n`n## $($agentName.ToUpper()) Review`n$logContent" }
             }
         }
 
-        $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
-            -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
-            -AllowedTools "Read"
+        $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir -AllowedTools "Read"
     }
-
     # ── 4. PARSE VERDICT & WRITE OUTPUTS ──
     $approved = $true
     $findings = @{
         approved   = $true
         confidence = 75
-        votes      = @{
-            claude = "unknown"
-            codex  = "unknown"
-            gemini = "unknown"
-        }
+        votes      = @{}
         concerns   = @()
         strengths  = @()
         reason     = ""

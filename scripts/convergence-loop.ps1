@@ -452,33 +452,85 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
-    # 2. RESEARCH (Gemini plan mode, read-only - saves Claude/Codex quota)
+    # 2. RESEARCH (Parallel Multi-Model Research + Claude Synthesis)
     if (-not $SkipResearch) {
         Send-HeartbeatIfDue -Phase "research" -Iteration $Iteration -Health $Health -RepoName $repoName
-        Write-Host "  GEMINI -> research (read-only)" -ForegroundColor Magenta
+        Write-Host "  [SCALES] Multi-Model Parallel Research (Kimi, Deepseek, GLM5, Minimax)..." -ForegroundColor Magenta
+        
         if (-not (Test-Path "$GsdDir\research")) { New-Item -ItemType Directory -Path "$GsdDir\research" -Force | Out-Null }
-        # Try Gemini first; fall back to Codex if gemini CLI not available
-        $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
-        if ($useGemini) {
+        
+        $researchAgents = @("kimi", "deepseek", "glm5", "minimax")
+        $researchJobs = @{}
+        
+        foreach ($agent in $researchAgents) {
+            $promptFile = if (Test-Path "$GlobalDir\prompts\$agent\research.md") { "$GlobalDir\prompts\$agent\research.md" } else { "$GlobalDir\prompts\gemini\research.md" }
+            $prompt = Local-ResolvePrompt $promptFile $Iteration $Health
+            $logFile = "$GsdDir\logs\iter$Iteration-$agent-research.log"
+            
             if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "gemini" -Iteration $Iteration -HealthScore $Health
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent $agent -Iteration $Iteration -HealthScore $Health
             }
-            $prompt = Local-ResolvePrompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
-            if (-not $DryRun) {
-                Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "research" `
-                    -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-                    -GeminiMode "--approval-mode plan" | Out-Null
+            
+            $jobParams = @{
+                ScriptBlock = {
+                    param($GlobalDir, $Agent, $Prompt, $LogFile, $GsdDir)
+                    . "$GlobalDir\lib\modules\resilience.ps1"
+                    Invoke-WithRetry -Agent $Agent -Prompt $Prompt -Phase "research" -LogFile $LogFile -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir -AllowedTools "Read"
+                }
+                ArgumentList = @($GlobalDir, $agent, $prompt, $logFile, $GsdDir)
+            }
+            
+            $researchJobs[$agent] = Start-Job @jobParams
+            Start-Sleep -Seconds 2 # Brief stagger
+        }
+        
+        # Wait for all research jobs
+        Write-Host "  [SCALES] Waiting for $($researchJobs.Count) research reports..." -ForegroundColor DarkGray
+        $successCount = 0
+        foreach ($agentName in $researchJobs.Keys) {
+            $job = $researchJobs[$agentName]
+            try {
+                $jobResult = $job | Wait-Job -Timeout 600 | Receive-Job -ErrorAction SilentlyContinue
+                if ($job.State -eq "Completed" -and $jobResult.Success) {
+                    $successCount++
+                    Write-Host "    [PASS] $agentName research complete" -ForegroundColor DarkGreen
+                } else {
+                    Write-Host "    [FAIL] $agentName research failed" -ForegroundColor Red
+                }
+            } catch {
+                Write-Host "    [FAIL] $agentName research error: $($_.Exception.Message)" -ForegroundColor Red
+            } finally {
+                Remove-Job $job -Force -ErrorAction SilentlyContinue
+            }
+        }
+        
+        # ── CLAUDE SYNTHESIS OF RESEARCH ──
+        if ($successCount -gt 0) {
+            Write-Host "  [SCALES] Synthesizing research findings via CLAUDE..." -ForegroundColor Cyan
+            
+            $synthPrompt = "You are the Lead Technical Architect. Synthesize the multiple research reports below into a single, comprehensive 'research.md' report. resolve conflicts, and ensure all requirements from Phase A-E and Figma deliverables are addressed.`n`n"
+            
+            foreach ($agent in $researchAgents) {
+                $logPath = "$GsdDir\logs\iter$Iteration-$agent-research.log"
+                if (Test-Path $logPath) {
+                    $logContent = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
+                    if ($logContent) { $synthPrompt += "### REPORT FROM $($agent.ToUpper()):`n$logContent`n`n" }
+                }
+            }
+            
+            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research-synthesis" -Agent "claude" -Iteration $Iteration -HealthScore $Health
+            }
+            
+            $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthPrompt -Phase "research-synthesis" `
+                -LogFile "$GsdDir\logs\iter$Iteration-claude-research-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir -AllowedTools "Read"
+            
+            if ($synthResult.Success) {
+                $synthResult.Output | Set-Content "$GsdDir\research\research.md" -Encoding UTF8
+                Write-Host "  [OK] Synthesized research saved to .gsd/research/research.md" -ForegroundColor Green
             }
         } else {
-            Write-Host "    (gemini not found, falling back to codex)" -ForegroundColor DarkYellow
-            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "codex" -Iteration $Iteration -HealthScore $Health
-            }
-            $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
-            if (-not $DryRun) {
-                Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "research" `
-                    -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
-            }
+            Write-Host "  [WARN] All research jobs failed. Pipeline may stall." -ForegroundColor Yellow
         }
     }
 
