@@ -1,0 +1,102 @@
+{
+  "version": "1.0.0",
+  "description": "Canonical source registry for all 7 configured GSD models.",
+  "agents": {
+    "claude": {
+      "type": "cli",
+      "cli_cmd": "claude",
+      "role": [
+        "review",
+        "plan",
+        "synthesize",
+        "execute"
+      ]
+    },
+    "codex": {
+      "type": "cli",
+      "cli_cmd": "codex",
+      "role": [
+        "execute",
+        "review"
+      ]
+    },
+    "gemini": {
+      "type": "cli",
+      "cli_cmd": "gemini",
+      "role": [
+        "research",
+        "spec-fix",
+        "review"
+      ]
+    },
+    "kimi": {
+      "type": "openai-compat",
+      "endpoint": "https://api.moonshot.ai/v1/chat/completions",
+      "api_key_env": "KIMI_API_KEY",
+      "model_id": "kimi-k2.5",
+      "max_tokens": 8192,
+      "temperature": 0.3,
+      "role": [
+        "execute",
+        "review",
+        "research"
+      ],
+      "supports_tools": true,
+      "enabled": true
+    },
+    "deepseek": {
+      "type": "openai-compat",
+      "endpoint": "https://api.deepseek.com/v1/chat/completions",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model_id": "deepseek-chat",
+      "max_tokens": 8192,
+      "temperature": 0.3,
+      "role": [
+        "execute",
+        "review",
+        "research"
+      ],
+      "supports_tools": true,
+      "enabled": true
+    },
+    "glm5": {
+      "type": "openai-compat",
+      "endpoint": "https://api.z.ai/api/paas/v4/chat/completions",
+      "api_key_env": "GLM_API_KEY",
+      "model_id": "glm-5",
+      "max_tokens": 8192,
+      "temperature": 0.3,
+      "role": [
+        "execute",
+        "review",
+        "research"
+      ],
+      "supports_tools": true,
+      "enabled": true
+    },
+    "minimax": {
+      "type": "openai-compat",
+      "endpoint": "https://api.minimax.io/v1/chat/completions",
+      "api_key_env": "MINIMAX_API_KEY",
+      "model_id": "MiniMax-M2.5",
+      "max_tokens": 8192,
+      "temperature": 0.3,
+      "role": [
+        "execute",
+        "review",
+        "research"
+      ],
+      "supports_tools": true,
+      "enabled": true
+    }
+  },
+  "rotation_pool_default": [
+    "claude",
+    "codex",
+    "gemini",
+    "kimi",
+    "deepseek",
+    "glm5",
+    "minimax"
+  ]
+}

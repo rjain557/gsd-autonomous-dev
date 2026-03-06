@@ -18,12 +18,18 @@ This runs ONCE at the start (Phase 0), or when specs/Figma change significantly.
 ## Do
 1. EXTRACT every discrete requirement into requirements-matrix.json:
    - id, source (spec|figma|compliance), sdlc_phase, description
-   - figma_frame (if UI), spec_doc (which doc defines it)
-   - status (scan code: satisfied|partial|not_started)
+   - spec_doc, figma_deliverable, figma_frame, storyboard_flow
+   - api_contract_ref, db_object_ref, acceptance_test_ref
+   - status (scan code: satisfied|partial|not_started), confidence
    - depends_on, pattern, priority
-2. UPDATE figma-mapping.md with component-to-file mappings
-3. WRITE initial health-current.json
-4. WRITE drift-report.md
+2. For every requirement, preserve end-to-end traceability:
+   - UI requirements must point to the exact Figma deliverable or storyboard
+   - API requirements must reference the contract or endpoint source
+   - Data requirements must reference the table, stored procedure, or migration source
+   - Mark missing downstream links as partial, never silently omit them
+3. UPDATE figma-mapping.md with component-to-file mappings
+4. WRITE initial health-current.json
+5. WRITE drift-report.md
 
 ## Token Budget
 ~5000 output tokens. The matrix JSON will be the bulk. Keep descriptions to one sentence each.

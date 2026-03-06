@@ -20,12 +20,14 @@ You are the PLANNER. Select and prioritize the next batch of work.
    b. SDLC phase order (A -> B -> C -> D -> E)
    c. Backend before frontend (APIs before UI)
    d. Group related requirements (all endpoints for one entity)
+   e. Keep shared Figma screen, storyboard, and API-to-SP chain work together when possible
 2. WRITE queue-current.json:
-   { "iteration": N, "batch": [ { "req_id", "description", "generation_instructions", "target_files", "pattern" } ] }
+   { "iteration": N, "batch": [ { "req_id", "description", "generation_instructions", "target_files", "pattern", "sdlc_phase", "figma_deliverable", "storyboard_flow", "api_contract_ref", "db_object_ref", "acceptance_test_ref" } ] }
 3. WRITE current-assignment.md for Codex:
    - Exact file paths to create/modify
    - Patterns to follow
    - Figma refs for UI components
+   - API contract and DB object refs for non-UI requirements
    - Acceptance criteria per requirement
 
 ## Token Budget

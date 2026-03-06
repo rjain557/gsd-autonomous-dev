@@ -39,6 +39,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 
 $GsdGlobalDir = Join-Path $UserHome ".gsd-global"
 $BlueprintDir = Join-Path $GsdGlobalDir "blueprint"
@@ -1183,6 +1184,40 @@ if (Test-Path $vscodeUserDir) {
     Write-Host "      Merge into your tasks.json manually" -ForegroundColor DarkGray
 } else {
     Write-Host "   [!!]  VS Code user dir not found" -ForegroundColor DarkYellow
+}
+
+Write-Host ""
+
+# ========================================================
+# STEP 9: Sync canonical repo sources
+# ========================================================
+
+Write-Host "[SYNC] Applying canonical blueprint sources..." -ForegroundColor Yellow
+
+$canonicalPairs = @(
+    @{ Source = Join-Path $RepoRoot "blueprint\config\blueprint-config.json";   Target = Join-Path $BlueprintDir "config\blueprint-config.json" },
+    @{ Source = Join-Path $RepoRoot "blueprint\scripts\blueprint-pipeline.ps1"; Target = Join-Path $BlueprintDir "scripts\blueprint-pipeline.ps1" }
+)
+
+foreach ($pair in $canonicalPairs) {
+    if (Test-Path $pair.Source) {
+        $targetDir = Split-Path -Parent $pair.Target
+        if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+        Copy-Item -Path $pair.Source -Destination $pair.Target -Force
+        Write-Host "   [OK] $(Split-Path $pair.Target -Leaf)" -ForegroundColor DarkGreen
+    }
+}
+
+$promptDirs = @(
+    @{ Source = Join-Path $RepoRoot "blueprint\prompts\claude"; Target = Join-Path $BlueprintDir "prompts\claude" },
+    @{ Source = Join-Path $RepoRoot "blueprint\prompts\codex";  Target = Join-Path $BlueprintDir "prompts\codex" }
+)
+
+foreach ($dirPair in $promptDirs) {
+    if (Test-Path $dirPair.Source) {
+        Copy-Item -Path (Join-Path $dirPair.Source "*") -Destination $dirPair.Target -Recurse -Force
+        Write-Host "   [OK] $(Split-Path $dirPair.Target -Leaf) prompts synced" -ForegroundColor DarkGreen
+    }
 }
 
 Write-Host ""

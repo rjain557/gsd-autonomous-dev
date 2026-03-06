@@ -1,59 +1,106 @@
-﻿{
-    "max_iterations":  20,
-    "phase_order":  [
-                        "code-review",
-                        "create-phases",
-                        "research",
-                        "plan",
-                        "execute"
-                    ],
-    "stall_threshold":  3,
-    "figma":  {
-                  "auto_detect_latest":  true,
-                  "version_pattern":  "^v(\\d+)$",
-                  "base_path":  "design\\figma"
-              },
-    "version":  "1.0.0",
-    "batch_size_min":  3,
-    "notifications":  {
-                          "notify_on":  [
-                                            "iteration_complete",
-                                            "converged",
-                                            "stalled",
-                                            "quota_exhausted",
-                                            "error"
-                                        ],
-                          "ntfy_topic":  "auto"
-                      },
-    "project_gsd_dir":  ".gsd",
-    "batch_size_max":  8,
-    "target_health":  100,
-    "sdlc_docs":  {
-                      "path":  "docs",
-                      "phases":  [
-                                     "Phase-A",
-                                     "Phase-B",
-                                     "Phase-C",
-                                     "Phase-D",
-                                     "Phase-E"
-                                 ]
-                  },
-    "quality_gates": {
-        "database_completeness": { "enabled": true, "require_seed_data": true, "min_coverage_pct": 90 },
-        "security_compliance": { "enabled": true, "block_on_critical": true, "warn_on_high": true },
-        "spec_quality": { "enabled": true, "min_clarity_score": 70, "check_cross_artifact": true }
+{
+  "version": "2.0.0",
+  "target_health": 100,
+  "max_iterations": 20,
+  "stall_threshold": 3,
+  "batch_size_min": 3,
+  "batch_size_max": 8,
+  "project_gsd_dir": ".gsd",
+  "phase_order": [
+    "code-review",
+    "create-phases",
+    "research",
+    "plan",
+    "execute"
+  ],
+  "figma": {
+    "base_path": "design\\figma",
+    "version_pattern": "^v(\\d+)$",
+    "auto_detect_latest": true
+  },
+  "sdlc_docs": {
+    "path": "docs",
+    "phases": [
+      "Phase-A",
+      "Phase-B",
+      "Phase-C",
+      "Phase-D",
+      "Phase-E"
+    ]
+  },
+  "patterns": {
+    "backend": ".NET 8 with Dapper",
+    "database": "SQL Server stored procedures only",
+    "frontend": "React 18",
+    "api": "Contract-first, API-first",
+    "compliance": [
+      "HIPAA",
+      "SOC 2",
+      "PCI",
+      "GDPR"
+    ]
+  },
+  "notifications": {
+    "ntfy_topic": "auto",
+    "notify_on": [
+      "iteration_complete",
+      "converged",
+      "stalled",
+      "quota_exhausted",
+      "error"
+    ]
+  },
+  "git": {
+    "enabled": true,
+    "commit_on_iteration": true,
+    "push_on_iteration": false,
+    "push_on_terminal": true,
+    "tag_on_terminal": true,
+    "commit_developer_handoff": true
+  },
+  "quality_gates": {
+    "database_completeness": {
+      "enabled": true,
+      "require_seed_data": true,
+      "min_coverage_pct": 90
     },
-    "patterns":  {
-                     "api":  "Contract-first, API-first",
-                     "backend":  ".NET 8 with Dapper",
-                     "database":  "SQL Server stored procedures only",
-                     "frontend":  "React 18",
-                     "compliance":  [
-                                        "HIPAA",
-                                        "SOC 2",
-                                        "PCI",
-                                        "GDPR"
-                                    ]
-                 }
+    "security_compliance": {
+      "enabled": true,
+      "block_on_critical": true,
+      "warn_on_high": true
+    },
+    "spec_quality": {
+      "enabled": true,
+      "min_clarity_score": 70,
+      "check_cross_artifact": true
+    }
+  },
+  "partitioned_code_review": {
+    "enabled": true,
+    "agents": [
+      "claude",
+      "gemini",
+      "codex"
+    ],
+    "rotation_strategy": "round-robin",
+    "validate_against_figma": true,
+    "validate_against_spec": true,
+    "fallback_to_single": true,
+    "cooldown_between_agents": 5,
+    "timeout_seconds": 900,
+    "parallel_timeout_minutes": 15
+  },
+  "council_requirements": {
+    "enabled": true,
+    "agents": [
+      "claude",
+      "codex",
+      "gemini"
+    ],
+    "min_agents_for_merge": 2,
+    "chunk_size": 10,
+    "timeout_seconds": 600,
+    "cooldown_between_agents": 5,
+    "fallback_to_single": true
+  }
 }
-

@@ -42,19 +42,137 @@ if (Get-Command Initialize-CostTracking -ErrorAction SilentlyContinue) {
 
 $HealthFile = Join-Path $GsdDir "health\health-current.json"
 $MatrixFile = Join-Path $GsdDir "health\requirements-matrix.json"
+$PipelineName = "converge"
+$GsdGlobalDir = $GlobalDir
 
 if (-not (Test-Path $HealthFile)) {
     @{ health_score=0; total_requirements=0; satisfied=0; partial=0; not_started=0; iteration=0 } |
         ConvertTo-Json | Set-Content $HealthFile -Encoding UTF8
 }
 if (-not (Test-Path $MatrixFile)) {
-    @{ meta=@{ total_requirements=0; satisfied=0; health_score=0; iteration=0 }; requirements=@() } |
-        ConvertTo-Json -Depth 4 | Set-Content $MatrixFile -Encoding UTF8
+    @{
+        meta = @{
+            total_requirements = 0
+            satisfied = 0
+            health_score = 0
+            iteration = 0
+            schema_version = "2.0.0"
+            traceability = @{
+                required_fields = @(
+                    "id", "source", "sdlc_phase", "description", "spec_doc",
+                    "figma_deliverable", "figma_frame", "storyboard_flow",
+                    "api_contract_ref", "db_object_ref", "acceptance_test_ref",
+                    "depends_on", "pattern", "priority", "status", "confidence"
+                )
+                sdlc_phases = @("Phase-A", "Phase-B", "Phase-C", "Phase-D", "Phase-E")
+                figma_analysis_required = $true
+            }
+        }
+        requirements = @()
+    } | ConvertTo-Json -Depth 8 | Set-Content $MatrixFile -Encoding UTF8
 }
 
 function Get-Health {
     try { return [double](Get-Content $HealthFile -Raw | ConvertFrom-Json).health_score } catch { return 0 }
 }
+
+function Get-GitRuntimeConfig {
+    $defaults = @{
+        enabled = $true
+        commit_on_iteration = $true
+        push_on_iteration = $false
+        push_on_terminal = $true
+        tag_on_terminal = $true
+        commit_developer_handoff = $true
+    }
+
+    $cfgPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $cfgPath) {
+        try {
+            $gitCfg = (Get-Content $cfgPath -Raw | ConvertFrom-Json).git
+            if ($gitCfg) {
+                foreach ($prop in $gitCfg.PSObject.Properties.Name) {
+                    $defaults[$prop] = $gitCfg.$prop
+                }
+            }
+        } catch {}
+    }
+
+    return $defaults
+}
+
+function Invoke-GitCommitFromText {
+    param(
+        [string]$Subject,
+        [string]$Body = "",
+        [string[]]$Paths = @(),
+        [switch]$Terminal
+    )
+
+    if ($DryRun -or -not $script:GIT_RUNTIME.enabled) { return $false }
+    if (-not $Terminal -and -not $script:GIT_RUNTIME.commit_on_iteration) { return $false }
+
+    if ($Paths.Count -gt 0) {
+        git add -- @Paths 2>$null | Out-Null
+    } else {
+        git add -A 2>$null | Out-Null
+    }
+
+    git diff --cached --quiet 2>$null
+    if ($LASTEXITCODE -eq 0) { return $false }
+    if ($LASTEXITCODE -gt 1) { return $false }
+
+    if ($Body) {
+        $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+        "$Subject`n`n$Body" | Set-Content $commitMsgFile -Encoding UTF8
+        git commit -F $commitMsgFile --no-verify 2>$null | Out-Null
+        Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+    } else {
+        git commit -m $Subject --no-verify 2>$null | Out-Null
+    }
+
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Invoke-GitPushIfAllowed {
+    param(
+        [switch]$Terminal,
+        [switch]$IncludeTags
+    )
+
+    if ($DryRun -or -not $script:GIT_RUNTIME.enabled) { return }
+
+    $shouldPush = if ($Terminal) {
+        [bool]$script:GIT_RUNTIME.push_on_terminal
+    } else {
+        [bool]$script:GIT_RUNTIME.push_on_iteration
+    }
+
+    if (-not $shouldPush) { return }
+
+    if ($IncludeTags) {
+        git push --tags 2>$null | Out-Null
+    } else {
+        git push 2>$null | Out-Null
+    }
+}
+
+function Add-SupervisorContextSection {
+    param(
+        [string]$Heading,
+        [string[]]$Lines
+    )
+
+    if (-not $Lines -or $Lines.Count -eq 0) { return }
+
+    $ctxPath = Join-Path $GsdDir "supervisor\error-context.md"
+    $existing = if (Test-Path $ctxPath) { Get-Content $ctxPath -Raw } else { "" }
+    $section = "## $Heading`n" + (($Lines | Where-Object { $_ }) -join "`n")
+    $content = if ($existing.Trim()) { "$existing`n`n$section" } else { $section }
+    $content | Set-Content $ctxPath -Encoding UTF8
+}
+
+$script:GIT_RUNTIME = Get-GitRuntimeConfig
 
 # -- Startup --
 Write-Host ""
@@ -102,6 +220,11 @@ Send-GsdNotification -Title "GSD Converge Started" `
     -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize | Throttle: ${ThrottleSeconds}s" `
     -Tags "rocket" -Priority "default"
 
+# Save LOC baseline for cumulative metrics at pipeline exit.
+if (Get-Command Save-LocBaseline -ErrorAction SilentlyContinue) {
+    Save-LocBaseline -GsdDir $GsdDir
+}
+
 # Start background heartbeat (sends progress every 10 min even during long agent calls)
 Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
     -Pipeline "converge" -RepoName $repoName -IntervalMinutes 10
@@ -132,6 +255,10 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     }
     if (Test-Path $hintPath) {
         $resolved += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw)
+    }
+    if ($templatePath -match "code-review" -and (Get-Command Get-LocContextForReview -ErrorAction SilentlyContinue)) {
+        $locCtx = Get-LocContextForReview -GsdDir $GsdDir
+        if ($locCtx) { $resolved += "`n`n$locCtx" }
     }
     # Council: inject feedback from previous council review
     $councilFeedbackPath = Join-Path $GsdDir "supervisor\council-feedback.md"
@@ -175,9 +302,6 @@ if (-not $SkipSpecCheck -and -not $SkipInit) {
 
 $StallCount = 0; $TargetHealth = 100
 
-# Initialize BEFORE try so finally block always has valid values
-$StallCount = 0; $TargetHealth = 100; $Iteration = 0
-
 trap { Remove-GsdLock -GsdDir $GsdDir }
 
 try {
@@ -186,12 +310,35 @@ try {
 $matrixContent = Get-Content $MatrixFile -Raw | ConvertFrom-Json
 if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
     Write-Host "[CLIP] Phase 0: CREATE PHASES" -ForegroundColor Magenta
-    Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration 0 -Phase "create-phases" -Health 0 -BatchSize $CurrentBatchSize
-    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\create-phases.md" 0 0
-    if (-not $DryRun) {
-        Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "create-phases" `
-            -LogFile "$GsdDir\logs\phase0.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-            -AllowedTools "Read,Write,Bash" | Out-Null
+    $useCouncilReqs = $false
+    if (Get-Command Invoke-CouncilRequirements -ErrorAction SilentlyContinue) {
+        $crCfgPath = Join-Path $GlobalDir "config\global-config.json"
+        if (Test-Path $crCfgPath) {
+            try {
+                $crCfg = (Get-Content $crCfgPath -Raw | ConvertFrom-Json).council_requirements
+                if ($crCfg -and $crCfg.enabled) { $useCouncilReqs = $true }
+            } catch {}
+        }
+    }
+
+    if ($useCouncilReqs -and -not $DryRun) {
+        Write-Host "  [SCALES] Council requirements extraction (partitioned + cross-verify)" -ForegroundColor Cyan
+        Save-Checkpoint -GsdDir $GsdDir -Pipeline $PipelineName -Iteration 0 -Phase "council-create-phases" -Health 0 -BatchSize $CurrentBatchSize
+        $crResult = Invoke-CouncilRequirements -RepoRoot $RepoRoot -GsdDir $GsdDir
+        if (-not $crResult.Success) {
+            Write-Host "  [WARN] Council extraction failed. Falling back to single-agent create-phases." -ForegroundColor Yellow
+            $useCouncilReqs = $false
+        }
+    }
+
+    if (-not $useCouncilReqs) {
+        Save-Checkpoint -GsdDir $GsdDir -Pipeline $PipelineName -Iteration 0 -Phase "create-phases" -Health 0 -BatchSize $CurrentBatchSize
+        $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\create-phases.md" 0 0
+        if (-not $DryRun) {
+            Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "create-phases" `
+                -LogFile "$GsdDir\logs\phase0.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+                -AllowedTools "Read,Write,Bash" | Out-Null
+        }
     }
     $Health = Get-Health
     Write-Host "  [OK] Matrix built. Health: ${Health}%" -ForegroundColor Green
@@ -226,21 +373,55 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     $errorsThisIter = 0
 
-    # 1. CODE REVIEW (Claude)
+    # 1. CODE REVIEW (Partitioned when enabled, otherwise Claude)
     Send-HeartbeatIfDue -Phase "code-review" -Iteration $Iteration -Health $Health -RepoName $repoName
-    Write-Host "  [SEARCH] CLAUDE -> code-review" -ForegroundColor Cyan
-    Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "code-review" -Health $Health -BatchSize $CurrentBatchSize
-    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-        Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "code-review" -Agent "claude" -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize -Attempt "1/$($script:RETRY_MAX)" -ErrorsThisIteration 0
+
+    $usePartitionedReview = $false
+    if (Get-Command Invoke-PartitionedCodeReview -ErrorAction SilentlyContinue) {
+        $pcrConfigPath = Join-Path $GlobalDir "config\global-config.json"
+        if (Test-Path $pcrConfigPath) {
+            try {
+                $pcrConfig = (Get-Content $pcrConfigPath -Raw | ConvertFrom-Json).partitioned_code_review
+                if ($pcrConfig -and $pcrConfig.enabled) { $usePartitionedReview = $true }
+            } catch {}
+        }
     }
-    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
-    if (-not $DryRun) {
-        Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
-            -LogFile "$GsdDir\logs\iter${Iteration}-1.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-            -AllowedTools "Read,Write,Bash" | Out-Null
+
+    if ($usePartitionedReview -and -not $DryRun) {
+        Write-Host "  [PARTITION] 3-agent parallel code review (rotation enabled)" -ForegroundColor Cyan
+        Save-Checkpoint -GsdDir $GsdDir -Pipeline $PipelineName -Iteration $Iteration -Phase "code-review-partitioned" -Health $Health -BatchSize $CurrentBatchSize
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "code-review-partitioned" -Agent "parallel" -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize
+        }
+
+        $pcrResult = Invoke-PartitionedCodeReview -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GlobalDir `
+            -Iteration $Iteration -Health $Health -CurrentBatchSize $CurrentBatchSize `
+            -InterfaceContext $InterfaceContext -DryRun:$DryRun
+
+        if ($pcrResult.Success) {
+            $Health = $pcrResult.Health
+            if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
+        } else {
+            Write-Host "  [PARTITION] Fallback to single-agent review: $($pcrResult.Error)" -ForegroundColor Yellow
+            $usePartitionedReview = $false
+        }
     }
-    $Health = Get-Health
-    if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
+
+    if (-not $usePartitionedReview) {
+        Write-Host "  [SEARCH] CLAUDE -> code-review" -ForegroundColor Cyan
+        Save-Checkpoint -GsdDir $GsdDir -Pipeline $PipelineName -Iteration $Iteration -Phase "code-review" -Health $Health -BatchSize $CurrentBatchSize
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "code-review" -Agent "claude" -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize -Attempt "1/$($script:RETRY_MAX)" -ErrorsThisIteration 0
+        }
+        $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
+        if (-not $DryRun) {
+            Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
+                -LogFile "$GsdDir\logs\iter${Iteration}-1.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+                -AllowedTools "Read,Write,Bash" | Out-Null
+        }
+        $Health = Get-Health
+        if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
+    }
 
     # Throttle between phases
     if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
@@ -285,7 +466,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     # ── POST-RESEARCH COUNCIL (validate research before planning) ──
     if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Post-research council..." -ForegroundColor DarkCyan
-        $prResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "post-research"
+        $prResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $PipelineName -CouncilType "post-research"
         if (-not $prResult.Approved) {
             Write-Host "  [SCALES] Research concerns noted -- plan phase will address them" -ForegroundColor DarkYellow
         }
@@ -328,7 +509,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     # ── PRE-EXECUTE COUNCIL (validate plan before code generation) ──
     if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Pre-execute council..." -ForegroundColor DarkCyan
-        $peResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "pre-execute"
+        $peResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $PipelineName -CouncilType "pre-execute"
         if (-not $peResult.Approved) {
             Write-Host "  [SCALES] Plan concerns noted -- executing with caution" -ForegroundColor DarkYellow
         }
@@ -385,18 +566,15 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             if (Test-Path $reviewPath) {
                 $reviewText = (Get-Content $reviewPath -Raw).Trim()
                 if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
-                $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
-                "$commitSubject`n`nCompleted: $($result.Completed -join ', ')`nFailed: $($result.Failed -join ', ')`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
-                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
-                Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+                $null = Invoke-GitCommitFromText -Subject $commitSubject -Body "Completed: $($result.Completed -join ', ')`nFailed: $($result.Failed -join ', ')`n`n$reviewText"
             } else {
-                git add -A; git commit -m $commitSubject --no-verify 2>$null
+                $null = Invoke-GitCommitFromText -Subject $commitSubject
             }
-            git push 2>$null
 
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
             }
+            Invoke-GitPushIfAllowed
             Invoke-BuildValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -AutoFix | Out-Null
 
             # If partial success, log failed sub-tasks for next iteration
@@ -451,17 +629,14 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             if (Test-Path $reviewPath) {
                 $reviewText = (Get-Content $reviewPath -Raw).Trim()
                 if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
-                $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
-                "$commitSubject`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
-                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
-                Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+                $null = Invoke-GitCommitFromText -Subject $commitSubject -Body $reviewText
             } else {
-                git add -A; git commit -m $commitSubject --no-verify 2>$null
+                $null = Invoke-GitCommitFromText -Subject $commitSubject
             }
-            git push 2>$null
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
             }
+            Invoke-GitPushIfAllowed
             Invoke-BuildValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -AutoFix | Out-Null
         } else {
             $CurrentBatchSize = $result.FinalBatchSize; $StallCount++; $errorsThisIter++
@@ -504,7 +679,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             # Multi-agent stall diagnosis via council
             if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
                 Write-Host "  [SCALES] Multi-agent stall diagnosis..." -ForegroundColor DarkCyan
-                Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $NewHealth -Pipeline $Pipeline -CouncilType "stall-diagnosis" | Out-Null
+                Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $NewHealth -Pipeline $PipelineName -CouncilType "stall-diagnosis" | Out-Null
             } else {
                 Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read .gsd\health\*, .gsd\logs\errors.jsonl. Diagnose. Write .gsd\health\stall-diagnosis.md." `
                     -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
@@ -516,10 +691,13 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
     $iterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir } else { "" }
-    $iterDiffLine = if (Get-Command Get-GitDiffStats -ErrorAction SilentlyContinue) { Get-GitDiffStats -RepoRoot $RepoRoot } else { "" }
     $iterMsg = "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize"
-    if ($iterDiffLine) { $iterMsg += "`n$iterDiffLine" }
     if ($iterCostLine) { $iterMsg += "`n$iterCostLine" }
+    if (Get-Command Update-LocMetrics -ErrorAction SilentlyContinue) {
+        Update-LocMetrics -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Iteration $Iteration -Pipeline $PipelineName
+    }
+    $locLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir } else { "" }
+    if ($locLine) { $iterMsg += "`n$locLine" }
     Send-GsdNotification -Title "Iter $Iteration Complete" -Message $iterMsg -Tags "chart_with_upwards_trend"
     $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
@@ -536,7 +714,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
                 Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "council-review" -Agent "council" -Iteration $Iteration -HealthScore $FinalHealth
             }
-            $councilResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $FinalHealth -Pipeline $Pipeline
+            $councilResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $FinalHealth -Pipeline $PipelineName
             if (-not $councilResult.Approved) {
                 Write-Host "  [SCALES] Council BLOCKED -- $($councilResult.Findings.concerns.Count) concern(s)" -ForegroundColor Yellow
                 foreach ($c in $councilResult.Findings.concerns) { Write-Host "    - $c" -ForegroundColor DarkYellow }
@@ -630,39 +808,44 @@ if ($FinalHealth -ge $TargetHealth) {
         if (Test-Path $reviewPath) {
             $reviewText = (Get-Content $reviewPath -Raw).Trim()
             if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
-            $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
-            "$commitSubject`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
-            git add -A; git commit -F $commitMsgFile --no-verify 2>$null
-            Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+            $null = Invoke-GitCommitFromText -Subject $commitSubject -Body $reviewText -Terminal
         } else {
-            git add -A; git commit -m $commitSubject --no-verify 2>$null
+            $null = Invoke-GitCommitFromText -Subject $commitSubject -Terminal
         }
-        git tag "gsd-converged-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null
-        git push --tags 2>$null
+        if ($script:GIT_RUNTIME.tag_on_terminal) {
+            git tag "gsd-converged-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null | Out-Null
+        }
+        Invoke-GitPushIfAllowed -Terminal -IncludeTags:$script:GIT_RUNTIME.tag_on_terminal
     }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     $finalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $finalDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $convergedMsg = "$repoName | 100% in $Iteration iterations"
-    if ($finalDiffLine) { $convergedMsg += "`n$finalDiffLine" }
+    $locCostSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostSummary) { $convergedMsg += "`n$locCostSummary" }
+    $locFinalLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locFinalLine) { $convergedMsg += "`n$locFinalLine" }
     if ($finalCostLine) { $convergedMsg += "`n$finalCostLine" }
     Send-GsdNotification -Title "CONVERGED!" -Message $convergedMsg -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
     Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
     $stalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $stalledDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $stalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
-    if ($stalledDiffLine) { $stalledMsg += "`n$stalledDiffLine" }
+    $locCostStalledSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostStalledSummary) { $stalledMsg += "`n$locCostStalledSummary" }
+    $locStalledLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locStalledLine) { $stalledMsg += "`n$locStalledLine" }
     if ($stalledCostLine) { $stalledMsg += "`n$stalledCostLine" }
     Send-GsdNotification -Title "STALLED" -Message $stalledMsg -Tags "warning" -Priority "high"
 } else {
     Write-Host "  [!!]  MAX ITERATIONS at ${FinalHealth}%" -ForegroundColor Yellow
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
     $maxIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $maxIterDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $maxIterMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
-    if ($maxIterDiffLine) { $maxIterMsg += "`n$maxIterDiffLine" }
+    $locCostMaxSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostMaxSummary) { $maxIterMsg += "`n$locCostMaxSummary" }
+    $locMaxLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locMaxLine) { $maxIterMsg += "`n$locMaxLine" }
     if ($maxIterCostLine) { $maxIterMsg += "`n$maxIterCostLine" }
     Send-GsdNotification -Title "MAX ITERATIONS" -Message $maxIterMsg -Tags "warning" -Priority "high"
 }
@@ -674,6 +857,9 @@ Write-Host "=========================================================" -Foregrou
     Stop-CommandListener
     if (Get-Command Stop-EngineStatusHeartbeat -ErrorAction SilentlyContinue) { Stop-EngineStatusHeartbeat }
     if (Get-Command Complete-CostTrackingRun -ErrorAction SilentlyContinue) { Complete-CostTrackingRun -GsdDir $GsdDir }
+    if (Get-Command Complete-LocTracking -ErrorAction SilentlyContinue) {
+        Complete-LocTracking -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Pipeline $PipelineName
+    }
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health
@@ -691,11 +877,12 @@ Write-Host "=========================================================" -Foregrou
         $handoffPath = New-DeveloperHandoff -RepoRoot $RepoRoot -GsdDir $GsdDir `
             -Pipeline "converge" -ExitReason $exitReason `
             -FinalHealth $FinalHealth -Iteration $Iteration -ValidationResult $validationResult
-        if ($handoffPath -and (Test-Path $handoffPath)) {
-            git add $handoffPath; git commit -m "gsd: developer handoff report" --no-verify 2>$null
-            git push 2>$null
+        if ($script:GIT_RUNTIME.commit_developer_handoff -and $handoffPath -and (Test-Path $handoffPath)) {
+            $null = Invoke-GitCommitFromText -Subject "gsd: developer handoff report" -Paths @($handoffPath) -Terminal
         }
     }
+
+    Invoke-GitPushIfAllowed -Terminal
 
     Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
 }

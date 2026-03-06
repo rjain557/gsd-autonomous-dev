@@ -404,11 +404,11 @@ Installs storyboard-aware verification prompt for Claude. Traces data paths end-
 
 ### final-patch-4-blueprint-pipeline.ps1 (Script 12)
 
-Final blueprint pipeline with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, final validation gate, developer handoff generation, and git commit traceability (review text in commit messages with auto-push).
+Syncs the installed blueprint pipeline from the canonical repository source file so the deployed runtime matches the maintained repo implementation.
 
 ### final-patch-5-convergence-pipeline.ps1 (Script 13)
 
-Final convergence loop with file map updates, prompt injection (via Local-ResolvePrompt), background heartbeat, push notifications, throttling, spec check integration, adaptive batch sizing, parallel sub-task execution (when enabled), final validation gate, developer handoff generation, and git commit traceability (code review text in commit messages with auto-push).
+Syncs the installed convergence pipeline from the canonical repository source file so later patches extend the same runtime the repo documents and tests.
 
 ### final-patch-6-assess-limitations.ps1 (Script 14)
 

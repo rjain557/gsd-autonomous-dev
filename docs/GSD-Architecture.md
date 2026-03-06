@@ -225,7 +225,7 @@ All API keys are stored as persistent environment variables (Windows registry), 
 
 ### Gemini Fallback
 
-If the Gemini CLI (`gemini`) is not installed, the engine automatically falls back to Codex for research and spec-fix phases. Install Gemini CLI to get the full benefit of three-model optimization:
+If the Gemini CLI (`gemini`) is not installed, the engine automatically falls back to Codex for research and spec-fix phases. Install Gemini CLI to get the full benefit of the core 3-model phase routing and the broader 7-model architecture:
 
 ```
 npm install -g @google/gemini-cli

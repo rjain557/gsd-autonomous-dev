@@ -8,6 +8,13 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 
 ```json
 {
+  "git": {
+    "enabled": true,
+    "commit_on_iteration": true,
+    "push_on_iteration": false,
+    "push_on_terminal": true,
+    "tag_on_terminal": true
+  },
   "notifications": {
     "ntfy_topic": "auto",
     "notify_on": ["iteration_complete", "converged", "stalled", "quota_exhausted", "error"]
@@ -38,6 +45,30 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 Notification events: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `progress_response`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`, `validation_failed`, `validation_passed`
 
 All notification types that include status information (heartbeat, iteration_complete, converged, stalled, max_iterations, progress_response) also include running token cost data read from `.gsd/costs/cost-summary.json`. Terminal notifications (converged, stalled, max_iterations) and progress responses include a per-agent cost breakdown.
+
+#### git
+
+Controls commit/push behavior during autonomous runs. The default is local commits during iterations, with remote push reserved for terminal states.
+
+```json
+"git": {
+  "enabled": true,
+  "commit_on_iteration": true,
+  "push_on_iteration": false,
+  "push_on_terminal": true,
+  "tag_on_terminal": true,
+  "commit_developer_handoff": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Master switch for git automation |
+| `commit_on_iteration` | bool | true | Commit generated work during iterations |
+| `push_on_iteration` | bool | false | Push after each iteration commit |
+| `push_on_terminal` | bool | true | Push on converged/stalled/max-iteration exit |
+| `tag_on_terminal` | bool | true | Create terminal tags on successful completion |
+| `commit_developer_handoff` | bool | true | Commit the generated developer handoff report |
 
 #### patterns
 

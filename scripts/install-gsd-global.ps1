@@ -48,6 +48,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 
 # -- Paths --
 $GsdGlobalDir = Join-Path $UserHome ".gsd-global"
@@ -1400,6 +1401,44 @@ if (Test-Path $vscodeUserDir) {
         Write-Host "   [OK] VS Code user tasks.json updated" -ForegroundColor DarkGreen
 } else {
     Write-Host "   [!!]  VS Code user dir not found. Skipping global tasks." -ForegroundColor DarkYellow
+}
+
+Write-Host ""
+
+# ========================================================
+# STEP 12: Sync canonical repo sources
+# ========================================================
+
+Write-Host "[SYNC] Applying canonical repo sources..." -ForegroundColor Yellow
+
+$canonicalPairs = @(
+    @{ Source = Join-Path $RepoRoot "config\agent-map.json";               Target = Join-Path $GsdGlobalDir "config\agent-map.json" },
+    @{ Source = Join-Path $RepoRoot "config\global-config.json";           Target = Join-Path $GsdGlobalDir "config\global-config.json" },
+    @{ Source = Join-Path $RepoRoot "config\model-registry.json";          Target = Join-Path $GsdGlobalDir "config\model-registry.json" },
+    @{ Source = Join-Path $RepoRoot "scripts\convergence-loop.ps1";        Target = Join-Path $GsdGlobalDir "scripts\convergence-loop.ps1" },
+    @{ Source = Join-Path $RepoRoot "scripts\token-cost-calculator.ps1";   Target = Join-Path $GsdGlobalDir "scripts\token-cost-calculator.ps1" }
+)
+
+foreach ($pair in $canonicalPairs) {
+    if (Test-Path $pair.Source) {
+        $targetDir = Split-Path -Parent $pair.Target
+        if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+        Copy-Item -Path $pair.Source -Destination $pair.Target -Force
+        Write-Host "   [OK] $(Split-Path $pair.Target -Leaf)" -ForegroundColor DarkGreen
+    }
+}
+
+$promptDirs = @(
+    @{ Source = Join-Path $RepoRoot "prompts\claude"; Target = Join-Path $GsdGlobalDir "prompts\claude" },
+    @{ Source = Join-Path $RepoRoot "prompts\codex";  Target = Join-Path $GsdGlobalDir "prompts\codex" },
+    @{ Source = Join-Path $RepoRoot "prompts\gemini"; Target = Join-Path $GsdGlobalDir "prompts\gemini" }
+)
+
+foreach ($dirPair in $promptDirs) {
+    if (Test-Path $dirPair.Source) {
+        Copy-Item -Path (Join-Path $dirPair.Source "*") -Destination $dirPair.Target -Recurse -Force
+        Write-Host "   [OK] $(Split-Path $dirPair.Target -Leaf) prompts synced" -ForegroundColor DarkGreen
+    }
 }
 
 Write-Host ""

@@ -988,7 +988,7 @@ if ($ClientQuote) {
         Write-Host "  Remaining scope:      $($result.RemainingItems) deliverables"
     }
     Write-Host "  Pipeline:             $($Pipeline.ToUpper()) (autonomous AI development)"
-    Write-Host "  AI Models:            Claude + Codex + Gemini (3-model strategy)"
+    Write-Host "  AI Models:            Core 3-model pipeline + 4 optional review/failover providers"
     Write-Host ""
     Write-Host "  -----------------------------------------------"
     Write-Host "  ESTIMATED COST" -ForegroundColor White

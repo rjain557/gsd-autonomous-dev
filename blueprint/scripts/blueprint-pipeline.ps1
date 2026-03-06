@@ -18,6 +18,8 @@ $GlobalDir = Join-Path $UserHome ".gsd-global"
 $BpGlobalDir = Join-Path $GlobalDir "blueprint"
 $GsdDir = Join-Path $RepoRoot ".gsd"
 $BpDir = Join-Path $GsdDir "blueprint"
+$PipelineName = "blueprint"
+$GsdGlobalDir = $GlobalDir
 
 # -- Load ALL modules --
 . "$GlobalDir\lib\modules\resilience.ps1"
@@ -65,6 +67,104 @@ function Has-Blueprint {
     try { return (Get-Content $BlueprintFile -Raw | ConvertFrom-Json).tiers.Count -gt 0 } catch { return $false }
 }
 
+function Get-GitRuntimeConfig {
+    $defaults = @{
+        enabled = $true
+        commit_on_iteration = $true
+        push_on_iteration = $false
+        push_on_terminal = $true
+        tag_on_terminal = $true
+        commit_developer_handoff = $true
+    }
+
+    $cfgPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $cfgPath) {
+        try {
+            $gitCfg = (Get-Content $cfgPath -Raw | ConvertFrom-Json).git
+            if ($gitCfg) {
+                foreach ($prop in $gitCfg.PSObject.Properties.Name) {
+                    $defaults[$prop] = $gitCfg.$prop
+                }
+            }
+        } catch {}
+    }
+
+    return $defaults
+}
+
+function Invoke-GitCommitFromText {
+    param(
+        [string]$Subject,
+        [string]$Body = "",
+        [string[]]$Paths = @(),
+        [switch]$Terminal
+    )
+
+    if ($DryRun -or -not $script:GIT_RUNTIME.enabled) { return $false }
+    if (-not $Terminal -and -not $script:GIT_RUNTIME.commit_on_iteration) { return $false }
+
+    if ($Paths.Count -gt 0) {
+        git add -- @Paths 2>$null | Out-Null
+    } else {
+        git add -A 2>$null | Out-Null
+    }
+
+    git diff --cached --quiet 2>$null
+    if ($LASTEXITCODE -eq 0) { return $false }
+    if ($LASTEXITCODE -gt 1) { return $false }
+
+    if ($Body) {
+        $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
+        "$Subject`n`n$Body" | Set-Content $commitMsgFile -Encoding UTF8
+        git commit -F $commitMsgFile --no-verify 2>$null | Out-Null
+        Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+    } else {
+        git commit -m $Subject --no-verify 2>$null | Out-Null
+    }
+
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Invoke-GitPushIfAllowed {
+    param(
+        [switch]$Terminal,
+        [switch]$IncludeTags
+    )
+
+    if ($DryRun -or -not $script:GIT_RUNTIME.enabled) { return }
+
+    $shouldPush = if ($Terminal) {
+        [bool]$script:GIT_RUNTIME.push_on_terminal
+    } else {
+        [bool]$script:GIT_RUNTIME.push_on_iteration
+    }
+
+    if (-not $shouldPush) { return }
+
+    if ($IncludeTags) {
+        git push --tags 2>$null | Out-Null
+    } else {
+        git push 2>$null | Out-Null
+    }
+}
+
+function Add-SupervisorContextSection {
+    param(
+        [string]$Heading,
+        [string[]]$Lines
+    )
+
+    if (-not $Lines -or $Lines.Count -eq 0) { return }
+
+    $ctxPath = Join-Path $GsdDir "supervisor\error-context.md"
+    $existing = if (Test-Path $ctxPath) { Get-Content $ctxPath -Raw } else { "" }
+    $section = "## $Heading`n" + (($Lines | Where-Object { $_ }) -join "`n")
+    $content = if ($existing.Trim()) { "$existing`n`n$section" } else { $section }
+    $content | Set-Content $ctxPath -Encoding UTF8
+}
+
+$script:GIT_RUNTIME = Get-GitRuntimeConfig
+
 # ========================================
 # STARTUP
 # ========================================
@@ -88,6 +188,7 @@ if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
 
 # Interface detection (GAP 11)
 $InterfaceContext = ""
+$Interfaces = @()
 $UseFigmaMake = $false
 $hasStoryboards = $false
 
@@ -95,6 +196,7 @@ if (Get-Command Initialize-ProjectInterfaces -ErrorAction SilentlyContinue) {
     Write-Host ""
     $ifaceResult = Initialize-ProjectInterfaces -RepoRoot $RepoRoot -GsdDir $GsdDir
     $InterfaceContext = $ifaceResult.Context
+    $Interfaces = $ifaceResult.Interfaces
     $UseFigmaMake = $ifaceResult.UseFigmaMakePrompts
 
     $hasStoryboards = ($ifaceResult.Interfaces | Where-Object {
@@ -137,6 +239,11 @@ Write-Host ""
 Send-GsdNotification -Title "GSD Blueprint Started" `
     -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize" `
     -Tags "rocket" -Priority "default"
+
+# Save LOC baseline for cumulative metrics at pipeline exit.
+if (Get-Command Save-LocBaseline -ErrorAction SilentlyContinue) {
+    Save-LocBaseline -GsdDir $GsdDir
+}
 
 # Start background heartbeat (sends progress every 10 min even during long agent calls)
 Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
@@ -185,7 +292,6 @@ if (-not $SkipSpecCheck -and -not $BuildOnly -and -not $VerifyOnly) {
             Write-Host "  [!!]  Spec quality gate WARN: $($specResult.Issues -join '; ')" -ForegroundColor DarkYellow
         }
     } elseif (Get-Command Invoke-SpecConsistencyCheck -ErrorAction SilentlyContinue) {
-        $Interfaces = if ($ifaceResult) { $ifaceResult.Interfaces } else { @() }
         $specResult = Invoke-SpecConsistencyCheck -RepoRoot $RepoRoot -GsdDir $GsdDir -Interfaces $Interfaces -DryRun:$DryRun
         if (-not $specResult.Passed) {
             if ($AutoResolve -and (Get-Command Invoke-SpecConflictResolution -ErrorAction SilentlyContinue)) {
@@ -354,18 +460,15 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             }
             if ($commitBody) {
                 if ($commitBody.Length -gt 4000) { $commitBody = $commitBody.Substring(0, 4000) + "`n... (truncated)" }
-                $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
-                "$commitSubject`n`n$commitBody" | Set-Content $commitMsgFile -Encoding UTF8
-                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
-                Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+                $null = Invoke-GitCommitFromText -Subject $commitSubject -Body $commitBody
             } else {
-                git add -A; git commit -m $commitSubject --no-verify 2>$null
+                $null = Invoke-GitCommitFromText -Subject $commitSubject
             }
-            git push 2>$null
             # Update file map after each iteration so agents see current structure
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
             }
+            Invoke-GitPushIfAllowed
             Invoke-BuildValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -AutoFix | Out-Null
         } else {
             $CurrentBatchSize = $result.FinalBatchSize; $StallCount++; $errorsThisIter++
@@ -413,36 +516,36 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
     $bpIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir } else { "" }
-    $bpIterDiffLine = if (Get-Command Get-GitDiffStats -ErrorAction SilentlyContinue) { Get-GitDiffStats -RepoRoot $RepoRoot } else { "" }
     $bpIterMsg = "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize"
-    if ($bpIterDiffLine) { $bpIterMsg += "`n$bpIterDiffLine" }
     if ($bpIterCostLine) { $bpIterMsg += "`n$bpIterCostLine" }
+    if (Get-Command Update-LocMetrics -ErrorAction SilentlyContinue) {
+        Update-LocMetrics -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Iteration $Iteration -Pipeline $PipelineName
+    }
+    $bpLocLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir } else { "" }
+    if ($bpLocLine) { $bpIterMsg += "`n$bpLocLine" }
     Send-GsdNotification -Title "Blueprint Iter $Iteration" -Message $bpIterMsg -Tags "chart_with_upwards_trend"
     $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
 }
 
-        # Quality gate checks before final validation
+    $FinalHealth = Get-Health
+
+    # Quality gate checks before final validation
     if ($FinalHealth -ge $TargetHealth -and -not $DryRun) {
         if (Get-Command Test-DatabaseCompleteness -ErrorAction SilentlyContinue) {
             $dbResult = Test-DatabaseCompleteness -RepoRoot $RepoRoot -GsdDir $GsdDir
             if (-not $dbResult.Passed -and -not $dbResult.Skipped) {
-                $ctxPath = Join-Path $GsdDir "supervisor\error-context.md"
-                $existingCtx = ""; if (Test-Path $ctxPath) { $existingCtx = Get-Content $ctxPath -Raw }
-                "$existingCtx`n## Database Completeness Issues`n$(($dbResult.Issues | ForEach-Object { "- $_" }) -join "`n")" | Set-Content $ctxPath -Encoding UTF8
+                Add-SupervisorContextSection -Heading "Database Completeness Issues" -Lines ($dbResult.Issues | ForEach-Object { "- $_" })
             }
         }
         if (Get-Command Test-SecurityCompliance -ErrorAction SilentlyContinue) {
             $secResult = Test-SecurityCompliance -RepoRoot $RepoRoot -GsdDir $GsdDir -Detailed
             if (-not $secResult.Passed -and -not $secResult.Skipped) {
-                $ctxPath = Join-Path $GsdDir "supervisor\error-context.md"
-                $existingCtx = ""; if (Test-Path $ctxPath) { $existingCtx = Get-Content $ctxPath -Raw }
-                "$existingCtx`n## Security Compliance Issues`n- $($secResult.Criticals) critical, $($secResult.Highs) high violations" | Set-Content $ctxPath -Encoding UTF8
+                Add-SupervisorContextSection -Heading "Security Compliance Issues" -Lines @("- $($secResult.Criticals) critical, $($secResult.Highs) high violations")
             }
         }
     }
     # Final validation gate - runs when health reaches 100%
-    $FinalHealth = Get-Health
     $validationFailed = $false
     if ($FinalHealth -ge $TargetHealth -and -not $DryRun -and $ValidationAttempts -lt $MaxValidationAttempts) {
         if (Get-Command Invoke-FinalValidation -ErrorAction SilentlyContinue) {
@@ -491,39 +594,40 @@ if ($FinalHealth -ge $TargetHealth) {
         $bpHealthContent = if (Test-Path $HealthFile) { (Get-Content $HealthFile -Raw).Trim() } else { "" }
         $commitSubject = "blueprint: COMPLETE at ${FinalHealth}% in $Iteration iterations"
         if ($bpHealthContent) {
-            $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
-            "$commitSubject`n`nFinal health:`n$bpHealthContent" | Set-Content $commitMsgFile -Encoding UTF8
-            git add -A; git commit -F $commitMsgFile --no-verify 2>$null
-            Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
+            $null = Invoke-GitCommitFromText -Subject $commitSubject -Body "Final health:`n$bpHealthContent" -Terminal
         } else {
-            git add -A; git commit -m $commitSubject --no-verify 2>$null
+            $null = Invoke-GitCommitFromText -Subject $commitSubject -Terminal
         }
-        git tag "blueprint-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null
-        git push --tags 2>$null
+        if ($script:GIT_RUNTIME.tag_on_terminal) {
+            git tag "blueprint-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null | Out-Null
+        }
+        Invoke-GitPushIfAllowed -Terminal -IncludeTags:$script:GIT_RUNTIME.tag_on_terminal
     }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     $bpFinalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $bpFinalDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $bpCompleteMsg = "$repoName | 100% in $Iteration iterations"
-    if ($bpFinalDiffLine) { $bpCompleteMsg += "`n$bpFinalDiffLine" }
+    $bpLocCostSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($bpLocCostSummary) { $bpCompleteMsg += "`n$bpLocCostSummary" }
+    $bpLocFinalLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($bpLocFinalLine) { $bpCompleteMsg += "`n$bpLocFinalLine" }
     if ($bpFinalCostLine) { $bpCompleteMsg += "`n$bpFinalCostLine" }
     Send-GsdNotification -Title "BLUEPRINT COMPLETE!" -Message $bpCompleteMsg -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
     Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
     $bpStalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $bpStalledDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $bpStalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
-    if ($bpStalledDiffLine) { $bpStalledMsg += "`n$bpStalledDiffLine" }
+    $bpLocStalledLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($bpLocStalledLine) { $bpStalledMsg += "`n$bpLocStalledLine" }
     if ($bpStalledCostLine) { $bpStalledMsg += "`n$bpStalledCostLine" }
     Send-GsdNotification -Title "BLUEPRINT STALLED" -Message $bpStalledMsg -Tags "warning" -Priority "high"
 } else {
     Write-Host "  [!!]  $(if ($VerifyOnly){'VERIFY DONE'}else{'MAX ITERATIONS'}) at ${FinalHealth}%" -ForegroundColor Yellow
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
     $bpMaxCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $bpMaxDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $bpMaxMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
-    if ($bpMaxDiffLine) { $bpMaxMsg += "`n$bpMaxDiffLine" }
+    $bpLocMaxLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($bpLocMaxLine) { $bpMaxMsg += "`n$bpLocMaxLine" }
     if ($bpMaxCostLine) { $bpMaxMsg += "`n$bpMaxCostLine" }
     Send-GsdNotification -Title "Blueprint Max Iterations" -Message $bpMaxMsg -Tags "warning" -Priority "high"
 }
@@ -546,6 +650,9 @@ Write-Host "=========================================================" -Foregrou
     Stop-CommandListener
     if (Get-Command Stop-EngineStatusHeartbeat -ErrorAction SilentlyContinue) { Stop-EngineStatusHeartbeat }
     if (Get-Command Complete-CostTrackingRun -ErrorAction SilentlyContinue) { Complete-CostTrackingRun -GsdDir $GsdDir }
+    if (Get-Command Complete-LocTracking -ErrorAction SilentlyContinue) {
+        Complete-LocTracking -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Pipeline $PipelineName
+    }
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health
@@ -563,11 +670,12 @@ Write-Host "=========================================================" -Foregrou
         $handoffPath = New-DeveloperHandoff -RepoRoot $RepoRoot -GsdDir $GsdDir `
             -Pipeline "blueprint" -ExitReason $exitReason `
             -FinalHealth $FinalHealth -Iteration $Iteration -ValidationResult $validationResult
-        if ($handoffPath -and (Test-Path $handoffPath)) {
-            git add $handoffPath; git commit -m "blueprint: developer handoff report" --no-verify 2>$null
-            git push 2>$null
+        if ($script:GIT_RUNTIME.commit_developer_handoff -and $handoffPath -and (Test-Path $handoffPath)) {
+            $null = Invoke-GitCommitFromText -Subject "blueprint: developer handoff report" -Paths @($handoffPath) -Terminal
         }
     }
+
+    Invoke-GitPushIfAllowed -Terminal
 
     Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
 }

@@ -115,7 +115,7 @@ The GSD Engine is a PowerShell-based orchestration framework that coordinates se
 
 ## 2.2 Agent Assignment
 
-The three-model strategy distributes work across independent quota pools. Each agent is assigned to phases that match its strengths:
+The seven-model architecture uses a core 3-model phase owner set plus 4 optional review/failover providers. Each agent is assigned to phases that match its strengths:
 
 | Agent | Role | Phases | Approx. Tokens/Iter | Why This Agent |
 |-------|------|--------|---------------------|----------------|
@@ -535,8 +535,8 @@ The master installer runs 21 scripts in dependency order. It also runs `install-
 | 8 | final-patch-1-spec-check.ps1 | Spec consistency checker |
 | 9 | final-patch-2-sql-cli.ps1 | SQL validation, CLI version checks |
 | 10 | final-patch-3-storyboard-verify.ps1 | Storyboard-aware verification prompts |
-| 11 | final-patch-4-blueprint-pipeline.ps1 | Final blueprint pipeline with all features |
-| 12 | final-patch-5-convergence-pipeline.ps1 | Final convergence loop with all features |
+| 11 | final-patch-4-blueprint-pipeline.ps1 | Sync installed blueprint pipeline from canonical repo source |
+| 12 | final-patch-5-convergence-pipeline.ps1 | Sync installed convergence pipeline from canonical repo source |
 | 13 | final-patch-6-assess-limitations.ps1 | Final assess script with known limitations |
 | 14 | final-patch-7-spec-resolve.ps1 | Spec conflict auto-resolution via Gemini |
 | 15 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
@@ -1693,11 +1693,11 @@ Creates `verify-storyboard.md` prompt that traces data flows end-to-end: compone
 
 ### final-patch-4-blueprint-pipeline.ps1
 
-Complete blueprint pipeline with all features integrated: spec check, post-blueprint council, storyboard verification, supervisor override, Figma Make prompts, cost tracking, heartbeat, git commits.
+Syncs the installed blueprint pipeline from the canonical repository source file so the deployed runtime stays aligned with the maintained repo implementation.
 
 ### final-patch-5-convergence-pipeline.ps1
 
-Complete convergence loop with all features: create-phases, 5-phase cycle, parallel execution, council gates (post-research, pre-execute, convergence), supervisor override, multi-interface context, cost tracking.
+Syncs the installed convergence pipeline from the canonical repository source file so later patches extend the same runtime the repo documents and tests.
 
 ### final-patch-6-assess-limitations.ps1
 
