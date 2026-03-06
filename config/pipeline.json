@@ -1,0 +1,110 @@
+{
+  "version": "1.0.0",
+  "description": "Defines the convergence pipeline — phase order, retry policies, skip rules, and prompt templates. Edit this file to change engine behavior without touching code.",
+
+  "phases": [
+    {
+      "id": "code-review",
+      "label": "Code Review",
+      "agent": "claude",
+      "prompt_file": "prompts/engine/code-review.md",
+      "timeout_seconds": 600,
+      "retry": { "max_attempts": 3, "backoff_seconds": [5, 15, 30] },
+      "skip_when": {
+        "health_above": null,
+        "iteration_below": null,
+        "flag": null
+      },
+      "outputs": ["health/health-current.json", "health/requirements-matrix.json", "code-review/review-current.md"],
+      "on_failure": "continue"
+    },
+    {
+      "id": "research",
+      "label": "Research",
+      "agent": "gemini",
+      "prompt_file": "prompts/engine/research.md",
+      "timeout_seconds": 1200,
+      "retry": { "max_attempts": 2, "backoff_seconds": [10, 30] },
+      "skip_when": {
+        "health_above": null,
+        "iteration_below": null,
+        "flag": "SkipResearch"
+      },
+      "outputs": ["research/research-findings.md", "research/pattern-analysis.md"],
+      "on_failure": "continue"
+    },
+    {
+      "id": "plan",
+      "label": "Plan",
+      "agent": "claude",
+      "prompt_file": "prompts/engine/plan.md",
+      "timeout_seconds": 300,
+      "retry": { "max_attempts": 2, "backoff_seconds": [5, 15] },
+      "skip_when": {
+        "health_above": null,
+        "iteration_below": null,
+        "flag": null
+      },
+      "outputs": ["generation-queue/queue-current.json"],
+      "on_failure": "abort_iteration"
+    },
+    {
+      "id": "execute",
+      "label": "Execute",
+      "agent": "codex",
+      "prompt_file": "prompts/engine/execute.md",
+      "timeout_seconds": 1800,
+      "retry": { "max_attempts": 3, "backoff_seconds": [10, 30, 60] },
+      "skip_when": {
+        "health_above": null,
+        "iteration_below": null,
+        "flag": null
+      },
+      "outputs": ["source files"],
+      "on_failure": "continue"
+    },
+    {
+      "id": "verify",
+      "label": "Verify",
+      "agent": "claude",
+      "prompt_file": "prompts/engine/verify.md",
+      "timeout_seconds": 600,
+      "retry": { "max_attempts": 2, "backoff_seconds": [5, 15] },
+      "skip_when": {
+        "health_above": null,
+        "iteration_below": null,
+        "flag": null
+      },
+      "outputs": ["health/health-current.json", "health/requirements-matrix.json"],
+      "on_failure": "continue"
+    }
+  ],
+
+  "convergence": {
+    "target_health": 100,
+    "max_iterations": 20,
+    "stall_threshold": 3,
+    "stall_action": "supervisor_diagnose",
+    "cooldown_between_phases_seconds": 2,
+    "cooldown_between_iterations_seconds": 5
+  },
+
+  "agent_fallback": {
+    "enabled": true,
+    "rules": [
+      { "if_agent_fails": "claude", "try_next": ["codex", "gemini"] },
+      { "if_agent_fails": "codex",  "try_next": ["claude", "kimi"] },
+      { "if_agent_fails": "gemini", "try_next": ["deepseek", "kimi"] },
+      { "if_agent_fails": "kimi",   "try_next": ["deepseek", "codex"] }
+    ]
+  },
+
+  "hooks": {
+    "before_iteration": null,
+    "after_iteration": null,
+    "before_phase": null,
+    "after_phase": null,
+    "on_converged": null,
+    "on_stalled": null
+  }
+}
