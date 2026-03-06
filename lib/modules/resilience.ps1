@@ -1763,7 +1763,8 @@ function Invoke-WithRetry {
 
                 # Rotate to different agent after N consecutive quota hits
                 if ($consecutiveQuotaFails[$Agent] -ge $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) {
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    $cliOnlyPhase = ($Phase -match "council-requirements")
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -CliOnly:$cliOnlyPhase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent exhausted $($consecutiveQuotaFails[$Agent])x. Switching to $rotatedAgent" -ForegroundColor Yellow
                         Write-GsdError -GsdDir $GsdDir -Category "agent_rotate" -Phase $Phase -Iteration $i `
@@ -1803,7 +1804,8 @@ function Invoke-WithRetry {
                     continue
                 } else {
                     # Quota didn't reset -- try rotating before giving up
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    $cliOnlyPhase = ($Phase -match "council-requirements")
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -CliOnly:$cliOnlyPhase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent quota didn't reset. Trying $rotatedAgent" -ForegroundColor Yellow
                         Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
@@ -5625,7 +5627,8 @@ function Get-NextAvailableAgent {
     #>
     param(
         [string]$CurrentAgent,
-        [string]$GsdDir
+        [string]$GsdDir,
+        [switch]$CliOnly   # Restrict rotation to CLI agents only (e.g. for council-requirements)
     )
 
     # Agent pool -- read from model-registry.json, fall back to legacy 3-agent list
@@ -5642,7 +5645,7 @@ function Get-NextAvailableAgent {
                     if (-not $agentCfg) { continue }
                     if ($agentCfg.type -eq "cli") {
                         $validPool += $agentName
-                    } elseif ($agentCfg.type -eq "openai-compat" -and $agentCfg.enabled -ne $false) {
+                    } elseif (-not $CliOnly -and $agentCfg.type -eq "openai-compat" -and $agentCfg.enabled -ne $false) {
                         $keyVal = [System.Environment]::GetEnvironmentVariable($agentCfg.api_key_env)
                         if (-not $keyVal) { $keyVal = [System.Environment]::GetEnvironmentVariable($agentCfg.api_key_env, 'User') }
                         if (-not $keyVal) { $keyVal = [System.Environment]::GetEnvironmentVariable($agentCfg.api_key_env, 'Machine') }

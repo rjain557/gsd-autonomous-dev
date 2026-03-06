@@ -308,7 +308,7 @@
                                                 "kimi"
                                             ],
                                  "min_agents_for_merge":  2,
-                                 "timeout_seconds":  600,
+                                 "timeout_seconds":  900,
                                  "cooldown_between_agents":  5,
                                  "fallback_to_single":  true,
                                  "chunk_size":  10
