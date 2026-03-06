@@ -1,8 +1,8 @@
 # GSD Engine - Goal-Spec-Done Autonomous Development System
 
-**Version:** 1.3.0 | **Platform:** Windows + PowerShell 5.1+ | **Agents:** Claude Code + Codex CLI + Gemini CLI
+**Version:** 2.1.0 | **Platform:** Windows + PowerShell 5.1+ | **Agents:** 7 configured models (Claude, Codex, Gemini, Kimi, DeepSeek, GLM-5, MiniMax)
 
-The GSD Engine is a PowerShell-based autonomous development framework that uses three AI agents to drive codebases from specification to 100% implementation through iterative convergence loops. It runs unattended with comprehensive self-healing for network failures, quota limits, agent crashes, and stalls.
+The GSD Engine is a PowerShell-based autonomous development framework that orchestrates seven configured models across CLI and REST providers to drive codebases from specification to 100% implementation through iterative convergence loops. It runs unattended with comprehensive self-healing for network failures, quota limits, agent crashes, and stalls.
 
 ## What It Does
 
@@ -13,7 +13,7 @@ The GSD Engine is a PowerShell-based autonomous development framework that uses 
 ## Quick Start
 
 ```powershell
-# Install (runs 19 scripts in dependency order)
+# Install (runs 36 installer steps in dependency order)
 powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
 
 # Restart terminal, then:
@@ -28,19 +28,20 @@ gsd-blueprint               # Build from specs (greenfield)
 
 Always cd into the directory containing .git, .sln, and source code. If nested project folders exist, run from the inner one.
 
-## Agents (Three-Model Strategy)
+## Agents (Seven-Model Strategy)
 
 | Agent | Role | Phases |
 |-------|------|--------|
 | **Claude Code** | Reasoning & analysis | Review, plan, verify, blueprint |
 | **Codex CLI** | Code generation | Execute, build |
 | **Gemini CLI** | Research & spec-fix (optional) | Research, spec-fix |
+| **Kimi / DeepSeek / GLM-5 / MiniMax** | Fallback review and research pool | Council, fallback, burst throughput |
 
-Each agent draws from an independent API quota pool, maximizing throughput. Gemini is optional -- the engine falls back to Codex if unavailable.
+Each provider draws from an independent quota pool, maximizing throughput. Gemini is optional for core routing; the REST agents expand review and fallback capacity.
 
 ## Key Features
 
-- **Three-model orchestration** with independent quota pools and automatic fallback
+- **Seven-model orchestration** with independent quota pools and automatic fallback
 - **Self-healing supervisor** that root-causes stalls, modifies prompts, and restarts (up to 5 attempts)
 - **Final validation gate** at 100% health: builds, tests, SQL, and security audits
 - **Developer handoff report** auto-generated at pipeline exit with build commands, DB setup, costs
@@ -82,4 +83,4 @@ Each agent draws from an independent API quota pool, maximizing throughput. Gemi
 
 ## Scripts
 
-The repository contains 25 scripts: 1 master installer + 1 pre-flight + 19 run by installer (17 core + 1 bug fix + 1 resilience hardening) + 4 standalone utilities. Run `install-gsd-all.ps1` to install everything.
+The repository currently contains 54 PowerShell scripts in total, with `scripts/install-gsd-all.ps1` executing 36 installer steps in dependency order. Run `install-gsd-all.ps1` to install everything.

@@ -113,11 +113,7 @@
     "agent_pool": [
       "codex",
       "claude",
-      "gemini",
-      "kimi",
-      "deepseek",
-      "glm5",
-      "minimax"
+      "gemini"
     ],
     "strategy": "round-robin",
     "fallback_to_sequential": true,

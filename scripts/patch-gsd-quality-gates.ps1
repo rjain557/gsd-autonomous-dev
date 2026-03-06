@@ -683,6 +683,15 @@ function Invoke-SpecQualityGate {
     if (-not $qgEnabled) { Write-Host "    [>>]  Spec quality gate disabled" -ForegroundColor DarkGray; return @{ Passed = $true; ClarityScore = 100; ConsistencyPassed = $true; Issues = @(); Skipped = $true } }
 
     $issues = @(); $clarityScore = 100; $consistencyPassed = $true
+    $analysisDirs = @()
+    foreach ($iface in $Interfaces) {
+        if ($iface.AnalysisDir -and (Test-Path $iface.AnalysisDir)) {
+            $analysisDirs += $iface.AnalysisDir
+        }
+    }
+    $rootAnalysisDir = Join-Path $RepoRoot "_analysis"
+    if (Test-Path $rootAnalysisDir) { $analysisDirs += $rootAnalysisDir }
+    $analysisDirs = @($analysisDirs | Select-Object -Unique)
 
     # Step 1: Existing consistency check
     if (Get-Command Invoke-SpecConsistencyCheck -ErrorAction SilentlyContinue) {
@@ -698,17 +707,40 @@ function Invoke-SpecQualityGate {
         if (Test-Path $clarityPrompt) {
             try {
                 $promptContent = (Get-Content $clarityPrompt -Raw).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{GSD_DIR}}", $GsdDir)
-                $figmaPath = ""; $amPath = Join-Path $env:USERPROFILE ".gsd-global\config\agent-map.json"
-                if (Test-Path $amPath) { try { $figmaPath = (Get-Content $amPath -Raw | ConvertFrom-Json).figma_path } catch { } }
+                $figmaPath = if ($Interfaces.Count -gt 0) {
+                    (($Interfaces | ForEach-Object { $_.VersionPath }) -join ", ")
+                } elseif (Test-Path (Join-Path $RepoRoot "design")) {
+                    "design\ (see interface folders)"
+                } else {
+                    ""
+                }
                 $promptContent = $promptContent.Replace("{{FIGMA_PATH}}", $figmaPath)
-                $ifaceCtx = ""; foreach ($iface in $Interfaces) { $aDir = Join-Path $RepoRoot "$($iface.name)\_analysis"; if (Test-Path $aDir) { $ifaceCtx += "- $($iface.name): has _analysis/ dir`n" } }
+                $ifaceCtx = ""
+                foreach ($iface in $Interfaces) {
+                    if ($iface.AnalysisDir -and (Test-Path $iface.AnalysisDir)) {
+                        $relAnalysis = $iface.AnalysisDir.Replace("$RepoRoot\", "")
+                        $ifaceCtx += "- $($iface.Key): $relAnalysis`n"
+                    }
+                }
                 $promptContent = $promptContent.Replace("{{INTERFACE_ANALYSIS}}", $ifaceCtx)
                 Write-Host "    [SEARCH] Running spec clarity check via Claude..." -ForegroundColor DarkGray
-                $clarityResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "spec-clarity-check" -RepoRoot $RepoRoot -GsdDir $GsdDir -MaxOutputTokens 4000
-                if ($clarityResult.Success) {
-                    $scoreMatch = [regex]::Match($clarityResult.Response, '"clarity_score"\s*:\s*(\d+)')
-                    if ($scoreMatch.Success) { $clarityScore = [int]$scoreMatch.Groups[1].Value }
+                $clarityLog = Join-Path $GsdDir "logs\spec-clarity-check.log"
+                Remove-Item $clarityLog -Force -ErrorAction SilentlyContinue
+                $clarityResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "spec-clarity-check" `
+                    -LogFile $clarityLog -CurrentBatchSize 1 -GsdDir $GsdDir -AllowedTools "Read,Write,Bash"
+                if ($clarityResult.Success -and (Test-Path $clarityLog)) {
+                    $clarityText = Get-Content $clarityLog -Raw -ErrorAction SilentlyContinue
+                    $scoreMatch = [regex]::Match($clarityText, '"clarity_score"\s*:\s*(\d+)')
+                    if ($scoreMatch.Success) {
+                        $clarityScore = [int]$scoreMatch.Groups[1].Value
+                    } else {
+                        $clarityScore = 0
+                        $issues += "Spec clarity check returned no parseable clarity_score"
+                    }
                     Write-Host "    [OK] Spec clarity score: $clarityScore" -ForegroundColor $(if ($clarityScore -ge 85) { "DarkGreen" } elseif ($clarityScore -ge 70) { "DarkYellow" } else { "Red" })
+                } else {
+                    $clarityScore = 0
+                    $issues += "Spec clarity check failed"
                 }
             } catch { Write-Host "    [!!]  Spec clarity check error: $_" -ForegroundColor DarkYellow }
         }
@@ -716,22 +748,36 @@ function Invoke-SpecQualityGate {
 
     # Step 3: Cross-artifact consistency
     if ($checkCrossArtifact -and -not $DryRun) {
-        $hasAnalysis = $false
-        foreach ($iface in $Interfaces) { if (Test-Path (Join-Path $RepoRoot "$($iface.name)\_analysis")) { $hasAnalysis = $true; break } }
-        if (Test-Path (Join-Path $RepoRoot "_analysis")) { $hasAnalysis = $true }
+        $hasAnalysis = $analysisDirs.Count -gt 0
         if ($hasAnalysis) {
             $cPrompt = Join-Path $env:USERPROFILE ".gsd-global\prompts\claude\cross-artifact-consistency.md"
             if (Test-Path $cPrompt) {
                 try {
                     $promptContent = (Get-Content $cPrompt -Raw).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{GSD_DIR}}", $GsdDir)
-                    $ifaceName = if ($Interfaces.Count -gt 0) { $Interfaces[0].name } else { "" }
-                    $ifaceAnalysis = if ($ifaceName) { Join-Path $RepoRoot "$ifaceName\_analysis" } else { Join-Path $RepoRoot "_analysis" }
+                    $primaryAnalysis = $analysisDirs | Select-Object -First 1
+                    $ifaceName = if ($Interfaces.Count -gt 0) { $Interfaces[0].Key } else { "root" }
+                    $ifaceAnalysis = if ($primaryAnalysis) { $primaryAnalysis } else { $rootAnalysisDir }
                     $promptContent = $promptContent.Replace("{{INTERFACE_NAME}}", $ifaceName).Replace("{{INTERFACE_ANALYSIS}}", $ifaceAnalysis)
                     Write-Host "    [SEARCH] Running cross-artifact consistency check..." -ForegroundColor DarkGray
-                    $crossResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "cross-artifact-check" -RepoRoot $RepoRoot -GsdDir $GsdDir -MaxOutputTokens 4000
-                    if ($crossResult.Success) {
-                        $cm = [regex]::Match($crossResult.Response, '"consistent"\s*:\s*(true|false)')
-                        if ($cm.Success -and $cm.Groups[1].Value -eq "false") { $consistencyPassed = $false; $issues += "Cross-artifact consistency check found mismatches" }
+                    $crossLog = Join-Path $GsdDir "logs\cross-artifact-check.log"
+                    Remove-Item $crossLog -Force -ErrorAction SilentlyContinue
+                    $crossResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "cross-artifact-check" `
+                        -LogFile $crossLog -CurrentBatchSize 1 -GsdDir $GsdDir -AllowedTools "Read,Write,Bash"
+                    if ($crossResult.Success -and (Test-Path $crossLog)) {
+                        $crossText = Get-Content $crossLog -Raw -ErrorAction SilentlyContinue
+                        $cm = [regex]::Match($crossText, '"consistent"\s*:\s*(true|false)')
+                        if ($cm.Success) {
+                            if ($cm.Groups[1].Value -eq "false") {
+                                $consistencyPassed = $false
+                                $issues += "Cross-artifact consistency check found mismatches"
+                            }
+                        } else {
+                            $consistencyPassed = $false
+                            $issues += "Cross-artifact consistency check returned no parseable consistency flag"
+                        }
+                    } else {
+                        $consistencyPassed = $false
+                        $issues += "Cross-artifact consistency check failed"
                     }
                 } catch { Write-Host "    [!!]  Cross-artifact check error: $_" -ForegroundColor DarkYellow }
             }
@@ -741,7 +787,7 @@ function Invoke-SpecQualityGate {
     $passed = $clarityScore -ge $MinClarityScore -and $consistencyPassed
     $assessDir = Join-Path $GsdDir "assessment"
     if (-not (Test-Path $assessDir)) { New-Item -Path $assessDir -ItemType Directory -Force | Out-Null }
-    $verdict = if ($clarityScore -ge 90) { "PASS" } elseif ($clarityScore -ge 70) { "WARN" } else { "BLOCK" }
+    $verdict = if (-not $consistencyPassed -or $clarityScore -lt $MinClarityScore) { "BLOCK" } elseif ($clarityScore -ge 90) { "PASS" } else { "WARN" }
     @{ timestamp = (Get-Date).ToString("o"); passed = $passed; clarity_score = $clarityScore; min_clarity_score = $MinClarityScore; consistency_passed = $consistencyPassed; issues = $issues; verdict = $verdict } | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $assessDir "spec-quality-gate.json") -Encoding UTF8
 
     if ($passed) { Write-Host "    [OK] Spec quality gate: $verdict (clarity=$clarityScore, consistency=$consistencyPassed)" -ForegroundColor DarkGreen }

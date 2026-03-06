@@ -148,8 +148,8 @@ if (Test-Path $registryPath) {
                 model_id = "kimi-k2.5"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
             deepseek = [ordered]@{
@@ -159,8 +159,8 @@ if (Test-Path $registryPath) {
                 model_id = "deepseek-chat"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
             glm5 = [ordered]@{
@@ -170,8 +170,8 @@ if (Test-Path $registryPath) {
                 model_id = "glm-5"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
             minimax = [ordered]@{
@@ -181,8 +181,8 @@ if (Test-Path $registryPath) {
                 model_id = "MiniMax-M2.5"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
         }
@@ -206,20 +206,8 @@ if (-not (Test-Path $agentMapPath)) {
     $agentMap = Get-Content $agentMapPath -Raw | ConvertFrom-Json
     $changed = $false
 
-    # Expand execute_parallel.agent_pool
-    if ($agentMap.execute_parallel -and $agentMap.execute_parallel.agent_pool) {
-        $pool = @($agentMap.execute_parallel.agent_pool)
-        $newAgents = @("kimi", "deepseek", "glm5", "minimax")
-        foreach ($a in $newAgents) {
-            if ($pool -notcontains $a) {
-                $pool += $a
-                $changed = $true
-            }
-        }
-        $agentMap.execute_parallel.agent_pool = $pool
-    }
-
-    # Expand council.reviewers
+    # Expand council.reviewers only.
+    # REST agents are text-only helpers and must not be treated as write-capable execute agents.
     if ($agentMap.council -and $agentMap.council.reviewers) {
         $reviewers = @($agentMap.council.reviewers)
         $newAgents = @("kimi", "deepseek", "glm5", "minimax")
@@ -234,7 +222,7 @@ if (-not (Test-Path $agentMapPath)) {
 
     if ($changed) {
         $agentMap | ConvertTo-Json -Depth 10 | Set-Content $agentMapPath -Encoding UTF8
-        Write-Host "  [OK] Updated execute_parallel.agent_pool + council.reviewers" -ForegroundColor Green
+        Write-Host "  [OK] Updated council.reviewers with REST reviewer pool" -ForegroundColor Green
         $changeCount++
     } else {
         Write-Host "  [SKIP] Pools already contain new agents" -ForegroundColor DarkGray

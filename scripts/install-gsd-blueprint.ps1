@@ -35,7 +35,8 @@
 #>
 
 param(
-    [string]$UserHome = $env:USERPROFILE
+    [string]$UserHome = $env:USERPROFILE,
+    [switch]$SkipPathUpdate
 )
 
 $ErrorActionPreference = "Stop"
@@ -140,7 +141,7 @@ $bpConfig = @{
         target_health = 100
     }
     project_structure = @{
-        figma_path = "design\figma"
+        figma_path = "design"
         figma_version_pattern = "^v(\d+)$"
         sdlc_docs_path = "docs"
         blueprint_file = ".gsd\blueprint\blueprint.json"
@@ -539,19 +540,27 @@ if (-not (Test-Path $BpGlobalDir)) {
 }
 
 # -- Detect latest Figma version --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"
 $FigmaPath = "none"
 
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
 
     if ($latest) {
-        $FigmaVersion = $latest.Name
-        $FigmaPath = "design\figma\$FigmaVersion"
+        $FigmaVersion = $latest.Version
+        $FigmaPath = "design\$($latest.Interface)\$FigmaVersion"
     }
 }
 
@@ -957,14 +966,22 @@ function gsd-status {
     }
 
     # Detect Figma version
-    $figmaBase = Join-Path $repoRoot "design\figma"
-    if (Test-Path $figmaBase) {
-        $latest = Get-ChildItem -Path $figmaBase -Directory |
-            Where-Object { $_.Name -match '^v(\d+)$' } |
-            Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-            Select-Object -First 1
+    $designBase = Join-Path $repoRoot "design"
+    if (Test-Path $designBase) {
+        $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+            $ifaceDir = $_
+            Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^v(\d+)$' } |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Interface = $ifaceDir.Name
+                        Version = $_.Name
+                        VersionNumber = [int]($_.Name -replace '^v', '')
+                    }
+                }
+        } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
         if ($latest) {
-            Write-Host "  Figma:      $($latest.Name)" -ForegroundColor DarkGray
+            Write-Host "  Design:     $($latest.Interface)\$($latest.Version)" -ForegroundColor DarkGray
         }
     }
 
@@ -1024,9 +1041,15 @@ Write-Host "   [>>]  GSD functions registered in all PowerShell profiles" -Foreg
 
 # Ensure bin in PATH
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-if ($currentPath -notlike "*$binDir*") {
-    [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$binDir", "User")
-    Write-Host "   [OK] Added bin\ to PATH" -ForegroundColor DarkGreen
+if ($SkipPathUpdate) {
+    Write-Host "   [>>]  Skipping user PATH update (--SkipPathUpdate)" -ForegroundColor DarkGray
+} elseif ($currentPath -notlike "*$binDir*") {
+    try {
+        [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$binDir", "User")
+        Write-Host "   [OK] Added bin\ to PATH" -ForegroundColor DarkGreen
+    } catch {
+        Write-Host "   [!!]  Could not update user PATH: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
 }
 
 Write-Host ""

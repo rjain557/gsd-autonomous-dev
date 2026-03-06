@@ -14,7 +14,7 @@
     "execute"
   ],
   "figma": {
-    "base_path": "design\\figma",
+    "base_path": "design",
     "version_pattern": "^v(\\d+)$",
     "auto_detect_latest": true
   },
@@ -77,6 +77,8 @@
   },
   "partitioned_code_review": {
     "enabled": true,
+    "min_requirements": 30,
+    "min_interfaces": 2,
     "agents": [
       "claude",
       "gemini",
@@ -92,6 +94,8 @@
   },
   "council_requirements": {
     "enabled": true,
+    "min_spec_files": 6,
+    "min_interfaces": 2,
     "agents": [
       "claude",
       "codex",

@@ -311,12 +311,21 @@ $matrixContent = Get-Content $MatrixFile -Raw | ConvertFrom-Json
 if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
     Write-Host "[CLIP] Phase 0: CREATE PHASES" -ForegroundColor Magenta
     $useCouncilReqs = $false
+    $crMinSpecFiles = 6
+    $crMinInterfaces = 2
     if (Get-Command Invoke-CouncilRequirements -ErrorAction SilentlyContinue) {
         $crCfgPath = Join-Path $GlobalDir "config\global-config.json"
         if (Test-Path $crCfgPath) {
             try {
                 $crCfg = (Get-Content $crCfgPath -Raw | ConvertFrom-Json).council_requirements
-                if ($crCfg -and $crCfg.enabled) { $useCouncilReqs = $true }
+                if ($crCfg) {
+                    if ($crCfg.min_spec_files) { $crMinSpecFiles = [int]$crCfg.min_spec_files }
+                    if ($crCfg.min_interfaces) { $crMinInterfaces = [int]$crCfg.min_interfaces }
+                    if ($crCfg.enabled) {
+                        $specFileCount = @(Get-ChildItem -Path (Join-Path $RepoRoot "docs") -File -Recurse -ErrorAction SilentlyContinue).Count
+                        $useCouncilReqs = ($Interfaces.Count -ge $crMinInterfaces) -or ($specFileCount -ge $crMinSpecFiles)
+                    }
+                }
             } catch {}
         }
     }
@@ -377,12 +386,22 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     Send-HeartbeatIfDue -Phase "code-review" -Iteration $Iteration -Health $Health -RepoName $repoName
 
     $usePartitionedReview = $false
+    $pcrMinRequirements = 30
+    $pcrMinInterfaces = 2
     if (Get-Command Invoke-PartitionedCodeReview -ErrorAction SilentlyContinue) {
         $pcrConfigPath = Join-Path $GlobalDir "config\global-config.json"
         if (Test-Path $pcrConfigPath) {
             try {
                 $pcrConfig = (Get-Content $pcrConfigPath -Raw | ConvertFrom-Json).partitioned_code_review
-                if ($pcrConfig -and $pcrConfig.enabled) { $usePartitionedReview = $true }
+                if ($pcrConfig) {
+                    if ($pcrConfig.min_requirements) { $pcrMinRequirements = [int]$pcrConfig.min_requirements }
+                    if ($pcrConfig.min_interfaces) { $pcrMinInterfaces = [int]$pcrConfig.min_interfaces }
+                    if ($pcrConfig.enabled) {
+                        $reqCount = 0
+                        try { $reqCount = @((Get-Content $MatrixFile -Raw | ConvertFrom-Json).requirements).Count } catch {}
+                        $usePartitionedReview = ($reqCount -ge $pcrMinRequirements) -or ($Interfaces.Count -ge $pcrMinInterfaces)
+                    }
+                }
             } catch {}
         }
     }

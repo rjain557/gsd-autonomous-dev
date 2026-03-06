@@ -44,7 +44,8 @@
 
 param(
     [string]$UserHome = $env:USERPROFILE,
-    [string]$UserName = "rjain"
+    [string]$UserName = "rjain",
+    [switch]$SkipPathUpdate
 )
 
 $ErrorActionPreference = "Stop"
@@ -151,10 +152,14 @@ $directories = @(
     $GsdGlobalDir,
     "$GsdGlobalDir\scripts",
     "$GsdGlobalDir\phases",
+    "$GsdGlobalDir\lib",
+    "$GsdGlobalDir\lib\modules",
     "$GsdGlobalDir\prompts",
     "$GsdGlobalDir\prompts\claude",
     "$GsdGlobalDir\prompts\codex",
+    "$GsdGlobalDir\prompts\council",
     "$GsdGlobalDir\prompts\gemini",
+    "$GsdGlobalDir\prompts\shared",
     "$GsdGlobalDir\config",
     "$GsdGlobalDir\templates",
     "$GsdGlobalDir\templates\project-gsd",
@@ -195,7 +200,7 @@ $agentMap = @{
             agent = "claude-code"
             reason = "Architecture decisions. Creates phase structure and requirement decomposition. Needs high intelligence, low output volume."
             estimated_output_tokens = "3000-6000"
-            inputs = @("docs\ (SDLC specs Phase A-E)", "design\figma\v## (latest)", "existing codebase structure")
+            inputs = @("docs\ (SDLC specs Phase A-E)", "design\{interface}\v## (latest interface deliverables)", "existing codebase structure")
             outputs = @("requirements-matrix.json (full build)", "phase dependency graph", "figma-mapping.md")
         }
         "research" = @{
@@ -252,7 +257,7 @@ $globalConfig = @{
     batch_size_min = 3
     batch_size_max = 8
     figma = @{
-        base_path = "design\figma"
+        base_path = "design"
         version_pattern = "^v(\d+)$"
         auto_detect_latest = $true
     }
@@ -693,7 +698,7 @@ Claude Code stays well under the `$`200/mo cap. Codex does the heavy lifting.
 | .gsd\research\           | READ only                                | READ + WRITE                 |
 | .gsd\agent-handoff\      | WRITE current-assignment.md              | APPEND handoff-log.jsonl     |
 | docs\                    | READ only                                | READ only                    |
-| design\figma\            | READ only                                | READ only                    |
+| design\{interface}\      | READ only                                | READ only                    |
 "@
 
 Set-Content -Path "$GsdGlobalDir\phases\README.md" -Value $phasesReadme -Encoding UTF8
@@ -735,7 +740,7 @@ $projectInitTemplate = @'
 |   +-- current-assignment.md
 |   +-- handoff-log.jsonl
 +-- specs\
-|   +-- figma-mapping.md      (auto-populated from design\figma\v##)
+|   +-- figma-mapping.md      (auto-populated from design\{interface}\v##)
 |   +-- sdlc-reference.md     (auto-populated from docs\)
 +-- logs\
 '@
@@ -788,19 +793,27 @@ if (-not (Test-Path $GlobalDir)) {
 }
 
 # -- Detect latest Figma version --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"
 $FigmaPath = "none"
 
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
 
     if ($latest) {
-        $FigmaVersion = $latest.Name
-        $FigmaPath = "design\figma\$FigmaVersion"
+        $FigmaVersion = $latest.Version
+        $FigmaPath = "design\$($latest.Interface)\$FigmaVersion"
     }
 }
 
@@ -813,7 +826,7 @@ if (-not $hasDocs) {
     Write-Host "[!!]  No docs\ directory found. SDLC spec-based requirements will be limited." -ForegroundColor Yellow
 }
 if (-not $hasFigma) {
-    Write-Host "[!!]  No design\figma\v## found. Figma-based requirements will be limited." -ForegroundColor Yellow
+    Write-Host "[!!]  No design\<interface>\v## found. Design-based requirements will be limited." -ForegroundColor Yellow
 }
 
 # -- Initialize per-project .gsd if needed --
@@ -1239,10 +1252,16 @@ Write-Host "   [>>]  GSD functions registered in all PowerShell profiles" -Foreg
 
 # Add bin to PATH if not already
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-if ($currentPath -notlike "*$scriptsOnPath*") {
-    [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$scriptsOnPath", "User")
-    Write-Host "   [OK] Added $scriptsOnPath to user PATH" -ForegroundColor DarkGreen
-    Write-Host "   [!!]  Restart your terminal for PATH change to take effect" -ForegroundColor Yellow
+if ($SkipPathUpdate) {
+    Write-Host "   [>>]  Skipping user PATH update (--SkipPathUpdate)" -ForegroundColor DarkGray
+} elseif ($currentPath -notlike "*$scriptsOnPath*") {
+    try {
+        [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$scriptsOnPath", "User")
+        Write-Host "   [OK] Added $scriptsOnPath to user PATH" -ForegroundColor DarkGreen
+        Write-Host "   [!!]  Restart your terminal for PATH change to take effect" -ForegroundColor Yellow
+    } catch {
+        Write-Host "   [!!]  Could not update user PATH: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
 } else {
     Write-Host "   [>>]  bin\ already in PATH" -ForegroundColor DarkGray
 }
@@ -1428,10 +1447,19 @@ foreach ($pair in $canonicalPairs) {
     }
 }
 
+$moduleSourceDir = Join-Path $RepoRoot "lib\modules"
+$moduleTargetDir = Join-Path $GsdGlobalDir "lib\modules"
+if (Test-Path $moduleSourceDir) {
+    Copy-Item -Path (Join-Path $moduleSourceDir "*") -Destination $moduleTargetDir -Recurse -Force
+    Write-Host "   [OK] modules synced" -ForegroundColor DarkGreen
+}
+
 $promptDirs = @(
     @{ Source = Join-Path $RepoRoot "prompts\claude"; Target = Join-Path $GsdGlobalDir "prompts\claude" },
     @{ Source = Join-Path $RepoRoot "prompts\codex";  Target = Join-Path $GsdGlobalDir "prompts\codex" },
-    @{ Source = Join-Path $RepoRoot "prompts\gemini"; Target = Join-Path $GsdGlobalDir "prompts\gemini" }
+    @{ Source = Join-Path $RepoRoot "prompts\council"; Target = Join-Path $GsdGlobalDir "prompts\council" },
+    @{ Source = Join-Path $RepoRoot "prompts\gemini"; Target = Join-Path $GsdGlobalDir "prompts\gemini" },
+    @{ Source = Join-Path $RepoRoot "prompts\shared"; Target = Join-Path $GsdGlobalDir "prompts\shared" }
 )
 
 foreach ($dirPair in $promptDirs) {
@@ -1480,8 +1508,8 @@ Write-Host "    Ctrl+Shift+P -> 'Run Task' -> 'GSD: Convergence Loop'" -Foregrou
 Write-Host ""
 Write-Host "  EXPECTED PROJECT STRUCTURE:" -ForegroundColor Yellow
 Write-Host "    your-repo\" -ForegroundColor DarkGray
-Write-Host "    +-- design\figma\v01\     <- Figma deliverables" -ForegroundColor DarkGray
-Write-Host "    +-- design\figma\v02\     <- latest picked automatically" -ForegroundColor DarkGray
+Write-Host "    +-- design\web\v01\       <- interface deliverables" -ForegroundColor DarkGray
+Write-Host "    +-- design\mcp\v02\       <- latest picked automatically" -ForegroundColor DarkGray
 Write-Host "    +-- docs\                 <- SDLC specs (Phase A-E)" -ForegroundColor DarkGray
 Write-Host "    +-- src\                  <- your code" -ForegroundColor DarkGray
 Write-Host ""

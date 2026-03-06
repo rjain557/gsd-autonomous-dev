@@ -742,7 +742,7 @@ function Invoke-AgentFallback {
 # ===========================================
 
 # Override the original Invoke-WithRetry with quota + network + diagnosis awareness
-$script:OriginalInvokeWithRetry = ${function:Invoke-WithRetry}
+$script:OriginalInvokeWithRetry = ${function:Invoke-WithRetryCore}
 
 function Invoke-WithRetry {
     param(

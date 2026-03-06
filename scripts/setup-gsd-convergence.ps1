@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     This script:
-    1. Detects the latest Figma design version from \design\figma\v##
+    1. Detects the latest interface design version from \design\<interface>\v##
     2. References SDLC spec docs from \docs\ (Phase A through Phase E)
     3. Creates the full .gsd/ convergence loop structure
     4. Creates the convergence-loop.ps1 orchestrator
@@ -34,30 +34,40 @@ Write-Host ""
 
 Write-Host "Repo root: $RepoRoot" -ForegroundColor Yellow
 
-# Check for design\figma\v## folders
-$figmaBase = Join-Path $RepoRoot "design\figma"
-if (-not (Test-Path $figmaBase)) {
-    Write-Host "[XX] design\figma\ not found at $figmaBase" -ForegroundColor Red
-    Write-Host "   Expected: design\figma\v01, design\figma\v02, etc." -ForegroundColor Red
+# Check for design\<interface>\v## folders
+$designBase = Join-Path $RepoRoot "design"
+if (-not (Test-Path $designBase)) {
+    Write-Host "[XX] design\ not found at $designBase" -ForegroundColor Red
+    Write-Host "   Expected: design\web\v01, design\mcp\v02, etc." -ForegroundColor Red
     exit 1
 }
 
-# Find latest Figma version (highest v## number)
-$figmaVersions = Get-ChildItem -Path $figmaBase -Directory |
-    Where-Object { $_.Name -match '^v(\d+)$' } |
-    Sort-Object { [int]($_.Name -replace '^v', '') } -Descending
+# Find latest design version (highest v## number across interface folders)
+$figmaVersions = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+    $ifaceDir = $_
+    Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^v(\d+)$' } |
+        ForEach-Object {
+            [PSCustomObject]@{
+                Interface = $ifaceDir.Name
+                Name = $_.Name
+                FullName = $_.FullName
+                VersionNumber = [int]($_.Name -replace '^v', '')
+            }
+        }
+} | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false }
 
 if ($figmaVersions.Count -eq 0) {
-    Write-Host "[XX] No v## folders found in design\figma\" -ForegroundColor Red
+    Write-Host "[XX] No v## folders found in design\<interface>\" -ForegroundColor Red
     exit 1
 }
 
 $latestFigma = $figmaVersions[0]
 $latestFigmaVersion = $latestFigma.Name
 $latestFigmaPath = $latestFigma.FullName
-$figmaRelPath = "design\figma\$latestFigmaVersion"
+$figmaRelPath = "design\$($latestFigma.Interface)\$latestFigmaVersion"
 
-Write-Host "[ART] Latest Figma version: $latestFigmaVersion ($latestFigmaPath)" -ForegroundColor Green
+Write-Host "[ART] Latest design version: $($latestFigma.Interface)\$latestFigmaVersion ($latestFigmaPath)" -ForegroundColor Green
 
 # List Figma deliverables
 $figmaFiles = Get-ChildItem -Path $latestFigmaPath -Recurse -File
@@ -708,15 +718,23 @@ $Health = 0
 $StallCount = 0
 $TargetHealth = 100
 
-# -- Detect latest Figma version --
-$figmaBase = Join-Path $RepoRoot "design\figma"
-$latestFigma = Get-ChildItem -Path $figmaBase -Directory |
-    Where-Object { $_.Name -match '^v(\d+)$' } |
-    Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-    Select-Object -First 1
+# -- Detect latest design version --
+$designBase = Join-Path $RepoRoot "design"
+$latestFigma = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+    $ifaceDir = $_
+    Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^v(\d+)$' } |
+        ForEach-Object {
+            [PSCustomObject]@{
+                Interface = $ifaceDir.Name
+                Version = $_.Name
+                VersionNumber = [int]($_.Name -replace '^v', '')
+            }
+        }
+} | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
 
-$FigmaVersion = $latestFigma.Name
-$FigmaPath = "design\figma\$FigmaVersion"
+$FigmaVersion = $latestFigma.Version
+$FigmaPath = "design\$($latestFigma.Interface)\$FigmaVersion"
 
 # -- Helper functions --
 function Get-Health {
@@ -1028,7 +1046,7 @@ Write-Host "  [OK] GSD Convergence Loop - Setup Complete!" -ForegroundColor Gree
 Write-Host "==============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Structure created:  .gsd\" -ForegroundColor White
-Write-Host "  [ART] Figma version:      $FigmaVersion ($FigmaPath)" -ForegroundColor White
+Write-Host "  [ART] Design version:     $latestFigmaVersion ($figmaRelPath)" -ForegroundColor White
 Write-Host "  [CLIP] SDLC docs:          docs\ (Phase A-E)" -ForegroundColor White
 Write-Host ""
 Write-Host "  HOW TO RUN:" -ForegroundColor Yellow

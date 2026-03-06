@@ -368,7 +368,7 @@ function Invoke-AgentFallback {
 # RETRY WITH ADAPTIVE BATCH REDUCTION
 # ===========================================
 
-function Invoke-WithRetry {
+function Invoke-WithRetryCore {
     param(
         [string]$Agent,           # "claude", "codex", or "gemini"
         [string]$Prompt,
@@ -933,15 +933,23 @@ if (-not (Test-Path $BpGlobalDir)) {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 }
 
-# -- Detect Figma --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+# -- Detect design deliverables --
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"; $FigmaPath = "none"
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
-    if ($latest) { $FigmaVersion = $latest.Name; $FigmaPath = "design\figma\$FigmaVersion" }
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
+    if ($latest) { $FigmaVersion = $latest.Version; $FigmaPath = "design\$($latest.Interface)\$FigmaVersion" }
 }
 
 # -- State files --
@@ -1295,15 +1303,23 @@ foreach ($dir in $projectDirs) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 
-# -- Detect Figma --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+# -- Detect design deliverables --
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"; $FigmaPath = "none"
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
-    if ($latest) { $FigmaVersion = $latest.Name; $FigmaPath = "design\figma\$FigmaVersion" }
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
+    if ($latest) { $FigmaVersion = $latest.Version; $FigmaPath = "design\$($latest.Interface)\$FigmaVersion" }
 }
 
 # -- State files --

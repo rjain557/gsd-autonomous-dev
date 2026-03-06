@@ -297,7 +297,7 @@ Examples: `my.project.v2` becomes `my-project-v2`, `My_App` becomes `my-app`
 
 ### install-gsd-all.ps1
 
-Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 36 scripts in dependency order. Idempotent (safe to re-run for updates). The repository contains 42 scripts total (1 master installer + 1 pre-flight + 36 run by installer + 4 standalone utilities).
+Master installer. Runs install-gsd-prerequisites.ps1 (pre-flight check) then all 36 scripts in dependency order. Idempotent (safe to re-run for updates). The repository currently contains 54 PowerShell scripts total across installer, runtime, blueprint, and utility folders.
 
 Usage:
 
@@ -341,7 +341,7 @@ Adds VS Code keyboard shortcuts (Ctrl+Shift+G chords).
 
 ## Core Scripts (executed by installer)
 
-The master installer (`install-gsd-all.ps1`) runs these 35 scripts in order. Each is idempotent and safe to re-run.
+The master installer (`install-gsd-all.ps1`) runs these 36 scripts in order. Each is idempotent and safe to re-run.
 
 ### install-gsd-global.ps1 (Script 1)
 

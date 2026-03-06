@@ -37,11 +37,10 @@
       "max_tokens": 8192,
       "temperature": 0.3,
       "role": [
-        "execute",
         "review",
         "research"
       ],
-      "supports_tools": true,
+      "supports_tools": false,
       "enabled": true
     },
     "deepseek": {
@@ -52,11 +51,10 @@
       "max_tokens": 8192,
       "temperature": 0.3,
       "role": [
-        "execute",
         "review",
         "research"
       ],
-      "supports_tools": true,
+      "supports_tools": false,
       "enabled": true
     },
     "glm5": {
@@ -67,11 +65,10 @@
       "max_tokens": 8192,
       "temperature": 0.3,
       "role": [
-        "execute",
         "review",
         "research"
       ],
-      "supports_tools": true,
+      "supports_tools": false,
       "enabled": true
     },
     "minimax": {
@@ -82,11 +79,10 @@
       "max_tokens": 8192,
       "temperature": 0.3,
       "role": [
-        "execute",
         "review",
         "research"
       ],
-      "supports_tools": true,
+      "supports_tools": false,
       "enabled": true
     }
   },

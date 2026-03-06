@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 35 scripts in correct order.
+    GSD Master Installer - Runs ALL 36 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 

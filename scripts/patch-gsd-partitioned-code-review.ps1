@@ -296,14 +296,17 @@ if (Test-Path $resilienceFile) {
                 $exitCode = $LASTEXITCODE
             }
 '@
-    $newCodexDispatch = @'
+$newCodexDispatch = @'
             } elseif ($Agent -eq "codex") {
                 $output = codex exec --full-auto $effectivePrompt 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "gemini") {
-                $geminiArgs = @("-p", $effectivePrompt)
-                if ($GeminiMode) { $geminiArgs += "--approval-mode"; $geminiArgs += $GeminiMode }
-                else { $geminiArgs += "--approval-mode"; $geminiArgs += "plan" }
+                $geminiArgs = if ($GeminiMode) {
+                    $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+                } else {
+                    @("--approval-mode", "plan")
+                }
+                $geminiArgs = @("-p", $effectivePrompt) + $geminiArgs
                 $output = gemini @geminiArgs 2>&1
                 $exitCode = $LASTEXITCODE
             }

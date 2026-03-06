@@ -121,15 +121,26 @@ function gsd-status {
         Write-Host "  GSD Health: not initialized" -ForegroundColor DarkGray
     }
 
-    # Detect Figma version
-    $figmaBase = Join-Path $repoRoot "design\figma"
-    if (Test-Path $figmaBase) {
-        $latest = Get-ChildItem -Path $figmaBase -Directory |
-            Where-Object { $_.Name -match '^v(\d+)$' } |
-            Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
+    # Detect latest design deliverable version across supported interface folders.
+    $designRoot = Join-Path $repoRoot "design"
+    if (Test-Path $designRoot) {
+        $latest = Get-ChildItem -Path $designRoot -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $ifaceDir = $_
+                Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^v(\d+)$' } |
+                    ForEach-Object {
+                        [pscustomobject]@{
+                            Interface = $ifaceDir.Name
+                            Version = $_.Name
+                            SortVersion = [int]($_.Name -replace '^v', '')
+                        }
+                    }
+            } |
+            Sort-Object SortVersion -Descending |
             Select-Object -First 1
         if ($latest) {
-            Write-Host "  Figma:      $($latest.Name)" -ForegroundColor DarkGray
+            Write-Host "  Design:     $($latest.Interface)\$($latest.Version)" -ForegroundColor DarkGray
         }
     }
 
