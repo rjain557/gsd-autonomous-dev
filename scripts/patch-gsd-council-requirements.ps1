@@ -152,6 +152,12 @@ Rules:
 - READ actual source files to determine status accurately
 - Prefix IDs with {{ID_PREFIX}} (e.g., {{ID_PREFIX}}-001, {{ID_PREFIX}}-002)
 - Number IDs starting from {{ID_START}} (e.g., {{ID_PREFIX}}-{{ID_START}})
+- For Figma Make _analysis/ files (06-api-contracts.md, 10-screen-state-matrix.md,
+  03-design-system.md, 05-data-types.md, 09-storyboards.md, etc.), extract EVERY
+  discrete requirement including: API endpoints, screen states, design tokens,
+  TypeScript interfaces, user flow steps, and edge cases
+- If assessment context is provided below, use detected-patterns.json and
+  work-classification.json to accurately set requirement statuses
 '@
 
 Set-Content -Path (Join-Path $promptDir "requirements-extract-chunk.md") -Value $chunkExtract -Encoding UTF8
@@ -312,7 +318,11 @@ Also write {{GSD_DIR}}\health\health-current.json:
 Also write {{GSD_DIR}}\health\drift-report.md listing all not_started and partial requirements.
 
 Rules:
-- Calculate health_score = (satisfied / total) * 100
+- Calculate health_score using PRIORITY-WEIGHTED formula:
+  health = (sum of priority_weight x satisfied) / (sum of priority_weight x total) x 100
+  where: high=3, medium=2, low=1. Partial requirements get 0.5 credit.
+  Also calculate flat_health_score = (satisfied / total) * 100 for comparison.
+  Add "scoring_method": "priority-weighted" and "flat_health_score": N to meta.
 - Sort requirements by: sdlc_phase, priority desc, pattern
 '@
 
@@ -361,23 +371,35 @@ $councilReqCode = @'
 function Get-SpecFiles {
     <#
     .SYNOPSIS
-        Scans docs/ and design/ for spec files to partition across agents.
+        Scans docs/, design/, and all Figma Make _analysis/ folders for spec files.
         Returns array of relative file paths.
+    .DESCRIPTION
+        Scans three sources:
+        1. docs/ recursively for .md files (SDLC specs)
+        2. design/ for _analysis and _stubs .md files (latest version per interface)
+        3. All detected interface _analysis/ folders via Find-ProjectInterfaces
+           This captures the 12 Figma Make deliverables (06-api-contracts.md,
+           10-screen-state-matrix.md, 03-design-system.md, 05-data-types.md,
+           09-storyboards.md, etc.) that contain machine-readable, exhaustive specs.
     #>
     param([string]$RepoRoot)
 
     $specFiles = @()
+    $seenPaths = @{}  # Deduplicate across sources
 
-    # Scan docs/ recursively for .md files
+    # Source 1: Scan docs/ recursively for .md files
     $docsDir = Join-Path $RepoRoot "docs"
     if (Test-Path $docsDir) {
         Get-ChildItem -Path $docsDir -Recurse -Filter "*.md" -File | ForEach-Object {
             $rel = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
-            $specFiles += $rel
+            if (-not $seenPaths.ContainsKey($rel)) {
+                $specFiles += $rel
+                $seenPaths[$rel] = $true
+            }
         }
     }
 
-    # Scan design/ for _analysis .md files (latest version only)
+    # Source 2: Scan design/ for _analysis and _stubs .md files (legacy path)
     $designDir = Join-Path $RepoRoot "design"
     if (Test-Path $designDir) {
         $versions = Get-ChildItem -Path $designDir -Recurse -Directory | Where-Object {
@@ -390,8 +412,45 @@ function Get-SpecFiles {
                 $_.FullName -like "*_analysis*" -or $_.FullName -like "*_stubs*"
             } | ForEach-Object {
                 $rel = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
-                $specFiles += $rel
+                if (-not $seenPaths.ContainsKey($rel)) {
+                    $specFiles += $rel
+                    $seenPaths[$rel] = $true
+                }
             }
+        }
+    }
+
+    # Source 3: Scan ALL Figma Make _analysis/ folders from detected interfaces
+    # This captures the 12 deliverables that blueprint uses but convergence previously skipped
+    if (Get-Command Find-ProjectInterfaces -ErrorAction SilentlyContinue) {
+        try {
+            $interfaces = Find-ProjectInterfaces -RepoRoot $RepoRoot
+            foreach ($iface in $interfaces) {
+                if ($iface.HasAnalysis -and $iface.AnalysisDir) {
+                    # Scan all files in _analysis/ (not just .md - includes .json, .ts, etc.)
+                    Get-ChildItem -Path $iface.AnalysisDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+                        $rel = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
+                        if (-not $seenPaths.ContainsKey($rel)) {
+                            $specFiles += $rel
+                            $seenPaths[$rel] = $true
+                        }
+                    }
+                }
+                # Also include _stubs/ files from detected interfaces
+                if ($iface.HasStubs -and $iface.StubsDir) {
+                    Get-ChildItem -Path $iface.StubsDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                        $_.Extension -in @('.md', '.sql', '.cs', '.ts', '.json')
+                    } | ForEach-Object {
+                        $rel = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
+                        if (-not $seenPaths.ContainsKey($rel)) {
+                            $specFiles += $rel
+                            $seenPaths[$rel] = $true
+                        }
+                    }
+                }
+            }
+        } catch {
+            Write-Host "  [WARN] Interface scan failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
         }
     }
 
@@ -522,6 +581,45 @@ function Invoke-CouncilRequirements {
         return $result
     }
 
+    # ── PRE-EXTRACTION ASSESSMENT PASS ──
+    # Run a lightweight assessment scan before council extraction so agents
+    # know what code already exists, avoiding duplicate/misclassified statuses
+    $assessmentContext = ""
+    $assessmentDir = Join-Path $GsdDir "assessment"
+    if (-not (Test-Path $assessmentDir)) { New-Item -ItemType Directory -Path $assessmentDir -Force | Out-Null }
+
+    $detectedPatternsPath = Join-Path $assessmentDir "detected-patterns.json"
+    $workClassificationPath = Join-Path $assessmentDir "work-classification.json"
+
+    if ((Test-Path $detectedPatternsPath) -or (Test-Path $workClassificationPath)) {
+        Write-Host "  [ASSESS] Injecting pre-existing assessment data into extraction context..." -ForegroundColor Cyan
+        $assessmentContext = "`n## Pre-Extraction Assessment Context`n"
+        $assessmentContext += "The following assessment data was gathered from a prior codebase scan.`n"
+        $assessmentContext += "Use this to accurately classify requirement statuses (satisfied/partial/not_started).`n`n"
+
+        if (Test-Path $detectedPatternsPath) {
+            $assessmentContext += "### Detected Patterns`nRead: $detectedPatternsPath`n"
+            $assessmentContext += "(Contains: framework, ORM, architecture, frontend state management, DB engine, compliance patterns)`n`n"
+        }
+        if (Test-Path $workClassificationPath) {
+            $assessmentContext += "### Work Classification`nRead: $workClassificationPath`n"
+            $assessmentContext += "(Contains: skip/refactor/extend/build_new classification for each known requirement)`n`n"
+        }
+
+        # Also check for coverage analysis and file inventory
+        $coveragePath = Join-Path $assessmentDir "coverage-analysis.json"
+        $inventoryPath = Join-Path $assessmentDir "file-inventory.json"
+        if (Test-Path $coveragePath) {
+            $assessmentContext += "### Coverage Analysis`nRead: $coveragePath`n`n"
+        }
+        if (Test-Path $inventoryPath) {
+            $assessmentContext += "### File Inventory`nRead: $inventoryPath`n`n"
+        }
+    } else {
+        Write-Host "  [ASSESS] No prior assessment found -- agents will extract without existing-code context" -ForegroundColor DarkYellow
+        Write-Host "  [TIP] Run the assess phase first (prompts\claude\assess.md) for more accurate status classification" -ForegroundColor DarkGray
+    }
+
     # Scan for spec files
     Write-Host "  [SCAN] Scanning for specification files..." -ForegroundColor Cyan
     $specFiles = @(Get-SpecFiles -RepoRoot $RepoRoot)
@@ -609,7 +707,8 @@ function Invoke-CouncilRequirements {
         $job = Start-Job -ScriptBlock {
             param($resPath, $aName, $aPrefix, $aTools, $aGeminiMode,
                   $filesStr, $chunkSz, $cooldownSec, $template,
-                  $hDir, $lDir, $rRoot, $gDir, $iCtx, $ftPath, $ftExists)
+                  $hDir, $lDir, $rRoot, $gDir, $iCtx, $ftPath, $ftExists,
+                  $assessCtx)
 
             try { . $resPath } catch {
                 return @{ AgentName = $aName; Success = $false; Error = "Failed to load resilience: $($_.Exception.Message)"; ReqCount = 0; ChunksFailed = 0 }
@@ -650,6 +749,11 @@ function Invoke-CouncilRequirements {
 
                 if ($ftExists) {
                     $prompt += "`n`n## Repository File Map`nRead: $ftPath"
+                }
+
+                # Inject pre-extraction assessment context if available
+                if ($assessCtx) {
+                    $prompt += "`n`n$assessCtx"
                 }
 
                 $logFile = Join-Path $lDir "council-requirements-$aName-chunk$chunkNum.log"
@@ -727,7 +831,7 @@ function Invoke-CouncilRequirements {
             $agent.AllowedTools, $agent.GeminiMode,
             $filesStr, $chunkSize, $cooldown, $extractTemplate,
             $healthDir, $logDir, $RepoRoot, $GsdDir, $InterfaceContext,
-            $fileTreePath, $fileTreeExists
+            $fileTreePath, $fileTreeExists, $assessmentContext
         )
 
         $extractJobs += @{ Job = $job; Agent = $agent }
@@ -1330,12 +1434,27 @@ function Merge-CouncilRequirementsLocal {
     $satisfied = @($mergedReqs | Where-Object { $_.status -eq "satisfied" }).Count
     $partial = @($mergedReqs | Where-Object { $_.status -eq "partial" }).Count
     $notStarted = @($mergedReqs | Where-Object { $_.status -eq "not_started" }).Count
-    $healthScore = if ($total -gt 0) { [math]::Round(($satisfied / $total) * 100, 1) } else { 0 }
+
+    # Priority-weighted health scoring: high=3, medium=2, low=1
+    # This surfaces critical gaps instead of burying them in a flat percentage
+    $priorityWeights = @{ "high" = 3; "medium" = 2; "low" = 1 }
+    $weightedSatisfied = 0.0
+    $weightedTotal = 0.0
+    foreach ($req in $mergedReqs) {
+        $w = if ($req.priority -and $priorityWeights.ContainsKey($req.priority)) { $priorityWeights[$req.priority] } else { 1 }
+        $weightedTotal += $w
+        if ($req.status -eq "satisfied") { $weightedSatisfied += $w }
+        elseif ($req.status -eq "partial") { $weightedSatisfied += ($w * 0.5) }  # Partial gets half credit
+    }
+    $healthScore = if ($weightedTotal -gt 0) { [math]::Round(($weightedSatisfied / $weightedTotal) * 100, 1) } else { 0 }
+    $flatHealthScore = if ($total -gt 0) { [math]::Round(($satisfied / $total) * 100, 1) } else { 0 }
 
     $matrix = [PSCustomObject]@{
         meta = [PSCustomObject]@{
             total_requirements  = $total; satisfied = $satisfied; partial = $partial
             not_started = $notStarted; health_score = $healthScore; iteration = 0
+            flat_health_score   = $flatHealthScore
+            scoring_method      = "priority-weighted"
             extraction_method   = "council-local-merge"
             agents_participated = @($AgentOutputs.Keys | Sort-Object)
             timestamp           = (Get-Date).ToUniversalTime().ToString("o")
@@ -1347,7 +1466,7 @@ function Merge-CouncilRequirementsLocal {
     $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
 
     $healthPath = Join-Path $GsdDir "health\health-current.json"
-    @{ health_score = $healthScore; total_requirements = $total; satisfied = $satisfied; partial = $partial; not_started = $notStarted; iteration = 0 } | ConvertTo-Json | Set-Content $healthPath -Encoding UTF8
+    @{ health_score = $healthScore; flat_health_score = $flatHealthScore; scoring_method = "priority-weighted"; total_requirements = $total; satisfied = $satisfied; partial = $partial; not_started = $notStarted; iteration = 0 } | ConvertTo-Json | Set-Content $healthPath -Encoding UTF8
 
     $high = @($mergedReqs | Where-Object { $_.confidence -eq "high" }).Count
     $med = @($mergedReqs | Where-Object { $_.confidence -eq "medium" }).Count
@@ -1366,6 +1485,244 @@ function Merge-CouncilRequirementsLocal {
 
     Write-Host "  [OK] Local merge: $total requirements (${healthScore}% health)" -ForegroundColor Green
     $result.Success = $true
+    return $result
+}
+
+function Invoke-ComplianceRequirementsExtraction {
+    <#
+    .SYNOPSIS
+        Reads security-standards.md and generates discrete requirement entries
+        for applicable compliance rules based on detected project patterns.
+        Without this, a project can converge to 100% while missing WCAG/OWASP/HIPAA compliance.
+    .RETURNS
+        @{ Success = bool; RequirementsAdded = int; Error = string }
+    #>
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir
+    )
+
+    $result = @{ Success = $false; RequirementsAdded = 0; Error = "" }
+    $globalDir = Join-Path $env:USERPROFILE ".gsd-global"
+    $secStandardsPath = Join-Path $globalDir "prompts\shared\security-standards.md"
+
+    if (-not (Test-Path $secStandardsPath)) {
+        # Also check local repo copy
+        $secStandardsPath = Join-Path $RepoRoot "prompts\shared\security-standards.md"
+        if (-not (Test-Path $secStandardsPath)) {
+            $result.Error = "security-standards.md not found"
+            return $result
+        }
+    }
+
+    $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
+    if (-not (Test-Path $matrixPath)) {
+        $result.Error = "requirements-matrix.json not found -- run extraction first"
+        return $result
+    }
+
+    try {
+        $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+    } catch {
+        $result.Error = "Failed to parse requirements-matrix.json"
+        return $result
+    }
+
+    $existingIds = @($matrix.requirements | ForEach-Object { $_.id })
+    $existingDescs = @($matrix.requirements | ForEach-Object { $_.description.ToLower() })
+
+    # Detect project patterns to determine which compliance rules apply
+    $assessmentDir = Join-Path $GsdDir "assessment"
+    $patternsPath = Join-Path $assessmentDir "detected-patterns.json"
+    $detectedPatterns = @{
+        has_backend = $false; has_frontend = $false; has_database = $false
+        has_hipaa = $false; has_auth = $false; has_web_ui = $false
+    }
+
+    if (Test-Path $patternsPath) {
+        try {
+            $patterns = Get-Content $patternsPath -Raw | ConvertFrom-Json
+            $detectedPatterns.has_backend = ($null -ne $patterns.backend -and $patterns.backend.framework)
+            $detectedPatterns.has_frontend = ($null -ne $patterns.frontend -and $patterns.frontend.framework)
+            $detectedPatterns.has_database = ($null -ne $patterns.database -and $patterns.database.engine)
+            $detectedPatterns.has_hipaa = ($null -ne $patterns.compliance -and $patterns.compliance.hipaa_patterns_detected)
+            $detectedPatterns.has_auth = ($null -ne $patterns.compliance -and $patterns.compliance.rbac_implemented)
+        } catch {}
+    } else {
+        # Fallback: detect from file extensions in the repo
+        $csFiles = @(Get-ChildItem -Path $RepoRoot -Recurse -Filter "*.cs" -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+        $tsxFiles = @(Get-ChildItem -Path $RepoRoot -Recurse -Filter "*.tsx" -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+        $sqlFiles = @(Get-ChildItem -Path $RepoRoot -Recurse -Filter "*.sql" -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+        $detectedPatterns.has_backend = $csFiles.Count -gt 0
+        $detectedPatterns.has_frontend = $tsxFiles.Count -gt 0
+        $detectedPatterns.has_database = $sqlFiles.Count -gt 0
+        $detectedPatterns.has_web_ui = $tsxFiles.Count -gt 0
+    }
+
+    # Parse security-standards.md for compliance rules
+    $secContent = Get-Content $secStandardsPath -Raw
+    $complianceReqs = @()
+
+    # Extract rules from markdown tables: | ID | Rule |
+    $ruleMatches = [regex]::Matches($secContent, '\|\s*(SEC-[A-Z]+-\d+|COMP-[A-Z]+-\d+)\s*\|\s*(.+?)\s*\|')
+
+    foreach ($m in $ruleMatches) {
+        $ruleId = $m.Groups[1].Value
+        $ruleDesc = $m.Groups[2].Value.Trim()
+
+        # Skip if already in matrix (fuzzy match)
+        $ruleLower = $ruleDesc.ToLower()
+        $isDuplicate = $false
+        foreach ($existing in $existingDescs) {
+            if ($existing -like "*$ruleLower*" -or $ruleLower -like "*$existing*") {
+                $isDuplicate = $true; break
+            }
+        }
+        # Also skip if the rule ID is already referenced
+        foreach ($existing in $existingDescs) {
+            if ($existing -like "*$($ruleId.ToLower())*") {
+                $isDuplicate = $true; break
+            }
+        }
+        if ($isDuplicate) { continue }
+
+        # Determine applicability based on detected patterns
+        $applicable = $false
+        $pattern = "security"
+
+        if ($ruleId -match '^SEC-NET-') {
+            $applicable = $detectedPatterns.has_backend
+            $pattern = "backend"
+        }
+        elseif ($ruleId -match '^SEC-SQL-') {
+            $applicable = $detectedPatterns.has_database
+            $pattern = "database"
+        }
+        elseif ($ruleId -match '^SEC-FE-') {
+            $applicable = $detectedPatterns.has_frontend -or $detectedPatterns.has_web_ui
+            $pattern = "frontend"
+        }
+        elseif ($ruleId -match '^COMP-HIPAA-') {
+            $applicable = $detectedPatterns.has_hipaa -or $detectedPatterns.has_backend
+            $pattern = "security"
+        }
+        elseif ($ruleId -match '^COMP-SOC2-') {
+            $applicable = $detectedPatterns.has_backend
+            $pattern = "security"
+        }
+        elseif ($ruleId -match '^COMP-PCI-') {
+            # PCI only if payment-related code detected
+            $applicable = $false
+            $pattern = "security"
+        }
+        elseif ($ruleId -match '^COMP-GDPR-') {
+            $applicable = $detectedPatterns.has_backend -or $detectedPatterns.has_frontend
+            $pattern = "security"
+        }
+
+        if ($applicable) {
+            $complianceReqs += @{
+                RuleId = $ruleId
+                Description = "[$ruleId] $ruleDesc"
+                Pattern = $pattern
+                Priority = if ($ruleId -match 'SEC-NET-0[1-9]|SEC-SQL-0[1-3]|COMP-HIPAA') { "high" } else { "medium" }
+            }
+        }
+    }
+
+    # Add WCAG accessibility requirements if web frontend detected
+    if ($detectedPatterns.has_frontend -or $detectedPatterns.has_web_ui) {
+        $wcagRules = @(
+            @{ Id = "WCAG-01"; Desc = "All interactive elements must be keyboard-accessible (WCAG 2.1.1)"; Priority = "high" }
+            @{ Id = "WCAG-02"; Desc = "All images must have alt text or aria-label (WCAG 1.1.1)"; Priority = "high" }
+            @{ Id = "WCAG-03"; Desc = "Color contrast ratio must be at least 4.5:1 for normal text (WCAG 1.4.3)"; Priority = "medium" }
+            @{ Id = "WCAG-04"; Desc = "Form inputs must have associated labels (WCAG 1.3.1)"; Priority = "high" }
+            @{ Id = "WCAG-05"; Desc = "Focus indicators must be visible on all interactive elements (WCAG 2.4.7)"; Priority = "medium" }
+            @{ Id = "WCAG-06"; Desc = "Page must have proper heading hierarchy (h1-h6) (WCAG 1.3.1)"; Priority = "low" }
+            @{ Id = "WCAG-07"; Desc = "ARIA roles and attributes must be used correctly (WCAG 4.1.2)"; Priority = "medium" }
+            @{ Id = "WCAG-08"; Desc = "Error messages must be programmatically associated with inputs (WCAG 3.3.1)"; Priority = "medium" }
+        )
+
+        foreach ($wcag in $wcagRules) {
+            $wcagLower = $wcag.Desc.ToLower()
+            $isDup = $false
+            foreach ($existing in $existingDescs) {
+                if ($existing -like "*$($wcag.Id.ToLower())*" -or $existing -like "*wcag*$($wcagLower.Substring(0, 30))*") {
+                    $isDup = $true; break
+                }
+            }
+            if (-not $isDup) {
+                $complianceReqs += @{
+                    RuleId = $wcag.Id
+                    Description = "[$($wcag.Id)] $($wcag.Desc)"
+                    Pattern = "frontend"
+                    Priority = $wcag.Priority
+                }
+            }
+        }
+    }
+
+    if ($complianceReqs.Count -eq 0) {
+        Write-Host "  [COMPLIANCE] No new compliance requirements to add (all covered or not applicable)" -ForegroundColor DarkGray
+        $result.Success = $true
+        return $result
+    }
+
+    # Add compliance requirements to the matrix
+    $nextId = $matrix.requirements.Count + 1
+    foreach ($cr in $complianceReqs) {
+        $newReq = [PSCustomObject]@{
+            id           = "REQ-{0:D3}" -f $nextId
+            description  = $cr.Description
+            source       = "compliance"
+            spec_doc     = "prompts/shared/security-standards.md"
+            sdlc_phase   = "review"
+            pattern      = $cr.Pattern
+            priority     = $cr.Priority
+            status       = "not_started"
+            satisfied_by = ""
+            notes        = "Auto-extracted from security-standards.md ($($cr.RuleId))"
+            confidence   = "high"
+        }
+        $matrix.requirements += $newReq
+        $nextId++
+    }
+
+    # Recalculate health with priority-weighted scoring
+    $total = $matrix.requirements.Count
+    $satisfied = @($matrix.requirements | Where-Object { $_.status -eq "satisfied" }).Count
+    $partial = @($matrix.requirements | Where-Object { $_.status -eq "partial" }).Count
+    $notStarted = @($matrix.requirements | Where-Object { $_.status -eq "not_started" }).Count
+
+    $priorityWeights = @{ "high" = 3; "medium" = 2; "low" = 1 }
+    $wSat = 0.0; $wTotal = 0.0
+    foreach ($req in $matrix.requirements) {
+        $w = if ($req.priority -and $priorityWeights.ContainsKey($req.priority)) { $priorityWeights[$req.priority] } else { 1 }
+        $wTotal += $w
+        if ($req.status -eq "satisfied") { $wSat += $w }
+        elseif ($req.status -eq "partial") { $wSat += ($w * 0.5) }
+    }
+    $healthScore = if ($wTotal -gt 0) { [math]::Round(($wSat / $wTotal) * 100, 1) } else { 0 }
+
+    $matrix.meta.total_requirements = $total
+    $matrix.meta.satisfied = $satisfied
+    $matrix.meta.partial = $partial
+    $matrix.meta.not_started = $notStarted
+    $matrix.meta.health_score = $healthScore
+    if (-not $matrix.meta.scoring_method) {
+        $matrix.meta | Add-Member -NotePropertyName "scoring_method" -NotePropertyValue "priority-weighted" -ErrorAction SilentlyContinue
+    }
+
+    $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+
+    # Update health file
+    $healthPath = Join-Path $GsdDir "health\health-current.json"
+    @{ health_score = $healthScore; scoring_method = "priority-weighted"; total_requirements = $total; satisfied = $satisfied; partial = $partial; not_started = $notStarted; iteration = 0 } |
+        ConvertTo-Json | Set-Content $healthPath -Encoding UTF8
+
+    Write-Host "  [COMPLIANCE] Added $($complianceReqs.Count) compliance/accessibility requirements (health: ${healthScore}%)" -ForegroundColor Cyan
+    $result.Success = $true
+    $result.RequirementsAdded = $complianceReqs.Count
     return $result
 }
 

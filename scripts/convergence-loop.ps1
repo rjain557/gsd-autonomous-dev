@@ -195,6 +195,18 @@ if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
     }
     $Health = Get-Health
     Write-Host "  [OK] Matrix built. Health: ${Health}%" -ForegroundColor Green
+
+    # Compliance & accessibility requirements extraction (runs after Phase 0)
+    # Reads security-standards.md and generates requirement entries for applicable
+    # rules based on detected project patterns (web frontend -> WCAG, backend -> OWASP, etc.)
+    if (Get-Command Invoke-ComplianceRequirementsExtraction -ErrorAction SilentlyContinue) {
+        Write-Host "  [SHIELD] Extracting compliance & accessibility requirements..." -ForegroundColor Cyan
+        $compResult = Invoke-ComplianceRequirementsExtraction -RepoRoot $RepoRoot -GsdDir $GsdDir
+        if ($compResult.Success -and $compResult.RequirementsAdded -gt 0) {
+            $Health = Get-Health
+            Write-Host "  [OK] Added $($compResult.RequirementsAdded) compliance requirements. Health: ${Health}%" -ForegroundColor Green
+        }
+    }
     Write-Host ""
 }
 
@@ -241,6 +253,106 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
     $Health = Get-Health
     if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
+
+    # ── MID-CONVERGENCE REQUIREMENT DISCOVERY ──
+    # After code-review, check if the review identified components/patterns
+    # not in the requirements matrix. If so, auto-create requirement entries.
+    if (-not $DryRun -and $Iteration -gt 0) {
+        $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
+        if (Test-Path $reviewPath) {
+            try {
+                $matrixData = Get-Content $MatrixFile -Raw | ConvertFrom-Json
+                $existingDescs = @($matrixData.requirements | ForEach-Object { $_.description.ToLower() })
+                $reviewContent = Get-Content $reviewPath -Raw
+
+                # Look for common discovery patterns in review output
+                $discoveredReqs = @()
+                $patterns = @(
+                    @{ Regex = '(?i)missing\s+(component|module|service|endpoint|page|screen|route)\s*[:\-]\s*(.+)'; Type = "component" },
+                    @{ Regex = '(?i)no\s+(test|spec|validation)\s+for\s+(.+)'; Type = "testing" },
+                    @{ Regex = '(?i)undocumented\s+(api|endpoint|route)\s*[:\-]?\s*(.+)'; Type = "api" },
+                    @{ Regex = '(?i)new\s+dependency\s*[:\-]\s*(.+)'; Type = "dependency" }
+                )
+
+                foreach ($p in $patterns) {
+                    $matches = [regex]::Matches($reviewContent, $p.Regex)
+                    foreach ($m in $matches) {
+                        $desc = $m.Groups[$m.Groups.Count - 1].Value.Trim()
+                        if ($desc.Length -gt 10 -and $desc.Length -lt 200) {
+                            # Check it's not already in the matrix (fuzzy match)
+                            $isDuplicate = $false
+                            $descLower = $desc.ToLower()
+                            foreach ($existing in $existingDescs) {
+                                if ($existing -like "*$descLower*" -or $descLower -like "*$existing*") {
+                                    $isDuplicate = $true; break
+                                }
+                            }
+                            if (-not $isDuplicate) {
+                                $discoveredReqs += @{
+                                    description = $desc
+                                    type = $p.Type
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if ($discoveredReqs.Count -gt 0) {
+                    Write-Host "  [DISCOVER] Found $($discoveredReqs.Count) new requirement(s) from code-review" -ForegroundColor DarkCyan
+                    $nextId = $matrixData.requirements.Count + 1
+                    foreach ($dr in $discoveredReqs) {
+                        $newReq = [PSCustomObject]@{
+                            id           = "REQ-{0:D3}" -f $nextId
+                            description  = $dr.description
+                            source       = "discovered"
+                            spec_doc     = "code-review iteration $Iteration"
+                            sdlc_phase   = "review"
+                            pattern      = $dr.type
+                            priority     = "medium"
+                            status       = "not_started"
+                            satisfied_by = ""
+                            notes        = "Auto-discovered from code-review output at iteration $Iteration"
+                            confidence   = "medium"
+                        }
+                        $matrixData.requirements += $newReq
+                        $nextId++
+                        Write-Host "    + $($newReq.id): $($dr.description)" -ForegroundColor DarkGray
+                    }
+
+                    # Recalculate health with priority-weighted scoring
+                    $total = $matrixData.requirements.Count
+                    $sat = @($matrixData.requirements | Where-Object { $_.status -eq "satisfied" }).Count
+                    $par = @($matrixData.requirements | Where-Object { $_.status -eq "partial" }).Count
+                    $ns = @($matrixData.requirements | Where-Object { $_.status -eq "not_started" }).Count
+
+                    $priorityWeights = @{ "high" = 3; "medium" = 2; "low" = 1 }
+                    $wSat = 0.0; $wTotal = 0.0
+                    foreach ($req in $matrixData.requirements) {
+                        $w = if ($req.priority -and $priorityWeights.ContainsKey($req.priority)) { $priorityWeights[$req.priority] } else { 1 }
+                        $wTotal += $w
+                        if ($req.status -eq "satisfied") { $wSat += $w }
+                        elseif ($req.status -eq "partial") { $wSat += ($w * 0.5) }
+                    }
+                    $newHealthScore = if ($wTotal -gt 0) { [math]::Round(($wSat / $wTotal) * 100, 1) } else { 0 }
+
+                    $matrixData.meta.total_requirements = $total
+                    $matrixData.meta.satisfied = $sat
+                    $matrixData.meta.partial = $par
+                    $matrixData.meta.not_started = $ns
+                    $matrixData.meta.health_score = $newHealthScore
+                    $matrixData | ConvertTo-Json -Depth 10 | Set-Content $MatrixFile -Encoding UTF8
+
+                    # Update health file
+                    @{ health_score = $newHealthScore; total_requirements = $total; satisfied = $sat; partial = $par; not_started = $ns; iteration = $Iteration } |
+                        ConvertTo-Json | Set-Content $HealthFile -Encoding UTF8
+                    $Health = $newHealthScore
+                }
+            } catch {
+                # Discovery is best-effort; don't block convergence
+                Write-Host "  [WARN] Requirement discovery failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+    }
 
     # Throttle between phases
     if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
