@@ -1,0 +1,166 @@
+{
+  "name": "vscode-gsd",
+  "displayName": "GSD — AI Spec-Driven Development",
+  "description": "Real-time dashboards, requirement tracking, and agent control for the GSD autonomous development engine",
+  "version": "0.1.0",
+  "publisher": "gsd-team",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "workspaceContains:.gsd"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gsd-explorer",
+          "title": "GSD Engine",
+          "icon": "media/gsd-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "gsd-explorer": [
+        {
+          "id": "gsd-engine-status",
+          "name": "Engine Status"
+        },
+        {
+          "id": "gsd-requirements",
+          "name": "Requirements"
+        },
+        {
+          "id": "gsd-agents",
+          "name": "Agents"
+        },
+        {
+          "id": "gsd-costs",
+          "name": "Token Costs"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "gsd.openDashboard",
+        "title": "GSD: Open Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "gsd.startConverge",
+        "title": "GSD: Start Convergence Loop"
+      },
+      {
+        "command": "gsd.stopConverge",
+        "title": "GSD: Stop Convergence Loop"
+      },
+      {
+        "command": "gsd.runAssess",
+        "title": "GSD: Run Assessment"
+      },
+      {
+        "command": "gsd.runBlueprint",
+        "title": "GSD: Run Blueprint"
+      },
+      {
+        "command": "gsd.showCosts",
+        "title": "GSD: Show Cost Summary"
+      },
+      {
+        "command": "gsd.refreshAll",
+        "title": "GSD: Refresh All Data",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gsd.openRequirement",
+        "title": "GSD: Go to Requirement"
+      },
+      {
+        "command": "gsd.filterRequirements",
+        "title": "GSD: Filter Requirements"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "gsd.openDashboard",
+          "when": "view == gsd-engine-status",
+          "group": "navigation"
+        },
+        {
+          "command": "gsd.refreshAll",
+          "when": "view == gsd-engine-status",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "gsd.openDashboard",
+        "key": "ctrl+shift+g d",
+        "mac": "cmd+shift+g d"
+      },
+      {
+        "command": "gsd.startConverge",
+        "key": "ctrl+shift+g c",
+        "mac": "cmd+shift+g c"
+      },
+      {
+        "command": "gsd.runAssess",
+        "key": "ctrl+shift+g a",
+        "mac": "cmd+shift+g a"
+      }
+    ],
+    "configuration": {
+      "title": "GSD Engine",
+      "properties": {
+        "gsd.gsdPath": {
+          "type": "string",
+          "default": ".gsd",
+          "description": "Relative path to the .gsd directory"
+        },
+        "gsd.pollIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "File watcher poll interval in milliseconds"
+        },
+        "gsd.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show GSD status in the status bar"
+        },
+        "gsd.autoOpenDashboard": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open dashboard when engine starts"
+        },
+        "gsd.scriptsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to GSD scripts directory (auto-detected if empty)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}
