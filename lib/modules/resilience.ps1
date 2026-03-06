@@ -33,6 +33,7 @@ function Test-PreFlight {
         @{ Name="claude"; Cmd="claude --version" },
         @{ Name="codex"; Cmd="codex --version" },
         @{ Name="gemini"; Cmd="gemini --version" },
+        @{ Name="kimi"; Cmd="kimi --version" },
         @{ Name="git"; Cmd="git --version" }
     )
     foreach ($tool in $tools) {
@@ -42,6 +43,9 @@ function Test-PreFlight {
         } catch {
             if ($tool.Name -eq "gemini") {
                 $warnings += "gemini CLI not found - research/spec-fix will fall back to codex"
+                Write-Host "    [!!]  $($tool.Name) not found (optional)" -ForegroundColor DarkYellow
+            } elseif ($tool.Name -eq "kimi") {
+                $warnings += "kimi CLI not found - 4th agent slot will be unavailable (install: pip install kimi-cli)"
                 Write-Host "    [!!]  $($tool.Name) not found (optional)" -ForegroundColor DarkYellow
             } else {
                 $errors += "$($tool.Name) CLI not found in PATH"
@@ -1533,7 +1537,15 @@ function Invoke-AgentFallback {
     $fbTokenData = $null
 
     try {
-        if ($FallbackAgent -eq "codex") {
+        if ($FallbackAgent -eq "kimi") {
+            $kimiFbArgs = @("--print")
+            if ($env:GSD_KIMI_THINKING -eq "false") { $kimiFbArgs += "--no-thinking" } else { $kimiFbArgs += "--thinking" }
+            $rawOutput = $Prompt | kimi @kimiFbArgs 2>&1
+            $fbExit = $LASTEXITCODE
+            $parsed = Extract-TokensFromOutput -Agent "kimi" -RawOutput ($rawOutput -join "`n")
+            if ($parsed -and $parsed.TextOutput) { $fbOutput = $parsed.TextOutput -split "`n"; $fbTokenData = $parsed }
+            else { $fbOutput = $rawOutput }
+        } elseif ($FallbackAgent -eq "codex") {
             $codexFbArgs = @("exec", "--full-auto", "--json", "-")
             $codexFbEffort = $env:GSD_CODEX_EFFORT
             if ($codexFbEffort) { $codexFbArgs = @("exec", "--full-auto", "--json", "-c", "model_reasoning_effort=$codexFbEffort", "-") }
@@ -1687,8 +1699,22 @@ function Invoke-WithRetry {
                 } else {
                     $output = $rawOutput
                 }
+            } elseif ($Agent -eq "kimi") {
+                # Kimi CLI: --print for non-interactive mode (implicitly --yolo)
+                # GSD_KIMI_THINKING=false uses --no-thinking for bulk tasks (faster)
+                $kimiArgs = @("--print")
+                if ($env:GSD_KIMI_THINKING -eq "false") { $kimiArgs += "--no-thinking" } else { $kimiArgs += "--thinking" }
+                $rawOutput = $effectivePrompt | kimi @kimiArgs 2>&1
+                $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "kimi" -RawOutput ($rawOutput -join "`n")
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = $rawOutput
+                }
             } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
-                # OpenAI-compatible REST API agents (kimi, deepseek, glm5, minimax, etc.)
+                # OpenAI-compatible REST API agents (deepseek, glm5, minimax, etc.)
                 $rawOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt $effectivePrompt
                 $exitCode = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted)") { 1 } else { 0 }
                 $parsed = Extract-TokensFromOutput -Agent $Agent -RawOutput $rawOutput
@@ -10068,12 +10094,19 @@ function Invoke-CouncilRequirements {
         } catch {}
     }
 
-    # Agent definitions with cross-verify assignments
+    # Agent definitions with cross-verify assignments (4-agent ring: claude→codex→gemini→kimi→claude)
     $agents = @(
-        @{ Name = "claude";  Prefix = "CL";  Verifier = "codex";  AllowedTools = "Read,Write,Bash"; GeminiMode = $null }
-        @{ Name = "codex";   Prefix = "CX";  Verifier = "gemini"; AllowedTools = $null;             GeminiMode = $null }
-        @{ Name = "gemini";  Prefix = "GM";  Verifier = "claude"; AllowedTools = $null;             GeminiMode = "--approval-mode yolo" }
+        @{ Name = "claude";  Prefix = "CL";  Verifier = "codex";  AllowedTools = "Read,Write,Bash"; GeminiMode = $null; KimiMode = $null }
+        @{ Name = "codex";   Prefix = "CX";  Verifier = "gemini"; AllowedTools = $null;             GeminiMode = $null; KimiMode = $null }
+        @{ Name = "gemini";  Prefix = "GM";  Verifier = "kimi";   AllowedTools = $null;             GeminiMode = "--approval-mode yolo"; KimiMode = $null }
+        @{ Name = "kimi";    Prefix = "KM";  Verifier = "claude"; AllowedTools = $null;             GeminiMode = $null; KimiMode = "--no-thinking" }
     )
+    # Remove kimi if not installed
+    if (-not (Get-Command kimi -ErrorAction SilentlyContinue)) {
+        $agents = @($agents | Where-Object { $_.Name -ne "kimi" })
+        # Fix broken verifier chain: gemini now verifies back to claude
+        ($agents | Where-Object { $_.Name -eq "gemini" }).Verifier = "claude"
+    }
 
     # Filter out skipped agent and adjust verifier chain
     if ($SkipAgent) {
@@ -10200,7 +10233,7 @@ function Invoke-CouncilRequirements {
         $filesStr = $agentFiles -join "|"
 
         $job = Start-Job -ScriptBlock {
-            param($resPath, $aName, $aPrefix, $aTools, $aGeminiMode,
+            param($resPath, $aName, $aPrefix, $aTools, $aGeminiMode, $aKimiMode,
                   $filesStr, $chunkSz, $cooldownSec, $template,
                   $hDir, $lDir, $rRoot, $gDir, $iCtx, $ftPath, $ftExists)
 
@@ -10258,6 +10291,7 @@ function Invoke-CouncilRequirements {
                     }
                     if ($aTools) { $invokeParams["AllowedTools"] = $aTools }
                     if ($aGeminiMode) { $invokeParams["GeminiMode"] = $aGeminiMode }
+                    if ($aKimiMode -and $aName -eq "kimi") { $env:GSD_KIMI_THINKING = "false" }
 
                     Invoke-WithRetry @invokeParams | Out-Null
 
@@ -10317,7 +10351,7 @@ function Invoke-CouncilRequirements {
             }
         } -ArgumentList @(
             $resiliencePath, $agent.Name, $agent.Prefix,
-            $agent.AllowedTools, $agent.GeminiMode,
+            $agent.AllowedTools, $agent.GeminiMode, $agent.KimiMode,
             $filesStr, $chunkSize, $cooldown, $extractTemplate,
             $healthDir, $logDir, $RepoRoot, $GsdDir, $InterfaceContext,
             $fileTreePath, $fileTreeExists

@@ -1,98 +1,104 @@
-{
-  "version": "1.0.0",
-  "description": "Canonical source registry for all 7 configured GSD models.",
-  "agents": {
-    "claude": {
-      "type": "cli",
-      "cli_cmd": "claude",
-      "role": [
-        "review",
-        "plan",
-        "synthesize",
-        "execute"
-      ]
-    },
-    "codex": {
-      "type": "cli",
-      "cli_cmd": "codex",
-      "role": [
-        "execute",
-        "review"
-      ]
-    },
-    "gemini": {
-      "type": "cli",
-      "cli_cmd": "gemini",
-      "role": [
-        "research",
-        "spec-fix",
-        "review"
-      ]
-    },
-    "kimi": {
-      "type": "openai-compat",
-      "endpoint": "https://api.moonshot.ai/v1/chat/completions",
-      "api_key_env": "KIMI_API_KEY",
-      "model_id": "kimi-k2.5",
-      "max_tokens": 8192,
-      "temperature": 0.3,
-      "role": [
-        "review",
-        "research"
-      ],
-      "supports_tools": false,
-      "enabled": true
-    },
-    "deepseek": {
-      "type": "openai-compat",
-      "endpoint": "https://api.deepseek.com/v1/chat/completions",
-      "api_key_env": "DEEPSEEK_API_KEY",
-      "model_id": "deepseek-chat",
-      "max_tokens": 8192,
-      "temperature": 0.3,
-      "role": [
-        "review",
-        "research"
-      ],
-      "supports_tools": false,
-      "enabled": true
-    },
-    "glm5": {
-      "type": "openai-compat",
-      "endpoint": "https://api.z.ai/api/paas/v4/chat/completions",
-      "api_key_env": "GLM_API_KEY",
-      "model_id": "glm-5",
-      "max_tokens": 8192,
-      "temperature": 0.3,
-      "role": [
-        "review",
-        "research"
-      ],
-      "supports_tools": false,
-      "enabled": true
-    },
-    "minimax": {
-      "type": "openai-compat",
-      "endpoint": "https://api.minimax.io/v1/chat/completions",
-      "api_key_env": "MINIMAX_API_KEY",
-      "model_id": "MiniMax-M2.5",
-      "max_tokens": 8192,
-      "temperature": 0.3,
-      "role": [
-        "review",
-        "research"
-      ],
-      "supports_tools": false,
-      "enabled": true
-    }
-  },
-  "rotation_pool_default": [
-    "claude",
-    "codex",
-    "gemini",
-    "kimi",
-    "deepseek",
-    "glm5",
-    "minimax"
-  ]
+﻿{
+    "version":  "1.0.0",
+    "description":  "Central registry for all LLM agents. CLI agents use native CLIs; openai-compat agents use REST API.",
+    "agents":  {
+                   "claude":  {
+                                  "type":  "cli",
+                                  "cli_cmd":  "claude",
+                                  "role":  [
+                                               "review",
+                                               "plan",
+                                               "synthesize",
+                                               "execute"
+                                           ]
+                              },
+                   "codex":  {
+                                 "type":  "cli",
+                                 "cli_cmd":  "codex",
+                                 "role":  [
+                                              "execute",
+                                              "review"
+                                          ]
+                             },
+                   "gemini":  {
+                                  "type":  "cli",
+                                  "cli_cmd":  "gemini",
+                                  "role":  [
+                                               "research",
+                                               "spec-fix",
+                                               "review"
+                                           ]
+                              },
+                   "kimi":  {
+                                "type":  "cli",
+                                "cli_cmd":  "kimi",
+                                "api_key_env":  "KIMI_API_KEY",
+                                "model_id":  "kimi-k2.5",
+                                "role":  [
+                                             "execute",
+                                             "review",
+                                             "research",
+                                             "requirements"
+                                         ],
+                                "enabled":  true,
+                                "thinking_flag":  "--thinking",
+                                "no_thinking_flag":  "--no-thinking",
+                                "note":  "Kimi Code CLI v1.17+. Install: pip install kimi-cli. Auth: KIMI_API_KEY env var."
+                            },
+                   "deepseek":  {
+                                    "type":  "openai-compat",
+                                    "endpoint":  "https://api.deepseek.com/v1/chat/completions",
+                                    "api_key_env":  "DEEPSEEK_API_KEY",
+                                    "model_id":  "deepseek-chat",
+                                    "max_tokens":  8192,
+                                    "temperature":  0.3,
+                                    "role":  [
+                                                 "execute",
+                                                 "review",
+                                                 "research"
+                                             ],
+                                    "supports_tools":  true,
+                                    "enabled":  true
+                                },
+                   "glm5":  {
+                                "type":  "openai-compat",
+                                "endpoint":  "https://api.z.ai/api/paas/v4/chat/completions",
+                                "api_key_env":  "GLM_API_KEY",
+                                "model_id":  "glm-5",
+                                "max_tokens":  8192,
+                                "temperature":  0.3,
+                                "role":  [
+                                             "execute",
+                                             "review",
+                                             "research"
+                                         ],
+                                "supports_tools":  true,
+                                "enabled":  true,
+                                "endpoint_note":  "International endpoint (api.z.ai). Get API key from z.ai. Requires firewall whitelist for 128.14.69.x"
+                            },
+                   "minimax":  {
+                                   "type":  "openai-compat",
+                                   "endpoint":  "https://api.minimax.io/v1/chat/completions",
+                                   "api_key_env":  "MINIMAX_API_KEY",
+                                   "model_id":  "MiniMax-M2.5",
+                                   "max_tokens":  8192,
+                                   "temperature":  0.3,
+                                   "role":  [
+                                                "execute",
+                                                "review",
+                                                "research"
+                                            ],
+                                   "supports_tools":  true,
+                                   "enabled":  true
+                               }
+               },
+    "rotation_pool_default":  [
+                                  "claude",
+                                  "codex",
+                                  "gemini",
+                                  "kimi",
+                                  "deepseek",
+                                  "glm5",
+                                  "minimax"
+                              ]
 }

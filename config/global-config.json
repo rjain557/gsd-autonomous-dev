@@ -304,13 +304,14 @@
                                  "agents":  [
                                                 "claude",
                                                 "codex",
-                                                "gemini"
+                                                "gemini",
+                                                "kimi"
                                             ],
                                  "min_agents_for_merge":  2,
                                  "timeout_seconds":  600,
                                  "cooldown_between_agents":  5,
                                  "fallback_to_single":  true,
-                                 "chunk_size":  30
+                                 "chunk_size":  10
                              },
     "parallel_research":  {
                               "enabled":  true,

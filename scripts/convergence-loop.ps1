@@ -272,8 +272,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     $errorsThisIter = 0
 
-    # Codex reasoning effort: medium for review/research/plan, xhigh for execute
+    # Reasoning effort: medium/no-thinking for review/research/plan, full for execute
     $env:GSD_CODEX_EFFORT = "medium"
+    $env:GSD_KIMI_THINKING = "false"
 
     # 1. CODE REVIEW (Claude)
     Send-HeartbeatIfDue -Phase "code-review" -Iteration $Iteration -Health $Health -RepoName $repoName
@@ -446,7 +447,8 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # 4. EXECUTE -- Parallel sub-task or monolithic fallback
-    $env:GSD_CODEX_EFFORT = "xhigh"   # Restore full reasoning for code generation
+    $env:GSD_CODEX_EFFORT = "xhigh"       # Restore full reasoning for code generation
+    $env:GSD_KIMI_THINKING = "true"        # Restore thinking for kimi execute
     Send-HeartbeatIfDue -Phase "execute" -Iteration $Iteration -Health $Health -RepoName $repoName
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
 
