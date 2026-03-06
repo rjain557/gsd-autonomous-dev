@@ -1763,7 +1763,7 @@ function Invoke-WithRetry {
 
                 # Rotate to different agent after N consecutive quota hits
                 if ($consecutiveQuotaFails[$Agent] -ge $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) {
-                    $cliOnlyPhase = ($Phase -match "council-requirements")
+                    $cliOnlyPhase = ($Phase -match "council-requirements|council-verify")
                     $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -CliOnly:$cliOnlyPhase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent exhausted $($consecutiveQuotaFails[$Agent])x. Switching to $rotatedAgent" -ForegroundColor Yellow
@@ -1804,7 +1804,7 @@ function Invoke-WithRetry {
                     continue
                 } else {
                     # Quota didn't reset -- try rotating before giving up
-                    $cliOnlyPhase = ($Phase -match "council-requirements")
+                    $cliOnlyPhase = ($Phase -match "council-requirements|council-verify")
                     $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -CliOnly:$cliOnlyPhase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent quota didn't reset. Trying $rotatedAgent" -ForegroundColor Yellow
@@ -10656,6 +10656,8 @@ function Invoke-CouncilRequirements {
                     if (Test-Path $vOutFile) {
                         Write-Host "    [PROGRESS] ${vName} verifying ${eName}: output written [${vElapsed}s]" -ForegroundColor DarkCyan
                         $vSeen[$vKey] = $true
+                        # Output file written = work is done; stop the job cleanly rather than waiting for process exit
+                        $vj.Job | Stop-Job -ErrorAction SilentlyContinue
                     }
                 }
 
