@@ -1,4 +1,4 @@
-﻿# GSD Execute - Codex Phase
+# GSD Execute - Codex Phase
 
 You are the DEVELOPER. Generate ALL code needed to satisfy the current batch.
 You have UNLIMITED tokens - generate complete, production-ready files.
@@ -66,14 +66,44 @@ For each requirement in the batch:
 5. Create corresponding stored procedures for any new data access
 6. Create corresponding React components for any new UI
 
-## After Generating
-- Verify files have no syntax errors (run quick checks if possible)
+## MANDATORY Verification (before handoff)
+
+You MUST run these verification steps after generating code. Do NOT skip them.
+Fix ALL errors before finishing — catching them now saves an entire iteration.
+
+1. **If backend (.NET) files were created/modified:**
+   - Run `dotnet build` on the solution or affected project
+   - Fix ALL build errors (missing usings, type mismatches, missing references)
+   - If build still fails after 2 attempts, document the remaining errors in handoff-log
+
+2. **If frontend (React/TypeScript) files were created/modified:**
+   - Run `npx tsc --noEmit` (or the project's type-check command)
+   - Fix ALL type errors (missing imports, wrong props, type mismatches)
+   - If available, run `npx eslint --no-warn` on changed files
+
+3. **If SQL files (stored procedures, migrations) were created/modified:**
+   - Verify parameter names in stored procedures match the C# calling code exactly
+   - Verify table/column names match the schema
+   - Check that every stored procedure referenced in C# code actually exists as a .sql file
+
+4. **If configuration files were modified:**
+   - Verify JSON/YAML syntax is valid
+   - Check that connection strings use parameterized format (no hardcoded credentials)
+
+5. **Cross-cutting checks:**
+   - Verify new files are in the correct directories per project structure
+   - Verify using/import statements reference packages that exist in the project
+   - Verify DI registrations exist for any new services/repositories
+
+If ANY verification fails and you cannot fix it, clearly document the failure in the handoff log
+with the exact error message so the next iteration can address it.
+
+## After Generating and Verifying
 - Append completion summary to {{GSD_DIR}}\agent-handoff\handoff-log.jsonl:
-  {"agent":"codex","action":"execute-complete","iteration":N,"files_created":[...],"files_modified":[...],"requirements_addressed":[...],"timestamp":"..."}
+  {"agent":"codex","action":"execute-complete","iteration":{{ITERATION}},"files_created":[...],"files_modified":[...],"requirements_addressed":[...],"verification":{"dotnet_build":"pass|fail|skipped","tsc":"pass|fail|skipped","sql_check":"pass|fail|skipped","errors":[...]},"timestamp":"..."}
 
 ## Boundaries
 - DO NOT modify anything in {{GSD_DIR}}\code-review\
 - DO NOT modify anything in {{GSD_DIR}}\health\
 - DO NOT modify anything in {{GSD_DIR}}\generation-queue\
 - WRITE source code + handoff log entries ONLY
-

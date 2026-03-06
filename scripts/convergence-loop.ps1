@@ -6,6 +6,8 @@
 param(
     [int]$MaxIterations = 20, [int]$StallThreshold = 3, [int]$BatchSize = 8,
     [int]$ThrottleSeconds = 30,
+    [int]$ResearchInterval = 3,       # Run research every N iterations (0 = every iteration, old behavior)
+    [int]$PushInterval = 3,           # Push to remote every N iterations (0 = every iteration)
     [string]$NtfyTopic = "",
     [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck,
     [switch]$AutoResolve, [switch]$ForceCodeReview
@@ -56,6 +58,119 @@ function Get-Health {
     try { return [double](Get-Content $HealthFile -Raw | ConvertFrom-Json).health_score } catch { return 0 }
 }
 
+# ── Adaptive Throttle (#5) ──
+# Start at configured value, reduce to 10s if no quota errors in last 3 iterations, increase on quota errors
+$script:AdaptiveThrottle = $ThrottleSeconds
+$script:QuotaErrorHistory = @()  # Track last N iterations' quota error status
+
+function Get-AdaptiveThrottle {
+    param([string]$BetweenPhases = "")
+    # No throttle between plan→execute (plan is lightweight)
+    if ($BetweenPhases -eq "plan-to-execute") { return 0 }
+    return $script:AdaptiveThrottle
+}
+
+function Update-AdaptiveThrottle {
+    param([bool]$HadQuotaError = $false)
+    $script:QuotaErrorHistory += $HadQuotaError
+    # Keep only last 5 entries
+    if ($script:QuotaErrorHistory.Count -gt 5) {
+        $script:QuotaErrorHistory = $script:QuotaErrorHistory[-5..-1]
+    }
+    $recentErrors = ($script:QuotaErrorHistory | Where-Object { $_ -eq $true }).Count
+    if ($recentErrors -gt 0) {
+        # Had quota errors recently — increase throttle
+        $script:AdaptiveThrottle = [math]::Min(60, $ThrottleSeconds + 10)
+    } elseif ($script:QuotaErrorHistory.Count -ge 3) {
+        # 3+ iterations without quota errors — reduce throttle
+        $script:AdaptiveThrottle = [math]::Max(10, [math]::Floor($script:AdaptiveThrottle * 0.7))
+    }
+}
+
+# ── Stall Detection Helpers (#9) ──
+$script:HealthWindow = @()  # Track last N health values for oscillation detection
+
+function Test-HealthOscillation {
+    # Returns $true if health is oscillating (range < 3% over 4+ readings)
+    if ($script:HealthWindow.Count -lt 4) { return $false }
+    $recent = $script:HealthWindow[-4..-1]
+    $range = ($recent | Measure-Object -Maximum -Minimum)
+    return (($range.Maximum - $range.Minimum) -lt 3)
+}
+
+function Test-NearCeilingStall {
+    param([double]$Health)
+    # Returns $true if health > 90% and hasn't changed by > 1% in last 2 readings
+    if ($Health -le 90 -or $script:HealthWindow.Count -lt 2) { return $false }
+    $recent = $script:HealthWindow[-2..-1]
+    $maxDelta = ($recent | ForEach-Object { [math]::Abs($_ - $Health) } | Measure-Object -Maximum).Maximum
+    return ($maxDelta -le 1)
+}
+
+# ── Research Scheduling (#4) ──
+function Test-ShouldRunResearch {
+    param([int]$Iter, [int]$StallCnt, [double]$Health, [double]$PrevHealth)
+    # Always run on iterations 1-2 (establishing patterns)
+    if ($Iter -le 2) { return $true }
+    # Always run if stalled
+    if ($StallCnt -gt 0) { return $true }
+    # Always run if regression detected
+    if ($Health -lt $PrevHealth) { return $true }
+    # Run at configured interval
+    if ($ResearchInterval -gt 0 -and ($Iter % $ResearchInterval) -eq 0) { return $true }
+    # Skip otherwise
+    return $false
+}
+
+# ── Council Scheduling (#6) ──
+function Test-ShouldRunNonBlockingCouncil {
+    param([string]$CouncilType, [int]$StallCnt, [double]$Health, [double]$PrevHealth)
+    # Always run if stalled
+    if ($StallCnt -gt 0) { return $true }
+    # Always run if regression
+    if ($Health -lt $PrevHealth) { return $true }
+    # Always run near convergence (quality matters most)
+    if ($Health -ge 80) { return $true }
+    # Skip non-blocking councils otherwise to save time
+    return $false
+}
+
+# ── Conflict Detection for Parallel Execute (#10) ──
+function Find-FileConflicts {
+    param([array]$BatchItems)
+    # Detect file overlaps between batch items targeting the same files
+    $fileMap = @{}
+    $conflicts = @()
+    foreach ($item in $BatchItems) {
+        $files = @()
+        if ($item.target_files) { $files = $item.target_files }
+        foreach ($f in $files) {
+            $normFile = $f.Replace("/", "\").ToLower()
+            if ($fileMap.ContainsKey($normFile)) {
+                $conflicts += @{ File = $f; Req1 = $fileMap[$normFile]; Req2 = $item.req_id }
+            } else {
+                $fileMap[$normFile] = $item.req_id
+            }
+        }
+    }
+    return $conflicts
+}
+
+# ── Git Push Scheduling (#7) ──
+$script:LastPushIteration = 0
+$script:PendingPush = $false
+
+function Test-ShouldPush {
+    param([int]$Iter, [double]$Health, [double]$PrevHealth)
+    # Always push if health improved by > 5%
+    if (($Health - $PrevHealth) -gt 5) { return $true }
+    # Push at configured interval
+    if ($PushInterval -le 0) { return $true }  # 0 = every iteration (old behavior)
+    if (($Iter - $script:LastPushIteration) -ge $PushInterval) { return $true }
+    $script:PendingPush = $true
+    return $false
+}
+
 # -- Startup --
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Green
@@ -93,7 +208,9 @@ if ($checkpoint -and $checkpoint.pipeline -eq "converge") {
 }
 
 Write-Host "  Health: ${Health}% -> 100% | Batch: $CurrentBatchSize | Interfaces: $($Interfaces.Count)" -ForegroundColor White
-if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle: ${ThrottleSeconds}s between agent calls (prevents quota exhaustion)" -ForegroundColor DarkGray }
+if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle: ${ThrottleSeconds}s initial (adaptive — will auto-tune)" -ForegroundColor DarkGray }
+if ($ResearchInterval -gt 0) { Write-Host "  Research: every $ResearchInterval iterations (+ on stall/regression)" -ForegroundColor DarkGray }
+if ($PushInterval -gt 0) { Write-Host "  Push:     every $PushInterval iterations (+ on convergence/significant progress)" -ForegroundColor DarkGray }
 if ($ForceCodeReview) { Write-Host "  Force:    code-review will run even at 100% health" -ForegroundColor Yellow }
 if ($script:NTFY_TOPIC) { Write-Host "  Notify:   ntfy.sh/$($script:NTFY_TOPIC)" -ForegroundColor DarkGray }
 Write-Host ""
@@ -125,18 +242,34 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
         $resolved += "`n`n## Repository File Map`nA live file map is maintained at:`n- JSON: $fileMapPath`n- Tree: $fileTreePath`nRead the tree file to understand the current repo structure. This map is updated after every iteration.`n"
     }
     # Supervisor: inject error context and prompt hints from previous iteration
+    # CAP injected context (#11) — limit each context source to prevent unbounded growth
     $errorCtxPath = Join-Path $GsdDir "supervisor\error-context.md"
     $hintPath = Join-Path $GsdDir "supervisor\prompt-hints.md"
     if (Test-Path $errorCtxPath) {
-        $resolved += "`n`n## Previous Iteration Errors`n" + (Get-Content $errorCtxPath -Raw)
+        $errorCtx = (Get-Content $errorCtxPath -Raw)
+        # Cap error context to 2000 chars (keep most recent content)
+        if ($errorCtx.Length -gt 2000) {
+            $errorCtx = "... (truncated — showing last 2000 chars)`n" + $errorCtx.Substring($errorCtx.Length - 2000)
+        }
+        $resolved += "`n`n## Previous Iteration Errors`n" + $errorCtx
     }
     if (Test-Path $hintPath) {
-        $resolved += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw)
+        $hintCtx = (Get-Content $hintPath -Raw)
+        # Cap hints to 1000 chars
+        if ($hintCtx.Length -gt 1000) {
+            $hintCtx = $hintCtx.Substring($hintCtx.Length - 1000)
+        }
+        $resolved += "`n`n## Supervisor Instructions`n" + $hintCtx
     }
-    # Council: inject feedback from previous council review
+    # Council: inject ONLY the most recent council feedback, capped
     $councilFeedbackPath = Join-Path $GsdDir "supervisor\council-feedback.md"
     if (Test-Path $councilFeedbackPath) {
-        $resolved += "`n`n" + (Get-Content $councilFeedbackPath -Raw)
+        $councilCtx = (Get-Content $councilFeedbackPath -Raw)
+        # Cap council feedback to 1500 chars
+        if ($councilCtx.Length -gt 1500) {
+            $councilCtx = $councilCtx.Substring($councilCtx.Length - 1500)
+        }
+        $resolved += "`n`n" + $councilCtx
     }
     return $resolved
 }
@@ -242,18 +375,21 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $Health = Get-Health
     if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
 
-    # Throttle between phases
-    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+    # Adaptive throttle between phases (#5)
+    $currentThrottle = Get-AdaptiveThrottle -BetweenPhases "review-to-research"
+    if ($currentThrottle -gt 0 -and -not $DryRun) {
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($ThrottleSeconds))
+            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($currentThrottle))
         }
-        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
-        Start-Sleep -Seconds $ThrottleSeconds
+        Write-Host "  [THROTTLE] ${currentThrottle}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $currentThrottle
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
     # 2. RESEARCH (Gemini plan mode, read-only - saves Claude/Codex quota)
-    if (-not $SkipResearch) {
+    # Conditional research (#4): skip when patterns are established and no issues
+    $runResearch = Test-ShouldRunResearch -Iter $Iteration -StallCnt $StallCount -Health $Health -PrevHealth $PrevHealth
+    if (-not $SkipResearch -and $runResearch) {
         Send-HeartbeatIfDue -Phase "research" -Iteration $Iteration -Health $Health -RepoName $repoName
         Write-Host "  GEMINI -> research (read-only)" -ForegroundColor Magenta
         if (-not (Test-Path "$GsdDir\research")) { New-Item -ItemType Directory -Path "$GsdDir\research" -Force | Out-Null }
@@ -280,24 +416,31 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
                     -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
             }
         }
+    } elseif (-not $SkipResearch -and -not $runResearch) {
+        Write-Host "  [SKIP] Research skipped (interval: every $ResearchInterval iters, no stall/regression)" -ForegroundColor DarkGray
     }
 
     # ── POST-RESEARCH COUNCIL (validate research before planning) ──
-    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+    # Conditional non-blocking council (#6): only run when stalled, regression, or near convergence
+    $runPostResearchCouncil = Test-ShouldRunNonBlockingCouncil -CouncilType "post-research" -StallCnt $StallCount -Health $Health -PrevHealth $PrevHealth
+    if (-not $DryRun -and $runPostResearchCouncil -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Post-research council..." -ForegroundColor DarkCyan
         $prResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "post-research"
         if (-not $prResult.Approved) {
             Write-Host "  [SCALES] Research concerns noted -- plan phase will address them" -ForegroundColor DarkYellow
         }
+    } elseif (-not $runPostResearchCouncil) {
+        Write-Host "  [SKIP] Post-research council skipped (no stall/regression, health < 80%)" -ForegroundColor DarkGray
     }
 
-    # Throttle between phases
-    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
+    # Adaptive throttle between phases (#5)
+    $currentThrottle = Get-AdaptiveThrottle -BetweenPhases "research-to-plan"
+    if ($currentThrottle -gt 0 -and -not $DryRun) {
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($ThrottleSeconds))
+            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($currentThrottle))
         }
-        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
-        Start-Sleep -Seconds $ThrottleSeconds
+        Write-Host "  [THROTTLE] ${currentThrottle}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $currentThrottle
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
@@ -315,23 +458,25 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             -AllowedTools "Read,Write,Bash" | Out-Null
     }
 
-    # Throttle between phases
-    if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
-        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($ThrottleSeconds))
-        }
-        Write-Host "  [THROTTLE] ${ThrottleSeconds}s pacing..." -ForegroundColor DarkGray
-        Start-Sleep -Seconds $ThrottleSeconds
-        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
+    # No throttle between plan→execute (#5) — plan is lightweight, skip the wait
+    # Adaptive throttle returns 0 for plan-to-execute
+    $currentThrottle = Get-AdaptiveThrottle -BetweenPhases "plan-to-execute"
+    if ($currentThrottle -gt 0 -and -not $DryRun) {
+        Write-Host "  [THROTTLE] ${currentThrottle}s pacing..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $currentThrottle
     }
 
     # ── PRE-EXECUTE COUNCIL (validate plan before code generation) ──
-    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+    # Conditional non-blocking council (#6): only run when stalled, regression, or near convergence
+    $runPreExecuteCouncil = Test-ShouldRunNonBlockingCouncil -CouncilType "pre-execute" -StallCnt $StallCount -Health $Health -PrevHealth $PrevHealth
+    if (-not $DryRun -and $runPreExecuteCouncil -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Pre-execute council..." -ForegroundColor DarkCyan
         $peResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "pre-execute"
         if (-not $peResult.Approved) {
             Write-Host "  [SCALES] Plan concerns noted -- executing with caution" -ForegroundColor DarkYellow
         }
+    } elseif (-not $runPreExecuteCouncil) {
+        Write-Host "  [SKIP] Pre-execute council skipped (no stall/regression, health < 80%)" -ForegroundColor DarkGray
     }
 
     # 4. EXECUTE -- Parallel sub-task or monolithic fallback
@@ -361,6 +506,28 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     if ($useParallel -and -not $DryRun) {
+        # Conflict detection for parallel execute (#10)
+        $queuePath = Join-Path $GsdDir "generation-queue\queue-current.json"
+        if (Test-Path $queuePath) {
+            try {
+                $queueData = Get-Content $queuePath -Raw | ConvertFrom-Json
+                if ($queueData.batch) {
+                    $fileConflicts = Find-FileConflicts -BatchItems $queueData.batch
+                    if ($fileConflicts.Count -gt 0) {
+                        Write-Host "  [WARN] File conflicts detected in parallel batch — $($fileConflicts.Count) overlap(s):" -ForegroundColor Yellow
+                        foreach ($c in $fileConflicts) {
+                            Write-Host "    $($c.File): $($c.Req1) vs $($c.Req2)" -ForegroundColor DarkYellow
+                        }
+                        # Group conflicting requirements into the same sub-task by writing a conflict map
+                        $conflictMapPath = Join-Path $GsdDir "generation-queue\conflict-map.json"
+                        $fileConflicts | ConvertTo-Json -Depth 3 | Set-Content $conflictMapPath -Encoding UTF8
+                        Write-Host "  [INFO] Conflict map written — parallel executor should group conflicting reqs" -ForegroundColor DarkGray
+                    }
+                }
+            } catch {
+                Write-Host "  [WARN] Could not check for file conflicts: $_" -ForegroundColor DarkYellow
+            }
+        }
         Write-Host "  [WRENCH] PARALLEL EXECUTE (batch: $CurrentBatchSize)" -ForegroundColor Magenta
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
             Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "execute" -Agent "parallel" -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize
@@ -387,12 +554,20 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
                 if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
                 $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
                 "$commitSubject`n`nCompleted: $($result.Completed -join ', ')`nFailed: $($result.Failed -join ', ')`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
-                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
+                # Stage source code + .gsd tracked files, exclude temp artifacts (#7)
+                git add src/ docs/ *.sln *.csproj *.json *.sql *.tsx *.ts *.cs 2>$null
+                git add .gsd/health/ .gsd/agent-handoff/ .gsd/code-review/ .gsd/specs/ 2>$null
+                git diff --cached --quiet 2>$null; if ($LASTEXITCODE -ne 0) { git commit -F $commitMsgFile --no-verify 2>$null }
                 Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
             } else {
-                git add -A; git commit -m $commitSubject --no-verify 2>$null
+                git add src/ docs/ *.sln *.csproj *.json *.sql *.tsx *.ts *.cs 2>$null
+                git add .gsd/health/ .gsd/agent-handoff/ .gsd/code-review/ .gsd/specs/ 2>$null
+                git diff --cached --quiet 2>$null; if ($LASTEXITCODE -ne 0) { git commit -m $commitSubject --no-verify 2>$null }
             }
-            git push 2>$null
+            # Batch push: only push at intervals or on significant progress (#7)
+            if (Test-ShouldPush -Iter $Iteration -Health $Health -PrevHealth $PrevHealth) {
+                git push 2>$null; $script:LastPushIteration = $Iteration; $script:PendingPush = $false
+            }
 
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
@@ -453,12 +628,20 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
                 if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
                 $commitMsgFile = Join-Path $GsdDir ".commit-msg.tmp"
                 "$commitSubject`n`n$reviewText" | Set-Content $commitMsgFile -Encoding UTF8
-                git add -A; git commit -F $commitMsgFile --no-verify 2>$null
+                # Stage source code + .gsd tracked files, exclude temp artifacts (#7)
+                git add src/ docs/ *.sln *.csproj *.json *.sql *.tsx *.ts *.cs 2>$null
+                git add .gsd/health/ .gsd/agent-handoff/ .gsd/code-review/ .gsd/specs/ 2>$null
+                git diff --cached --quiet 2>$null; if ($LASTEXITCODE -ne 0) { git commit -F $commitMsgFile --no-verify 2>$null }
                 Remove-Item $commitMsgFile -ErrorAction SilentlyContinue
             } else {
-                git add -A; git commit -m $commitSubject --no-verify 2>$null
+                git add src/ docs/ *.sln *.csproj *.json *.sql *.tsx *.ts *.cs 2>$null
+                git add .gsd/health/ .gsd/agent-handoff/ .gsd/code-review/ .gsd/specs/ 2>$null
+                git diff --cached --quiet 2>$null; if ($LASTEXITCODE -ne 0) { git commit -m $commitSubject --no-verify 2>$null }
             }
-            git push 2>$null
+            # Batch push: only push at intervals or on significant progress (#7)
+            if (Test-ShouldPush -Iter $Iteration -Health $Health -PrevHealth $PrevHealth) {
+                git push 2>$null; $script:LastPushIteration = $Iteration; $script:PendingPush = $false
+            }
             if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
                 $null = Update-FileMap -Root $RepoRoot -GsdPath $GsdDir
             }
@@ -476,8 +659,15 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         }
     }
 
-    # Regression + stall
+    # Regression + stall detection (#9: smarter stall detection with oscillation and near-ceiling)
     $NewHealth = Get-Health
+    $script:HealthWindow += $NewHealth  # Track for oscillation detection
+    if ($script:HealthWindow.Count -gt 10) { $script:HealthWindow = $script:HealthWindow[-10..-1] }
+
+    # Update adaptive throttle based on whether this iteration had quota errors
+    $hadQuotaErr = ($errorsThisIter -gt 0)  # Rough proxy — could be refined
+    Update-AdaptiveThrottle -HadQuotaError $hadQuotaErr
+
     if (-not $DryRun -and $Iteration -gt 1 -and (Test-HealthRegression -PreviousHealth $PrevHealth -CurrentHealth $NewHealth -RepoRoot $RepoRoot -Iteration $Iteration)) {
         $errorsThisIter++
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
@@ -489,7 +679,28 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         $script:LAST_NOTIFY_TIME = Get-Date
         $Health = $PrevHealth; $StallCount++; continue
     }
-    if ($NewHealth -le $PrevHealth -and $Iteration -gt 1) {
+
+    # Smart stall detection (#9): oscillation, near-ceiling, and standard stall
+    $isOscillating = Test-HealthOscillation
+    $isNearCeilingStall = Test-NearCeilingStall -Health $NewHealth
+    $isStandardStall = ($NewHealth -le $PrevHealth -and $Iteration -gt 1)
+
+    if ($isOscillating) {
+        $StallCount += 2  # Oscillation is worse than a single stall — accelerate diagnosis
+        Write-Host "  [!!]  OSCILLATION detected (health bouncing within 3% range) | Stall -> $StallCount/$StallThreshold" -ForegroundColor Red
+        Send-GsdNotification -Title "Iter ${Iteration}: Oscillation" `
+            -Message "$repoName | Health oscillating near ${NewHealth}% | Stall $StallCount/$StallThreshold" `
+            -Tags "warning" -Priority "high"
+        $script:LAST_NOTIFY_TIME = Get-Date
+    } elseif ($isNearCeilingStall) {
+        $StallCount++
+        Write-Host "  [!!]  Near-ceiling stall (${NewHealth}% > 90%, delta < 1%) | Stall $StallCount/$StallThreshold" -ForegroundColor DarkYellow
+        # For near-ceiling stalls, don't reduce batch — instead, the plan prompt's precision mode will handle it
+        Send-GsdNotification -Title "Iter ${Iteration}: Near-Ceiling Stall" `
+            -Message "$repoName | Health: ${NewHealth}% — stuck near convergence | Stall $StallCount/$StallThreshold" `
+            -Tags "hourglass" -Priority "default"
+        $script:LAST_NOTIFY_TIME = Get-Date
+    } elseif ($isStandardStall) {
         $StallCount++
         $CurrentBatchSize = [math]::Max($script:MIN_BATCH_SIZE, [math]::Floor($CurrentBatchSize * 0.75))
         Write-Host "  [!!]  Stall $StallCount/$StallThreshold | Batch -> $CurrentBatchSize" -ForegroundColor DarkYellow
@@ -497,21 +708,31 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             -Message "$repoName | Health: ${NewHealth}% (unchanged) | Batch -> $CurrentBatchSize | Stall $StallCount/$StallThreshold" `
             -Tags "hourglass" -Priority "default"
         $script:LAST_NOTIFY_TIME = Get-Date
-        if ($StallCount -ge $StallThreshold -and -not $DryRun) {
-            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-                Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $NewHealth -LastError "Stalled: $StallCount consecutive iterations with no progress"
-            }
-            # Multi-agent stall diagnosis via council
-            if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
-                Write-Host "  [SCALES] Multi-agent stall diagnosis..." -ForegroundColor DarkCyan
-                Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $NewHealth -Pipeline $Pipeline -CouncilType "stall-diagnosis" | Out-Null
-            } else {
-                Invoke-WithRetry -Agent "claude" -Prompt "Stalled at ${NewHealth}%. Read .gsd\health\*, .gsd\logs\errors.jsonl. Diagnose. Write .gsd\health\stall-diagnosis.md." `
-                    -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
-            }
-            break
+    }
+
+    if (($isOscillating -or $isNearCeilingStall -or $isStandardStall) -and $StallCount -ge $StallThreshold -and -not $DryRun) {
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            $stallReason = if ($isOscillating) { "Oscillation" } elseif ($isNearCeilingStall) { "Near-ceiling stall at ${NewHealth}%" } else { "No progress for $StallCount iterations" }
+            Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $NewHealth -LastError "Stalled: $stallReason"
         }
-    } else { $StallCount = 0; if ($CurrentBatchSize -lt $BatchSize) { $CurrentBatchSize = [math]::Min($BatchSize, $CurrentBatchSize + 1) } }
+        # Multi-agent stall diagnosis via council
+        if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
+            Write-Host "  [SCALES] Multi-agent stall diagnosis..." -ForegroundColor DarkCyan
+            Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $NewHealth -Pipeline $Pipeline -CouncilType "stall-diagnosis" | Out-Null
+        } else {
+            $stallDiagPrompt = "Stalled at ${NewHealth}%. Stall type: $stallReason. Read .gsd\health\*, .gsd\logs\errors.jsonl, .gsd\agent-handoff\handoff-log.jsonl. Diagnose root cause. If near-ceiling, identify the specific remaining requirements. Write .gsd\health\stall-diagnosis.md."
+            Invoke-WithRetry -Agent "claude" -Prompt $stallDiagPrompt `
+                -Phase "stall" -LogFile "$GsdDir\logs\stall-$Iteration.log" -CurrentBatchSize 1 -GsdDir $GsdDir | Out-Null
+        }
+        break
+    } elseif (-not $isOscillating -and -not $isNearCeilingStall -and -not $isStandardStall) {
+        # Health improved — reset stall count and potentially grow batch
+        $StallCount = 0
+        if ($CurrentBatchSize -lt $BatchSize) { $CurrentBatchSize = [math]::Min($BatchSize, $CurrentBatchSize + 1) }
+        # Clear stale error context after successful iteration (#11)
+        $errorCtxPath = Join-Path $GsdDir "supervisor\error-context.md"
+        if (Test-Path $errorCtxPath) { Remove-Item $errorCtxPath -ErrorAction SilentlyContinue }
+    }
 
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
@@ -627,6 +848,7 @@ if ($FinalHealth -ge $TargetHealth) {
     if (-not $DryRun) {
         $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
         $commitSubject = "gsd: CONVERGED at ${FinalHealth}% in $Iteration iterations"
+        # Final commit uses git add -A since this is the convergence commit — everything should be clean
         if (Test-Path $reviewPath) {
             $reviewText = (Get-Content $reviewPath -Raw).Trim()
             if ($reviewText.Length -gt 4000) { $reviewText = $reviewText.Substring(0, 4000) + "`n... (truncated)" }
@@ -638,6 +860,7 @@ if ($FinalHealth -ge $TargetHealth) {
             git add -A; git commit -m $commitSubject --no-verify 2>$null
         }
         git tag "gsd-converged-$(Get-Date -Format 'yyyyMMdd-HHmmss')" 2>$null
+        # Always push on convergence (flush any pending pushes too)
         git push --tags 2>$null
     }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
@@ -693,8 +916,12 @@ Write-Host "=========================================================" -Foregrou
             -FinalHealth $FinalHealth -Iteration $Iteration -ValidationResult $validationResult
         if ($handoffPath -and (Test-Path $handoffPath)) {
             git add $handoffPath; git commit -m "gsd: developer handoff report" --no-verify 2>$null
-            git push 2>$null
         }
+    }
+
+    # Final push: flush any pending pushes from batched push strategy (#7)
+    if ($script:PendingPush -or $true) {
+        git push 2>$null
     }
 
     Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
