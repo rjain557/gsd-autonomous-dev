@@ -266,8 +266,11 @@ function gsd-verify-requirements {
         Update-FileMap -Root $repoRoot -GsdPath $gsdDir 2>$null | Out-Null
     }
 
+    # Use medium reasoning for bulk spec scanning (xhigh is too slow for file extraction)
+    $env:GSD_CODEX_EFFORT = "medium"
     $callResult = Invoke-CouncilRequirements -RepoRoot $repoRoot -GsdDir $gsdDir `
         -DryRun:$DryRun -UseJobs $false -SkipAgent $SkipAgent -SkipVerify:$SkipVerify
+    $env:GSD_CODEX_EFFORT = ""
 
     Write-Host ""
     if ($callResult.Success -and -not $DryRun -and (Test-Path $matrixFile)) {
