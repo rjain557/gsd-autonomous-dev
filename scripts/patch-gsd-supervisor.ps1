@@ -621,7 +621,9 @@ function Save-FailurePattern {
     )
     $memoryDir = Join-Path $env:USERPROFILE ".gsd-global\supervisor"
     if (-not (Test-Path $memoryDir)) { New-Item -ItemType Directory -Path $memoryDir -Force | Out-Null }
-    $memoryFile = Join-Path $memoryDir "pattern-memory.jsonl"
+    # Write to per-project file to avoid cross-project pattern pollution
+    $projectSlug = if ($Project) { $Project -replace '[^a-zA-Z0-9_-]', '_' } else { "global" }
+    $memoryFile = Join-Path $memoryDir "pattern-memory-$projectSlug.jsonl"
 
     $entry = @{
         category = $Category
@@ -901,7 +903,7 @@ function Invoke-SupervisorLoop {
         }
 
         # Health monotonicity check (after 3+ attempts, health should be going up)
-        if ($attempt -ge 3 -and $summary.final_health -lt $lastHealth -and $lastHealth -gt 0) {
+        if ($attempt -ge 2 -and $summary.final_health -lt $lastHealth -and $lastHealth -gt 0) {
             Write-Host "  [!!] Health declining across supervisor attempts ($lastHealth% -> $($summary.final_health)%). Escalating." -ForegroundColor Red
             break
         }

@@ -275,8 +275,13 @@ function Get-LocContextForReview {
         $iters = @($m.iterations)
         if ($iters.Count -eq 0) { return "" }
 
+        # Limit to last 10 iterations to avoid token bloat in long pipelines
+        $allIterCount = $iters.Count
+        $iters = $iters | Select-Object -Last 10
+
         $lines = @()
         $lines += "## AI-Generated Lines of Code (Running Totals)"
+        if ($allIterCount -gt 10) { $lines += "_Showing last 10 of $allIterCount iterations_" }
         $lines += ""
         $lines += "| Iter | Lines Added | Lines Deleted | Net | Files | Running Total |"
         $lines += "|------|------------|---------------|-----|-------|---------------|"

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     GSD Global Convergence Engine - Installer
     Installs the GSD convergence loop as a global tool for ALL projects.
@@ -44,7 +44,7 @@
 
 param(
     [string]$UserHome = $env:USERPROFILE,
-    [string]$UserName = "rjain",
+    [string]$UserName = $env:USERNAME,
     [switch]$SkipPathUpdate
 )
 

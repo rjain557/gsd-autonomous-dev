@@ -336,10 +336,12 @@ $newQuotaHandler = @'
                     }
                 }
 
-                # CHECK: Have we exceeded the cumulative wait cap?
-                if ($totalQuotaWaitMinutes -ge $script:QUOTA_CUMULATIVE_MAX_MINUTES) {
-                    Write-Host "    [XX] Cumulative quota wait ($totalQuotaWaitMinutes min) exceeds cap ($($script:QUOTA_CUMULATIVE_MAX_MINUTES) min). Giving up." -ForegroundColor Red
-                    $result.Error = "Quota exhausted: waited $totalQuotaWaitMinutes min total across all agents"
+                # CHECK: Have we exceeded the cumulative wait cap? (wall-clock, not sum of waits)
+                if ($null -eq $quotaWallClockStart) { $quotaWallClockStart = Get-Date }
+                $wallClockMinutes = ((Get-Date) - $quotaWallClockStart).TotalMinutes
+                if ($wallClockMinutes -ge $script:QUOTA_CUMULATIVE_MAX_MINUTES) {
+                    Write-Host "    [XX] Quota wall-clock wait ($([math]::Round($wallClockMinutes,1)) min) exceeds cap ($($script:QUOTA_CUMULATIVE_MAX_MINUTES) min). Giving up." -ForegroundColor Red
+                    $result.Error = "Quota exhausted: waited $([math]::Round($wallClockMinutes,1)) min wall-clock across all agents"
                     return $result
                 }
 
@@ -441,8 +443,9 @@ $oldRetryLoopInit = @'
 $newRetryLoopInit = @'
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }
 
-    # Cumulative quota wait tracking (Fix P3)
+    # Cumulative quota wait tracking (Fix P3) - uses wall-clock time to prevent multi-agent rotation from exceeding cap
     $totalQuotaWaitMinutes = 0
+    $quotaWallClockStart = $null   # Set on first quota hit; caps on actual elapsed time not summed waits
     $consecutiveQuotaFails = @{}  # Per-agent: @{ "codex" = 3; "gemini" = 1 }
 
     for ($i = $Attempt; $i -le $MaxAttempts; $i++) {
@@ -554,7 +557,7 @@ function Get-NextAvailableAgent {
         try {
             $raw = Get-Content $cooldownPath -Raw | ConvertFrom-Json
             foreach ($prop in $raw.PSObject.Properties) {
-                $cooldowns[$prop.Name] = [datetime]$prop.Value
+                try { $cooldowns[$prop.Name] = [datetime]$prop.Value } catch { <# skip corrupted entry #> }
             }
         } catch { }
     }

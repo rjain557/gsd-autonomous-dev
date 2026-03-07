@@ -524,16 +524,17 @@ function Invoke-LlmCouncil {
 
         # Quorum check on chunks
         if ($totalChunkSuccesses -lt 1) {
-            Write-Host "  [SCALES] All chunk reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
+            # All reviewers failed - do not auto-approve; return blocking state for supervisor escalation
+            Write-Host "  [SCALES] All chunk reviews failed -- blocking (no auto-approve)" -ForegroundColor Red
             $fallbackResult = @{
-                Approved = $true
+                Approved = $false
                 Findings = @{
-                    approved   = $true
-                    confidence = 50
+                    approved   = $false
+                    confidence = 0
                     votes      = @{}
-                    concerns   = @("Council quorum not met (0/$($chunks.Count) chunks had successful reviews)")
+                    concerns   = @("Council quorum not met (0/$($chunks.Count) chunks had successful reviews). All reviewers failed.")
                     strengths  = @()
-                    reason     = "Auto-approved: no chunk reviews succeeded"
+                    reason     = "ERROR: All council reviewers failed. Pipeline blocked pending supervisor intervention."
                 }
                 Report = ""
             }
@@ -611,16 +612,17 @@ function Invoke-LlmCouncil {
         # Count successful reviews
         $successCount = ($reviews.Values | Where-Object { $_.Success }).Count
         if ($successCount -lt 1) {
-            Write-Host "  [SCALES] All reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
+            # All reviewers failed - do not auto-approve; return blocking state for supervisor escalation
+            Write-Host "  [SCALES] All reviews failed -- blocking (no auto-approve)" -ForegroundColor Red
             $fallbackResult = @{
-                Approved = $true
+                Approved = $false
                 Findings = @{
-                    approved   = $true
-                    confidence = 50
+                    approved   = $false
+                    confidence = 0
                     votes      = @{}
-                    concerns   = @("Council quorum not met ($successCount/2 reviewers responded)")
+                    concerns   = @("Council quorum not met ($successCount/$($agents.Count) reviewers responded). All reviewers failed.")
                     strengths  = @()
-                    reason     = "Auto-approved: insufficient council quorum"
+                    reason     = "ERROR: All council reviewers failed. Pipeline blocked pending supervisor intervention."
                 }
                 Report = ""
             }

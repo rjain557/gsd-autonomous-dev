@@ -243,7 +243,7 @@ function Test-RequirementAcceptance {
                         $passed = ($LASTEXITCODE -eq 0)
                         $reason = if ($passed) { "Tests passed" } else { "Tests failed" }
                     } else {
-                        $results.Skipped++; $results.Total--
+                        $results.Skipped++
                         continue
                     }
                 }
@@ -258,7 +258,7 @@ function Test-RequirementAcceptance {
                         $passed = ($LASTEXITCODE -eq 0)
                         $reason = if ($passed) { "Tests passed" } else { "Tests failed" }
                     } else {
-                        $results.Skipped++; $results.Total--
+                        $results.Skipped++
                         continue
                     }
                 }

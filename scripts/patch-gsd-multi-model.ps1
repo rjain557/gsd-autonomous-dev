@@ -273,7 +273,7 @@ function Invoke-OpenAICompatibleAgent {
     param(
         [string]$AgentName,
         [string]$Prompt,
-        [int]$TimeoutSeconds = 600
+        [int]$TimeoutSeconds = 60
     )
 
     # Load registry config
@@ -290,7 +290,7 @@ function Invoke-OpenAICompatibleAgent {
     # Check if agent is disabled in registry
     if ($cfg.enabled -eq $false) {
         $reason = if ($cfg.disabled_reason) { $cfg.disabled_reason } else { "disabled in model-registry.json" }
-        return "connection_failed: Agent '$AgentName' is disabled - $reason"
+        return "disabled: Agent '$AgentName' is disabled - $reason"
     }
 
     # Resolve API key from environment (check Process, then User, then Machine store)
@@ -380,6 +380,8 @@ function Invoke-OpenAICompatibleAgent {
             } else {
                 return "unauthorized: access denied - $errMsg (HTTP 403)"
             }
+        } elseif ($statusCode -in @(502, 503)) {
+            return "rate_limit: server temporarily unavailable (HTTP $statusCode) - $errMsg"
         } elseif ($statusCode -ge 500) {
             return "server_error: $errMsg (HTTP $statusCode)"
         } elseif ($errMsg -match "(Unable to connect|No such host|name.*(not|could not).*resolve|ConnectFailure|connection refused|actively refused|unreachable|SocketException|NameResolutionFailure)") {

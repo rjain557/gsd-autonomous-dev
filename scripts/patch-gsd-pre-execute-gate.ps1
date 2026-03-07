@@ -228,7 +228,9 @@ function Invoke-PreExecuteGate {
                 -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 1
 
             if (-not $fixResult.Success) {
-                Write-Host "  [GATE] Fix attempt $attempt failed -- agent error" -ForegroundColor Red
+                Write-Host "  [GATE] Fix attempt $attempt failed -- agent error, stopping retry" -ForegroundColor Red
+                $result.Passed = $false
+                break
             }
         } else {
             # Exhausted fix attempts -- fall through (commit broken code, handle in next iteration)

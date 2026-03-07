@@ -819,6 +819,11 @@ function Invoke-CouncilRequirements {
 
             if ($ej.Job.State -eq "Completed") {
                 $jobResult = Receive-Job -Job $ej.Job
+                if ($null -eq $jobResult) {
+                    Write-Host "    [FAIL] ${agentName}: job returned null (agent may have crashed)" -ForegroundColor Red
+                    $failedAgents += $agentName
+                    continue
+                }
                 if ($jobResult.Success) {
                     Write-Host "    [PASS] ${agentName}: $($jobResult.ReqCount) requirements ($($jobResult.ChunksFailed) chunk failures)" -ForegroundColor Green
                     $completedAgents += $agentName
@@ -896,8 +901,15 @@ function Invoke-CouncilRequirements {
             $verifierName = $agent.Verifier
             $verifierAvailable = $null -ne (Get-Command $verifierName -ErrorAction SilentlyContinue)
             if (-not $verifierAvailable) {
-                Write-Host "    [SKIP] Cannot verify $($agent.Name) -- $verifierName not available" -ForegroundColor DarkYellow
-                continue
+                # Fall back to claude as verifier rather than skipping entirely
+                $claudeAvailable = $null -ne (Get-Command "claude" -ErrorAction SilentlyContinue)
+                if ($claudeAvailable -and $verifierName -ne "claude") {
+                    Write-Host "    [WARN] $verifierName not available -- falling back to claude for verification of $($agent.Name)" -ForegroundColor DarkYellow
+                    $verifierName = "claude"
+                } else {
+                    Write-Host "    [SKIP] Cannot verify $($agent.Name) -- $verifierName not available and no fallback" -ForegroundColor DarkYellow
+                    continue
+                }
             }
 
             $extractionPath = Join-Path $healthDir "council-extract-$($agent.Name).json"

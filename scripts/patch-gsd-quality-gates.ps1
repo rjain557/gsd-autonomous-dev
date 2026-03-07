@@ -632,7 +632,7 @@ function Test-SecurityCompliance {
     # Check missing [Authorize] on controllers
     foreach ($ctrl in ($allFiles | Where-Object { $_.Name -match "Controller\.cs$" })) {
         $content = Get-Content $ctrl.FullName -Raw -ErrorAction SilentlyContinue
-        if ($content -and $content -match "\[ApiController\]" -and $content -notmatch "\[Authorize") {
+        if ($content -and $content -match "\[ApiController\]" -and $content -notmatch "\[Authorize" -and $content -notmatch "\[AllowAnonymous") {
             $violations += @{ Severity = "High"; Description = "Controller missing [Authorize]"; File = $ctrl.FullName.Replace($RepoRoot, "").TrimStart("\", "/"); Line = 1; Match = $ctrl.Name }
         }
     }

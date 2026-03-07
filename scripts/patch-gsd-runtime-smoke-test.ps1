@@ -541,8 +541,10 @@ function Invoke-ApiSmokeTest {
         $ready = $false
         $startupError = ""
 
+        $pollInterval = 1  # Start at 1s, doubles each poll, caps at 5s (exponential backoff)
         while (((Get-Date) - $startTime).TotalSeconds -lt $startupTimeout) {
-            Start-Sleep -Seconds 2
+            Start-Sleep -Seconds $pollInterval
+            $pollInterval = [Math]::Min($pollInterval * 2, 5)
 
             # Check if process crashed
             if ($process.HasExited) {
