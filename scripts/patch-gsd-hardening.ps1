@@ -1043,7 +1043,10 @@ function Invoke-WithRetry {
 
                 # -- Post-check: boundary enforcement (with baseline to avoid false positives) --
                 $boundaryAgent = switch ($Agent) {
-                    "claude" { "claude" }
+                    "claude" {
+                        # When Claude rotates into execute/build phase, apply codex boundary rules
+                        if ($Phase -match "^execute$|^build$") { "codex" } else { "claude" }
+                    }
                     "codex"  { "codex" }
                     "gemini" {
                         # Map gemini mode to boundary role

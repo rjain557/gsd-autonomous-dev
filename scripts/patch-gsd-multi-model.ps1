@@ -683,11 +683,13 @@ Write-Host "[STEP 9] Patching Get-NextAvailableAgent pool..." -ForegroundColor Y
 $oldPool = @'
     # Agent pool -- order matters (preference order)
     $pool = @("claude", "codex", "gemini")
+    $researchCapable = @("gemini", "deepseek", "kimi", "minimax", "glm5")
 '@
 
 $newPool = @'
     # Agent pool -- read from model-registry.json, fall back to legacy 3-agent list
     $pool = @("claude", "codex", "gemini")  # legacy fallback
+    $researchCapable = @("gemini", "deepseek", "kimi", "minimax", "glm5")
     $regPath = Join-Path $env:USERPROFILE ".gsd-global\config\model-registry.json"
     if (Test-Path $regPath) {
         try {
@@ -1027,7 +1029,7 @@ $newDiagOriginalElse = @'
 }
 '@
 
-if ($content.Contains('$Agent rate-limited (HTTP 429)') -and $content.Contains('return @{ Diagnosis = $diagnosis; Action = $action;') -and $content.Contains('^disabled:')) {
+if ($content.Contains('$Agent rate-limited (HTTP 429)') -and $content.Contains('return @{ Diagnosis = $diagnosis; Action = $action; FallbackAgent = $fallbackAgent; FallbackMode = $fallbackMode }')) {
     Write-Host "  [SKIP] Original Get-FailureDiagnosis already patched" -ForegroundColor DarkGray
 } elseif (NormContains $content $oldDiagOriginalElse) {
     $content = NormReplace $content $oldDiagOriginalElse $newDiagOriginalElse

@@ -283,6 +283,8 @@ $oldQuotaHandler = @'
             if ($outputText -match "(unauthorized|invalid.*key|auth.*fail|401|403)") {
                 $result.Error = "AUTH_ERROR"
                 Write-Host "    [XX] Auth error - cannot retry" -ForegroundColor Red
+                # Long cooldown so this agent is skipped for the rest of the run
+                if ($GsdDir) { Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 480 }
                 return $result
             }
 
@@ -322,7 +324,7 @@ $newQuotaHandler = @'
 
                 # CHECK: Should we rotate to a different agent instead of waiting?
                 if ($consecutiveQuotaFails[$Agent] -ge $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) {
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -Phase $Phase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent exhausted $($consecutiveQuotaFails[$Agent])x. Switching to $rotatedAgent" -ForegroundColor Yellow
                         Write-GsdError -GsdDir $GsdDir -Category "agent_rotate" -Phase $Phase -Iteration $i `
@@ -365,7 +367,7 @@ $newQuotaHandler = @'
                     continue
                 } else {
                     # Quota didn't reset -- try rotating agent before giving up
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -Phase $Phase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent quota didn't reset. Trying $rotatedAgent" -ForegroundColor Yellow
                         Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
@@ -396,6 +398,8 @@ $newQuotaHandler = @'
 
                 $result.Error = "AUTH_ERROR"
                 Write-Host "    [XX] Auth error - cannot retry" -ForegroundColor Red
+                # Long cooldown so this agent is skipped for the rest of the run
+                if ($GsdDir) { Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 480 }
                 return $result
             }
 
@@ -541,14 +545,17 @@ function Get-NextAvailableAgent {
     .SYNOPSIS
         Returns the next agent from the pool that hasn't recently been quota-exhausted.
         Uses a cooldown file to track which agents are in quota backoff.
+        Phase-aware: research phase only rotates within research-capable agents.
     #>
     param(
         [string]$CurrentAgent,
-        [string]$GsdDir
+        [string]$GsdDir,
+        [string]$Phase = ""
     )
 
     # Agent pool -- order matters (preference order)
     $pool = @("claude", "codex", "gemini")
+    $researchCapable = @("gemini", "deepseek", "kimi", "minimax", "glm5")
 
     # Read cooldown state
     $cooldownPath = Join-Path $GsdDir "supervisor\agent-cooldowns.json"
@@ -563,6 +570,12 @@ function Get-NextAvailableAgent {
     }
 
     $now = Get-Date
+
+    # For research phase: restrict pool to research-capable agents only (never rotate to claude/codex)
+    if ($Phase -eq "research") {
+        $pool = @($pool | Where-Object { $_ -in $researchCapable })
+        if ($pool.Count -eq 0) { return $null }
+    }
 
     foreach ($agent in $pool) {
         if ($agent -eq $CurrentAgent) { continue }

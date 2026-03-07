@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Final Integration Sub-Patch 5/6: sync the installed convergence pipeline
     from the canonical repository source file.
@@ -25,3 +25,5 @@ if (-not (Test-Path $TargetDir)) {
 
 Copy-Item -Path $SourcePath -Destination $TargetPath -Force
 Write-Host "   [OK] scripts\convergence-loop.ps1 synced from repo source" -ForegroundColor DarkGreen
+
+

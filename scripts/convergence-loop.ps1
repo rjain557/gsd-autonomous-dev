@@ -363,6 +363,27 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             }
         }
 
+        # Pre-check: if all research-capable agents are on cooldown, skip research entirely
+        # This prevents rotating research to Claude/Codex and burning their quota
+        if (-not $parallelResearchOk -and -not $DryRun) {
+            $researchCapableAgents = @("gemini", "deepseek", "kimi", "minimax", "glm5")
+            $cooldownPath = Join-Path $GsdDir "supervisor\agent-cooldowns.json"
+            $agentCooldowns = @{}
+            if (Test-Path $cooldownPath) {
+                try { $raw = Get-Content $cooldownPath -Raw | ConvertFrom-Json
+                      foreach ($p in $raw.PSObject.Properties) { try { $agentCooldowns[$p.Name] = [datetime]$p.Value } catch {} }
+                } catch {}
+            }
+            $now = Get-Date
+            $anyResearchAvail = $researchCapableAgents | Where-Object {
+                -not $agentCooldowns.ContainsKey($_) -or $now -ge $agentCooldowns[$_]
+            }
+            if (-not $anyResearchAvail) {
+                Write-Host "  [SKIP] All research-capable agents on cooldown -- skipping research this iteration" -ForegroundColor DarkYellow
+                $parallelResearchOk = $true   # suppress sequential fallback
+            }
+        }
+
         # Sequential fallback: original Gemini -> Codex chain
         if (-not $parallelResearchOk -and -not $DryRun) {
             $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
@@ -660,7 +681,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     if ($iterCostLine) { $iterMsg += "`n$iterCostLine" }
     # LOC tracking
     if (Get-Command Update-LocMetrics -ErrorAction SilentlyContinue) {
-        Update-LocMetrics -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Iteration $Iteration -Pipeline "convergence"
+        Update-LocMetrics -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration -Pipeline "convergence"
     }
     $locLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir } else { "" }
     if ($locLine) { $iterMsg += "`n$locLine" }
@@ -828,7 +849,7 @@ Write-Host "=========================================================" -Foregrou
 
     # Final LOC tracking: compute total lines from baseline to HEAD
     if (Get-Command Complete-LocTracking -ErrorAction SilentlyContinue) {
-        Complete-LocTracking -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GsdGlobalDir -Pipeline "convergence"
+        Complete-LocTracking -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GlobalDir -Pipeline "convergence"
     }
 
     # Supervisor: save terminal summary so supervisor can read exit state

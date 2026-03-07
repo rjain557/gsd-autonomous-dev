@@ -555,16 +555,25 @@ function Invoke-LlmCouncil {
             $synthesisPrompt = "You are the synthesis judge. Read all chunk review verdicts below. Produce a JSON verdict."
         }
 
-        # Append all chunk verdicts
+        # Append all chunk verdicts (with per-chunk truncation to prevent oversized prompts)
+        $maxCharsPerChunkAgent = [math]::Max(500, [int](40000 / [math]::Max(1, $allChunkVerdicts.Count * 2)))
         foreach ($cv in $allChunkVerdicts) {
             $synthesisPrompt += "`n`n## Chunk: $($cv.ChunkName) ($($cv.ReqCount) requirements)"
             foreach ($agentName in $cv.AgentResults.Keys) {
-                $synthesisPrompt += "`n### $($agentName.ToUpper())`n$($cv.AgentResults[$agentName])"
+                $agentText = $cv.AgentResults[$agentName]
+                if ($agentText.Length -gt $maxCharsPerChunkAgent) {
+                    $agentText = $agentText.Substring(0, $maxCharsPerChunkAgent) + "`n... [truncated]"
+                }
+                $synthesisPrompt += "`n### $($agentName.ToUpper())`n$agentText"
             }
+        }
+        # Hard cap: 80KB to stay within Claude prompt limits
+        if ($synthesisPrompt.Length -gt 80000) {
+            $synthesisPrompt = $synthesisPrompt.Substring(0, 80000) + "`n`n[TRUNCATED - too many chunk verdicts]"
         }
 
         $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
-            -LogFile "$logDir\council-convergence-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
+            -LogFile "$logDir\council-convergence-synthesis.log" -MaxAttempts 3 -CurrentBatchSize 1 -GsdDir $GsdDir `
             -AllowedTools "Read"
 
     } else {
@@ -654,9 +663,13 @@ function Invoke-LlmCouncil {
                 }
             }
         }
+        # Hard cap: 80KB to stay within Claude prompt limits
+        if ($synthesisPrompt.Length -gt 80000) {
+            $synthesisPrompt = $synthesisPrompt.Substring(0, 80000) + "`n`n[TRUNCATED - synthesis prompt too large]"
+        }
 
         $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
-            -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
+            -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 3 -CurrentBatchSize 1 -GsdDir $GsdDir `
             -AllowedTools "Read"
     }
 

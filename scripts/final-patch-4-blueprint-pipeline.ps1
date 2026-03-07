@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Final Integration Sub-Patch 4/6: sync the installed blueprint pipeline
     from the canonical repository source file.
@@ -25,3 +25,4 @@ if (-not (Test-Path $TargetDir)) {
 
 Copy-Item -Path $SourcePath -Destination $TargetPath -Force
 Write-Host "   [OK] blueprint\scripts\blueprint-pipeline.ps1 synced from repo source" -ForegroundColor DarkGreen
+
