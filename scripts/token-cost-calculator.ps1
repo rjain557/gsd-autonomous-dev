@@ -148,9 +148,9 @@ function Get-ProviderPricing {
         @{ CacheKey = "claude_opus";   LiteLLMKeys = @("claude-opus-4-6","claude-opus-4-5","claude-opus-4-1"); NamePrefix = "Claude Opus" }
         @{ CacheKey = "claude_sonnet"; LiteLLMKeys = @("claude-sonnet-4-6","claude-sonnet-4-5","claude-sonnet-4"); NamePrefix = "Claude Sonnet" }
         @{ CacheKey = "claude_haiku";  LiteLLMKeys = @("claude-haiku-4-5","claude-3-5-haiku-latest"); NamePrefix = "Claude Haiku" }
-        @{ CacheKey = "codex";         LiteLLMKeys = @("gpt-5.3-codex","codex-mini-latest"); NamePrefix = "GPT 5.3 Codex" }
+        @{ CacheKey = "codex";         LiteLLMKeys = @("gpt-5.4","gpt-5.4-codex","gpt-5.3-codex","codex-mini-latest"); NamePrefix = "GPT 5.4 Codex" }
         @{ CacheKey = "codex_gpt51";   LiteLLMKeys = @("gpt-5.1-codex","gpt-5-codex"); NamePrefix = "GPT Codex" }
-        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3.1 Pro" }
+        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.0-pro","gemini-3-pro","gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3 Pro" }
     )
 
     try {

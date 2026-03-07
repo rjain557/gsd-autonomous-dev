@@ -132,8 +132,11 @@ function Update-LocMetrics {
         $parts = $line -split "\t"
         if ($parts.Count -lt 3) { continue }
 
-        # Binary files show "-" for added/deleted
-        if ($parts[0] -eq "-" -or $parts[1] -eq "-") { continue }
+        # Binary files show "-" for added/deleted -- log but skip counting
+        if ($parts[0] -eq "-" -or $parts[1] -eq "-") {
+            Write-Host "  [LOC] Binary file skipped: $($parts[2])" -ForegroundColor DarkGray
+            continue
+        }
 
         $added = [int]$parts[0]
         $deleted = [int]$parts[1]

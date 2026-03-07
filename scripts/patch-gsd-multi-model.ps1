@@ -511,7 +511,7 @@ $oldFallbackEnhanced = @'
 
 $newFallbackEnhanced = @'
         } elseif ($FallbackAgent -eq "gemini") {
-            $rawOutput = $Prompt | gemini --approval-mode plan --output-format json 2>&1
+            $rawOutput = $Prompt | gemini --model $script:GEMINI_MODEL --approval-mode plan --output-format json 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -758,11 +758,11 @@ $oldProbe = @'
 
 $newProbe = @'
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
+                    $testOutput = "Reply with just the word READY" | gemini --model $script:GEMINI_MODEL --approval-mode plan 2>&1
                 } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
                     $testOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt "Reply with just the word READY" -TimeoutSeconds 30
                 } else {
-                    $testOutput = claude -p "Reply with just the word READY" 2>&1
+                    $testOutput = claude -p "Reply with just the word READY" --model $script:CLAUDE_MODEL 2>&1
                 }
 '@
 
@@ -914,7 +914,15 @@ $oldDiagEnhancedElse = @'
 $newDiagEnhancedElse = @'
     # -- OpenAI-compatible REST agents (kimi, deepseek, glm5, minimax) --
     elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent -AgentName $Agent)) {
-        if ($OutputText -match "rate_limit|429|too.many.requests") {
+        if ($OutputText -match "^disabled:") {
+            $diagnosis = "$Agent is disabled in model-registry.json"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "^connection_failed:") {
+            $diagnosis = "$Agent endpoint unreachable"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "rate_limit|429|too.many.requests") {
             $diagnosis = "$Agent rate-limited (HTTP 429)"
         } elseif ($OutputText -match "quota_exhausted|402|payment|insufficient") {
             $diagnosis = "$Agent quota exhausted"
@@ -931,11 +939,13 @@ $newDiagEnhancedElse = @'
             $diagnosis = "$Agent exit code $ExitCode"
         }
         # REST agents fall back to claude for read-only phases, retry for write phases
-        if ($Phase -match "research|review|verify|plan|council") {
-            $action = "fallback"
-            $fallbackAgent = "claude"
-        } else {
-            $action = "retry"
+        if ($action -ne "fallback" -and $action -ne "fail") {
+            if ($Phase -match "research|review|verify|plan|council") {
+                $action = "fallback"
+                $fallbackAgent = "claude"
+            } else {
+                $action = "retry"
+            }
         }
     }
 
@@ -952,7 +962,7 @@ $newDiagEnhancedElse = @'
 }
 '@
 
-if ($content.Contains("Test-IsOpenAICompatAgent -AgentName `$Agent") -and $content.Contains("`$Agent rate-limited")) {
+if ($content.Contains("Test-IsOpenAICompatAgent -AgentName `$Agent") -and $content.Contains("`$Agent rate-limited") -and $content.Contains("^disabled:")) {
     Write-Host "  [SKIP] Enhanced Get-FailureDiagnosis already patched" -ForegroundColor DarkGray
 } elseif (NormContains $content $oldDiagEnhancedElse) {
     $content = NormReplace $content $oldDiagEnhancedElse $newDiagEnhancedElse
@@ -979,7 +989,15 @@ $oldDiagOriginalElse = @'
 
 $newDiagOriginalElse = @'
     } elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent -AgentName $Agent)) {
-        if ($OutputText -match "rate_limit|429|too.many.requests") {
+        if ($OutputText -match "^disabled:") {
+            $diagnosis = "$Agent is disabled in model-registry.json"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "^connection_failed:") {
+            $diagnosis = "$Agent endpoint unreachable"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "rate_limit|429|too.many.requests") {
             $diagnosis = "$Agent rate-limited (HTTP 429)"
         } elseif ($OutputText -match "quota_exhausted|402|payment|insufficient") {
             $diagnosis = "$Agent quota exhausted"
@@ -993,11 +1011,13 @@ $newDiagOriginalElse = @'
         } else {
             $diagnosis = "$Agent exit code $ExitCode"
         }
-        if ($Phase -match "research|review|verify|plan|council") {
-            $action = "fallback"
-            $fallbackAgent = "claude"
-        } else {
-            $action = "retry"
+        if ($action -ne "fallback" -and $action -ne "fail") {
+            if ($Phase -match "research|review|verify|plan|council") {
+                $action = "fallback"
+                $fallbackAgent = "claude"
+            } else {
+                $action = "retry"
+            }
         }
     } else {
         $diagnosis = "Unknown agent '$Agent' exit code $ExitCode"
@@ -1007,7 +1027,7 @@ $newDiagOriginalElse = @'
 }
 '@
 
-if ($content.Contains('$Agent rate-limited (HTTP 429)') -and $content.Contains('return @{ Diagnosis = $diagnosis; Action = $action;')) {
+if ($content.Contains('$Agent rate-limited (HTTP 429)') -and $content.Contains('return @{ Diagnosis = $diagnosis; Action = $action;') -and $content.Contains('^disabled:')) {
     Write-Host "  [SKIP] Original Get-FailureDiagnosis already patched" -ForegroundColor DarkGray
 } elseif (NormContains $content $oldDiagOriginalElse) {
     $content = NormReplace $content $oldDiagOriginalElse $newDiagOriginalElse
@@ -1043,7 +1063,7 @@ if (-not (Test-Path $supervisorPath)) {
             -LogFile $diagLogFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
             -AllowedTools "Read,Write,Bash"
     } else {
-        $output = claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1
+        $output = claude -p $prompt --allowed-tools "Read,Write,Bash" 2>&1
 '@
 
     $newSupervisorDiag = @'
@@ -1074,7 +1094,8 @@ if (-not (Test-Path $supervisorPath)) {
             -LogFile $diagLogFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
             -AllowedTools "Read,Write,Bash"
     } else {
-        $output = claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1
+        $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+        $output = claude -p $prompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1
 '@
 
     if ($supContent.Contains('$diagAgent = "claude"')) {
@@ -1129,12 +1150,12 @@ if (-not (Test-Path $calculatorPath)) {
 
     # 15B: Expand $modelLookups
     $oldCalcLookups = @'
-        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3.1 Pro" }
+        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.0-pro","gemini-3-pro","gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3 Pro" }
     )
 '@
 
     $newCalcLookups = @'
-        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3.1 Pro" }
+        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.0-pro","gemini-3-pro","gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3 Pro" }
         @{ CacheKey = "kimi";          LiteLLMKeys = @("moonshot-v1-128k","moonshot-v1-32k","kimi-k2.5"); NamePrefix = "Kimi K2.5" }
         @{ CacheKey = "deepseek";      LiteLLMKeys = @("deepseek-chat","deepseek-coder"); NamePrefix = "DeepSeek" }
         @{ CacheKey = "glm5";          LiteLLMKeys = @("glm-5","glm-4","glm-4-0520"); NamePrefix = "GLM" }

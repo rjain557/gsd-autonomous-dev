@@ -653,6 +653,17 @@ if ($VerifyOnly) { Write-Host "  MODE:       VERIFY ONLY" -ForegroundColor Yello
 Write-Host "=========================================================" -ForegroundColor Blue
 Write-Host ""
 
+# -- Agent model versions (read from global-config.json) --
+$claudeModel = "claude-sonnet-4-6"
+$codexModel  = "gpt-5.4"
+try {
+    $_bpcfg = Get-Content "$BpGlobalDir\config\global-config.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ($_bpcfg.agent_models) {
+        if ($_bpcfg.agent_models.claude) { $claudeModel = $_bpcfg.agent_models.claude }
+        if ($_bpcfg.agent_models.codex)  { $codexModel  = $_bpcfg.agent_models.codex }
+    }
+} catch { }
+
 # ========================================================
 # PHASE 1: BLUEPRINT (Claude Code - one time)
 # ========================================================
@@ -668,7 +679,7 @@ if ($needsBlueprint) {
 
     if (-not $DryRun) {
         $startTime = Get-Date
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-phase1-generate.log"
         $elapsed = (Get-Date) - $startTime
 
@@ -726,7 +737,7 @@ if ($VerifyOnly) {
     $prompt = Resolve-Prompt "$BpGlobalDir\prompts\claude\verify.md" 0 $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-verify-only.log"
         $Health = Get-Health
         Write-Host "  [CHART] Health: ${Health}%" -ForegroundColor Yellow
@@ -757,7 +768,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$BpGlobalDir\prompts\claude\verify.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-iter${Iteration}-1-verify.log"
     } else {
         Write-Host "    [DRY RUN] claude -> verify" -ForegroundColor DarkYellow
@@ -799,7 +810,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     if (-not $DryRun) {
         $buildStart = Get-Date
-        $prompt | codex exec --full-auto - 2>&1 |
+        $prompt | codex exec --full-auto --model $codexModel - 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-iter${Iteration}-2-build.log"
         $buildElapsed = (Get-Date) - $buildStart
 
@@ -835,7 +846,7 @@ Diagnose why items aren't being completed. Common causes:
 - Spec ambiguity in acceptance criteria
 Write diagnosis to $BpDir\stall-diagnosis.md with specific fixes.
 "@
-                claude -p $stallPrompt --allowedTools "Read,Write,Bash" 2>&1 |
+                claude -p $stallPrompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
                     Tee-Object "$GsdDir\logs\blueprint-stall-diagnosis-$Iteration.log"
             }
             break

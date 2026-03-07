@@ -347,7 +347,9 @@ The master installer (`install-gsd-all.ps1`) runs these 36 scripts in order. Eac
 
 **Step 0 -- API Key Setup**: Before creating the directory structure, prompts the user to enter API keys for all three providers (Anthropic, OpenAI, Google). If all keys are already configured as User-level environment variables, this step is automatically skipped with a green status display. Only missing keys are prompted. Keys are stored as persistent User-level environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY) and are immediately available in the current session.
 
-**Step 1+**: Creates the global `%USERPROFILE%\.gsd-global\` directory structure with: convergence engine (convergence-loop.ps1), token cost calculator (token-cost-calculator.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-blueprint.cmd, gsd-status.cmd, gsd-remote.cmd, gsd-costs.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings, prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-costs, gsd-status, gsd-assess, gsd-remote).
+**Step 1+**: Creates the global `%USERPROFILE%\.gsd-global\` directory structure with: convergence engine (convergence-loop.ps1), token cost calculator (token-cost-calculator.ps1), bin/ CLI wrappers (gsd-converge.cmd, gsd-blueprint.cmd, gsd-status.cmd, gsd-remote.cmd, gsd-costs.cmd), VS Code tasks.json, PATH entries, global-config.json with notification settings and `agent_models` block (claude/gemini/codex model versions), prompt templates for Claude/Codex/Gemini, and PowerShell profile functions (gsd-converge, gsd-costs, gsd-status, gsd-assess, gsd-remote).
+
+All direct agent invocations load `agent_models` from global-config.json at startup and pass `--model <version>` to every claude/codex/gemini call. Current defaults: claude → `claude-sonnet-4-6`, gemini → `gemini-3.0-pro`, codex → `gpt-5.4`. To change the model without reinstalling, update the `agent_models` section in `%USERPROFILE%\.gsd-global\config\global-config.json` and restart the pipeline.
 
 ### install-gsd-blueprint.ps1 (Script 2)
 
@@ -355,7 +357,7 @@ Installs the blueprint pipeline (blueprint-pipeline.ps1), assessment script (ass
 
 ### patch-gsd-partial-repo.ps1 (Script 3)
 
-Installs gsd-assess command, assessment prompts, file map generation, -MapOnly flag.
+Installs gsd-assess command, assessment prompts, file map generation, -MapOnly flag. Guards the `Initialize-ProjectInterfaces` call with a `Get-Command` existence check so the script degrades gracefully if `interfaces.ps1` has not yet been loaded. Passes `--model` and `--allowed-tools` (kebab-case) to the Claude fallback assessment call.
 
 ### patch-gsd-resilience.ps1 (Script 4)
 
@@ -364,6 +366,16 @@ Installs resilience.ps1 module: Invoke-WithRetry (with watchdog timeout), Save-C
 ### patch-gsd-hardening.ps1 (Script 5)
 
 Appends hardening to resilience.ps1: Wait-ForQuotaReset, Test-NetworkAvailability, Backup-JsonState, Set-AgentBoundary, Update-FileMap, Get-GsdNtfyTopic, Send-GsdNotification, Send-HeartbeatIfDue, Start-BackgroundHeartbeat, Stop-BackgroundHeartbeat, Start-CommandListener, Stop-CommandListener, Initialize-GsdNotifications, Test-HealthRegression, Write-GsdError, Update-EngineStatus, Start-EngineStatusHeartbeat, Stop-EngineStatusHeartbeat, Initialize-CostTracking, Get-TokenPrice, Extract-TokensFromOutput, Save-TokenUsage, Update-CostSummary, Rebuild-CostSummary, Complete-CostTrackingRun.
+
+Also injects three script-scope model version constants at the top of resilience.ps1:
+
+```powershell
+$script:CLAUDE_MODEL = "claude-sonnet-4-6"
+$script:GEMINI_MODEL = "gemini-3.0-pro"
+$script:CODEX_MODEL  = "gpt-5.4"
+```
+
+A config-override block immediately follows that reads `agent_models` from global-config.json and overrides these defaults if set. All CLI dispatch sites in resilience.ps1 (quota probe tests, `Invoke-FallbackAgent`, `Invoke-WithRetry`, SQL auto-fix calls, network ping) pass `--model $script:CLAUDE_MODEL` / `--model $script:GEMINI_MODEL` / `--model $script:CODEX_MODEL` to pin the exact model version. Also fixes `--allowedTools` → `--allowed-tools` (kebab-case) on all Claude CLI calls.
 
 ### patch-gsd-final-validation.ps1 (Script 6)
 
@@ -424,7 +436,7 @@ Installs the self-healing supervisor system: supervisor.ps1 module, supervisor-c
 
 ### patch-false-converge-fix.ps1 (Script 17)
 
-One-time bug fix: fixes false "converged" exit when StallCount/TargetHealth/Iteration variables are null in the finally block (moves initialization before try block), and removes orphaned profile code statements outside function bodies. Idempotent.
+One-time bug fix: fixes false "converged" exit when StallCount/TargetHealth/Iteration variables are null in the finally block (moves initialization before try block), and removes orphaned profile code statements outside function bodies. Wraps both `Set-Content` calls that write the patched file in `try/catch` blocks so a locked file or permission error prints a clear error message instead of crashing the installer. Idempotent.
 
 ### patch-gsd-parallel-execute.ps1 (Script 18)
 
@@ -440,7 +452,7 @@ Quality gates patch adding three verification layers: (1) `Test-DatabaseComplete
 
 ### patch-gsd-multi-model.ps1 (Script 21)
 
-Multi-model LLM integration patch adding four OpenAI-compatible REST API agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) to expand the agent pool from 3 to 7. Creates `model-registry.json` (central metadata for all agents: CLI vs REST type, endpoints, API key env vars, pricing, model IDs). Adds `Invoke-OpenAICompatibleAgent` and `Test-IsOpenAICompatAgent` functions to resilience.ps1. Patches `Invoke-WithRetry` (both original and enhanced versions) to dispatch REST agents via the generic adapter. Patches `Extract-TokensFromOutput` for `openai-compat-result` JSON parsing. Patches `Get-TokenPrice` with pricing for 4 new models. Patches `Get-NextAvailableAgent` to read rotation pool from model-registry.json (with API key validation for REST agents). Reduces `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` from 3 to 1 for immediate rotation. Patches `Wait-ForQuotaReset` with REST agent probe support. Patches both `Get-FailureDiagnosis` functions (original and enhanced) to handle REST agent HTTP errors (429→rate limit, 402→quota exhausted, 401→auth failure, 5xx→server error, timeout) with fallback to claude for read-only phases (steps 13B/13C). Expands council reviewers pool dynamically from agent-map.json. Adds REST agent API key checks to `Test-PreFlight` (warnings only). Patches supervisor diagnosis for cooldown-aware routing. Updates token-cost-calculator.ps1 with new model pricing and LiteLLM lookups. Creates `openai-compat-review.md` council prompt template.
+Multi-model LLM integration patch adding four OpenAI-compatible REST API agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) to expand the agent pool from 3 to 7. Creates `model-registry.json` (central metadata for all agents: CLI vs REST type, endpoints, API key env vars, pricing, model IDs). Adds `Invoke-OpenAICompatibleAgent` and `Test-IsOpenAICompatAgent` functions to resilience.ps1. Patches `Invoke-WithRetry` (both original and enhanced versions) to dispatch REST agents via the generic adapter. Patches `Extract-TokensFromOutput` for `openai-compat-result` JSON parsing. Patches `Get-TokenPrice` with pricing for 4 new models. Patches `Get-NextAvailableAgent` to read rotation pool from model-registry.json (with API key validation for REST agents). Reduces `QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE` from 3 to 1 for immediate rotation. Patches `Wait-ForQuotaReset` with REST agent probe support. Patches both `Get-FailureDiagnosis` functions (original and enhanced) to handle REST agent HTTP errors (429→rate limit, 402→quota exhausted, 401→auth failure, 5xx→server error, timeout) **plus `disabled:` and `connection_failed:` synthetic error prefixes** — all four trigger immediate fallback to claude with a 60-minute cooldown on the failed agent (steps 13B/13C). Expands council reviewers pool dynamically from agent-map.json. Adds REST agent API key checks to `Test-PreFlight` (warnings only). Patches supervisor diagnosis for cooldown-aware routing. Updates token-cost-calculator.ps1 with new model pricing and LiteLLM lookups. Creates `openai-compat-review.md` council prompt template. Passes `--model $script:GEMINI_MODEL` to all Gemini CLI calls and `$_cm` guard to supervisor Claude fallback calls.
 
 New functions:
 
@@ -473,19 +485,19 @@ Contract-first API validation: zero-cost static scan of controllers against `06-
 
 ### patch-gsd-visual-validation.ps1 (Script 26)
 
-Visual validation: Figma screenshot comparison via Playwright. Adds `Invoke-VisualValidation` to resilience.ps1. Captures component screenshots, compares against Figma exports in `design/screenshots/`. Reports pixel diff %. Falls back to component-match heuristic without Playwright. Results: `.gsd/validation/visual-results.json`. Config: `visual_validation` in global-config.json.
+Visual validation: Figma screenshot comparison via Playwright. Adds `Invoke-VisualValidation` to resilience.ps1. Captures component screenshots, compares against Figma exports in `design/screenshots/`. Uses a three-tier comparison strategy: (1) SHA-256 hash equality (instant pass, zero cost); (2) ImageMagick pixel diff via `magick compare -metric AE -fuzz 2%` (accurate, reports exact pixel count); (3) file-size ratio approximation with a warning when ImageMagick is not installed. Diff threshold applied only on tier 2/3 results. Results: `.gsd/validation/visual-results.json`. Config: `visual_validation` in global-config.json.
 
 ### patch-gsd-design-token-enforcement.ps1 (Script 27)
 
-Design token enforcement: zero-cost regex scan for hardcoded CSS values. Adds `Test-DesignTokenCompliance` to resilience.ps1. Scans CSS/SCSS/TSX for hardcoded colors, font sizes, spacing, border radii. Cross-references design tokens file. Results: `.gsd/validation/design-token-results.json`. Config: `design_token_enforcement` in global-config.json.
+Design token enforcement: zero-cost regex scan for hardcoded CSS values. Adds `Test-DesignTokenCompliance` to resilience.ps1. Scans CSS/SCSS/TSX for hardcoded colors (hex, rgb/rgba, **hsl/hsla, oklch, hwb**), font sizes, spacing, border radii. Cross-references design tokens file. Results: `.gsd/validation/design-token-results.json`. Config: `design_token_enforcement` in global-config.json.
 
 ### patch-gsd-compliance-engine.ps1 (Script 28)
 
-Compliance engine: three sub-systems. (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules, per-iteration scanning. (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data integrity. (3) `Invoke-PiiFlowAnalysis` -- PII field tracking through codebase, checks logging/encryption/UI masking. All zero-cost static scans. Results: `.gsd/validation/compliance-scan.json`, `db-migration-results.json`, `pii-flow-results.json`. Config: `compliance_engine` in global-config.json.
+Compliance engine: three sub-systems. (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules, per-iteration scanning. SEC-NET-05 and SEC-FE-01 patterns use `(?s)` multiline mode and negative lookaheads for `[AllowAnonymous]` so controllers that explicitly permit anonymous access are not false-flagged. (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data integrity. (3) `Invoke-PiiFlowAnalysis` -- PII field tracking through codebase, checks logging/encryption/UI masking. All zero-cost static scans. Results: `.gsd/validation/compliance-scan.json`, `db-migration-results.json`, `pii-flow-results.json`. Config: `compliance_engine` in global-config.json.
 
 ### patch-gsd-speed-optimizations.ps1 (Script 29)
 
-Five speed optimizations: (1) `Test-ShouldSkipResearch` -- conditional research skip when health improving. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- git-diff-based file map. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} / {{CODING_CONVENTIONS}} template variables. (5) Token budgets and handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
+Five speed optimizations: (1) `Test-ShouldSkipResearch` -- conditional research skip when health improving. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- git-diff-based incremental file map: if ≤20 files changed, prunes deleted entries from the cached map and returns the existing path (no full rebuild); if >20 files changed, delegates to `Update-FileMap` for a full rebuild. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} / {{CODING_CONVENTIONS}} template variables. (5) Token budgets and handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
 
 ### patch-gsd-agent-intelligence.ps1 (Script 30)
 
@@ -493,7 +505,7 @@ Agent intelligence: (1) `Update-AgentPerformanceScore` + `Get-BestAgentForPhase`
 
 ### patch-gsd-loc-tracking.ps1 (Script 31)
 
-LOC tracking: (1) `Update-LocMetrics` -- captures git diff --numstat after each execute phase, tracks lines added/deleted/net per iteration with file-level detail. (2) `Get-LocNotificationText` -- compact LOC string for ntfy notifications. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Patches both pipeline scripts and heartbeat to include LOC in all ntfy messages. Adds LOC section to developer-handoff.md. Output: `.gsd/costs/loc-metrics.json`. Config: `loc_tracking` in global-config.json.
+LOC tracking: (1) `Update-LocMetrics` -- captures git diff --numstat after each execute phase, tracks lines added/deleted/net per iteration with file-level detail. Binary files returned by git diff with `-` line counts are skipped and logged by filename at DarkGray severity (e.g. `[LOC] Binary file skipped: assets/logo.png`). (2) `Get-LocNotificationText` -- compact LOC string for ntfy notifications. Cross-references cost-summary.json to compute cost-per-added-line and cost-per-net-line. Patches both pipeline scripts and heartbeat to include LOC in all ntfy messages. Adds LOC section to developer-handoff.md. Output: `.gsd/costs/loc-metrics.json`. Config: `loc_tracking` in global-config.json.
 
 ### patch-gsd-runtime-smoke-test.ps1 (Script 32)
 
@@ -509,7 +521,7 @@ LOC-Cost integration: (1) `Save-LocBaseline` -- records starting git commit hash
 
 ### patch-gsd-maintenance-mode.ps1 (Script 35)
 
-Maintenance mode: adds `gsd-fix` and `gsd-update` commands for post-delivery maintenance workflows. `gsd-fix` accepts plain text, files (`-File`), or directories with rich artifacts (`-BugDir` — screenshots, logs, repro files copied to `.gsd/supervisor/bug-artifacts/`). Supports `--Scope` parameter for targeted convergence and `--Incremental` for adding new requirements from updated specs without losing existing satisfied items.
+Maintenance mode: adds `gsd-fix` and `gsd-update` commands for post-delivery maintenance workflows. `gsd-fix` accepts plain text, files (`-File`), or directories with rich artifacts (`-BugDir` — screenshots, logs, repro files copied to `.gsd/supervisor/bug-artifacts/`). `gsd-update` verifies that `.gsd/health/requirements-matrix.json` exists before proceeding — if not found, it prints a clear error directing the user to run `gsd-converge` first to initialize the project. Supports `--Scope` parameter for targeted convergence and `--Incremental` for adding new requirements from updated specs without losing existing satisfied items.
 
 ### patch-gsd-council-requirements.ps1 (Script 36)
 

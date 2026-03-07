@@ -657,7 +657,11 @@ $interfaceLib = "$GlobalDir\lib\modules\interfaces.ps1"
 $detectedInterfaces = @()
 if (Test-Path $interfaceLib) {
     . $interfaceLib
-    $detectedInterfaces = Initialize-ProjectInterfaces -RepoRoot $RepoRoot
+    if (Get-Command Initialize-ProjectInterfaces -ErrorAction SilentlyContinue) {
+        $detectedInterfaces = Initialize-ProjectInterfaces -RepoRoot $RepoRoot
+    } else {
+        Write-Host "  [!!] Initialize-ProjectInterfaces not found after loading interfaces.ps1" -ForegroundColor DarkYellow
+    }
 }
 
 # Load resilience if available
@@ -736,7 +740,8 @@ if (-not $DryRun) {
             Write-Host "  [XX] Assessment failed: $($result.Error)" -ForegroundColor Red
         }
     } else {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        $claudeModel = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\assessment.log"
     }
 

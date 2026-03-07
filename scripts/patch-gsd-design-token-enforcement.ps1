@@ -187,6 +187,21 @@ function Test-DesignTokenCompliance {
             Name    = "Inline style object color"
             Regex   = "color:\s*['""]#[0-9a-fA-F]{3,8}['""]"
             Type    = "color"
+        },
+        @{
+            Name    = "Hardcoded hsl/hsla color"
+            Regex   = 'hsla?\(\s*\d+(?:\.\d+)?\s*(?:deg|rad|turn)?\s*,\s*\d+(?:\.\d+)?%'
+            Type    = "color"
+        },
+        @{
+            Name    = "Hardcoded oklch color"
+            Regex   = 'oklch\(\s*[\d.]+%?\s+[\d.]+\s+[\d.]+'
+            Type    = "color"
+        },
+        @{
+            Name    = "Hardcoded hwb color"
+            Regex   = 'hwb\(\s*\d+(?:\.\d+)?\s+\d+(?:\.\d+)?%'
+            Type    = "color"
         }
     )
 

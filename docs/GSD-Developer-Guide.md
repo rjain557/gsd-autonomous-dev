@@ -1,6 +1,6 @@
 # GSD Autonomous Development Engine - Developer Guide
 
-**Version:** 2.2.0
+**Version:** 2.3.0
 **Date:** March 2026
 **Classification:** Confidential - Internal Use Only
 
@@ -20,6 +20,7 @@
 | 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
 | 2.1.0 | March 2026 | Runtime smoke tests (Script 32: DI validation, API endpoint checks, seed FK order). Partitioned code review (Script 33: 3-way parallel with agent rotation). LOC-cost integration (Script 34: baseline tracking, grand totals, cost-per-line in every notification). Maintenance mode (Script 35): `gsd-fix` (text/file/directory with screenshots), `gsd-update`, `--Scope`, `--Incremental`, `-BugDir`. Added Chapters 17.7-17.8, expanded Chapter 19, added Chapter 20. |
 | 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-phase parallel pipeline -- partitioned extract (each agent processes 1/3 of specs in chunks via `Start-Job`), cross-verification (different agent checks each extraction), Claude synthesis. Live progress monitoring (disk polling every 15s + heartbeat). Ntfy push notifications at every phase with token cost breakdown. `gsd-verify-requirements` standalone command with `-SkipAgent`, `-SkipVerify`, `-ChunkSize`. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
+| 2.3.0 | March 2026 | Model version pinning: `--model` flag enforced on all CLI invocations (claude-sonnet-4-6, gpt-5.4, gemini-3.0-pro). `agent_models` config block in global-config.json for zero-reinstall model upgrades. `$script:CLAUDE_MODEL` / `$script:GEMINI_MODEL` / `$script:CODEX_MODEL` script-scope constants in resilience.ps1. `--allowed-tools` kebab-case fix across all scripts. `disabled:` and `connection_failed:` error prefixes in Get-FailureDiagnosis (triggers immediate fallback). ImageMagick three-tier visual diff (SHA256 → pixel diff → file-size fallback). HSL/oklch/hwb design token detection. Incremental file map threshold (≤20 files prunes cache; >20 full rebuild). SEC-NET-05/SEC-FE-01 `[AllowAnonymous]` exclusion. Binary file skip logging in LOC tracking. `gsd-update` matrix existence guard. `Initialize-ProjectInterfaces` guard in gsd-assess. Set-Content error handling in convergence fix. Per-project supervisor pattern memory. |
 
 ---
 
@@ -1166,6 +1167,11 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
       "min_clarity_score": 70,
       "check_cross_artifact": true
     }
+  },
+  "agent_models": {
+    "claude": "claude-sonnet-4-6",
+    "gemini": "gemini-3.0-pro",
+    "codex":  "gpt-5.4"
   }
 }
 ```
@@ -1246,6 +1252,18 @@ Controls three quality gate checks that run during pipeline execution.
 | `spec_quality.enabled` | bool | true | Enable spec quality gate |
 | `spec_quality.min_clarity_score` | int | 70 | Minimum clarity score (0-100) |
 | `spec_quality.check_cross_artifact` | bool | true | Run cross-artifact consistency check |
+
+### agent_models
+
+Pins the exact model version passed to each CLI agent via `--model`. Loaded once at pipeline startup from global-config.json; script-scope constants (`$script:CLAUDE_MODEL`, `$script:GEMINI_MODEL`, `$script:CODEX_MODEL`) propagate to every CLI call in resilience.ps1 and all pipeline scripts.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `claude` | string | "claude-sonnet-4-6" | Claude Code model ID |
+| `gemini` | string | "gemini-3.0-pro" | Gemini CLI model ID |
+| `codex` | string | "gpt-5.4" | Codex CLI model ID |
+
+To upgrade a model without reinstalling, edit this section and restart the pipeline. To use Opus for the next run: `"claude": "claude-opus-4-6"`.
 
 ## 6.2 Agent Assignment (agent-map.json)
 
@@ -1753,7 +1771,7 @@ Contract-first API validation: Zero-cost static scan validating controllers agai
 
 ### patch-gsd-visual-validation.ps1
 
-Visual validation: Compares generated React components against Figma exported screenshots using Playwright. Reports pixel diff percentage per component, flags >15% deviation. Falls back to component-match heuristic if Playwright unavailable. Adds `Invoke-VisualValidation` to resilience.ps1. Config: `visual_validation` in global-config.json.
+Visual validation: Compares generated React components against Figma exported screenshots using Playwright. Uses three-tier diff: (1) SHA-256 hash equality (instant pass); (2) ImageMagick pixel diff via `magick compare -metric AE -fuzz 2%` (accurate); (3) file-size ratio with warning when ImageMagick is not installed. Flags >15% deviation. Adds `Invoke-VisualValidation` to resilience.ps1. Config: `visual_validation` in global-config.json.
 
 ### patch-gsd-design-token-enforcement.ps1
 
@@ -1761,11 +1779,11 @@ Design token enforcement: Zero-cost regex scan detecting hardcoded CSS values (c
 
 ### patch-gsd-compliance-engine.ps1
 
-Compliance engine with three sub-systems: (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules scanning every iteration (SQL injection, XSS, eval, hardcoded secrets, missing [Authorize], PII in logs, HIPAA/SOC2/PCI/GDPR patterns). (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data referential integrity. (3) `Invoke-PiiFlowAnalysis` -- traces PII fields through API->controller->SP->table, checks logging/encryption/UI masking. All zero-cost static scans. Config: `compliance_engine` in global-config.json.
+Compliance engine with three sub-systems: (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules scanning every iteration (SQL injection, XSS, eval, hardcoded secrets, missing [Authorize], PII in logs, HIPAA/SOC2/PCI/GDPR patterns). SEC-NET-05 and SEC-FE-01 use `(?s)` multiline mode with `(?!.*\[AllowAnonymous])` negative lookahead so intentionally anonymous endpoints are not flagged. (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data referential integrity. (3) `Invoke-PiiFlowAnalysis` -- traces PII fields through API->controller->SP->table, checks logging/encryption/UI masking. All zero-cost static scans. Config: `compliance_engine` in global-config.json.
 
 ### patch-gsd-speed-optimizations.ps1
 
-Five speed optimizations: (1) `Test-ShouldSkipResearch` -- skip research when health improving and no new requirements. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- git-diff-based file map updates. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} and {{CODING_CONVENTIONS}} template variables. (5) Token budget headers and inter-agent handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
+Five speed optimizations: (1) `Test-ShouldSkipResearch` -- skip research when health improving and no new requirements. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- threshold-based incremental file map: ≤20 changed files prunes deleted entries from the cached map (sub-second); >20 files triggers full rebuild via `Update-FileMap`. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} and {{CODING_CONVENTIONS}} template variables. (5) Token budget headers and inter-agent handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
 
 ### patch-gsd-agent-intelligence.ps1
 
@@ -5276,6 +5294,6 @@ Note: Costs scale with spec file count. Chunking into batches of 10 keeps each L
 
 ---
 
-*Generated from GSD Engine v2.2.0 source documentation, scripts, and standards prompt templates.*
+*Generated from GSD Engine v2.3.0 source documentation, scripts, and standards prompt templates.*
 *Total scripts: 42 (1 master installer + 1 pre-flight + 36 installer scripts + 4 standalone utilities)*
 *Chapters: 21 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*

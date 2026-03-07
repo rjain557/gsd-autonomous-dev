@@ -347,13 +347,13 @@ function Invoke-AgentFallback {
 
     try {
         if ($FallbackAgent -eq "codex") {
-            $fbOutput = $Prompt | codex exec --full-auto - 2>&1
+            $fbOutput = $Prompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "claude") {
-            $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
+            $fbOutput = claude -p $Prompt --model $script:CLAUDE_MODEL --allowed-tools $AllowedTools 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "gemini") {
-            $fbOutput = $Prompt | gemini --approval-mode plan 2>&1
+            $fbOutput = $Prompt | gemini --model $script:GEMINI_MODEL --approval-mode plan 2>&1
             $fbExit = $LASTEXITCODE
         }
         if ($LogFile -and $fbOutput) {
@@ -414,14 +414,14 @@ function Invoke-WithRetryCore {
                 if ($Agent -eq "claude") {
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = claude -p `$prompt --allowedTools $AllowedTools 2>&1
+`$output = claude -p `$prompt --model $($script:CLAUDE_MODEL) --allowed-tools $AllowedTools 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
                 } elseif ($Agent -eq "codex") {
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = `$prompt | codex exec --full-auto - 2>&1
+`$output = `$prompt | codex exec --full-auto --model $($script:CODEX_MODEL) - 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
@@ -429,7 +429,7 @@ exit `$LASTEXITCODE
                     $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) -join ' '
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = `$prompt | gemini $geminiArgs 2>&1
+`$output = `$prompt | gemini --model $($script:GEMINI_MODEL) $geminiArgs 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
@@ -662,7 +662,7 @@ Rules:
 - If a method signature doesn't match, fix the caller to match the definition
 - After fixing, the project must compile with: dotnet build $($slnFile.FullName)
 "@
-                    $fixPrompt | codex exec --full-auto - 2>&1 |
+                    $fixPrompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1 |
                         Out-File -FilePath (Join-Path $GsdDir "logs\autofix-dotnet-iter$Iteration.log") -Encoding UTF8
 
                     # Re-verify
@@ -731,7 +731,7 @@ Rules:
 - Module not found: install the package or fix the import path
 - After fixing, npm run build must succeed
 "@
-                        $fixPrompt | codex exec --full-auto - 2>&1 |
+                        $fixPrompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1 |
                             Out-File -FilePath (Join-Path $GsdDir "logs\autofix-npm-iter$Iteration.log") -Encoding UTF8
 
                         $reNpmOutput = npm run build 2>&1

@@ -171,11 +171,11 @@ $newProbeBlock = @'
             # Test if quota has reset - use the SAME agent that was exhausted
             try {
                 if ($Agent -eq "codex") {
-                    $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
+                    $testOutput = "Reply with just the word READY" | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
+                    $testOutput = "Reply with just the word READY" | gemini --model $script:GEMINI_MODEL --approval-mode plan 2>&1
                 } else {
-                    $testOutput = claude -p "Reply with just the word READY" 2>&1
+                    $testOutput = claude -p "Reply with just the word READY" --model $script:CLAUDE_MODEL 2>&1
                 }
 
                 # Track probe token cost (small but adds up over 24 cycles)
@@ -485,7 +485,7 @@ $script:QUOTA_CUMULATIVE_MAX_MINUTES = 120          # Give up after 2 hours TOTA
 $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE = 3   # Try different agent after 3 consecutive quota hits
 '@
 
-if (-not $content.Contains('QUOTA_CUMULATIVE_MAX_MINUTES')) {
+if (-not $content.Contains('QUOTA_CUMULATIVE_MAX_MINUTES = ')) {
     Add-Content -Path $resiliencePath -Value $configConstants -Encoding UTF8
     Write-Host "   [OK] Config constants added" -ForegroundColor DarkGreen
 } else {

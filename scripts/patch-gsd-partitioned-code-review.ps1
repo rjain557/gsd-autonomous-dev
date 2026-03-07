@@ -382,7 +382,7 @@ if (Test-Path $resilienceFile) {
 '@
 $newCodexDispatch = @'
             } elseif ($Agent -eq "codex") {
-                $output = codex exec --full-auto $effectivePrompt 2>&1
+                $output = $effectivePrompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "gemini") {
                 $geminiArgs = if ($GeminiMode) {
@@ -390,8 +390,7 @@ $newCodexDispatch = @'
                 } else {
                     @("--approval-mode", "plan")
                 }
-                $geminiArgs = @("-p", $effectivePrompt) + $geminiArgs
-                $output = gemini @geminiArgs 2>&1
+                $output = $effectivePrompt | gemini --model $script:GEMINI_MODEL @geminiArgs 2>&1
                 $exitCode = $LASTEXITCODE
             }
 '@

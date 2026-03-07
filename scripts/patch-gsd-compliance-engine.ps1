@@ -127,7 +127,7 @@ function Invoke-PerIterationCompliance {
         @{ Id="SEC-NET-02"; Name="XSS via innerHTML"; Severity="critical"; Glob="*.tsx,*.jsx"; Pattern='dangerouslySetInnerHTML|\.innerHTML\s*=' }
         @{ Id="SEC-NET-03"; Name="Eval usage"; Severity="critical"; Glob="*.ts,*.tsx,*.js,*.jsx"; Pattern='\beval\s*\(|new\s+Function\s*\(' }
         @{ Id="SEC-NET-04"; Name="Hardcoded secrets"; Severity="critical"; Glob="*.cs,*.ts,*.json"; Pattern='(?i)(password|secret|api_key|apikey|connection_string)\s*[:=]\s*"[^"]{8,}"' }
-        @{ Id="SEC-NET-05"; Name="Missing Authorize"; Severity="high"; Glob="*Controller*.cs"; Pattern='(?s)\[ApiController\](?!.*\[Authorize)' }
+        @{ Id="SEC-NET-05"; Name="Missing Authorize"; Severity="high"; Glob="*Controller*.cs"; Pattern='(?s)\[ApiController\](?!.*\[Authorize)(?!.*\[AllowAnonymous)' }
         @{ Id="SEC-NET-06"; Name="HTTP instead of HTTPS"; Severity="high"; Glob="*.cs,*.ts"; Pattern='http://(?!localhost|127\.0\.0\.1|0\.0\.0\.0)' }
         @{ Id="SEC-NET-07"; Name="Console.log sensitive data"; Severity="medium"; Glob="*.ts,*.tsx,*.js"; Pattern='console\.\w+\(.*(?i)(password|token|secret|ssn|credit)' }
         @{ Id="SEC-NET-08"; Name="localStorage for tokens"; Severity="high"; Glob="*.ts,*.tsx,*.js"; Pattern='localStorage\.\w+\(.*(?i)(token|jwt|auth|session)' }
@@ -138,7 +138,7 @@ function Invoke-PerIterationCompliance {
         @{ Id="SEC-SQL-03"; Name="Dynamic SQL without sp_executesql"; Severity="high"; Glob="*.sql"; Pattern='EXEC\s*\(\s*@(?!.*sp_executesql)' }
 
         # Frontend Security (SEC-FE-*)
-        @{ Id="SEC-FE-01"; Name="Missing CSRF token"; Severity="high"; Glob="*.cs"; Pattern='\[HttpPost\](?!.*\[ValidateAntiForgeryToken\])' }
+        @{ Id="SEC-FE-01"; Name="Missing CSRF token"; Severity="high"; Glob="*.cs"; Pattern='(?s)\[HttpPost\](?!.*\[ValidateAntiForgeryToken)(?!.*\[AllowAnonymous)' }
         @{ Id="SEC-FE-02"; Name="Unvalidated redirect"; Severity="medium"; Glob="*.cs"; Pattern='Redirect\(\s*\w+\)(?!.*IsLocalUrl)' }
 
         # HIPAA (COMP-HIPAA-*)

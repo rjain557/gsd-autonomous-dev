@@ -778,6 +778,17 @@ if ($DryRun) { Write-Host "  [!!]  DRY RUN MODE - no agents will execute" -Foreg
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host ""
 
+# -- Agent model versions (read from global-config.json) --
+$claudeModel = "claude-sonnet-4-6"
+$codexModel  = "gpt-5.4"
+try {
+    $_scfg = Get-Content (Join-Path $GsdDir "config\global-config.json") -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ($_scfg.agent_models) {
+        if ($_scfg.agent_models.claude) { $claudeModel = $_scfg.agent_models.claude }
+        if ($_scfg.agent_models.codex)  { $codexModel  = $_scfg.agent_models.codex }
+    }
+} catch { }
+
 # ========================================================
 # PHASE 0: Initial Requirements Extraction
 # ========================================================
@@ -793,7 +804,7 @@ if (-not $hasRequirements -and -not $SkipInit) {
 
     if (-not $DryRun) {
         claude -p $initPrompt `
-            --allowedTools "Read,Write,Bash" `
+            --model $claudeModel --allowed-tools "Read,Write,Bash" `
             2>&1 | Tee-Object (Join-Path $GsdDir "logs\phase0-init.log")
     } else {
         Write-Host "   [DRY RUN] Would execute: claude -p <phase0-init prompt>" -ForegroundColor DarkYellow
@@ -831,7 +842,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     if (-not $DryRun) {
         claude -p $reviewPrompt `
-            --allowedTools "Read,Write,Bash" `
+            --model $claudeModel --allowed-tools "Read,Write,Bash" `
             2>&1 | Tee-Object (Join-Path $GsdDir "logs\claude-review-$Iteration.log")
     } else {
         Write-Host "   [DRY RUN] Would execute: claude -p <review prompt iter $Iteration>" -ForegroundColor DarkYellow
@@ -854,7 +865,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $generatePrompt = Build-GeneratePrompt $Health
 
     if (-not $DryRun) {
-        $generatePrompt | codex exec --full-auto - `
+        $generatePrompt | codex exec --full-auto --model $codexModel - `
               2>&1 | Tee-Object (Join-Path $GsdDir "logs\codex-generate-$Iteration.log")
 
         # Git commit
@@ -887,7 +898,7 @@ Diagnose WHY progress stalled. Common causes:
 Write diagnosis to .gsd\health\stall-diagnosis.md with recommended actions.
 "@
                 claude -p $stallPrompt `
-                    --allowedTools "Read,Write,Bash" `
+                    --model $claudeModel --allowed-tools "Read,Write,Bash" `
                     2>&1 | Tee-Object (Join-Path $GsdDir "logs\stall-diagnosis-$Iteration.log")
             }
             break

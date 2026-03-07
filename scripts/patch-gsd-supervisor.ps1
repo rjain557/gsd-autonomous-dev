@@ -376,7 +376,8 @@ Write your analysis to: $GsdDir\supervisor\diagnosis-$AttemptNumber.md
             -LogFile $diagLogFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
             -AllowedTools "Read,Write,Bash"
     } else {
-        $output = claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1
+        $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+        $output = claude -p $prompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1
         $output | Out-File -FilePath $diagLogFile -Encoding UTF8
         $result = @{ Success = ($LASTEXITCODE -eq 0) }
     }
@@ -541,7 +542,8 @@ Also write a summary to $GsdDir\supervisor\decomposition-$AttemptNumber.md
                     -LogFile $logFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
                     -AllowedTools "Read,Write,Bash" | Out-Null
             } else {
-                claude -p $decompPrompt --allowedTools "Read,Write,Bash" 2>&1 |
+                $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+                claude -p $decompPrompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1 |
                     Out-File -FilePath $logFile -Encoding UTF8
             }
             Write-Host "    [OK] Requirements decomposed" -ForegroundColor DarkGreen
@@ -579,7 +581,8 @@ to follow the clarifications.
                     -LogFile $logFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
                     -AllowedTools "Read,Write,Bash" | Out-Null
             } else {
-                claude -p $clarifyPrompt --allowedTools "Read,Write,Bash" 2>&1 |
+                $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+                claude -p $clarifyPrompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1 |
                     Out-File -FilePath $logFile -Encoding UTF8
             }
             Write-Host "    [OK] Spec clarifications written" -ForegroundColor DarkGreen

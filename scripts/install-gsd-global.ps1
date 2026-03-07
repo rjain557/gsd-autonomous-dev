@@ -278,6 +278,11 @@ $globalConfig = @{
         ntfy_topic = "auto"
         notify_on = @("iteration_complete", "converged", "stalled", "quota_exhausted", "error")
     }
+    agent_models = @{
+        claude = "claude-sonnet-4-6"
+        gemini = "gemini-3.0-pro"
+        codex  = "gpt-5.4"
+    }
 } | ConvertTo-Json -Depth 4
 
 Set-Content -Path "$GsdGlobalDir\config\global-config.json" -Value $globalConfig -Encoding UTF8
@@ -925,6 +930,19 @@ if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle:    ${ThrottleSeconds}s bet
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host ""
 
+# -- Agent model versions (read from global-config.json) --
+$claudeModel = "claude-sonnet-4-6"
+$geminiModel = "gemini-3.0-pro"
+$codexModel  = "gpt-5.4"
+try {
+    $_gcfg = Get-Content "$GsdGlobalDir\config\global-config.json" -Raw | ConvertFrom-Json
+    if ($_gcfg.agent_models) {
+        if ($_gcfg.agent_models.claude) { $claudeModel = $_gcfg.agent_models.claude }
+        if ($_gcfg.agent_models.gemini) { $geminiModel = $_gcfg.agent_models.gemini }
+        if ($_gcfg.agent_models.codex)  { $codexModel  = $_gcfg.agent_models.codex }
+    }
+} catch { }
+
 # ========================================================
 # PHASE 0: Create Phases (Claude Code - one time)
 # ========================================================
@@ -938,7 +956,7 @@ if (-not $hasRequirements -and -not $SkipInit) {
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\create-phases.md" 0 0
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\phase0-create-phases.log"
     } else {
         Write-Host "   [DRY RUN] claude -p <create-phases prompt>" -ForegroundColor DarkYellow
@@ -965,7 +983,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-1-code-review.log"
     } else {
         Write-Host "   [DRY RUN] claude -> code-review" -ForegroundColor DarkYellow
@@ -997,7 +1015,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Log-Handoff "gemini" "research" $Iteration $Health
             $prompt = Resolve-Prompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
             if (-not $DryRun) {
-                $prompt | gemini --approval-mode plan 2>&1 |
+                $prompt | gemini --model $geminiModel --approval-mode plan 2>&1 |
                     Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
             } else {
                 Write-Host "   [DRY RUN] gemini -> research" -ForegroundColor DarkYellow
@@ -1007,7 +1025,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Log-Handoff "codex" "research" $Iteration $Health
             $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
             if (-not $DryRun) {
-                $prompt | codex exec --full-auto - 2>&1 |
+                $prompt | codex exec --full-auto --model $codexModel - 2>&1 |
                     Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
             } else {
                 Write-Host "   [DRY RUN] codex -> research" -ForegroundColor DarkYellow
@@ -1030,7 +1048,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-3-plan.log"
     } else {
         Write-Host "   [DRY RUN] claude -> plan" -ForegroundColor DarkYellow
@@ -1049,7 +1067,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
 
     if (-not $DryRun) {
-        $prompt | codex exec --full-auto - 2>&1 |
+        $prompt | codex exec --full-auto --model $codexModel - 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-4-execute.log"
 
         # Git commit
@@ -1069,7 +1087,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Write-Host "[STOP] Stalled. Running Claude Code diagnosis..." -ForegroundColor Red
             if (-not $DryRun) {
                 claude -p "The convergence loop stalled for $StallCount iterations at ${NewHealth}%. Read .gsd\health\health-history.jsonl, drift-report.md, and requirements-matrix.json. Diagnose why. Write to .gsd\health\stall-diagnosis.md." `
-                    --allowedTools "Read,Write,Bash" 2>&1 |
+                    --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
                     Tee-Object "$GsdDir\logs\stall-diagnosis-$Iteration.log"
             }
             break

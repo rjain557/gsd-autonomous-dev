@@ -278,9 +278,10 @@ function gsd-fix {
     $matrixPath = Join-Path $gsdDir "health\requirements-matrix.json"
     $errorCtxPath = Join-Path $gsdDir "supervisor\error-context.md"
 
-    # Ensure .gsd exists
+    # Ensure requirements-matrix.json exists
     if (-not (Test-Path $matrixPath)) {
-        Write-Host "  [ERROR] No .gsd directory found. Run gsd-init first." -ForegroundColor Red
+        Write-Host "  [ERROR] requirements-matrix.json not found at $matrixPath" -ForegroundColor Red
+        Write-Host "  Run gsd-converge first to initialize the project matrix." -ForegroundColor Yellow
         return
     }
 
@@ -491,6 +492,15 @@ function gsd-update {
     Write-Host "  [UPDATE] GSD Incremental Update Mode" -ForegroundColor Yellow
     Write-Host "  Preserves existing satisfied requirements, adds new from updated specs" -ForegroundColor DarkGray
     Write-Host ""
+
+    # Require existing matrix -- gsd-update is for projects already in convergence
+    $repoRoot = (Get-Location).Path
+    $matrixPath = Join-Path $repoRoot ".gsd\health\requirements-matrix.json"
+    if (-not (Test-Path $matrixPath)) {
+        Write-Host "  [ERROR] requirements-matrix.json not found at $matrixPath" -ForegroundColor Red
+        Write-Host "  Run gsd-converge first to initialize the project, then gsd-update to add features." -ForegroundColor Yellow
+        return
+    }
 
     # Call gsd-converge with --Incremental flag
     $gsdArgs = @{
