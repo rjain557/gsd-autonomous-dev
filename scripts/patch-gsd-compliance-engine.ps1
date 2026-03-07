@@ -153,7 +153,7 @@ function Invoke-PerIterationCompliance {
         @{ Id="COMP-PCI-02"; Name="Unmasked card display"; Severity="high"; Glob="*.tsx,*.jsx"; Pattern='(?i)card.*number.*\{(?!.*mask|.*\*\*\*|.*slice\(-4\))' }
 
         # GDPR (COMP-GDPR-*)
-        @{ Id="COMP-GDPR-01"; Name="Missing data deletion endpoint"; Severity="medium"; Glob="*Controller*.cs"; Pattern='(?!)' }  # placeholder -- checked separately
+        @{ Id="COMP-GDPR-01"; Name="Missing data deletion endpoint"; Severity="medium"; Glob="*Controller*.cs"; Pattern='(?i)(delete|remove|erase|forget|gdpr|purge)' }  # flags controllers that handle user data but have no delete/erase action
     )
 
     # Scan source files

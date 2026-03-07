@@ -337,7 +337,7 @@ function Test-DiskSpace {
         $logDir = Join-Path $GsdDir "logs"
         if (Test-Path $logDir) {
             Get-ChildItem $logDir -File | Sort-Object LastWriteTime -Descending |
-                Select-Object -Skip 20 | Remove-Item -Force -ErrorAction SilentlyContinue
+                Select-Object -Skip 5 | Remove-Item -Force -ErrorAction SilentlyContinue
             $cleaned = $true
         }
 

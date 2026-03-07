@@ -286,7 +286,11 @@ function Get-LocContextForReview {
         $lines += "| Iter | Lines Added | Lines Deleted | Net | Files | Running Total |"
         $lines += "|------|------------|---------------|-----|-------|---------------|"
 
-        $runningTotal = 0
+        # Seed running total from all iterations before the shown window so column reflects true cumulative
+        $shownNetSum = ($iters | ForEach-Object { [int]$_.lines_net } | Measure-Object -Sum).Sum
+        $totalNetAll  = if ($m.cumulative) { [int]$m.cumulative.lines_net } else { ($m.iterations | ForEach-Object { [int]$_.lines_net } | Measure-Object -Sum).Sum }
+        $runningTotal = $totalNetAll - $shownNetSum
+
         foreach ($iter in $iters) {
             $runningTotal += [int]$iter.lines_net
             $lines += "| $($iter.iteration) | +$($iter.lines_added) | -$($iter.lines_deleted) | $($iter.lines_net) | $($iter.files_changed) | $runningTotal |"

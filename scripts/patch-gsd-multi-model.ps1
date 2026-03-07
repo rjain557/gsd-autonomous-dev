@@ -424,7 +424,7 @@ $newEnhancedDispatchEnd = @'
             } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
                 # OpenAI-compatible REST API agents (kimi, deepseek, glm5, minimax, etc.)
                 $rawOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt $effectivePrompt
-                $exitCode = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted)") { 1 } else { 0 }
+                $exitCode = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted|disabled:|connection_failed:)") { 1 } else { 0 }
                 $parsed = Extract-TokensFromOutput -Agent $Agent -RawOutput $rawOutput
                 if ($parsed -and $parsed.TextOutput) {
                     $output = $parsed.TextOutput -split "`n"
@@ -522,7 +522,7 @@ $newFallbackEnhanced = @'
             }
         } elseif (Test-IsOpenAICompatAgent -AgentName $FallbackAgent) {
             $rawOutput = Invoke-OpenAICompatibleAgent -AgentName $FallbackAgent -Prompt $Prompt
-            $fbExit = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted)") { 1 } else { 0 }
+            $fbExit = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted|disabled:|connection_failed:)") { 1 } else { 0 }
             $parsed = Extract-TokensFromOutput -Agent $FallbackAgent -RawOutput $rawOutput
             if ($parsed -and $parsed.TextOutput) {
                 $fbOutput = $parsed.TextOutput -split "`n"

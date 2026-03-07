@@ -701,8 +701,12 @@ function Invoke-LlmCouncil {
             }
         }
     } else {
-        Write-Host "  [SCALES] Synthesis failed -- auto-approving" -ForegroundColor DarkYellow
-        $findings.reason = "Synthesis agent failed; auto-approved"
+        # Synthesis failure — block, do not auto-approve
+        Write-Host "  [SCALES] Synthesis failed -- blocking (no auto-approve)" -ForegroundColor Red
+        $approved = $false
+        $findings.approved = $false
+        $findings.confidence = 0
+        $findings.reason = "ERROR: Council synthesis agent failed. Pipeline blocked pending supervisor intervention."
     }
 
     # Write council-review.json

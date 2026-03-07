@@ -639,18 +639,32 @@ function Save-FailurePattern {
 }
 
 function Find-KnownFix {
-    param([string]$Category, [string]$RootCause)
-    $memoryFile = Join-Path $env:USERPROFILE ".gsd-global\supervisor\pattern-memory.jsonl"
-    if (-not (Test-Path $memoryFile)) { return $null }
+    param([string]$Category, [string]$RootCause, [string]$Project = "")
+    $memoryDir = Join-Path $env:USERPROFILE ".gsd-global\supervisor"
 
-    $patterns = Get-Content $memoryFile -ErrorAction SilentlyContinue | ForEach-Object {
-        try { $_ | ConvertFrom-Json } catch {}
+    # Read per-project file first (more specific), then fall back to global
+    $allPatterns = @()
+    if ($Project) {
+        $projectSlug = $Project -replace '[^a-zA-Z0-9_-]', '_'
+        $projectFile = Join-Path $memoryDir "pattern-memory-$projectSlug.jsonl"
+        if (Test-Path $projectFile) {
+            $allPatterns += Get-Content $projectFile -ErrorAction SilentlyContinue | ForEach-Object {
+                try { $_ | ConvertFrom-Json } catch {}
+            }
+        }
+    }
+    $globalFile = Join-Path $memoryDir "pattern-memory.jsonl"
+    if (Test-Path $globalFile) {
+        $allPatterns += Get-Content $globalFile -ErrorAction SilentlyContinue | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch {}
+        }
     }
 
-    # Find successful fixes for this category
-    $matches = $patterns | Where-Object { $_.success -eq $true -and $_.category -eq $Category }
+    if (-not $allPatterns) { return $null }
+
+    # Find successful fixes for this category (per-project entries appear first = higher priority)
+    $matches = $allPatterns | Where-Object { $_.success -eq $true -and $_.category -eq $Category }
     if ($matches) {
-        # Return most recent successful fix for this category
         return $matches | Select-Object -Last 1
     }
     return $null

@@ -70,6 +70,13 @@ $directories = @(
     "$BlueprintDir\templates"
 )
 
+# Pre-flight: verify install-gsd-global.ps1 ran first (resilience.ps1 must exist)
+if (-not (Test-Path "$GsdGlobalDir\lib\modules\resilience.ps1")) {
+    Write-Host "[XX] install-gsd-global.ps1 has not been run yet." -ForegroundColor Red
+    Write-Host "     Run install-gsd-global.ps1 first, then re-run this script." -ForegroundColor Yellow
+    exit 1
+}
+
 # Ensure parent dirs exist too
 if (-not (Test-Path $GsdGlobalDir)) {
     New-Item -ItemType Directory -Path $GsdGlobalDir -Force | Out-Null
