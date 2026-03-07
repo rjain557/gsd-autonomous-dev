@@ -1619,8 +1619,18 @@ if (Test-Path $convergenceScript) {
 
         if ($convContent -like "*Phase 0: CREATE PHASES*") {
             $convContent = $convContent.Replace($oldLine, $newBlock)
-            $outNullLine = '            -LogFile "$GsdDir\logs\phase0.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null'
-            $convContent = $convContent.Replace($outNullLine, "$outNullLine`n    }")
+            # Close the `if (-not $useCouncilReqs)` block before the elseif's own closing brace.
+            # The elseif block ends with: Write-Host "" followed by a lone `}`.
+            # We insert `    }` (closing the if block) before that final `}`.
+            $elifClose = '    Write-Host ""' + [Environment]::NewLine + '}'
+            $elifCloseFixed = '    Write-Host ""' + [Environment]::NewLine + '    }' + [Environment]::NewLine + '} # end elseif (create-phases)'
+            if ($convContent -like "*$elifClose*") {
+                $convContent = $convContent.Replace($elifClose, $elifCloseFixed)
+            } else {
+                # Fallback: append } after AllowedTools Out-Null line (older format)
+                $outNullLine = '            -AllowedTools "Read,Write,Bash" | Out-Null'
+                $convContent = $convContent.Replace($outNullLine, "$outNullLine`n    }")
+            }
             Set-Content -Path $convergenceScript -Value $convContent -Encoding UTF8
             Write-Host "  [OK] Convergence pipeline Phase 0 patched" -ForegroundColor Green
         } else {
