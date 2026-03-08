@@ -14,9 +14,30 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+
+# CRITICAL: Remove CLAUDECODE env var so nested claude CLI calls work
+# (When convergence-loop is launched from within a Claude Code session)
+Remove-Item Env:\CLAUDECODE -ErrorAction SilentlyContinue
+[System.Environment]::SetEnvironmentVariable("CLAUDECODE", $null, [System.EnvironmentVariableTarget]::Process)
+
 $RepoRoot = (Get-Location).Path
 $UserHome = $env:USERPROFILE
 $GlobalDir = Join-Path $UserHome ".gsd-global"
+
+# GUARD: Prevent running against the GSD engine's own repo
+$engineMarker = Join-Path $RepoRoot "scripts\convergence-loop.ps1"
+if (Test-Path $engineMarker) {
+    Write-Host ""
+    Write-Host "  [!!] ERROR: You are running convergence-loop inside the GSD engine repo!" -ForegroundColor Red
+    Write-Host "       Current dir: $RepoRoot" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Fix: cd into your TARGET PROJECT directory first, then run:" -ForegroundColor Yellow
+    Write-Host "       cd D:\vscode\your-project" -ForegroundColor Cyan
+    Write-Host "       & `"$GlobalDir\scripts\convergence-loop.ps1`"" -ForegroundColor Cyan
+    Write-Host ""
+    exit 1
+}
+
 $GsdDir = Join-Path $RepoRoot ".gsd"
 
 # Load ALL modules
@@ -65,6 +86,13 @@ Write-Host "  GSD Convergence - Final Integrated Edition" -ForegroundColor Green
 Write-Host "=========================================================" -ForegroundColor Green
 
 if (-not $DryRun) {
+    # Always remove existing lock before startup so we start clean
+    $existingLock = Join-Path $GsdDir ".gsd-lock"
+    if (Test-Path $existingLock) {
+        $lockAge = [math]::Round(((Get-Date) - (Get-Item $existingLock).LastWriteTime).TotalMinutes)
+        Write-Host "    [LOCK] Removing stale lock (${lockAge}m old) - starting clean" -ForegroundColor DarkYellow
+        Remove-Item $existingLock -Force -ErrorAction SilentlyContinue
+    }
     $preFlight = Test-PreFlight -RepoRoot $RepoRoot -GsdDir $GsdDir
     if (-not $preFlight) { exit 1 }
     New-GsdLock -GsdDir $GsdDir -Pipeline "converge"
@@ -299,6 +327,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
                 }
             } elseif ($diffCtx.UseDifferential -and $diffCtx.ChangedFiles.Count -eq 0) {
                 Write-Host "  [DIFF] No files changed since last review -- skipping code-review phase" -ForegroundColor DarkGray
+                $useDiffReview = $true  # prevents the full-review block below from firing
                 # Still need to save checkpoint
                 if (Get-Command Save-ReviewedCommit -ErrorAction SilentlyContinue) {
                     Save-ReviewedCommit -GsdDir $GsdDir -Iteration $Iteration
@@ -313,12 +342,11 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         $reviewResult = Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
             -LogFile "$GsdDir\logs\iter${Iteration}-1.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
             -AllowedTools "Read,Write,Bash"
-        # Fallback: if claude failed, retry with gemini
+        # Fallback: if claude failed, retry with codex (NOT gemini -- gemini applies strict traceability rules that corrupt the matrix)
         if (-not $reviewResult -or $reviewResult.ExitCode -ne 0) {
-            Write-Host "  [FALLBACK] claude code-review failed -- retrying with gemini" -ForegroundColor Yellow
-            Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "code-review" `
-                -LogFile "$GsdDir\logs\iter${Iteration}-1-gemini.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-                -GeminiMode "--approval-mode yolo" | Out-Null
+            Write-Host "  [FALLBACK] claude code-review failed -- retrying with codex" -ForegroundColor Yellow
+            Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "code-review" `
+                -LogFile "$GsdDir\logs\iter${Iteration}-1-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
         }
     }
     $Health = Get-Health
@@ -439,12 +467,11 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         $planResult = Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
             -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
             -AllowedTools "Read,Write,Bash"
-        # Fallback: if claude failed, retry with gemini
+        # Fallback: if claude failed, retry with codex (NOT gemini -- gemini misinterprets plan requirements)
         if (-not $planResult -or $planResult.ExitCode -ne 0) {
-            Write-Host "  [FALLBACK] claude plan failed -- retrying with gemini" -ForegroundColor Yellow
-            Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "plan" `
-                -LogFile "$GsdDir\logs\iter${Iteration}-3-gemini.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-                -GeminiMode "--approval-mode yolo" | Out-Null
+            Write-Host "  [FALLBACK] claude plan failed -- retrying with codex" -ForegroundColor Yellow
+            Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "plan" `
+                -LogFile "$GsdDir\logs\iter${Iteration}-3-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
         }
     }
 

@@ -1,0 +1,18 @@
+﻿{"iteration":1,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:20:37.7896502-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":2,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:20:49.6089006-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":1,"message":"gemini quota_exhausted","timestamp":"2026-03-08T08:21:17.7380881-07:00","resolution":"Waiting for reset","phase":"council-requirements","category":"quota"}
+{"iteration":1,"message":"gemini -\u003e claude after 1 consecutive quota failures","timestamp":"2026-03-08T08:21:17.8049089-07:00","resolution":"Rotated agent","phase":"council-requirements","category":"agent_rotate"}
+{"iteration":1,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:21:19.7477178-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":2,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:21:31.6846833-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":1,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:37:46.1162369-07:00","resolution":"Retrying at same batch 8","phase":"create-phases","category":"agent_crash"}
+{"iteration":2,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:37:57.9312390-07:00","resolution":"Retrying at same batch 8","phase":"create-phases","category":"agent_crash"}
+{"iteration":1,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:38:14.9367289-07:00","resolution":"Retrying at same batch 8","phase":"code-review","category":"agent_crash"}
+{"iteration":2,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:38:26.9537264-07:00","resolution":"Retrying at same batch 8","phase":"code-review","category":"agent_crash"}
+{"iteration":1,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:44:49.5968712-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":2,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:45:01.4951701-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":1,"message":"gemini quota_exhausted","timestamp":"2026-03-08T08:45:33.5677977-07:00","resolution":"Waiting for reset","phase":"council-requirements","category":"quota"}
+{"iteration":1,"message":"gemini -\u003e claude after 1 consecutive quota failures","timestamp":"2026-03-08T08:45:33.6525968-07:00","resolution":"Rotated agent","phase":"council-requirements","category":"agent_rotate"}
+{"iteration":1,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:45:35.6114358-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":2,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:45:47.7646165-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":1,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:50:23.8075856-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}
+{"iteration":2,"message":"claude exit code 1 (Claude exit code 1)","timestamp":"2026-03-08T08:50:35.7175753-07:00","resolution":"Retrying at same batch 1","phase":"council-requirements","category":"agent_crash"}

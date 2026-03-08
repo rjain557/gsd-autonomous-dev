@@ -380,6 +380,10 @@ function Invoke-OpenAICompatibleAgent {
             } else {
                 return "unauthorized: access denied - $errMsg (HTTP 403)"
             }
+        } elseif ($statusCode -eq 400) {
+            # 400 Bad Request -- typically prompt too large or malformed input
+            # Treat as rate_limit so pipeline rotates to a different agent gracefully
+            return "rate_limit: prompt too large or bad request for $AgentName (HTTP 400) - $errMsg"
         } elseif ($statusCode -in @(502, 503)) {
             return "rate_limit: server temporarily unavailable (HTTP $statusCode) - $errMsg"
         } elseif ($statusCode -ge 500) {

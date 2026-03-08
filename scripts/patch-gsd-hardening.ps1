@@ -78,7 +78,7 @@ $script:JSON_BACKUP_SUFFIX = ".last-good"
 
 # -- Agent model versions (overridable via global-config.json -> agent_models) --
 $script:CLAUDE_MODEL = "claude-sonnet-4-6"
-$script:GEMINI_MODEL = "gemini-3.0-pro"
+$script:GEMINI_MODEL = "gemini-3.1-pro-preview"
 $script:CODEX_MODEL  = "gpt-5.4"
 try {
     $_amCfgPath = Join-Path $env:USERPROFILE ".gsd-global\config\global-config.json"

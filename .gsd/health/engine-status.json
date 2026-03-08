@@ -1,0 +1,18 @@
+﻿{
+    "phase":  "",
+    "attempt":  "",
+    "last_error":  "",
+    "sleep_reason":  null,
+    "last_heartbeat":  "2026-03-08T16:21:12.9212606Z",
+    "pid":  324,
+    "elapsed_minutes":  481,
+    "recovered_from_error":  false,
+    "batch_size":  8,
+    "iteration":  0,
+    "started_at":  "2026-03-08T15:20:26.6552338Z",
+    "errors_this_iteration":  0,
+    "health_score":  0,
+    "sleep_until":  null,
+    "state":  "starting",
+    "agent":  ""
+}

@@ -103,6 +103,7 @@ $scripts = @(
     @{ File="patch-gsd-loc-cost-integration.ps1"; Desc="LOC-Cost Integration (running cost-per-line, code review LOC awareness, enhanced ntfy)" }
     @{ File="patch-gsd-maintenance-mode.ps1";    Desc="Maintenance Mode (incremental create-phases, scoped convergence, post-launch fixes)" }
     @{ File="patch-gsd-council-requirements.ps1"; Desc="Council Requirements Verification (3-agent extraction, dedup, confidence scoring)" }
+    @{ File="patch-gsd-partial-decompose.ps1";    Desc="Partial Decompose (auto-split stuck partials into atomic sub-requirements each iteration)" }
 )
 
 Write-Host ""

@@ -1,0 +1,242 @@
+node.exe : YOLO mode is enabled. All tool calls will be automatically approved.
+At C:\Users\rjain\AppData\Roaming\npm\gemini.ps1:22 char:14
++ ...    $input | & "node$exe" --no-warnings=DEP0040 "$basedir/node_modules ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (YOLO mode is en...cally approved.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Loaded cached credentials.
+YOLO mode is enabled. All tool calls will be automatically approved.
+Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.
+Error when talking to Gemini API Full report available at:
+C:\Users\rjain\AppData\Local\Temp\gemini-client-error-Turn.run-sendMessageStream-2026-03-08T15-21-17-003Z.json
+ModelNotFoundError: Requested entity was not found.
+    at classifyGoogleError (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_modules/@go
+ogle/gemini-cli-core/dist/src/utils/googleQuotaErrors.js:151:16)
+    at retryWithBackoff (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_modules/@googl
+e/gemini-cli-core/dist/src/utils/retry.js:153:37)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async GeminiChat.makeApiCallAndProcessStream (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/ge
+mini-cli/node_modules/@google/gemini-cli-core/dist/src/core/geminiChat.js:445:32)
+    at async GeminiChat.streamWithRetries (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/n
+ode_modules/@google/gemini-cli-core/dist/src/core/geminiChat.js:265:40)
+    at async Turn.run (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_modules/@google/
+gemini-cli-core/dist/src/core/turn.js:70:30)
+    at async GeminiClient.processTurn (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_
+modules/@google/gemini-cli-core/dist/src/core/client.js:477:26)
+    at async GeminiClient.sendMessageStream (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli
+/node_modules/@google/gemini-cli-core/dist/src/core/client.js:577:20)
+    at async
+file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/dist/src/nonInteractiveCli.js:194:34
+    at async main
+(file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/dist/src/gemini.js:531:9) {
+  code: 404
+}
+{
+  "session_id": "8d17a945-f6bb-4b37-95e4-4d9ebf2d43a8",
+  "error": {
+    "type": "Error",
+    "message": "[object Object]",
+    "code": 1
+  }
+}
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : YOLO mode is enabled. All tool calls will be automatically approved.
+At C:\Users\rjain\AppData\Roaming\npm\gemini.ps1:22 char:14
++ ...    $input | & "node$exe" --no-warnings=DEP0040 "$basedir/node_modules ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (YOLO mode is en...cally approved.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Loaded cached credentials.
+YOLO mode is enabled. All tool calls will be automatically approved.
+Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.
+Error when talking to Gemini API Full report available at:
+C:\Users\rjain\AppData\Local\Temp\gemini-client-error-Turn.run-sendMessageStream-2026-03-08T15-45-32-825Z.json
+ModelNotFoundError: Requested entity was not found.
+    at classifyGoogleError (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_modules/@go
+ogle/gemini-cli-core/dist/src/utils/googleQuotaErrors.js:151:16)
+    at retryWithBackoff (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_modules/@googl
+e/gemini-cli-core/dist/src/utils/retry.js:153:37)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async GeminiChat.makeApiCallAndProcessStream (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/ge
+mini-cli/node_modules/@google/gemini-cli-core/dist/src/core/geminiChat.js:445:32)
+    at async GeminiChat.streamWithRetries (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/n
+ode_modules/@google/gemini-cli-core/dist/src/core/geminiChat.js:265:40)
+    at async Turn.run (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_modules/@google/
+gemini-cli-core/dist/src/core/turn.js:70:30)
+    at async GeminiClient.processTurn (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/node_
+modules/@google/gemini-cli-core/dist/src/core/client.js:477:26)
+    at async GeminiClient.sendMessageStream (file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli
+/node_modules/@google/gemini-cli-core/dist/src/core/client.js:577:20)
+    at async
+file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/dist/src/nonInteractiveCli.js:194:34
+    at async main
+(file:///C:/Users/rjain/AppData/Roaming/npm/node_modules/@google/gemini-cli/dist/src/gemini.js:531:9) {
+  code: 404
+}
+{
+  "session_id": "8dbb09a5-ab6a-4997-838f-11a971f2b8b3",
+  "error": {
+    "type": "Error",
+    "message": "[object Object]",
+    "code": 1
+  }
+}
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : YOLO mode is enabled. All tool calls will be automatically approved.
+At C:\Users\rjain\AppData\Roaming\npm\gemini.ps1:22 char:14
++ ...    $input | & "node$exe" --no-warnings=DEP0040 "$basedir/node_modules ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (YOLO mode is en...cally approved.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Loaded cached credentials.
+YOLO mode is enabled. All tool calls will be automatically approved.
+Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.
+{
+  "session_id": "a190bfb3-ab3f-4242-8a8b-959d7063f46d",
+  "response": "I have extracted the requirements from the provided configuration and script reference documents, verified their implementation status in the codebase, and written the resulting JSON file to `D:\\vscode\\gsd-autonomous-dev\\gsd-autonomous-dev\\.gsd\\health\\council-extract-gemini-chunk1.json`.",
+  "stats": {
+    "models": {
+      "gemini-3.1-pro-preview": {
+        "api": {
+          "totalRequests": 4,
+          "totalErrors": 0,
+          "totalLatencyMs": 97846
+        },
+        "tokens": {
+          "input": 116907,
+          "prompt": 156533,
+          "candidates": 5062,
+          "total": 163954,
+          "cached": 39626,
+          "thoughts": 2359,
+          "tool": 0
+        },
+        "roles": {
+          "main": {
+            "totalRequests": 4,
+            "totalErrors": 0,
+            "totalLatencyMs": 97846,
+            "tokens": {
+              "input": 116907,
+              "prompt": 156533,
+              "candidates": 5062,
+              "total": 163954,
+              "cached": 39626,
+              "thoughts": 2359,
+              "tool": 0
+            }
+          }
+        }
+      }
+    },
+    "tools": {
+      "totalCalls": 7,
+      "totalSuccess": 7,
+      "totalFail": 0,
+      "totalDurationMs": 1572,
+      "totalDecisions": {
+        "accept": 7,
+        "reject": 0,
+        "modify": 0,
+        "auto_accept": 0
+      },
+      "byName": {
+        "read_file": {
+          "count": 3,
+          "success": 3,
+          "fail": 0,
+          "durationMs": 72,
+          "decisions": {
+            "accept": 3,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 0
+          }
+        },
+        "grep_search": {
+          "count": 3,
+          "success": 3,
+          "fail": 0,
+          "durationMs": 1473,
+          "decisions": {
+            "accept": 3,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 0
+          }
+        },
+        "write_file": {
+          "count": 1,
+          "success": 1,
+          "fail": 0,
+          "durationMs": 27,
+          "decisions": {
+            "accept": 1,
+            "reject": 0,
+            "modify": 0,
+            "auto_accept": 0
+          }
+        }
+      }
+    },
+    "files": {
+      "totalLinesAdded": 384,
+      "totalLinesRemoved": 0
+    }
+  }
+}

@@ -131,7 +131,19 @@
       "Bash(powershell:*)",
       "Bash(pwsh:*)",
       "Bash(gemini:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(claude:*)",
+      "Bash(sed:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Read(//d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/$USERPROFILE/.gsd-global/lib/**)",
+      "Read(//d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/$USERPROFILE/.gsd-global/lib/modules/**)",
+      "Bash(RESIL=\"$USERPROFILE/.gsd-global/lib/modules/resilience.ps1\")",
+      "Read(//d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/**)",
+      "Bash(echo USERPROFILE=$USERPROFILE:*)",
+      "Bash(RESIL=\"/c/Users/rjain/.gsd-global/lib/modules/resilience.ps1\")",
+      "Bash(awk:*)",
+      "Bash(powershell.exe:*)"
     ]
   }
 }

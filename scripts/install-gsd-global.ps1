@@ -280,7 +280,7 @@ $globalConfig = @{
     }
     agent_models = @{
         claude = "claude-sonnet-4-6"
-        gemini = "gemini-3.0-pro"
+        gemini = "gemini-3.1-pro-preview"
         codex  = "gpt-5.4"
     }
 } | ConvertTo-Json -Depth 4
@@ -932,7 +932,7 @@ Write-Host ""
 
 # -- Agent model versions (read from global-config.json) --
 $claudeModel = "claude-sonnet-4-6"
-$geminiModel = "gemini-3.0-pro"
+$geminiModel = "gemini-3.1-pro-preview"
 $codexModel  = "gpt-5.4"
 try {
     $_gcfg = Get-Content "$GsdGlobalDir\config\global-config.json" -Raw | ConvertFrom-Json
