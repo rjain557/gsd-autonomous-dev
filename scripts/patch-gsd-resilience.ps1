@@ -507,6 +507,7 @@ exit `$LASTEXITCODE
             if ($isAuthError) {
                 $result.Error = "AUTH_ERROR: Agent authentication failed"
                 Write-Host "    [XX] Auth error - cannot retry. Check API keys." -ForegroundColor Red
+                if ($GsdDir) { Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 480 }
                 break
             }
 
