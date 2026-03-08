@@ -577,6 +577,12 @@ function Get-NextAvailableAgent {
         if ($pool.Count -eq 0) { return $null }
     }
 
+    # Council phases are CLI-only — REST agents lack tool-use support needed for council prompts
+    if ($Phase -like "council-*") {
+        $pool = @($pool | Where-Object { $_ -in @("claude", "codex", "gemini") })
+        if ($pool.Count -eq 0) { return $null }
+    }
+
     foreach ($agent in $pool) {
         if ($agent -eq $CurrentAgent) { continue }
 
