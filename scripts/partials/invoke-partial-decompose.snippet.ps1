@@ -54,7 +54,8 @@ function Invoke-PartialDecompose {
     $claudeModel   = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { 'claude-sonnet-4-6' }
 
     foreach ($req in $stuck) {
-        $shortDesc = $req.description.Substring(0, [Math]::Min(70, $req.description.Length))
+        $desc = if ($req.description) { $req.description } else { "(no description)" }
+        $shortDesc = $desc.Substring(0, [Math]::Min(70, $desc.Length))
         Write-Host ("    Decomposing [" + $req.id + "] " + $shortDesc + "...") -ForegroundColor Cyan
 
         $promptLines = @(
@@ -62,7 +63,7 @@ function Invoke-PartialDecompose {
             "",
             "PARENT REQUIREMENT:",
             "- ID: " + $req.id,
-            "- Description: " + $req.description,
+            "- Description: " + $desc,
             "- Pattern: " + $req.pattern,
             "- Priority: " + $req.priority,
             "- Agent: " + $req.agent,
@@ -80,19 +81,9 @@ function Invoke-PartialDecompose {
             "",
             "SUB-REQUIREMENT ID PATTERN: " + $req.id + "-1, " + $req.id + "-2, etc.",
             "",
-            "Return ONLY a valid JSON array with NO other text, markdown, or explanation:",
-            "[",
-            "  {",
-            '    "id": "' + $req.id + '-1",',
-            '    "description": "Specific atomic task description",',
-            '    "pattern": "' + $req.pattern + '",',
-            '    "priority": "' + $req.priority + '",',
-            '    "agent": "' + $req.agent + '",',
-            '    "spec_doc": "' + $req.spec_doc + '",',
-            '    "status": "not_started",',
-            '    "parent_id": "' + $req.id + '"',
-            "  }",
-            "]"
+            "RESPOND WITH ONLY THE RAW JSON ARRAY. NO markdown fences, NO explanation, NO text before or after.",
+            "Example format:",
+            '[{"id":"' + $req.id + '-1","description":"Specific task","pattern":"' + $req.pattern + '","priority":"' + $req.priority + '","agent":"' + $req.agent + '","spec_doc":"' + $req.spec_doc + '","status":"not_started","parent_id":"' + $req.id + '"}]'
         )
         $decomposePrompt = $promptLines -join "`n"
 
@@ -102,8 +93,15 @@ function Invoke-PartialDecompose {
             $rawOut = Get-Content $tmpFile -Raw | claude --print --model $claudeModel --output-format text 2>&1
             Remove-Item $tmpFile -ErrorAction SilentlyContinue
 
-            # Extract JSON array from output
-            if ($rawOut -match '(?s)(\[[\s\S]+?\])') {
+            # Log raw output for debugging
+            $rawStr = if ($rawOut -is [array]) { $rawOut -join "`n" } else { "$rawOut" }
+            Write-Host ("    [DEBUG] Claude response length: " + $rawStr.Length + " chars") -ForegroundColor DarkGray
+
+            # Strip markdown fences if present
+            $cleaned = $rawStr -replace '(?s)```(?:json)?\s*', '' -replace '(?s)```\s*$', ''
+
+            # Extract JSON array — greedy match from first [ to last ]
+            if ($cleaned -match '(?s)(\[.+\])') {
                 $jsonStr = $Matches[1]
                 $subReqs = $jsonStr | ConvertFrom-Json
                 $added   = 0
@@ -111,13 +109,17 @@ function Invoke-PartialDecompose {
                     if ($sr.id -and $sr.description -and $sr.status) {
                         $newReqs.Add($sr)
                         $added++
-                        $srDesc = $sr.description.Substring(0, [Math]::Min(60, $sr.description.Length))
-                        Write-Host ("      + " + $sr.id + ": " + $srDesc) -ForegroundColor Green
+                        $srDesc2 = if ($sr.description) { $sr.description.Substring(0, [Math]::Min(60, $sr.description.Length)) } else { "(no desc)" }
+                        Write-Host ("      + " + $sr.id + ": " + $srDesc2) -ForegroundColor Green
                     }
                 }
                 if ($added -gt 0) { $decomposedIds.Add($req.id) }
+                else { Write-Host ("    [WARN] JSON parsed but no valid sub-reqs for " + $req.id) -ForegroundColor Yellow }
             } else {
                 Write-Host ("    [WARN] No JSON array in Claude response for " + $req.id) -ForegroundColor Yellow
+                # Log first 200 chars of response for debugging
+                $preview = if ($rawStr.Length -gt 200) { $rawStr.Substring(0, 200) + "..." } else { $rawStr }
+                Write-Host ("    [DEBUG] Response preview: " + $preview) -ForegroundColor DarkGray
             }
         } catch {
             Write-Host ("    [WARN] Decompose failed for " + $req.id + ": " + $_) -ForegroundColor Yellow

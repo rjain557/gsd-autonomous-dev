@@ -60,22 +60,40 @@ $convContent = [System.IO.File]::ReadAllText($convergenceFile)
 if ($convContent -match 'Invoke-PartialDecompose') {
     Write-Host "  [SKIP] Invoke-PartialDecompose call already in convergence-loop.ps1" -ForegroundColor Yellow
 } else {
-    $oldSnippet = '    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health'
-
-    if (-not $convContent.Contains($oldSnippet)) {
-        Write-Error "Could not find plan prompt line in convergence-loop.ps1 - patch aborted."
-        exit 1
+    # Try multiple anchor patterns (plan prompt line may vary due to other patches)
+    $anchors = @(
+        '    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health',
+        '    $prompt = Local-ResolvePrompt "$GlobalDir\\prompts\\claude\\plan.md" $Iteration $Health'
+    )
+    $matchedAnchor = $null
+    foreach ($a in $anchors) {
+        if ($convContent.Contains($a)) { $matchedAnchor = $a; break }
+    }
+    # Fallback: regex search for plan.md prompt line
+    if (-not $matchedAnchor) {
+        if ($convContent -match '(?m)^(\s+\$prompt\s*=\s*Local-ResolvePrompt\s+.*plan\.md.*)$') {
+            $matchedAnchor = $Matches[1]
+            Write-Host "  [INFO] Found plan prompt line via regex: $matchedAnchor" -ForegroundColor DarkCyan
+        }
     }
 
-    $insertBlock  = "    # Auto-decompose stuck partials from previous iteration before planning" + [System.Environment]::NewLine
-    $insertBlock += "    if (`$Iteration -gt 1 -and -not `$DryRun -and (Get-Command Invoke-PartialDecompose -ErrorAction SilentlyContinue)) {" + [System.Environment]::NewLine
-    $insertBlock += "        Invoke-PartialDecompose -GsdDir `$GsdDir -GlobalDir `$GlobalDir -Iteration `$Iteration" + [System.Environment]::NewLine
-    $insertBlock += "    }" + [System.Environment]::NewLine
-    $insertBlock += $oldSnippet
+    if (-not $matchedAnchor) {
+        Write-Host "  [WARN] Could not find plan prompt line in convergence-loop.ps1 — manual patch needed" -ForegroundColor Yellow
+        Write-Host "  Add the following BEFORE the plan prompt line:" -ForegroundColor Yellow
+        Write-Host '    if ($Iteration -gt 1 -and -not $DryRun -and (Get-Command Invoke-PartialDecompose -ErrorAction SilentlyContinue)) {' -ForegroundColor Gray
+        Write-Host '        Invoke-PartialDecompose -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration' -ForegroundColor Gray
+        Write-Host '    }' -ForegroundColor Gray
+    } else {
+        $insertBlock  = "    # Auto-decompose stuck partials from previous iteration before planning" + [System.Environment]::NewLine
+        $insertBlock += "    if (`$Iteration -gt 1 -and -not `$DryRun -and (Get-Command Invoke-PartialDecompose -ErrorAction SilentlyContinue)) {" + [System.Environment]::NewLine
+        $insertBlock += "        Invoke-PartialDecompose -GsdDir `$GsdDir -GlobalDir `$GlobalDir -Iteration `$Iteration" + [System.Environment]::NewLine
+        $insertBlock += "    }" + [System.Environment]::NewLine
+        $insertBlock += $matchedAnchor
 
-    $convContent = $convContent.Replace($oldSnippet, $insertBlock)
-    [System.IO.File]::WriteAllText($convergenceFile, $convContent)
-    Write-Host "  [OK] Invoke-PartialDecompose call inserted into convergence-loop.ps1" -ForegroundColor Green
+        $convContent = $convContent.Replace($matchedAnchor, $insertBlock)
+        [System.IO.File]::WriteAllText($convergenceFile, $convContent)
+        Write-Host "  [OK] Invoke-PartialDecompose call inserted into convergence-loop.ps1" -ForegroundColor Green
+    }
 }
 
 Write-Host ""

@@ -1623,7 +1623,8 @@ function Invoke-WithRetry {
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
         [string]$AllowedTools = "Read,Write,Bash,mcp__*",
-        [string]$GeminiMode = "--approval-mode plan"   # "--approval-mode plan" (read-only) or "--yolo" (write)
+        [string]$GeminiMode = "--approval-mode plan",   # "--approval-mode plan" (read-only) or "--yolo" (write)
+        [int]$MaxCallMinutes = 15   # Per-call timeout: kill hung agents after this many minutes (patch-gsd-rate-limiter.ps1)
     )
 
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }
@@ -1660,6 +1661,14 @@ function Invoke-WithRetry {
             $output = $null
             $tokenData = $null
             $callStart = Get-Date
+
+            # -- RATE LIMIT PRE-CHECK (patch-gsd-rate-limiter.ps1) --
+            if (Get-Command Wait-ForRateWindow -ErrorAction SilentlyContinue) {
+                $rlWait = Wait-ForRateWindow -AgentName $Agent -GsdDir $GsdDir
+                if ($rlWait -gt 0) {
+                    Write-Host "    [RATE-LIMIT] Paced $Agent for ${rlWait}s to stay within RPM" -ForegroundColor DarkYellow
+                }
+            }
 
             if ($Agent -eq "claude") {
                 # Use --output-format json to capture token usage + cost data
@@ -1732,9 +1741,25 @@ function Invoke-WithRetry {
                 $tokenData.DurationMs = $callDuration * 1000
             }
 
+            # -- TIMEOUT CHECK (patch-gsd-rate-limiter.ps1) --
+            # If a call took longer than MaxCallMinutes and produced no useful output, treat as hung
+            $callMinutes = $callDuration / 60
+            if ($callMinutes -gt $MaxCallMinutes -and (-not $output -or ($output -join "`n").Trim().Length -lt 50)) {
+                Write-Host "    [TIMEOUT] $($Agent.ToUpper()) took ${callMinutes}min with no useful output (limit: ${MaxCallMinutes}min)" -ForegroundColor Red
+                $exitCode = 1
+                $output = @("error: agent call timed out after ${callMinutes} minutes with no output")
+                Write-GsdError -GsdDir $GsdDir -Category "timeout" -Phase $Phase -Iteration $i `
+                    -Message "$Agent timed out after $([math]::Round($callMinutes,1))min" -Resolution "Rotating to next agent"
+            }
+
             if ($LogFile) { $output | Out-File -FilePath $LogFile -Encoding UTF8 -Append }
 
             $outputText = if ($output) { $output -join "`n" } else { "" }
+
+            # -- REGISTER CALL FOR RATE TRACKING (patch-gsd-rate-limiter.ps1) --
+            if (Get-Command Register-AgentCall -ErrorAction SilentlyContinue) {
+                Register-AgentCall -AgentName $Agent
+            }
 
             # -- Check for quota errors --
             $quotaType = Test-IsQuotaError $outputText
@@ -2713,7 +2738,48 @@ function Start-CommandListener {
                         $msg = $line | ConvertFrom-Json
                         if ($msg.event -ne "message") { continue }
                         $text = ($msg.message -as [string]).Trim().ToLower()
-                        if ($text -ne "progress" -and $text -ne "token" -and $text -ne "tokens" -and $text -ne "cost" -and $text -ne "costs") { continue }
+                        if ($text -ne "progress" -and $text -ne "token" -and $text -ne "tokens" -and $text -ne "cost" -and $text -ne "costs" -and $text -ne "whatsapp") { continue }
+
+                        # -- WHATSAPP RESTART COMMAND --
+                        if ($text -eq "whatsapp") {
+                            $waBridgeDir = Join-Path $env:USERPROFILE ".gsd-global\whatsapp-bridge"
+                            $waBody = "[GSD] WhatsApp Bridge Restart"
+                            try {
+                                # Kill existing bridge processes
+                                $killed = 0
+                                Get-Process node -ErrorAction SilentlyContinue | Where-Object {
+                                    try { $_.MainModule.FileName -match "node" -and ($_.CommandLine -match "bridge" -or $_.Path -match "node") } catch { $false }
+                                } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; $killed++ }
+                                # Broader kill: any node process with bridge.mjs in command line
+                                $bridgeProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+                                    Where-Object { $_.CommandLine -match "bridge\.mjs" }
+                                foreach ($bp in $bridgeProcs) {
+                                    Stop-Process -Id $bp.ProcessId -Force -ErrorAction SilentlyContinue; $killed++
+                                }
+                                Start-Sleep -Seconds 2
+
+                                # Restart bridge
+                                if (Test-Path "$waBridgeDir\bridge.mjs") {
+                                    Start-Process -FilePath "node" -ArgumentList "`"$waBridgeDir\bridge.mjs`"" `
+                                        -WorkingDirectory $waBridgeDir -WindowStyle Normal
+                                    $waBody += "`nKilled $killed old process(es), started new bridge"
+                                    $waBody += "`nBridge dir: $waBridgeDir"
+                                } else {
+                                    $waBody += "`nERROR: bridge.mjs not found at $waBridgeDir"
+                                }
+                            } catch {
+                                $waBody += "`nERROR: $($_.Exception.Message)"
+                            }
+
+                            $waHeaders = @{
+                                "Title"    = "[GSD] WhatsApp Restarted"
+                                "Priority" = "high"
+                                "Tags"     = "phone,recycle"
+                            }
+                            Invoke-RestMethod -Uri "https://ntfy.sh/$Topic" -Method Post `
+                                -Body $waBody -Headers $waHeaders -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+                            continue
+                        }
 
                         # -- TOKEN/COST COMMAND --
                         if ($text -eq "token" -or $text -eq "tokens" -or $text -eq "cost" -or $text -eq "costs") {
@@ -5933,67 +5999,121 @@ function Invoke-SpecQualityGate {
     }
     if (-not $qgEnabled) { Write-Host "    [>>]  Spec quality gate disabled" -ForegroundColor DarkGray; return @{ Passed = $true; ClarityScore = 100; ConsistencyPassed = $true; Issues = @(); Skipped = $true } }
 
+    # -- CACHE CHECK: skip if specs haven't changed since last successful gate --
+    $assessDir = Join-Path $GsdDir "assessment"
+    if (-not (Test-Path $assessDir)) { New-Item -Path $assessDir -ItemType Directory -Force | Out-Null }
+    $cacheFile = Join-Path $assessDir "spec-quality-gate.json"
+    $specHash = ""
+    try {
+        # Hash all spec files to detect changes
+        $specFiles = @()
+        foreach ($iface in $Interfaces) {
+            if ($iface.VersionPath -and (Test-Path $iface.VersionPath)) {
+                $specFiles += Get-ChildItem -Path $iface.VersionPath -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            }
+        }
+        $docsPath = Join-Path $RepoRoot "docs"
+        if (Test-Path $docsPath) { $specFiles += Get-ChildItem -Path $docsPath -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName }
+        if ($specFiles.Count -gt 0) {
+            $hashInput = ($specFiles | Sort-Object | ForEach-Object { "$_`:$((Get-Item $_).LastWriteTime.Ticks)" }) -join "|"
+            $specHash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($hashInput))).Replace("-","").Substring(0,16)
+        }
+    } catch { }
+
+    if ($specHash -and (Test-Path $cacheFile)) {
+        try {
+            $cached = Get-Content $cacheFile -Raw | ConvertFrom-Json
+            if ($cached.spec_hash -eq $specHash -and $cached.passed -eq $true) {
+                Write-Host "    [CACHE] Spec quality gate cached PASS (specs unchanged, hash=$specHash)" -ForegroundColor DarkGreen
+                return @{ Passed = $true; ClarityScore = [int]$cached.clarity_score; ConsistencyPassed = $true; Issues = @(); Verdict = "PASS"; Cached = $true }
+            }
+        } catch { }
+    }
+
     $issues = @(); $clarityScore = 100; $consistencyPassed = $true
 
-    # Step 1: Existing consistency check
-    if (Get-Command Invoke-SpecConsistencyCheck -ErrorAction SilentlyContinue) {
+    # -- Pick cheapest available agent (not hardcoded claude) --
+    $specAgent = "claude"
+    if (Get-Command Get-NextAvailableAgent -ErrorAction SilentlyContinue) {
         try {
-            $specResult = Invoke-SpecConsistencyCheck -RepoRoot $RepoRoot -GsdDir $GsdDir -Interfaces $Interfaces
-            if (-not $specResult.Passed) { $issues += "Spec consistency check found conflicts"; $consistencyPassed = $false }
-        } catch { Write-Host "    [!!]  Spec consistency check error: $_" -ForegroundColor DarkYellow }
+            $availAgent = Get-NextAvailableAgent -Phase "review" -GsdDir $GsdDir
+            if ($availAgent) { $specAgent = $availAgent }
+        } catch { }
     }
+    Write-Host "    [SEARCH] Using $($specAgent.ToUpper()) for spec quality gate" -ForegroundColor DarkGray
 
-    # Step 2: Clarity check via Claude
+    # Step 1: SINGLE COMBINED spec check (was 3 separate LLM calls — consolidated to 1)
     if (-not $DryRun) {
-        $clarityPrompt = Join-Path $env:USERPROFILE ".gsd-global\prompts\claude\spec-clarity-check.md"
-        if (Test-Path $clarityPrompt) {
-            try {
-                $promptContent = (Get-Content $clarityPrompt -Raw).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{GSD_DIR}}", $GsdDir)
-                $figmaPath = ""; $amPath = Join-Path $env:USERPROFILE ".gsd-global\config\agent-map.json"
-                if (Test-Path $amPath) { try { $figmaPath = (Get-Content $amPath -Raw | ConvertFrom-Json).figma_path } catch { } }
-                $promptContent = $promptContent.Replace("{{FIGMA_PATH}}", $figmaPath)
-                $ifaceCtx = ""; foreach ($iface in $Interfaces) { $aDir = Join-Path $RepoRoot "$($iface.name)\_analysis"; if (Test-Path $aDir) { $ifaceCtx += "- $($iface.name): has _analysis/ dir`n" } }
-                $promptContent = $promptContent.Replace("{{INTERFACE_ANALYSIS}}", $ifaceCtx)
-                Write-Host "    [SEARCH] Running spec clarity check via Claude..." -ForegroundColor DarkGray
-                $clarityResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "spec-clarity-check" -RepoRoot $RepoRoot -GsdDir $GsdDir -MaxOutputTokens 4000
-                if ($clarityResult.Success) {
-                    $scoreMatch = [regex]::Match($clarityResult.Response, '"clarity_score"\s*:\s*(\d+)')
-                    if ($scoreMatch.Success) { $clarityScore = [int]$scoreMatch.Groups[1].Value }
-                    Write-Host "    [OK] Spec clarity score: $clarityScore" -ForegroundColor $(if ($clarityScore -ge 85) { "DarkGreen" } elseif ($clarityScore -ge 70) { "DarkYellow" } else { "Red" })
-                }
-            } catch { Write-Host "    [!!]  Spec clarity check error: $_" -ForegroundColor DarkYellow }
+        $specSources = @()
+        foreach ($iface in $Interfaces) {
+            if ($iface.HasAnalysis) { $specSources += "$($iface.VersionPath)\_analysis\ ($($iface.Label))" }
         }
-    }
+        $docsPath = Join-Path $RepoRoot "docs"
+        if (Test-Path $docsPath) { $specSources += "docs\ (SDLC)" }
+        $sourceList = ($specSources | ForEach-Object { "- $_" }) -join "`n"
 
-    # Step 3: Cross-artifact consistency
-    if ($checkCrossArtifact -and -not $DryRun) {
-        $hasAnalysis = $false
-        foreach ($iface in $Interfaces) { if (Test-Path (Join-Path $RepoRoot "$($iface.name)\_analysis")) { $hasAnalysis = $true; break } }
-        if (Test-Path (Join-Path $RepoRoot "_analysis")) { $hasAnalysis = $true }
-        if ($hasAnalysis) {
-            $cPrompt = Join-Path $env:USERPROFILE ".gsd-global\prompts\claude\cross-artifact-consistency.md"
-            if (Test-Path $cPrompt) {
+        $combinedPrompt = @"
+You are a SPEC AUDITOR. Perform a FAST combined quality check on all specification documents.
+
+## Spec Sources
+$sourceList
+
+## Three Checks in One Pass
+1. **Consistency**: Flag data type, API contract, navigation, business rule, database, design system conflicts
+2. **Clarity**: Score specs 0-100 on clarity (unambiguous, complete, testable)
+3. **Cross-artifact**: Verify specs + Figma analysis + code contracts are aligned
+
+## Output (MANDATORY JSON)
+Write to: $GsdDir\spec-consistency-report.json
+``json
+{
+  "status": "pass|conflicts_found|warnings_only",
+  "clarity_score": <0-100>,
+  "consistent": <true|false>,
+  "conflicts": [{"severity":"critical|warning","type":"<type>","description":"<what>","recommendation":"<fix>"}],
+  "summary": {"total_conflicts": <N>, "critical": <N>, "warnings": <N>, "specs_checked": <N>}
+}
+``
+
+Also write human-readable summary to: $GsdDir\spec-consistency-report.md
+
+Rules: Be FAST. Only flag REAL conflicts. MAX 2000 tokens output. One pass, one call.
+"@
+
+        $result = Invoke-WithRetry -Agent $specAgent -Prompt $combinedPrompt -Phase "spec-quality-gate" `
+            -LogFile "$GsdDir\logs\spec-consistency.log" -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2
+
+        if ($result.Success) {
+            # Parse clarity score from output or report file
+            $reportFile = Join-Path $GsdDir "spec-consistency-report.json"
+            if (Test-Path $reportFile) {
                 try {
-                    $promptContent = (Get-Content $cPrompt -Raw).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{GSD_DIR}}", $GsdDir)
-                    $ifaceName = if ($Interfaces.Count -gt 0) { $Interfaces[0].name } else { "" }
-                    $ifaceAnalysis = if ($ifaceName) { Join-Path $RepoRoot "$ifaceName\_analysis" } else { Join-Path $RepoRoot "_analysis" }
-                    $promptContent = $promptContent.Replace("{{INTERFACE_NAME}}", $ifaceName).Replace("{{INTERFACE_ANALYSIS}}", $ifaceAnalysis)
-                    Write-Host "    [SEARCH] Running cross-artifact consistency check..." -ForegroundColor DarkGray
-                    $crossResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "cross-artifact-check" -RepoRoot $RepoRoot -GsdDir $GsdDir -MaxOutputTokens 4000
-                    if ($crossResult.Success) {
-                        $cm = [regex]::Match($crossResult.Response, '"consistent"\s*:\s*(true|false)')
-                        if ($cm.Success -and $cm.Groups[1].Value -eq "false") { $consistencyPassed = $false; $issues += "Cross-artifact consistency check found mismatches" }
+                    $report = Get-Content $reportFile -Raw | ConvertFrom-Json
+                    if ($report.clarity_score) { $clarityScore = [int]$report.clarity_score }
+                    if ($report.consistent -eq $false) { $consistencyPassed = $false; $issues += "Cross-artifact consistency issues found" }
+                    if ($report.status -eq "conflicts_found") {
+                        $criticals = @($report.conflicts | Where-Object { $_.severity -eq "critical" })
+                        if ($criticals.Count -gt 0) { $consistencyPassed = $false; $issues += "$($criticals.Count) critical spec conflicts" }
                     }
-                } catch { Write-Host "    [!!]  Cross-artifact check error: $_" -ForegroundColor DarkYellow }
+                } catch { }
             }
+            # Fallback: parse from raw output
+            if ($clarityScore -eq 100) {
+                $scoreMatch = [regex]::Match(($result.Output -join "`n"), '"clarity_score"\s*:\s*(\d+)')
+                if ($scoreMatch.Success) { $clarityScore = [int]$scoreMatch.Groups[1].Value }
+            }
+            Write-Host "    [OK] Spec clarity score: $clarityScore" -ForegroundColor $(if ($clarityScore -ge 85) { "DarkGreen" } elseif ($clarityScore -ge 70) { "DarkYellow" } else { "Red" })
+        } else {
+            Write-Host "    [!!]  Spec quality gate LLM call failed — proceeding with WARN" -ForegroundColor DarkYellow
+            $issues += "Spec quality check failed (agent: $specAgent)"
         }
     }
 
     $passed = $clarityScore -ge $MinClarityScore -and $consistencyPassed
-    $assessDir = Join-Path $GsdDir "assessment"
-    if (-not (Test-Path $assessDir)) { New-Item -Path $assessDir -ItemType Directory -Force | Out-Null }
     $verdict = if ($clarityScore -ge 90) { "PASS" } elseif ($clarityScore -ge 70) { "WARN" } else { "BLOCK" }
-    @{ timestamp = (Get-Date).ToString("o"); passed = $passed; clarity_score = $clarityScore; min_clarity_score = $MinClarityScore; consistency_passed = $consistencyPassed; issues = $issues; verdict = $verdict } | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $assessDir "spec-quality-gate.json") -Encoding UTF8
+
+    # Save result with spec hash for caching
+    @{ timestamp = (Get-Date).ToString("o"); passed = $passed; clarity_score = $clarityScore; min_clarity_score = $MinClarityScore; consistency_passed = $consistencyPassed; issues = $issues; verdict = $verdict; spec_hash = $specHash; agent = $specAgent } | ConvertTo-Json -Depth 3 | Set-Content $cacheFile -Encoding UTF8
 
     if ($passed) { Write-Host "    [OK] Spec quality gate: $verdict (clarity=$clarityScore, consistency=$consistencyPassed)" -ForegroundColor DarkGreen }
     else { Write-Host "    [!!]  Spec quality gate: $verdict (clarity=$clarityScore, consistency=$consistencyPassed)" -ForegroundColor $(if ($clarityScore -lt 70) { "Red" } else { "DarkYellow" }); $issues | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkYellow } }
@@ -6083,11 +6203,24 @@ function Invoke-OpenAICompatibleAgent {
             "Content-Type"  = "application/json"
         }
 
-        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        # -- REST RATE LIMIT PRE-CHECK (patch-gsd-rate-limiter.ps1) --
+    if (Get-Command Wait-ForRateWindow -ErrorAction SilentlyContinue) {
+        $rlWait = Wait-ForRateWindow -AgentName $AgentName
+        if ($rlWait -gt 0) {
+            Write-Host "    [RATE-LIMIT] Paced REST agent $AgentName for ${rlWait}s" -ForegroundColor DarkYellow
+        }
+    }
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $response = Invoke-RestMethod -Uri $cfg.endpoint -Method POST `
             -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($requestBody)) `
             -TimeoutSec $TimeoutSeconds -ErrorAction Stop
         $stopwatch.Stop()
+
+        # -- REGISTER REST CALL FOR RATE TRACKING (patch-gsd-rate-limiter.ps1) --
+        if (Get-Command Register-AgentCall -ErrorAction SilentlyContinue) {
+            Register-AgentCall -AgentName $AgentName
+        }
 
         # Extract response content
         $textContent = ""
@@ -11002,3 +11135,659 @@ function Merge-CouncilRequirementsLocal {
 }
 
 Write-Host "  Council Requirements module loaded." -ForegroundColor DarkGray
+
+
+# ===========================================
+# PROACTIVE RATE LIMITER (patch-gsd-rate-limiter.ps1)
+# Prevents 429/quota errors by enforcing RPM limits BEFORE making API calls.
+# Uses sliding-window call tracking per agent.
+# ===========================================
+
+# In-memory call tracker: agent -> [System.Collections.ArrayList] of [datetime]
+if (-not $script:RateLimitTracker) {
+    $script:RateLimitTracker = @{}
+}
+
+# Cached registry (avoid re-reading JSON on every call)
+$script:RateLimitRegistryCache = $null
+$script:RateLimitRegistryCacheTime = [datetime]::MinValue
+
+function Get-AgentRpmLimit {
+    <#
+    .SYNOPSIS
+        Returns the effective RPM limit for an agent, factoring in safety margin.
+        Reads from model-registry.json (cached for 60s) and agent-map.json safety_factor.
+    #>
+    param([string]$AgentName)
+
+    # Refresh cache every 60 seconds
+    if (-not $script:RateLimitRegistryCache -or ((Get-Date) - $script:RateLimitRegistryCacheTime).TotalSeconds -gt 60) {
+        $regPath = Join-Path $env:USERPROFILE ".gsd-global\config\model-registry.json"
+        if (Test-Path $regPath) {
+            try {
+                $script:RateLimitRegistryCache = Get-Content $regPath -Raw | ConvertFrom-Json
+                $script:RateLimitRegistryCacheTime = Get-Date
+            } catch {
+                # Fall through to defaults
+            }
+        }
+    }
+
+    # Read RPM from registry
+    $rpm = 10  # Conservative default
+    if ($script:RateLimitRegistryCache -and $script:RateLimitRegistryCache.agents.$AgentName) {
+        $agentCfg = $script:RateLimitRegistryCache.agents.$AgentName
+        if ($agentCfg.rate_limits -and $agentCfg.rate_limits.rpm) {
+            $rpm = [int]$agentCfg.rate_limits.rpm
+        }
+    }
+
+    # Apply safety factor from agent-map.json (default 0.8 = use 80% of stated RPM)
+    $safetyFactor = 0.8
+    $amPath = Join-Path $env:USERPROFILE ".gsd-global\config\agent-map.json"
+    if (Test-Path $amPath) {
+        try {
+            $am = Get-Content $amPath -Raw | ConvertFrom-Json
+            if ($am.rate_limiter -and $am.rate_limiter.safety_factor) {
+                $safetyFactor = [double]$am.rate_limiter.safety_factor
+            }
+        } catch { }
+    }
+
+    $effectiveRpm = [math]::Max(1, [math]::Floor($rpm * $safetyFactor))
+    return $effectiveRpm
+}
+
+function Wait-ForRateWindow {
+    <#
+    .SYNOPSIS
+        Proactive rate limiter. Checks if calling $AgentName now would exceed its RPM limit.
+        If yes, sleeps the exact number of seconds needed until a slot opens.
+        Returns the number of seconds waited (0 if no wait needed).
+    .DESCRIPTION
+        Uses a sliding 60-second window of call timestamps per agent.
+        Prunes timestamps older than 60s on each check.
+    #>
+    param(
+        [string]$AgentName,
+        [string]$GsdDir = ""
+    )
+
+    if (-not $script:RateLimitTracker[$AgentName]) {
+        $script:RateLimitTracker[$AgentName] = [System.Collections.ArrayList]::new()
+    }
+
+    $now = Get-Date
+    $windowStart = $now.AddSeconds(-60)
+    $callLog = $script:RateLimitTracker[$AgentName]
+
+    # Prune calls older than 60 seconds
+    $expired = @($callLog | Where-Object { $_ -lt $windowStart })
+    foreach ($ts in $expired) { $callLog.Remove($ts) | Out-Null }
+
+    $effectiveRpm = Get-AgentRpmLimit -AgentName $AgentName
+    $currentCalls = $callLog.Count
+
+    if ($currentCalls -lt $effectiveRpm) {
+        # Under limit â€” no wait needed
+        return 0
+    }
+
+    # At or over limit. Find when the oldest call in the window will expire.
+    $sortedCalls = $callLog | Sort-Object
+    $oldestInWindow = $sortedCalls[0]
+    $expiresAt = $oldestInWindow.AddSeconds(60)
+    $waitSeconds = [math]::Ceiling(($expiresAt - $now).TotalSeconds)
+
+    if ($waitSeconds -le 0) {
+        # Edge case: should have been pruned
+        return 0
+    }
+
+    # Add 1s buffer to avoid edge-case 429
+    $waitSeconds = $waitSeconds + 1
+
+    Write-Host "    [RATE-LIMIT] $($AgentName.ToUpper()): $currentCalls/$effectiveRpm calls in last 60s. Waiting ${waitSeconds}s..." -ForegroundColor Yellow
+
+    # Update engine status if available
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        if ($GsdDir) {
+            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "rate-limit" `
+                -SleepReason "rate_limit_pacing" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($waitSeconds))
+        }
+    }
+
+    Start-Sleep -Seconds $waitSeconds
+
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        if ($GsdDir) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running"
+        }
+    }
+
+    return $waitSeconds
+}
+
+function Register-AgentCall {
+    <#
+    .SYNOPSIS
+        Records that an API call was made to $AgentName at the current time.
+        Must be called AFTER every successful or failed API invocation.
+    #>
+    param([string]$AgentName)
+
+    if (-not $script:RateLimitTracker[$AgentName]) {
+        $script:RateLimitTracker[$AgentName] = [System.Collections.ArrayList]::new()
+    }
+
+    $script:RateLimitTracker[$AgentName].Add((Get-Date)) | Out-Null
+}
+
+function Get-RateLimitStatus {
+    <#
+    .SYNOPSIS
+        Returns a summary of current rate limit usage for all tracked agents.
+        Useful for diagnostics and WhatsApp /status command.
+    #>
+    $status = @{}
+    $now = Get-Date
+    $windowStart = $now.AddSeconds(-60)
+
+    foreach ($agent in $script:RateLimitTracker.Keys) {
+        $callLog = $script:RateLimitTracker[$agent]
+        $recentCalls = @($callLog | Where-Object { $_ -ge $windowStart })
+        $effectiveRpm = Get-AgentRpmLimit -AgentName $agent
+        $status[$agent] = @{
+            CallsInWindow = $recentCalls.Count
+            EffectiveRpm  = $effectiveRpm
+            Headroom      = $effectiveRpm - $recentCalls.Count
+            NextSlotIn    = if ($recentCalls.Count -ge $effectiveRpm -and $recentCalls.Count -gt 0) {
+                $oldest = ($recentCalls | Sort-Object)[0]
+                [math]::Max(0, [math]::Ceiling(($oldest.AddSeconds(60) - $now).TotalSeconds))
+            } else { 0 }
+        }
+    }
+    return $status
+}
+
+
+
+# ============================================================
+# Rate-Limit-Aware Chunked Code Review (v2)
+# Dynamically calculates chunk count and size based on each
+# agent's RPM from model-registry.json. Uses all 7 agents
+# across multiple waves to stay well under rate limits.
+# Appended to resilience.ps1 by patch script.
+# ============================================================
+
+function Invoke-SequentialChunkedReview {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$GsdDir,
+        [Parameter(Mandatory)][string]$GlobalDir,
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][int]$Iteration,
+        [Parameter(Mandatory)][double]$Health,
+        [int]$CurrentBatchSize = 2,
+        [string]$InterfaceContext = "",
+        [switch]$DryRun
+    )
+
+    # â”€â”€ 1. Load config from agent-map.json â”€â”€
+    $agentMapPath = Join-Path $GlobalDir "config\agent-map.json"
+    $registryPath = Join-Path $GlobalDir "config\model-registry.json"
+    $config = @{
+        safety_factor = 0.5
+        min_chunk_size = 5
+        max_chunk_size = 30
+        inter_wave_cooldown_seconds = 20
+        inter_chunk_cooldown_seconds = 10
+        min_success_ratio = 0.6
+        fallback_to_single_agent = $true
+        fallback_agent = "codex"
+        agent_pool = @("claude", "codex", "gemini", "kimi", "deepseek", "glm5", "minimax")
+    }
+
+    if (Test-Path $agentMapPath) {
+        try {
+            $agentMap = Get-Content $agentMapPath -Raw | ConvertFrom-Json
+            if ($agentMap.review_chunked) {
+                $rc = $agentMap.review_chunked
+                if ($null -ne $rc.safety_factor) { $config.safety_factor = $rc.safety_factor }
+                if ($null -ne $rc.min_chunk_size) { $config.min_chunk_size = $rc.min_chunk_size }
+                if ($null -ne $rc.max_chunk_size) { $config.max_chunk_size = $rc.max_chunk_size }
+                if ($null -ne $rc.inter_wave_cooldown_seconds) { $config.inter_wave_cooldown_seconds = $rc.inter_wave_cooldown_seconds }
+                if ($null -ne $rc.inter_chunk_cooldown_seconds) { $config.inter_chunk_cooldown_seconds = $rc.inter_chunk_cooldown_seconds }
+                if ($null -ne $rc.min_success_ratio) { $config.min_success_ratio = $rc.min_success_ratio }
+                if ($null -ne $rc.fallback_to_single_agent) { $config.fallback_to_single_agent = $rc.fallback_to_single_agent }
+                if ($rc.fallback_agent) { $config.fallback_agent = $rc.fallback_agent }
+                if ($rc.agent_pool) { $config.agent_pool = @($rc.agent_pool) }
+            }
+        } catch { Write-Host "  [CHUNK-REVIEW] Could not read agent-map.json config, using defaults" -ForegroundColor Yellow }
+    }
+
+    # â”€â”€ 2. Load model registry for rate limits â”€â”€
+    $agentRpm = @{}  # agent -> safe requests per wave
+    $agentCooldownMin = @{}  # agent -> cooldown minutes
+    $registry = $null
+
+    if (Test-Path $registryPath) {
+        try {
+            $registry = Get-Content $registryPath -Raw | ConvertFrom-Json
+        } catch { $registry = $null }
+    }
+
+    # Build per-agent capacity map from rate_limits
+    $availableAgents = @()
+    $cooldownPath = Join-Path $GsdDir "supervisor\agent-cooldowns.json"
+    $cooldowns = @{}
+    if (Test-Path $cooldownPath) {
+        try { $cooldowns = Get-Content $cooldownPath -Raw | ConvertFrom-Json } catch { $cooldowns = @{} }
+    }
+
+    foreach ($agentName in $config.agent_pool) {
+        # Skip agents on cooldown
+        $cdExpiry = $null
+        if ($cooldowns.PSObject -and $cooldowns.PSObject.Properties[$agentName]) {
+            $cdExpiry = $cooldowns.$agentName
+        } elseif ($cooldowns -is [hashtable] -and $cooldowns.ContainsKey($agentName)) {
+            $cdExpiry = $cooldowns[$agentName]
+        }
+        if ($cdExpiry) {
+            try {
+                $expiryTime = [datetime]::Parse($cdExpiry)
+                if ($expiryTime -gt (Get-Date)) {
+                    Write-Host "  [CHUNK-REVIEW] $agentName on cooldown until $cdExpiry --skipping" -ForegroundColor DarkGray
+                    continue
+                }
+            } catch { }
+        }
+
+        # Check if agent has review role
+        $agentDef = $null
+        if ($registry -and $registry.agents.PSObject.Properties[$agentName]) {
+            $agentDef = $registry.agents.$agentName
+        }
+        if ($agentDef -and $agentDef.role -and ("review" -notin @($agentDef.role))) {
+            continue
+        }
+
+        # Check enabled flag (REST agents)
+        if ($agentDef -and $null -ne $agentDef.enabled -and -not $agentDef.enabled) {
+            continue
+        }
+
+        # Get RPM from rate_limits (default 10 if not specified)
+        $rpm = 10
+        $cdMin = 30
+        if ($agentDef -and $agentDef.rate_limits) {
+            if ($agentDef.rate_limits.rpm) { $rpm = [int]$agentDef.rate_limits.rpm }
+            if ($agentDef.rate_limits.cooldown_minutes) { $cdMin = [int]$agentDef.rate_limits.cooldown_minutes }
+        }
+
+        # Safe capacity = floor(RPM * safety_factor) --this is the max reqs we send to this agent per wave
+        $safeCapacity = [math]::Floor($rpm * $config.safety_factor)
+        if ($safeCapacity -lt 1) { $safeCapacity = 1 }
+
+        $agentRpm[$agentName] = $safeCapacity
+        $agentCooldownMin[$agentName] = $cdMin
+        $availableAgents += $agentName
+    }
+
+    if ($availableAgents.Count -eq 0) {
+        Write-Host "  [CHUNK-REVIEW] No available agents (all on cooldown or disabled)" -ForegroundColor Red
+        return @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = 0 }
+    }
+
+    # â”€â”€ 3. Load requirements matrix â”€â”€
+    $matrixFile = Join-Path $GsdDir "health\requirements-matrix.json"
+    if (-not (Test-Path $matrixFile)) {
+        Write-Host "  [CHUNK-REVIEW] No requirements-matrix.json found" -ForegroundColor Red
+        return @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = 0 }
+    }
+    $matrix = Get-Content $matrixFile -Raw | ConvertFrom-Json
+    $allReqs = @($matrix.requirements)
+    if ($allReqs.Count -eq 0) {
+        Write-Host "  [CHUNK-REVIEW] Empty requirements matrix" -ForegroundColor Red
+        return @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = 0 }
+    }
+
+    # â”€â”€ 4. Calculate dynamic chunk sizes per agent â”€â”€
+    # Each agent gets at most min(safeCapacity, max_chunk_size) reqs, at least min_chunk_size
+    # Total capacity across all agents determines how many waves we need
+
+    $totalCapacity = 0
+    $agentChunkSize = @{}
+    foreach ($agent in $availableAgents) {
+        $chunkSz = $agentRpm[$agent]
+        if ($chunkSz -gt $config.max_chunk_size) { $chunkSz = $config.max_chunk_size }
+        if ($chunkSz -lt $config.min_chunk_size) { $chunkSz = $config.min_chunk_size }
+        $agentChunkSize[$agent] = $chunkSz
+        $totalCapacity += $chunkSz
+    }
+
+    $totalReqs = $allReqs.Count
+    $numWaves = [math]::Ceiling($totalReqs / $totalCapacity)
+    if ($numWaves -lt 1) { $numWaves = 1 }
+
+    # Build chunk assignments: distribute reqs across agents and waves
+    $chunks = @()
+    $reqIndex = 0
+    $chunkLabelCounter = 0
+    $chunkLabels = @("A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z")
+
+    for ($wave = 1; $wave -le $numWaves; $wave++) {
+        foreach ($agent in $availableAgents) {
+            if ($reqIndex -ge $totalReqs) { break }
+            $sz = $agentChunkSize[$agent]
+            $remaining = $totalReqs - $reqIndex
+            if ($sz -gt $remaining) { $sz = $remaining }
+            if ($sz -le 0) { continue }
+
+            $label = if ($chunkLabelCounter -lt $chunkLabels.Count) { $chunkLabels[$chunkLabelCounter] } else { "Z$chunkLabelCounter" }
+            $chunks += @{
+                Label = $label
+                Agent = $agent
+                Wave  = $wave
+                Reqs  = @($allReqs[$reqIndex..($reqIndex + $sz - 1)])
+            }
+            $reqIndex += $sz
+            $chunkLabelCounter++
+        }
+    }
+
+    $totalChunks = $chunks.Count
+    Write-Host "  [CHUNK-REVIEW] $totalReqs requirements -> $totalChunks chunks across $numWaves wave(s) using $($availableAgents.Count) agents" -ForegroundColor Cyan
+    Write-Host "  [CHUNK-REVIEW] Agent capacity (safe RPM/2): $( ($availableAgents | ForEach-Object { "$_=$($agentChunkSize[$_])" }) -join ', ' )" -ForegroundColor DarkCyan
+
+    $result = @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = $totalChunks }
+
+    # Ensure output directory exists
+    $reviewDir = Join-Path $GsdDir "code-review"
+    if (-not (Test-Path $reviewDir)) { New-Item -Path $reviewDir -ItemType Directory -Force | Out-Null }
+
+    # â”€â”€ 5. Load prompt template â”€â”€
+    $templatePath = Join-Path $GlobalDir "prompts\claude\code-review-chunked.md"
+    if (-not (Test-Path $templatePath)) {
+        Write-Host "  [CHUNK-REVIEW] Missing template: $templatePath" -ForegroundColor Red
+        return $result
+    }
+    $templateRaw = Get-Content $templatePath -Raw
+
+    # â”€â”€ 6. Execute chunks wave by wave â”€â”€
+    $completedChunks = @()
+    $currentWave = 0
+
+    foreach ($chunk in $chunks) {
+        $label = $chunk.Label
+        $agent = $chunk.Agent
+        $wave  = $chunk.Wave
+        $reqIds = ($chunk.Reqs | ForEach-Object { $_.id }) -join ", "
+        $reqCount = $chunk.Reqs.Count
+
+        if ($reqCount -eq 0) { continue }
+
+        # Wave transition cooldown
+        if ($wave -gt $currentWave) {
+            if ($currentWave -gt 0) {
+                $waveCooldown = $config.inter_wave_cooldown_seconds
+                Write-Host "  [WAVE] Wave $currentWave complete. ${waveCooldown}s cooldown before wave $wave..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds $config.inter_wave_cooldown_seconds
+            }
+            $currentWave = $wave
+            Write-Host "  [WAVE $wave/$numWaves] Starting wave with $($availableAgents.Count) agents" -ForegroundColor Cyan
+        }
+
+        Write-Host "  [CHUNK-$label] $agent reviewing $reqCount reqs (wave $wave): $($reqIds.Substring(0, [math]::Min(80, $reqIds.Length)))..." -ForegroundColor Cyan
+
+        # Build prompt from template
+        $prompt = $templateRaw
+        $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration")
+        $prompt = $prompt.Replace("{{HEALTH}}", "$Health")
+        $prompt = $prompt.Replace("{{GSD_DIR}}", $GsdDir)
+        $prompt = $prompt.Replace("{{REPO_ROOT}}", $RepoRoot)
+        $prompt = $prompt.Replace("{{CHUNK_LABEL}}", $label)
+        $prompt = $prompt.Replace("{{TOTAL_CHUNKS}}", "$totalChunks")
+        $prompt = $prompt.Replace("{{CHUNK_COUNT}}", "$reqCount")
+        $prompt = $prompt.Replace("{{CHUNK_REQUIREMENT_IDS}}", $reqIds)
+        $prompt = $prompt.Replace("{{BATCH_SIZE}}", "$CurrentBatchSize")
+        $prompt = $prompt.Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext)
+
+        # Append file map context
+        $fileTreePath = Join-Path $GsdDir "file-map-tree.md"
+        if (Test-Path $fileTreePath) {
+            $prompt += "`n`n## Repository File Map`nRead the tree file at: $fileTreePath`n"
+        }
+
+        # Append supervisor hints
+        $errorCtxPath = Join-Path $GsdDir "supervisor\error-context.md"
+        $hintPath = Join-Path $GsdDir "supervisor\prompt-hints.md"
+        if (Test-Path $errorCtxPath) { $prompt += "`n`n## Previous Iteration Errors`n" + (Get-Content $errorCtxPath -Raw) }
+        if (Test-Path $hintPath) { $prompt += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw) }
+
+        if ($DryRun) {
+            Write-Host "  [CHUNK-$label] DRY RUN: would invoke $agent" -ForegroundColor DarkGray
+            $completedChunks += $label  # Count dry run as success for testing
+            continue
+        }
+
+        # Invoke agent with MaxAttempts 1 --rotation is handled by trying the next chunk's agent
+        $logFile = Join-Path $GsdDir "logs\iter${Iteration}-1-chunk-${label}.log"
+
+        $invokeParams = @{
+            Agent            = $agent
+            Prompt           = $prompt
+            Phase            = "code-review"
+            LogFile          = $logFile
+            CurrentBatchSize = $CurrentBatchSize
+            GsdDir           = $GsdDir
+            MaxAttempts      = 1
+        }
+        if ($agent -eq "claude") {
+            $invokeParams["AllowedTools"] = "Read,Write,Bash"
+        }
+
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "code-review" -Agent $agent `
+                -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize `
+                -Attempt "chunk-$label/$totalChunks (wave $wave/$numWaves)" -ErrorsThisIteration 0
+        }
+
+        $invokeResult = Invoke-WithRetry @invokeParams
+
+        # Check if chunk file was written
+        $chunkFile = Join-Path $GsdDir "code-review\chunk-${label}.json"
+        if (Test-Path $chunkFile) {
+            $completedChunks += $label
+            Write-Host "  [CHUNK-$label] Completed by $agent" -ForegroundColor Green
+        } elseif ($invokeResult -and $invokeResult.ExitCode -eq 0) {
+            $completedChunks += $label
+            Write-Host "  [CHUNK-$label] Agent completed (no chunk file, may have written health directly)" -ForegroundColor Yellow
+        } else {
+            Write-Host "  [CHUNK-$label] $agent failed --will retry in fallback pass" -ForegroundColor Yellow
+        }
+
+        # Inter-chunk cooldown within the same wave
+        if ($config.inter_chunk_cooldown_seconds -gt 0) {
+            Start-Sleep -Seconds $config.inter_chunk_cooldown_seconds
+        }
+    }
+
+    $result.ChunksCompleted = $completedChunks.Count
+    $chunkStatusColor = if ($completedChunks.Count -ge [math]::Ceiling($totalChunks * $config.min_success_ratio)) { "Green" } else { "Yellow" }
+    Write-Host "  [CHUNK-REVIEW] $($completedChunks.Count)/$totalChunks chunks completed" -ForegroundColor $chunkStatusColor
+
+    # â”€â”€ 7. Fallback pass: retry failed chunks with any available agent â”€â”€
+    $allLabels = $chunks | ForEach-Object { $_.Label }
+    $failedLabels = @($allLabels | Where-Object { $_ -notin $completedChunks })
+    if ($failedLabels.Count -gt 0 -and $completedChunks.Count -gt 0) {
+        # Pick an agent that succeeded recently (it's warm and not rate-limited)
+        $successChunk = $chunks | Where-Object { $_.Label -eq $completedChunks[-1] }
+        $fallbackAgent = if ($successChunk) { $successChunk.Agent } else { $config.fallback_agent }
+
+        Write-Host "  [FALLBACK] Retrying $($failedLabels.Count) failed chunk(s) with $fallbackAgent" -ForegroundColor Yellow
+
+        foreach ($label in $failedLabels) {
+            $chunk = $chunks | Where-Object { $_.Label -eq $label }
+            $reqIds = ($chunk.Reqs | ForEach-Object { $_.id }) -join ", "
+
+            $prompt = $templateRaw
+            $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration")
+            $prompt = $prompt.Replace("{{HEALTH}}", "$Health")
+            $prompt = $prompt.Replace("{{GSD_DIR}}", $GsdDir)
+            $prompt = $prompt.Replace("{{REPO_ROOT}}", $RepoRoot)
+            $prompt = $prompt.Replace("{{CHUNK_LABEL}}", $label)
+            $prompt = $prompt.Replace("{{TOTAL_CHUNKS}}", "$totalChunks")
+            $prompt = $prompt.Replace("{{CHUNK_COUNT}}", "$($chunk.Reqs.Count)")
+            $prompt = $prompt.Replace("{{CHUNK_REQUIREMENT_IDS}}", $reqIds)
+            $prompt = $prompt.Replace("{{BATCH_SIZE}}", "$CurrentBatchSize")
+            $prompt = $prompt.Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext)
+
+            $logFile = Join-Path $GsdDir "logs\iter${Iteration}-1-chunk-${label}-fallback.log"
+            $fbParams = @{
+                Agent            = $fallbackAgent
+                Prompt           = $prompt
+                Phase            = "code-review"
+                LogFile          = $logFile
+                CurrentBatchSize = $CurrentBatchSize
+                GsdDir           = $GsdDir
+                MaxAttempts      = 1
+            }
+            if ($fallbackAgent -eq "claude") { $fbParams["AllowedTools"] = "Read,Write,Bash" }
+
+            Invoke-WithRetry @fbParams | Out-Null
+
+            $chunkFile = Join-Path $GsdDir "code-review\chunk-${label}.json"
+            if (Test-Path $chunkFile) {
+                $completedChunks += $label
+                Write-Host "  [CHUNK-$label] Fallback completed" -ForegroundColor Green
+            }
+
+            Start-Sleep -Seconds $config.inter_chunk_cooldown_seconds
+        }
+        $result.ChunksCompleted = $completedChunks.Count
+    }
+
+    # â”€â”€ 8. Merge chunk results into requirements-matrix.json + health-current.json â”€â”€
+    Write-Host "  [CHUNK-MERGE] Merging $($completedChunks.Count) chunk results..." -ForegroundColor Cyan
+
+    $statusUpdates = @{}  # id -> { status, evidence }
+    $allBlockers = @()
+
+    foreach ($label in $completedChunks) {
+        $chunkFile = Join-Path $GsdDir "code-review\chunk-${label}.json"
+        if (-not (Test-Path $chunkFile)) { continue }
+
+        try {
+            $raw = Get-Content $chunkFile -Raw
+            # Strip markdown fences if agent wrapped output
+            $raw = $raw -replace '(?s)```(?:json)?\s*', ''
+            $raw = $raw -replace '(?s)\s*```', ''
+            $chunkData = $raw | ConvertFrom-Json
+
+            if ($chunkData.results) {
+                foreach ($r in $chunkData.results) {
+                    if ($r.id -and $r.status) {
+                        $statusUpdates[$r.id] = @{
+                            status   = $r.status
+                            evidence = if ($r.evidence) { $r.evidence } else { "" }
+                        }
+                    }
+                }
+            }
+            if ($chunkData.blockers) {
+                $allBlockers += @($chunkData.blockers)
+            }
+        } catch {
+            Write-Host "  [CHUNK-MERGE] Failed to parse chunk-${label}.json: $_" -ForegroundColor Red
+        }
+    }
+
+    Write-Host "  [CHUNK-MERGE] Got $($statusUpdates.Count) status updates from $($completedChunks.Count) chunks" -ForegroundColor Cyan
+
+    # Apply status updates to requirements-matrix.json
+    if ($statusUpdates.Count -gt 0) {
+        $matrix = Get-Content $matrixFile -Raw | ConvertFrom-Json
+        $changed = 0
+        $resolvedThisIter = @()
+
+        foreach ($req in $matrix.requirements) {
+            if ($statusUpdates.ContainsKey($req.id)) {
+                $update = $statusUpdates[$req.id]
+                $oldStatus = $req.status
+                $newStatus = $update.status
+
+                if ($oldStatus -ne $newStatus) {
+                    $req.status = $newStatus
+                    if ($update.evidence) { $req.satisfied_by = $update.evidence }
+                    $changed++
+                    $resolvedThisIter += "$($req.id): $oldStatus->$newStatus ($($update.evidence))"
+                }
+            }
+        }
+
+        # Write updated matrix
+        $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixFile -Encoding UTF8
+        $mergeColor = if ($changed -gt 0) { "Green" } else { "DarkGray" }
+        Write-Host "  [CHUNK-MERGE] Updated $changed requirement statuses in matrix" -ForegroundColor $mergeColor
+
+        # Recalculate health
+        $satisfied = @($matrix.requirements | Where-Object { $_.status -eq "satisfied" }).Count
+        $partial = @($matrix.requirements | Where-Object { $_.status -eq "partial" }).Count
+        $notStarted = @($matrix.requirements | Where-Object { $_.status -eq "not_started" }).Count
+        $total = $matrix.requirements.Count
+        $newHealth = if ($total -gt 0) { [math]::Round(($satisfied + 0.5 * $partial) / $total * 100) } else { 0 }
+
+        # Write health-current.json
+        $healthData = @{
+            health_score              = $newHealth
+            satisfied                 = $satisfied
+            partial                   = $partial
+            not_started               = $notStarted
+            total                     = $total
+            iteration                 = $Iteration
+            timestamp                 = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            formula                   = "(satisfied + 0.5 * partial) / total * 100"
+            calc                      = "($satisfied + $($partial * 0.5)) / $total = $([math]::Round(($satisfied + 0.5 * $partial) / $total * 100, 2))% -> $newHealth%"
+            status                    = if ($newHealth -ge 100) { "passed" } else { "in_progress" }
+            delta                     = "$($newHealth - $Health) from previous (was $Health%)"
+            resolved_this_iteration   = $resolvedThisIter
+            remaining_blockers        = $allBlockers
+            review_method             = "rate-limit-aware-chunked"
+            chunks_completed          = $completedChunks.Count
+            chunks_total              = $totalChunks
+            waves                     = $numWaves
+            agents_used               = ($availableAgents -join ", ")
+        }
+        $healthFile = Join-Path $GsdDir "health\health-current.json"
+        $healthData | ConvertTo-Json -Depth 5 | Set-Content $healthFile -Encoding UTF8
+
+        # Append to health-history.jsonl
+        $historyFile = Join-Path $GsdDir "health\health-history.jsonl"
+        ($healthData | ConvertTo-Json -Depth 5 -Compress) | Add-Content $historyFile -Encoding UTF8
+
+        $healthColor = if ($newHealth -gt $Health) { "Green" } elseif ($newHealth -eq $Health) { "Yellow" } else { "Red" }
+        Write-Host "  [CHUNK-MERGE] Health: $Health% -> $newHealth% (sat=$satisfied par=$partial ns=$notStarted)" -ForegroundColor $healthColor
+
+        $result.NewHealth = $newHealth
+    }
+
+    # â”€â”€ 9. Merge review markdown files â”€â”€
+    $mergedReview = "# Code Review - Iteration $Iteration (Rate-Limit-Aware Chunked: $totalChunks chunks, $numWaves waves)`n`n"
+    foreach ($chunk in $chunks) {
+        $reviewFile = Join-Path $GsdDir "code-review\chunk-$($chunk.Label)-review.md"
+        if (Test-Path $reviewFile) {
+            $mergedReview += "## Chunk $($chunk.Label) [$($chunk.Agent), wave $($chunk.Wave)]`n" + (Get-Content $reviewFile -Raw) + "`n`n"
+        }
+    }
+    $reviewCurrentFile = Join-Path $GsdDir "code-review\review-current.md"
+    $mergedReview | Set-Content $reviewCurrentFile -Encoding UTF8
+
+    $minRequired = [math]::Ceiling($totalChunks * $config.min_success_ratio)
+    $result.Success = ($completedChunks.Count -ge $minRequired)
+
+    $finalColor = if ($result.Success) { "Green" } else { "Red" }
+    Write-Host "  [CHUNK-REVIEW] Final: $($completedChunks.Count)/$totalChunks chunks (need $minRequired). Success=$($result.Success)" -ForegroundColor $finalColor
+    return $result
+}
+

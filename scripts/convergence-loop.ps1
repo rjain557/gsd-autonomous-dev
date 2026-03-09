@@ -270,7 +270,8 @@ if ($Incremental -and $matrixContent.requirements.Count -gt 0) {
     $Health = Get-Health
     Write-Host "  [OK] Matrix built. Health: ${Health}%" -ForegroundColor Green
     Write-Host ""
-}
+    }
+} # end if/elseif (create-phases)
 
 # Main loop
 $ValidationAttempts = 0; $MaxValidationAttempts = 3; $validationResult = $null
@@ -337,12 +338,27 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             }
         }
         if (-not $useDiffReview) {
-    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
-    if (-not $DryRun) {
+    # Rate-limit-aware chunked review: dynamically splits requirements across all available agents
+    if (-not $DryRun -and (Get-Command Invoke-SequentialChunkedReview -ErrorAction SilentlyContinue)) {
+        Write-Host "  [REVIEW] Rate-limit-aware chunked review (all available agents)" -ForegroundColor Cyan
+        $chunkResult = Invoke-SequentialChunkedReview -GsdDir $GsdDir -GlobalDir $GlobalDir -RepoRoot $RepoRoot `
+            -Iteration $Iteration -Health $Health -CurrentBatchSize $CurrentBatchSize -InterfaceContext $InterfaceContext
+        if ($chunkResult.Success) {
+            Write-Host "  [REVIEW] Chunked review completed ($($chunkResult.ChunksCompleted)/$($chunkResult.ChunksTotal) chunks)" -ForegroundColor Green
+        } else {
+            Write-Host "  [REVIEW] Chunked review partial ($($chunkResult.ChunksCompleted)/$($chunkResult.ChunksTotal)) — falling back to single-agent" -ForegroundColor Yellow
+            if ($chunkResult.ChunksCompleted -lt 2) {
+                $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
+                $reviewResult = Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "code-review" `
+                    -LogFile "$GsdDir\logs\iter${Iteration}-1-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
+            }
+        }
+    } elseif (-not $DryRun) {
+        # Legacy single-agent path
+        $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
         $reviewResult = Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
             -LogFile "$GsdDir\logs\iter${Iteration}-1.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
             -AllowedTools "Read,Write,Bash"
-        # Fallback: if claude failed, retry with codex (NOT gemini -- gemini applies strict traceability rules that corrupt the matrix)
         if (-not $reviewResult -or $reviewResult.ExitCode -ne 0) {
             Write-Host "  [FALLBACK] claude code-review failed -- retrying with codex" -ForegroundColor Yellow
             Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "code-review" `
@@ -437,7 +453,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # ── POST-RESEARCH COUNCIL (validate research before planning) ──
-    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+    if ($SkipResearch) {
+        Write-Host "  [SCALES] Skipping post-research council (research was skipped)" -ForegroundColor DarkGray
+    } elseif (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Post-research council..." -ForegroundColor DarkCyan
         $prResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "post-research"
         if (-not $prResult.Approved) {
@@ -462,16 +480,37 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
         Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "plan" -Agent "claude" -Iteration $Iteration -HealthScore $Health
     }
+    # Auto-decompose stuck partials from previous iteration before planning
+    if ($Iteration -gt 1 -and -not $DryRun -and (Get-Command Invoke-PartialDecompose -ErrorAction SilentlyContinue)) {
+        Invoke-PartialDecompose -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration
+    }
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
     if (-not $DryRun) {
-        $planResult = Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
-            -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-            -AllowedTools "Read,Write,Bash"
-        # Fallback: if claude failed, retry with codex (NOT gemini -- gemini misinterprets plan requirements)
-        if (-not $planResult -or $planResult.ExitCode -ne 0) {
-            Write-Host "  [FALLBACK] claude plan failed -- retrying with codex" -ForegroundColor Yellow
-            Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "plan" `
-                -LogFile "$GsdDir\logs\iter${Iteration}-3-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+        # Pre-check: skip plan LLM call only if queue was written for THIS iteration (same health score = same iteration)
+        $queueFile = Join-Path $GsdDir "generation-queue\queue-current.json"
+        $planWritten = $false
+        if (Test-Path $queueFile) {
+            try {
+                $qContent = Get-Content $queueFile -Raw | ConvertFrom-Json
+                # Queue is fresh only if it was written at the current health level AND within 45 min
+                $planWritten = ($qContent.health_at_plan -eq $Health) -and ((Get-Item $queueFile).LastWriteTime -gt (Get-Date).AddMinutes(-45))
+            } catch { $planWritten = $false }
+        }
+        if ($planWritten) {
+            Write-Host "  [PLAN] Plan output files already written for health=$Health ($(((Get-Item $queueFile).LastWriteTime).ToString('HH:mm'))) -- skipping plan LLM call" -ForegroundColor Green
+        } else {
+            $planResult = Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
+                -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+                -AllowedTools "Read,Write,Bash" -MaxAttempts 1
+            # Re-check after Invoke-WithRetry returns (agent may have written files before hitting quota)
+            $planWritten = (Test-Path $queueFile) -and ((Get-Item $queueFile).LastWriteTime -gt (Get-Date).AddMinutes(-45))
+            if ($planWritten) {
+                Write-Host "  [PLAN] Plan output files written during attempt -- skipping fallback" -ForegroundColor Green
+            } elseif (-not $planResult -or $planResult.ExitCode -ne 0) {
+                Write-Host "  [FALLBACK] claude plan failed -- retrying with codex" -ForegroundColor Yellow
+                Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "plan" `
+                    -LogFile "$GsdDir\logs\iter${Iteration}-3-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+            }
         }
     }
 
@@ -486,7 +525,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # ── PRE-EXECUTE COUNCIL (validate plan before code generation) ──
-    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+    if ($SkipResearch) {
+        Write-Host "  [SCALES] Skipping pre-execute council (research was skipped)" -ForegroundColor DarkGray
+    } elseif (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Pre-execute council..." -ForegroundColor DarkCyan
         $peResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "pre-execute"
         if (-not $peResult.Approved) {
@@ -631,7 +672,8 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
         if ($figmaFirstHeader) { $prompt = $figmaFirstHeader + $prompt }
         $result = Invoke-WithRetry -Agent $executeAgent -Prompt $prompt -Phase "execute" `
-            -LogFile "$GsdDir\logs\iter${Iteration}-4.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
+            -LogFile "$GsdDir\logs\iter${Iteration}-4.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+            -GeminiMode "--yolo"
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
             $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
@@ -902,6 +944,10 @@ Write-Host "=========================================================" -Foregrou
     }
 
     Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
+} catch {
+    Write-Host "  [FATAL] $($_.Exception.Message)" -ForegroundColor Red
+    Remove-GsdLock -GsdDir $GsdDir
+    throw
 }
 
 
