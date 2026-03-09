@@ -298,6 +298,22 @@ function Get-FailureDiagnosis {
         } else {
             $diagnosis = "Claude exit code $ExitCode"
         }
+    } elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent $Agent)) {
+        if ($OutputText -match "connection_failed:") {
+            $diagnosis = "$Agent connection failed (endpoint unreachable)"
+        } elseif ($OutputText -match "rate_limit|429") {
+            $diagnosis = "$Agent rate limited"
+        } elseif ($OutputText -match "quota_exhausted|402") {
+            $diagnosis = "$Agent quota exhausted"
+        } elseif ($OutputText -match "unauthorized|401") {
+            $diagnosis = "$Agent unauthorized (check API key)"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "$Agent produced no output"
+        } else {
+            $diagnosis = "$Agent exit code $ExitCode"
+        }
+        $action = "fallback"
+        $fallbackAgent = "codex"
     } else {
         $diagnosis = "Unknown agent '$Agent' exit code $ExitCode"
     }
@@ -324,8 +340,12 @@ function Invoke-AgentFallback {
             $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "gemini") {
-            $fbOutput = $Prompt | gemini --approval-mode plan 2>&1
+            $fbOutput = gemini -p $Prompt --approval-mode plan 2>&1
             $fbExit = $LASTEXITCODE
+        } elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent $FallbackAgent)) {
+            $fbResult = Invoke-OpenAICompatibleAgent -Agent $FallbackAgent -Prompt $Prompt
+            $fbOutput = $fbResult.Output
+            $fbExit = $fbResult.ExitCode
         }
         if ($LogFile -and $fbOutput) {
             $fbOutput | Out-File -FilePath $LogFile -Encoding UTF8 -Append
@@ -400,7 +420,7 @@ exit `$LASTEXITCODE
                     $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) -join ' '
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = `$prompt | gemini $geminiArgs 2>&1
+`$output = gemini -p `$prompt $geminiArgs 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
@@ -866,6 +886,8 @@ $script:QUOTA_SLEEP_MAX = 60            # cap at 60 minutes
 $script:QUOTA_SLEEP_BACKOFF = 2         # double each cycle: 5, 10, 20, 40, 60, 60...
 $script:QUOTA_SLEEP_MINUTES = $script:QUOTA_SLEEP_INITIAL  # compat alias
 $script:QUOTA_MAX_SLEEPS = 24           # max total sleep cycles
+$script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE = 1  # rotate after 1 consecutive quota failure
+$script:QUOTA_CUMULATIVE_MAX_MINUTES = 120         # give up after 120 min total quota wait
 $script:NETWORK_POLL_SECONDS = 10
 $script:NETWORK_MAX_POLLS = 6          # max 60s of polling, then skip
 $script:DISK_MIN_FREE_GB = 0.5
@@ -1022,7 +1044,7 @@ function Wait-ForQuotaReset {
                 if ($Agent -eq "codex") {
                     $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
+                    $testOutput = gemini -p "Reply with just the word READY" --approval-mode plan 2>&1
                 } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
                     $testOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt "Reply with just the word READY" -TimeoutSeconds 30
                 } else {
@@ -1569,7 +1591,7 @@ function Invoke-AgentFallback {
                 $fbOutput = $rawOutput
             }
         } elseif ($FallbackAgent -eq "gemini") {
-            $rawOutput = $Prompt | gemini --approval-mode plan --output-format json 2>&1
+            $rawOutput = gemini -p $Prompt --approval-mode plan --output-format json 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -1699,7 +1721,7 @@ function Invoke-WithRetry {
             } elseif ($Agent -eq "gemini") {
                 # Gemini CLI: --approval-mode plan (read-only) or --yolo (write)
                 $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-                $rawOutput = $effectivePrompt | gemini @geminiArgs --output-format json 2>&1
+                $rawOutput = gemini -p $effectivePrompt @geminiArgs --output-format json 2>&1
                 $exitCode = $LASTEXITCODE
                 $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
                 if ($parsed -and $parsed.TextOutput) {
@@ -1786,8 +1808,9 @@ function Invoke-WithRetry {
                 Write-GsdError -GsdDir $GsdDir -Category "quota" -Phase $Phase -Iteration $i `
                     -Message "$Agent $quotaType" -Resolution "Waiting for reset"
 
-                # Rotate to different agent after N consecutive quota hits
-                if ($consecutiveQuotaFails[$Agent] -ge $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) {
+                # Rotate to different agent after N consecutive quota hits (default 1 if variable not in scope)
+                $rotateThreshold = if ($script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) { $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE } else { 1 }
+                if ($consecutiveQuotaFails[$Agent] -ge $rotateThreshold) {
                     $cliOnlyPhase = ($Phase -match "council-requirements|council-verify")
                     $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -CliOnly:$cliOnlyPhase
                     if ($rotatedAgent) {
@@ -1803,9 +1826,10 @@ function Invoke-WithRetry {
                     }
                 }
 
-                # Check cumulative wait cap
-                if ($totalQuotaWaitMinutes -ge $script:QUOTA_CUMULATIVE_MAX_MINUTES) {
-                    Write-Host "    [XX] Cumulative quota wait ($totalQuotaWaitMinutes min) exceeds cap ($($script:QUOTA_CUMULATIVE_MAX_MINUTES) min). Giving up." -ForegroundColor Red
+                # Check cumulative wait cap (default 120 min if variable not in scope)
+                $cumulativeCap = if ($script:QUOTA_CUMULATIVE_MAX_MINUTES) { $script:QUOTA_CUMULATIVE_MAX_MINUTES } else { 120 }
+                if ($totalQuotaWaitMinutes -ge $cumulativeCap) {
+                    Write-Host "    [XX] Cumulative quota wait ($totalQuotaWaitMinutes min) exceeds cap (${cumulativeCap} min). Giving up." -ForegroundColor Red
                     $result.Error = "Quota exhausted: waited $totalQuotaWaitMinutes min total across all agents"
                     return $result
                 }
@@ -10094,13 +10118,15 @@ function Get-AgentForComplexity {
             default  { @() }
         }
 
-        foreach ($p in $preferred) {
-            if ($AvailableAgents -contains $p) {
-                if ($p -ne $fallback) {
-                    Write-Host "  [COMPLEXITY] $Complexity requirement -> $p (preferred over round-robin: $fallback)" -ForegroundColor DarkCyan
-                }
-                return $p
+        # Filter to only preferred agents that are in the available pool
+        $eligible = @($preferred | Where-Object { $AvailableAgents -contains $_ })
+        if ($eligible.Count -gt 0) {
+            # Distribute across eligible preferred agents using Index (round-robin within preferred tier)
+            $pick = $eligible[$Index % $eligible.Count]
+            if ($pick -ne $fallback) {
+                Write-Host "  [COMPLEXITY] $Complexity requirement -> $pick (preferred #$($Index % $eligible.Count + 1)/$($eligible.Count), round-robin: $fallback)" -ForegroundColor DarkCyan
             }
+            return $pick
         }
     } catch {}
 
@@ -11198,38 +11224,79 @@ function Get-AgentRpmLimit {
     return $effectiveRpm
 }
 
+function Get-RateTrackerPath {
+    <# Returns path to shared rate tracker file. All processes use the same file. #>
+    $dir = Join-Path $env:USERPROFILE “.gsd-global”
+    if (-not (Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
+    return Join-Path $dir “rate-tracker.json”
+}
+
+function Read-SharedRateTracker {
+    <# Reads the shared file-based rate tracker. Returns hashtable of agent -> timestamp arrays. #>
+    $path = Get-RateTrackerPath
+    $now = Get-Date
+    $windowStart = $now.AddSeconds(-60)
+    $tracker = @{}
+
+    if (Test-Path $path) {
+        try {
+            $raw = Get-Content $path -Raw -ErrorAction Stop | ConvertFrom-Json
+            foreach ($prop in $raw.PSObject.Properties) {
+                # Parse timestamps and prune older than 60s
+                $recent = @($prop.Value | ForEach-Object {
+                    try { [DateTime]$_ } catch { $null }
+                } | Where-Object { $_ -and $_ -ge $windowStart })
+                if ($recent.Count -gt 0) {
+                    $tracker[$prop.Name] = $recent
+                }
+            }
+        } catch {
+            $tracker = @{}
+        }
+    }
+    return $tracker
+}
+
+function Write-SharedRateTracker {
+    <# Writes the rate tracker atomically. #>
+    param([hashtable]$Tracker)
+    $path = Get-RateTrackerPath
+    $obj = @{}
+    foreach ($key in $Tracker.Keys) {
+        $obj[$key] = @($Tracker[$key] | ForEach-Object { $_.ToString(“o”) })
+    }
+    try {
+        $json = $obj | ConvertTo-Json -Depth 3 -Compress
+        $tmpPath = “$path.tmp.$PID”
+        Set-Content -Path $tmpPath -Value $json -Encoding UTF8 -Force
+        Move-Item -Path $tmpPath -Destination $path -Force
+    } catch {}
+}
+
 function Wait-ForRateWindow {
     <#
     .SYNOPSIS
-        Proactive rate limiter. Checks if calling $AgentName now would exceed its RPM limit.
+        Proactive rate limiter using SHARED FILE-BASED tracker (works across parallel processes).
+        Checks if calling $AgentName now would exceed its RPM limit.
         If yes, sleeps the exact number of seconds needed until a slot opens.
         Returns the number of seconds waited (0 if no wait needed).
-    .DESCRIPTION
-        Uses a sliding 60-second window of call timestamps per agent.
-        Prunes timestamps older than 60s on each check.
     #>
     param(
         [string]$AgentName,
-        [string]$GsdDir = ""
+        [string]$GsdDir = “”
     )
 
-    if (-not $script:RateLimitTracker[$AgentName]) {
-        $script:RateLimitTracker[$AgentName] = [System.Collections.ArrayList]::new()
-    }
-
+    $tracker = Read-SharedRateTracker
     $now = Get-Date
     $windowStart = $now.AddSeconds(-60)
-    $callLog = $script:RateLimitTracker[$AgentName]
 
-    # Prune calls older than 60 seconds
-    $expired = @($callLog | Where-Object { $_ -lt $windowStart })
-    foreach ($ts in $expired) { $callLog.Remove($ts) | Out-Null }
+    $callLog = @()
+    if ($tracker[$AgentName]) { $callLog = @($tracker[$AgentName]) }
 
     $effectiveRpm = Get-AgentRpmLimit -AgentName $AgentName
     $currentCalls = $callLog.Count
 
     if ($currentCalls -lt $effectiveRpm) {
-        # Under limit â€” no wait needed
         return 0
     }
 
@@ -11240,20 +11307,18 @@ function Wait-ForRateWindow {
     $waitSeconds = [math]::Ceiling(($expiresAt - $now).TotalSeconds)
 
     if ($waitSeconds -le 0) {
-        # Edge case: should have been pruned
         return 0
     }
 
     # Add 1s buffer to avoid edge-case 429
     $waitSeconds = $waitSeconds + 1
 
-    Write-Host "    [RATE-LIMIT] $($AgentName.ToUpper()): $currentCalls/$effectiveRpm calls in last 60s. Waiting ${waitSeconds}s..." -ForegroundColor Yellow
+    Write-Host “    [RATE-LIMIT] $($AgentName.ToUpper()): $currentCalls/$effectiveRpm calls in last 60s. Waiting ${waitSeconds}s...” -ForegroundColor Yellow
 
-    # Update engine status if available
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
         if ($GsdDir) {
-            Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "rate-limit" `
-                -SleepReason "rate_limit_pacing" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($waitSeconds))
+            Update-EngineStatus -GsdDir $GsdDir -State “sleeping” -Phase “rate-limit” `
+                -SleepReason “rate_limit_pacing” -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($waitSeconds))
         }
     }
 
@@ -11261,7 +11326,7 @@ function Wait-ForRateWindow {
 
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
         if ($GsdDir) {
-            Update-EngineStatus -GsdDir $GsdDir -State "running"
+            Update-EngineStatus -GsdDir $GsdDir -State “running”
         }
     }
 
@@ -11271,15 +11336,23 @@ function Wait-ForRateWindow {
 function Register-AgentCall {
     <#
     .SYNOPSIS
-        Records that an API call was made to $AgentName at the current time.
-        Must be called AFTER every successful or failed API invocation.
+        Records that an API call was made to $AgentName. Uses SHARED FILE-BASED tracker
+        so parallel sub-task processes all see each other's calls.
     #>
     param([string]$AgentName)
 
+    $tracker = Read-SharedRateTracker
+    if (-not $tracker[$AgentName]) {
+        $tracker[$AgentName] = @()
+    }
+    $tracker[$AgentName] = @($tracker[$AgentName]) + @((Get-Date))
+    Write-SharedRateTracker $tracker
+
+    # Also update in-memory for same-process sequential calls
+    if (-not $script:RateLimitTracker) { $script:RateLimitTracker = @{} }
     if (-not $script:RateLimitTracker[$AgentName]) {
         $script:RateLimitTracker[$AgentName] = [System.Collections.ArrayList]::new()
     }
-
     $script:RateLimitTracker[$AgentName].Add((Get-Date)) | Out-Null
 }
 
@@ -11287,15 +11360,14 @@ function Get-RateLimitStatus {
     <#
     .SYNOPSIS
         Returns a summary of current rate limit usage for all tracked agents.
-        Useful for diagnostics and WhatsApp /status command.
+        Reads from shared file-based tracker for cross-process accuracy.
     #>
+    $tracker = Read-SharedRateTracker
     $status = @{}
     $now = Get-Date
-    $windowStart = $now.AddSeconds(-60)
 
-    foreach ($agent in $script:RateLimitTracker.Keys) {
-        $callLog = $script:RateLimitTracker[$agent]
-        $recentCalls = @($callLog | Where-Object { $_ -ge $windowStart })
+    foreach ($agent in $tracker.Keys) {
+        $recentCalls = @($tracker[$agent])
         $effectiveRpm = Get-AgentRpmLimit -AgentName $agent
         $status[$agent] = @{
             CallsInWindow = $recentCalls.Count
