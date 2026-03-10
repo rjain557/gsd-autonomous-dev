@@ -31,7 +31,7 @@ function Invoke-SequentialChunkedReview {
         min_success_ratio = 0.6
         fallback_to_single_agent = $true
         fallback_agent = "codex"
-        agent_pool = @("claude", "codex", "gemini", "kimi", "deepseek", "glm5", "minimax")
+        agent_pool = @("claude", "codex", "gemini")
     }
 
     if (Test-Path $agentMapPath) {

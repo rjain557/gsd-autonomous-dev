@@ -134,11 +134,7 @@
                            "agent_pool":  [
                                               "claude",
                                               "codex",
-                                              "gemini",
-                                              "kimi",
-                                              "deepseek",
-                                              "glm5",
-                                              "minimax"
+                                              "gemini"
                                           ],
                            "safety_factor":  0.5,
                            "min_chunk_size":  5,
@@ -148,7 +144,7 @@
                            "min_success_ratio":  0.6,
                            "fallback_to_single_agent":  true,
                            "fallback_agent":  "codex",
-                           "notes":  "safety_factor=0.5 means use half the RPM as max reqs per agent per wave. Agents with review role only."
+                           "notes":  "safety_factor=0.5 means use half the RPM as max reqs per agent per wave. CLI agents only (claude/codex/gemini) for quality assurance."
                        },
     "partial_decompose":  {
                               "enabled":  true,

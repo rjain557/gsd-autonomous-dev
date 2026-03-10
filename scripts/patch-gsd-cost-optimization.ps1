@@ -56,7 +56,7 @@ if (Test-Path $agentMapPath) {
         $agentMap | Add-Member -NotePropertyName "cost_optimization" -NotePropertyValue ([PSCustomObject]@{
             enabled = $true
             cheap_first_review = ([PSCustomObject]@{
-                enabled              = $true
+                enabled              = $false
                 cheap_agents         = @("kimi", "deepseek", "minimax", "glm5")
                 verify_agent         = "claude"
                 verify_fallback      = "codex"

@@ -436,27 +436,24 @@ if (Test-Path $resilienceFile) {
 # GSD PARTITIONED CODE REVIEW MODULES - appended to resilience.ps1
 # ===============================================================
 
-# Agent rotation matrix: maps (iteration % 7) to agent assignments for partitions A-G
+# Agent rotation matrix: maps (iteration % 3) to agent assignments for partitions A-C
+# Code review uses CLI agents ONLY (claude/codex/gemini) for quality assurance
 $script:PARTITION_ROTATION = @(
-    @{ A = "claude";   B = "codex";    C = "gemini";  D = "kimi";     E = "deepseek"; F = "glm5";     G = "minimax" } # Iter 1
-    @{ A = "minimax";  B = "claude";   C = "codex";   D = "gemini";   E = "kimi";     F = "deepseek"; G = "glm5"    } # Iter 2
-    @{ A = "glm5";     B = "minimax";  C = "claude";  D = "codex";    E = "gemini";   F = "kimi";     G = "deepseek" } # Iter 3
-    @{ A = "deepseek"; B = "glm5";     C = "minimax"; D = "claude";   E = "codex";    F = "gemini";   G = "kimi"     } # Iter 4
-    @{ A = "kimi";     B = "deepseek"; C = "glm5";     D = "minimax";  E = "claude";   F = "codex";    G = "gemini"   } # Iter 5
-    @{ A = "gemini";   B = "kimi";     C = "deepseek"; D = "glm5";     E = "minimax";  F = "claude";   G = "codex"    } # Iter 6
-    @{ A = "codex";    B = "gemini";   C = "kimi";     D = "deepseek"; E = "glm5";     F = "minimax";  G = "claude"   } # Iter 7
+    @{ A = "claude"; B = "codex";  C = "gemini" } # Iter 1
+    @{ A = "gemini"; B = "claude"; C = "codex"  } # Iter 2
+    @{ A = "codex";  B = "gemini"; C = "claude" } # Iter 3
 )
 
 
 function Split-RequirementsIntoPartitions {
     <#
     .SYNOPSIS
-        Splits requirements matrix into 7 roughly equal partitions.
+        Splits requirements matrix into 3 roughly equal partitions (one per CLI agent).
         Each partition includes the requirement IDs and their associated files.
     #>
     param(
         [string]$GsdDir,
-        [int]$PartitionCount = 7
+        [int]$PartitionCount = 3
     )
 
     $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
@@ -641,10 +638,10 @@ function Invoke-PartitionedCodeReview {
     $cooldown = if ($pcConfig.cooldown_between_agents) { [int]$pcConfig.cooldown_between_agents } else { 5 }
 
     # 1. Split requirements into partitions
-    Write-Host "  [PARTITION] Splitting requirements into 7 partitions..." -ForegroundColor Cyan
-    $partitions = Split-RequirementsIntoPartitions -GsdDir $GsdDir -PartitionCount 7
+    Write-Host "  [PARTITION] Splitting requirements into 3 partitions (CLI agents only)..." -ForegroundColor Cyan
+    $partitions = Split-RequirementsIntoPartitions -GsdDir $GsdDir -PartitionCount 3
 
-    if (-not $partitions -or $partitions.Count -lt 7) {
+    if (-not $partitions -or $partitions.Count -lt 3) {
         Write-Host "  [PARTITION] Cannot partition (too few requirements). Falling back to single review." -ForegroundColor Yellow
         $result.Success = $false
         $result.Error = "Too few requirements to partition"
@@ -656,11 +653,11 @@ function Invoke-PartitionedCodeReview {
     }
 
     # 2. Determine agent rotation for this iteration
-    $rotationIdx = ($Iteration - 1) % 7
+    $rotationIdx = ($Iteration - 1) % 3
     $rotation = $script:PARTITION_ROTATION[$rotationIdx]
 
     Write-Host "  [PARTITION] Rotation (iter $Iteration -> slot $rotationIdx):" -ForegroundColor Cyan
-    Write-Host "    A=$($rotation.A)  B=$($rotation.B)  C=$($rotation.C)  D=$($rotation.D)  E=$($rotation.E)  F=$($rotation.F)  G=$($rotation.G)" -ForegroundColor White
+    Write-Host "    A=$($rotation.A)  B=$($rotation.B)  C=$($rotation.C)" -ForegroundColor White
     $result.AgentMap = $rotation
 
     # 3. Discover spec and Figma paths
@@ -675,8 +672,8 @@ function Invoke-PartitionedCodeReview {
 
     # 4. Build prompts for each partition
     $templateDir = Join-Path $GlobalDir "prompts\shared"
-    $labels = @("A", "B", "C", "D", "E", "F", "G")
-    $agentKeys = @("A", "B", "C", "D", "E", "F", "G")
+    $labels = @("A", "B", "C")
+    $agentKeys = @("A", "B", "C")
     $prompts = @{}
     $logFiles = @{}
 
@@ -822,7 +819,7 @@ function Invoke-PartitionedCodeReview {
     }
 
     # 7. Merge partition results
-    Write-Host "  [PARTITION] Merging results from $($completedJobs.Count)/7 partitions..." -ForegroundColor Cyan
+    Write-Host "  [PARTITION] Merging results from $($completedJobs.Count)/3 partitions..." -ForegroundColor Cyan
 
     $mergeResult = Merge-PartitionedReviews -GsdDir $GsdDir -Partitions $partitions `
         -CompletedLabels @($completedJobs.Keys) -FailedLabels $failedPartitions `
@@ -1126,16 +1123,16 @@ Write-Host "=========================================================" -Foregrou
 Write-Host ""
 Write-Host "  HOW IT WORKS:" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  [PARTITION] Requirements split into 7 groups (A-G)" -ForegroundColor White
+Write-Host "  [PARTITION] Requirements split into 3 groups (A-C)" -ForegroundColor White
 Write-Host "     - Even distribution with mixed statuses per partition" -ForegroundColor DarkGray
 Write-Host "     - Each partition includes source files + spec + Figma refs" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  [ROTATION] Agent assignments rotate every iteration (7-agent pool)" -ForegroundColor White
-Write-Host "     Iter 1: A=Claude B=Codex C=Gemini D=Kimi E=Deepseek F=GLM5 G=Minimax" -ForegroundColor DarkGray
-Write-Host "     (repeats every 7 iterations)" -ForegroundColor DarkGray
+Write-Host "  [ROTATION] Agent assignments rotate every iteration (CLI agents only)" -ForegroundColor White
+Write-Host "     Iter 1: A=Claude B=Codex C=Gemini" -ForegroundColor DarkGray
+Write-Host "     (repeats every 3 iterations)" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  [PARALLEL] All 7 agents run simultaneously" -ForegroundColor White
-Write-Host "     - 7x faster than sequential single-agent review" -ForegroundColor DarkGray
+Write-Host "  [PARALLEL] All 3 CLI agents run simultaneously" -ForegroundColor White
+Write-Host "     - 3x faster than sequential single-agent review" -ForegroundColor DarkGray
 Write-Host "     - Each agent validates against spec AND Figma deliverables" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  [COVERAGE] After 7 iterations, every requirement reviewed by all 7 LLMs" -ForegroundColor White

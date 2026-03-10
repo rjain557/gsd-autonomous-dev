@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Patch #43: Fix 15 convergence diseases found by deep analysis.
-    1. Execute pool CLI-only: remove REST agents (can't write files)
+    1. Execute pool ALL 7 agents: cheapest first, max_concurrent=4
     2. $Pipeline undefined: add "converge" assignment
     3. Unwrapped calls: try/catch on ParallelResearch + 7 more calls
     4. Parameter mismatches: Wait-ForRateWindow/Register-AgentCall in decompose
@@ -11,13 +11,13 @@
     8. Stop-Job before Remove-Job for timed-out parallel jobs
     9. New-GitSnapshot stash pop removal (was a no-op)
     10. Cooldown reduced 30 min → 10 min (CLI quotas reset in 1-5 min)
-    11. Sub-task cap at 6 (3 CLI agents × 2 waves)
+    11. Sub-task cap at 14 (7 agents × 2 waves)
     12. CheapFirstReview wired into code-review phase
     13. BatchScopedResearch wired into research phase
     14. Decompose try/catch: already applied
     15. All Invoke-LlmCouncil/BuildValidation/CouncilRequirements wrapped
-    16. Quota rotation phase-aware: CLI-only for execute/plan/spec (prevents kimi crashes)
-    17. Gemini removed from execute pool (spec-fix only, can't write source files)
+    16. Quota rotation phase-aware: CLI-only for plan/spec (execute allows ALL agents)
+    17. Gemini added to execute pool (all 7 agents participate)
     18. Subtask timeout reduced 30→15 min (prevents codex hanging in quota loop)
 
 .NOTES
@@ -40,11 +40,12 @@ if (Test-Path $agentMapPath) {
     $pool = $amContent.execute_parallel.agent_pool
     $restAgents = @("deepseek", "kimi", "minimax", "glm5")
     $hasRest = $pool | Where-Object { $_ -in $restAgents }
-    if ($hasRest -or ($pool -contains "gemini")) {
-        $amContent.execute_parallel.agent_pool = @("codex", "claude")
-        $amContent | ConvertTo-Json -Depth 10 | Set-Content $agentMapPath -Encoding UTF8
+    if ($pool.Count -ne 7 -or ($pool -notcontains "deepseek")) {
+        $amContent.execute_parallel.agent_pool = @("deepseek", "codex", "kimi", "minimax", "glm5", "claude", "gemini")
+        $amContent.execute_parallel.max_concurrent = 4
         $amContent.execute_parallel.subtask_timeout_minutes = 15
-        Write-Host "  [OK] Execute pool: codex+claude only, timeout 15min" -ForegroundColor Green
+        $amContent | ConvertTo-Json -Depth 10 | Set-Content $agentMapPath -Encoding UTF8
+        Write-Host "  [OK] Execute pool: all 7 agents (cheapest first), max_concurrent=4, timeout 15min" -ForegroundColor Green
     } else {
         Write-Host "  [SKIP] Execute pool already correct" -ForegroundColor DarkGray
     }
@@ -164,18 +165,22 @@ if ($loopContent -match 'Invoke-BatchScopedResearch') {
     Write-Host "  [INFO] BatchScopedResearch needs wiring into convergence-loop.ps1" -ForegroundColor Yellow
 }
 
-# ── Disease 16: Quota rotation sends REST agents to execute/plan/spec phases ──
+# ── Disease 16: Quota rotation phase-aware (execute allows ALL agents) ──
 $resContent = Get-Content $resPath -Raw
-if ($resContent -match '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify"\)') {
-    $resContent = $resContent -replace '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify"\)', '$cliOnlyPhase = ($Phase -match "council-requirements|council-verify|execute|plan|spec")'
+if ($resContent -match '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify\|execute\|plan\|spec"\)') {
+    $resContent = $resContent -replace '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify\|execute\|plan\|spec"\)', '$cliOnlyPhase = ($Phase -match "council-requirements|council-verify|plan|spec")'
     $resContent | Set-Content $resPath -Encoding UTF8
-    Write-Host "  [OK] Quota rotation: CLI-only for execute/plan/spec phases" -ForegroundColor Green
+    Write-Host "  [OK] Quota rotation: execute phase now allows ALL agents" -ForegroundColor Green
+} elseif ($resContent -match '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify"\)') {
+    $resContent = $resContent -replace '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify"\)', '$cliOnlyPhase = ($Phase -match "council-requirements|council-verify|plan|spec")'
+    $resContent | Set-Content $resPath -Encoding UTF8
+    Write-Host "  [OK] Quota rotation: CLI-only for plan/spec phases (execute open)" -ForegroundColor Green
 } else {
-    Write-Host "  [SKIP] Quota rotation already phase-aware" -ForegroundColor DarkGray
+    Write-Host "  [SKIP] Quota rotation already correct" -ForegroundColor DarkGray
 }
 
 Write-Host "`n=== Patch #43 Complete ===" -ForegroundColor Green
-Write-Host "  Execute pool: CLI-only (codex, gemini, claude)" -ForegroundColor DarkCyan
+Write-Host "  Execute pool: ALL 7 agents (cheapest first, max_concurrent=4)" -ForegroundColor DarkCyan
 Write-Host "  Pipeline var: defined as 'converge'" -ForegroundColor DarkCyan
 Write-Host "  Crash protection: try/catch on 8 unwrapped calls" -ForegroundColor DarkCyan
 Write-Host "  Rate limiter: correct param names + mutex fix" -ForegroundColor DarkCyan
@@ -183,7 +188,7 @@ Write-Host "  Plan/review: decomposed-aware (skip parents, exclude from health)"
 Write-Host "  Parallel jobs: Stop-Job before Remove-Job" -ForegroundColor DarkCyan
 Write-Host "  Git snapshots: stash persists as revert point" -ForegroundColor DarkCyan
 Write-Host "  Cooldown: 10 min (was 30 min)" -ForegroundColor DarkCyan
-Write-Host "  Sub-task cap: 6 max (3 agents x 2 waves)" -ForegroundColor DarkCyan
+Write-Host "  Sub-task cap: 14 max (7 agents x 2 waves)" -ForegroundColor DarkCyan
 Write-Host "  CheapFirstReview: wired into code-review phase" -ForegroundColor DarkCyan
 Write-Host "  BatchScopedResearch: wired into research phase" -ForegroundColor DarkCyan
-Write-Host "  Quota rotation: CLI-only for execute/plan/spec phases" -ForegroundColor DarkCyan
+Write-Host "  Quota rotation: CLI-only for plan/spec phases (execute open to all)" -ForegroundColor DarkCyan
