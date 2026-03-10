@@ -455,6 +455,163 @@ if (Test-Path $agentMapPath) {
 }
 
 # ============================================================
+# STEP 7: Fix Invoke-AgentFallback bypass — add rate limiting
+#         Disease: CLI agents in fallback path bypass rate limiter entirely
+# ============================================================
+
+$content = Get-Content $resiliencePath -Raw
+$fallbackSentinel = '# -- Rate limiter: pace fallback calls'
+
+if (-not $content.Contains($fallbackSentinel)) {
+    $fallbackSearch = '$fbOutput = $null' + "`n" + '    $fbExit = 1' + "`n" + '    $fbTokenData = $null' + "`n`n" + '    try {'
+    $fallbackSearchCrlf = '$fbOutput = $null' + "`r`n" + '    $fbExit = 1' + "`r`n" + '    $fbTokenData = $null' + "`r`n`r`n" + '    try {'
+    $fallbackReplace = @'
+$fbOutput = $null
+    $fbExit = 1
+    $fbTokenData = $null
+
+    # -- Rate limiter: pace fallback calls (prevents bypass → 429 cascade) --
+    try { Wait-ForRateWindow -AgentName $FallbackAgent } catch { }
+
+    try {
+'@
+    $matchFb = if ($content.Contains($fallbackSearchCrlf)) { $fallbackSearchCrlf } elseif ($content.Contains($fallbackSearch)) { $fallbackSearch } else { $null }
+    if ($matchFb) {
+        # Find the occurrence inside the enhanced Invoke-AgentFallback (after line 1500)
+        $fbFuncIdx = $content.IndexOf("function Invoke-AgentFallback", 1400)
+        if ($fbFuncIdx -gt 0) {
+            $fbTargetIdx = $content.IndexOf($matchFb, $fbFuncIdx)
+            if ($fbTargetIdx -gt 0) {
+                $before = $content.Substring(0, $fbTargetIdx)
+                $after = $content.Substring($fbTargetIdx + $matchFb.Length)
+                $content = $before + $fallbackReplace + $after
+                Set-Content -Path $resiliencePath -Value $content -Encoding UTF8 -NoNewline
+                $changeCount++
+                Write-Host "   [OK] Rate limiter injected into Invoke-AgentFallback (pre-call)" -ForegroundColor DarkGreen
+            }
+        }
+    } else {
+        Write-Host "   [!!] Could not find Invoke-AgentFallback injection point" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "   [--] Invoke-AgentFallback rate limiter already present" -ForegroundColor DarkGray
+}
+
+# Also add Register-AgentCall after fallback completes
+$content = Get-Content $resiliencePath -Raw
+$fbRegSentinel = '# -- Register call for rate tracking (prevents bypass'
+
+if (-not $content.Contains($fbRegSentinel)) {
+    $fbRegSearch = 'if ($LogFile -and $fbOutput) {' + "`n" + '            $fbOutput | Out-File -FilePath $LogFile -Encoding UTF8 -Append' + "`n" + '        }' + "`n" + '    } catch {'
+    $fbRegSearchCrlf = 'if ($LogFile -and $fbOutput) {' + "`r`n" + '            $fbOutput | Out-File -FilePath $LogFile -Encoding UTF8 -Append' + "`r`n" + '        }' + "`r`n" + '    } catch {'
+    $fbRegReplace = @'
+if ($LogFile -and $fbOutput) {
+            $fbOutput | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        }
+
+        # -- Register call for rate tracking (prevents bypass → 429 cascade) --
+        try { Register-AgentCall -AgentName $FallbackAgent } catch { }
+    } catch {
+'@
+    $matchFbReg = if ($content.Contains($fbRegSearchCrlf)) { $fbRegSearchCrlf } elseif ($content.Contains($fbRegSearch)) { $fbRegSearch } else { $null }
+    if ($matchFbReg) {
+        $fbFuncIdx2 = $content.IndexOf("function Invoke-AgentFallback", 1400)
+        if ($fbFuncIdx2 -gt 0) {
+            $fbRegIdx = $content.IndexOf($matchFbReg, $fbFuncIdx2)
+            if ($fbRegIdx -gt 0) {
+                $before = $content.Substring(0, $fbRegIdx)
+                $after = $content.Substring($fbRegIdx + $matchFbReg.Length)
+                $content = $before + $fbRegReplace + $after
+                Set-Content -Path $resiliencePath -Value $content -Encoding UTF8 -NoNewline
+                $changeCount++
+                Write-Host "   [OK] Register-AgentCall injected into Invoke-AgentFallback (post-call)" -ForegroundColor DarkGreen
+            }
+        }
+    }
+} else {
+    Write-Host "   [--] Invoke-AgentFallback Register-AgentCall already present" -ForegroundColor DarkGray
+}
+
+# ============================================================
+# STEP 8: Fix double registration for REST agents
+#         Disease: Both Invoke-WithRetry AND Invoke-OpenAICompatibleAgent
+#         register the same call → tracker shows 2x actual → corrupts RPM
+# ============================================================
+
+$content = Get-Content $resiliencePath -Raw
+$doubleRegSentinel = '# Skip for REST agents'
+
+if (-not $content.Contains($doubleRegSentinel)) {
+    $doubleRegSearch = @'
+            # -- REGISTER CALL FOR RATE TRACKING (patch-gsd-rate-limiter.ps1) --
+            if (Get-Command Register-AgentCall -ErrorAction SilentlyContinue) {
+                Register-AgentCall -AgentName $Agent
+            }
+'@
+    $doubleRegReplace = @'
+            # -- REGISTER CALL FOR RATE TRACKING (patch-gsd-rate-limiter.ps1) --
+            # Skip for REST agents — Invoke-OpenAICompatibleAgent already registers (avoids double-count)
+            if ((Get-Command Register-AgentCall -ErrorAction SilentlyContinue) -and
+                -not (Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue -and (Test-IsOpenAICompatAgent -AgentName $Agent))) {
+                Register-AgentCall -AgentName $Agent
+            }
+'@
+    if ($content.Contains($doubleRegSearch)) {
+        $content = $content.Replace($doubleRegSearch, $doubleRegReplace)
+        Set-Content -Path $resiliencePath -Value $content -Encoding UTF8 -NoNewline
+        $changeCount++
+        Write-Host "   [OK] Fixed double registration for REST agents in Invoke-WithRetry" -ForegroundColor DarkGreen
+    }
+} else {
+    Write-Host "   [--] Double registration fix already applied" -ForegroundColor DarkGray
+}
+
+# ============================================================
+# STEP 9: Add rate limiting to build auto-fix codex calls
+#         Disease: dotnet/npm auto-fix calls codex without rate check
+# ============================================================
+
+$content = Get-Content $resiliencePath -Raw
+$autoFixSentinel = 'Wait-ForRateWindow -AgentName "codex"'
+
+if (-not $content.Contains($autoFixSentinel)) {
+    # Dotnet auto-fix
+    $dotnetFixSearch = 'Write-Host "    [SYNC] Auto-fix: sending build errors to Codex..." -ForegroundColor DarkYellow' + "`n" + '                    $fixAttempted = $true'
+    $dotnetFixSearchCrlf = 'Write-Host "    [SYNC] Auto-fix: sending build errors to Codex..." -ForegroundColor DarkYellow' + "`r`n" + '                    $fixAttempted = $true'
+    $dotnetFixReplace = @'
+Write-Host "    [SYNC] Auto-fix: sending build errors to Codex..." -ForegroundColor DarkYellow
+                    $fixAttempted = $true
+                    try { Wait-ForRateWindow -AgentName "codex" } catch { }
+'@
+    $matchDotnet = if ($content.Contains($dotnetFixSearchCrlf)) { $dotnetFixSearchCrlf } elseif ($content.Contains($dotnetFixSearch)) { $dotnetFixSearch } else { $null }
+    if ($matchDotnet) {
+        $content = $content.Replace($matchDotnet, $dotnetFixReplace)
+        Set-Content -Path $resiliencePath -Value $content -Encoding UTF8 -NoNewline
+        $changeCount++
+        Write-Host "   [OK] Rate limiter added to dotnet auto-fix codex call" -ForegroundColor DarkGreen
+    }
+
+    # Npm auto-fix
+    $content = Get-Content $resiliencePath -Raw
+    $npmFixSearch = 'Write-Host "    [SYNC] Auto-fix: sending npm errors to Codex..." -ForegroundColor DarkYellow' + "`n" + '                        $fixAttempted = $true'
+    $npmFixSearchCrlf = 'Write-Host "    [SYNC] Auto-fix: sending npm errors to Codex..." -ForegroundColor DarkYellow' + "`r`n" + '                        $fixAttempted = $true'
+    $npmFixReplace = @'
+Write-Host "    [SYNC] Auto-fix: sending npm errors to Codex..." -ForegroundColor DarkYellow
+                        $fixAttempted = $true
+                        try { Wait-ForRateWindow -AgentName "codex" } catch { }
+'@
+    $matchNpm = if ($content.Contains($npmFixSearchCrlf)) { $npmFixSearchCrlf } elseif ($content.Contains($npmFixSearch)) { $npmFixSearch } else { $null }
+    if ($matchNpm) {
+        $content = $content.Replace($matchNpm, $npmFixReplace)
+        Set-Content -Path $resiliencePath -Value $content -Encoding UTF8 -NoNewline
+        $changeCount++
+        Write-Host "   [OK] Rate limiter added to npm auto-fix codex call" -ForegroundColor DarkGreen
+    }
+} else {
+    Write-Host "   [--] Auto-fix rate limiter already present" -ForegroundColor DarkGray
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 
