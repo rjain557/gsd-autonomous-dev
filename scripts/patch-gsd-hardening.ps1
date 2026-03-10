@@ -213,9 +213,18 @@ function Wait-ForQuotaReset {
     )
 
     if ($QuotaType -eq "rate_limit") {
-        $waitMinutes = 2
-        Write-Host "    Rate limited on $Agent. Waiting $waitMinutes minutes..." -ForegroundColor Yellow
-        Start-Sleep -Seconds ($waitMinutes * 60)
+        # Use rate limiter's sliding window to calculate exact wait (max 65s instead of flat 2min)
+        $waitSeconds = 65  # default: 60s window + 5s buffer
+        try {
+            if (Get-Command Wait-ForRateWindow -ErrorAction SilentlyContinue) {
+                $rlWait = Wait-ForRateWindow -AgentName $Agent -GsdDir $GsdDir
+                if ($rlWait -gt 0) { $waitSeconds = 0 }  # rate limiter already slept
+            }
+        } catch { }
+        if ($waitSeconds -gt 0) {
+            Write-Host "    Rate limited on $Agent. Waiting ${waitSeconds}s (RPM window reset)..." -ForegroundColor Yellow
+            Start-Sleep -Seconds $waitSeconds
+        }
         return $true
     }
 
