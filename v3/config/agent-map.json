@@ -1,0 +1,198 @@
+{
+    "version": "3.0.0",
+    "strategy": "two-model-api-optimized",
+    "description": "Sonnet reasons. Codex Mini generates code. Prompt caching + Batch API + model routing for 85%+ cost reduction.",
+    "phases": {
+        "cache-warm": {
+            "agent": "sonnet",
+            "mode": "realtime",
+            "purpose": "Populate prompt cache before first iteration",
+            "estimated_input_tokens": 15000,
+            "estimated_output_tokens": 10,
+            "cache_action": "write",
+            "frequency": "once"
+        },
+        "spec-gate": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Validate spec quality, detect contradictions/ambiguities",
+            "estimated_input_tokens": 50000,
+            "estimated_output_tokens": 3000,
+            "cache_action": "read",
+            "frequency": "once",
+            "gate_rules": {
+                "block_if_critical_conflicts": true,
+                "block_if_clarity_below": 70,
+                "warn_if_clarity_below": 85
+            },
+            "output_schema": "gsd-v3/spec-gate-output",
+            "prompt": "sonnet/01-spec-gate.md"
+        },
+        "research": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Analyze patterns, discover dependencies, identify tech decisions",
+            "estimated_input_tokens": 25000,
+            "estimated_output_tokens": 6000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 10000,
+            "frequency": "per-iteration",
+            "output_schema": "gsd-v3/research-output",
+            "prompt": "sonnet/02-research.md"
+        },
+        "plan": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Create detailed generation plans with confidence scores",
+            "estimated_input_tokens": 23000,
+            "estimated_output_tokens": 4000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 8000,
+            "frequency": "per-iteration",
+            "output_schema": "gsd-v3/plan-output",
+            "prompt": "sonnet/03-plan.md",
+            "confidence_scoring": {
+                "enabled": true,
+                "criteria": {
+                    "complexity_small": 0.3,
+                    "complexity_medium": 0.1,
+                    "complexity_large": -0.1,
+                    "category_trivial": 0.3,
+                    "zero_dependencies": 0.2,
+                    "few_dependencies": 0.1,
+                    "many_dependencies": -0.1,
+                    "no_prior_rework": 0.1,
+                    "has_prior_rework": -0.2
+                },
+                "trivial_categories": ["crud", "config", "dto", "seed_data", "utility", "sql_view"]
+            }
+        },
+        "execute-skeleton": {
+            "agent": "codex-mini",
+            "mode": "realtime",
+            "purpose": "Generate type signatures, interfaces, function stubs",
+            "estimated_input_tokens": 20000,
+            "estimated_output_tokens": 15750,
+            "frequency": "per-iteration",
+            "parallel": {
+                "enabled": true,
+                "max_concurrent": 15,
+                "per_item_input_tokens": 1333,
+                "per_item_output_tokens": 1050
+            },
+            "prompt": "codex-mini/04a-execute-skeleton.md"
+        },
+        "execute-fill": {
+            "agent": "codex-mini",
+            "mode": "realtime",
+            "purpose": "Fill implementations from skeleton + plan",
+            "estimated_input_tokens": 42500,
+            "estimated_output_tokens": 52500,
+            "frequency": "per-iteration",
+            "parallel": {
+                "enabled": true,
+                "max_concurrent": 15,
+                "per_item_input_tokens": 2833,
+                "per_item_output_tokens": 3500
+            },
+            "prompt": "codex-mini/04b-execute-fill.md"
+        },
+        "local-validate": {
+            "agent": "none",
+            "mode": "local",
+            "purpose": "Lint + typecheck + test (free quality gate)",
+            "estimated_input_tokens": 0,
+            "estimated_output_tokens": 0,
+            "frequency": "per-item",
+            "validators": [
+                { "type": "file_exists", "description": "Check all planned files were created" },
+                { "type": "dotnet_build", "command": "dotnet build --no-restore", "description": "C# compilation check" },
+                { "type": "typescript_check", "command": "npx tsc --noEmit", "description": "TypeScript type check" },
+                { "type": "sql_syntax", "command": "sqlcmd -i {file} -b", "description": "SQL syntax validation" },
+                { "type": "pattern_match", "description": "Acceptance criteria from plan" },
+                { "type": "dotnet_test", "command": "dotnet test --filter Category={req_id}", "description": "Unit tests" },
+                { "type": "npm_test", "command": "npm test -- --testPathPattern={test_pattern}", "description": "Frontend tests" }
+            ],
+            "output_classification": {
+                "pass": "Skip Review, proceed to Verify",
+                "fail": "Send to Review with error context"
+            }
+        },
+        "review": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Analyze failed items, provide targeted fix instructions",
+            "estimated_input_tokens": 27000,
+            "estimated_output_tokens": 3000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 12000,
+            "frequency": "conditional-per-iteration",
+            "condition": "Only items that FAIL local-validate or have plan confidence < 0.9",
+            "expected_skip_rate": 0.6,
+            "diff_based": true,
+            "output_schema": "gsd-v3/review-output",
+            "prompt": "sonnet/06-review.md"
+        },
+        "verify": {
+            "agent": "sonnet",
+            "mode": "realtime",
+            "purpose": "Health scoring, requirement tracking, drift detection, iteration gating",
+            "estimated_input_tokens": 45000,
+            "estimated_output_tokens": 2500,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 30000,
+            "frequency": "per-iteration",
+            "gates_next_iteration": true,
+            "output_schema": "gsd-v3/verify-output",
+            "prompt": "sonnet/07-verify.md"
+        },
+        "spec-fix": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Resolve spec conflicts discovered during execution",
+            "estimated_input_tokens": 27000,
+            "estimated_output_tokens": 4000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 12000,
+            "frequency": "occasional",
+            "expected_frequency_pct": 22,
+            "cache_invalidation": true,
+            "output_schema": "gsd-v3/spec-fix-output",
+            "prompt": "sonnet/08-spec-fix.md"
+        }
+    },
+    "phase_order": [
+        "cache-warm",
+        "spec-gate",
+        "research",
+        "plan",
+        "execute-skeleton",
+        "execute-fill",
+        "local-validate",
+        "review",
+        "verify",
+        "spec-fix"
+    ],
+    "iteration_phases": [
+        "research",
+        "plan",
+        "execute-skeleton",
+        "execute-fill",
+        "local-validate",
+        "review",
+        "verify"
+    ],
+    "token_budget_summary": {
+        "sonnet_per_iteration": "~120K input (75K cached) + ~15.5K output",
+        "codex_mini_per_iteration": "~62.5K input + ~68.25K output",
+        "sonnet_per_project_estimate": "~2.2M input + ~350K output",
+        "codex_mini_per_project_estimate": "~1.4M input + ~1.6M output",
+        "total_per_project_estimate": "~5.55M tokens",
+        "cost_per_project_estimate": "$7.30"
+    }
+}

@@ -1,0 +1,284 @@
+{
+    "version": "3.0.0",
+    "max_iterations": 25,
+    "stall_threshold": 3,
+    "target_health": 100,
+    "batch_size_min": 3,
+    "batch_size_max": 15,
+    "project_gsd_dir": ".gsd",
+
+    "phase_order": [
+        "cache-warm",
+        "spec-gate",
+        "research",
+        "plan",
+        "execute-skeleton",
+        "execute-fill",
+        "local-validate",
+        "review",
+        "verify",
+        "spec-fix"
+    ],
+
+    "sdlc_docs": {
+        "path": "docs",
+        "phases": ["Phase-A", "Phase-B", "Phase-C", "Phase-D", "Phase-E"]
+    },
+
+    "figma": {
+        "auto_detect_latest": true,
+        "version_pattern": "^v(\\d+)$",
+        "base_path": "design\\figma"
+    },
+
+    "patterns": {
+        "backend": ".NET 8 with Dapper",
+        "database": "SQL Server stored procedures only",
+        "frontend": "React 18",
+        "api": "Contract-first, API-first",
+        "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"]
+    },
+
+    "prompt_caching": {
+        "enabled": true,
+        "ttl": "5-minute",
+        "cache_blocks": [
+            { "name": "system_prompt", "source": "v3/prompts/shared/system-prompt.md", "estimated_tokens": 2000 },
+            { "name": "spec_documents", "source": "dynamic", "estimated_tokens": 8000 },
+            { "name": "blueprint_manifest", "source": "dynamic", "estimated_tokens": 5000 }
+        ],
+        "total_prefix_tokens": 15000,
+        "invalidation_tracking": true,
+        "version_counter_file": ".gsd/cache/cache-version.json"
+    },
+
+    "batch_api": {
+        "enabled": true,
+        "eligible_phases": ["spec-gate", "research", "plan", "review", "spec-fix"],
+        "poll_interval_seconds": 30,
+        "max_wait_minutes": 60,
+        "combine_with_caching": true,
+        "notes": "50% discount on all batch-eligible phases. Combined with caching for up to 95% input savings."
+    },
+
+    "local_validation": {
+        "enabled": true,
+        "validators": {
+            "file_exists": { "enabled": true },
+            "dotnet_build": { "enabled": true, "command": "dotnet build --no-restore", "timeout_seconds": 60 },
+            "typescript_check": { "enabled": true, "command": "npx tsc --noEmit", "timeout_seconds": 30 },
+            "sql_syntax": { "enabled": true, "command": "sqlcmd -i {file} -b", "timeout_seconds": 10 },
+            "pattern_match": { "enabled": true },
+            "dotnet_test": { "enabled": true, "command": "dotnet test --filter Category={req_id}", "timeout_seconds": 60 },
+            "npm_test": { "enabled": true, "command": "npm test -- --testPathPattern={test_pattern}", "timeout_seconds": 30 }
+        },
+        "pass_action": "skip-review",
+        "fail_action": "send-to-review-with-context"
+    },
+
+    "confidence_gated_review": {
+        "enabled": true,
+        "skip_threshold": 0.9,
+        "always_review_threshold": 0.7,
+        "trivial_categories": ["crud", "config", "dto", "seed_data", "utility", "sql_view"],
+        "notes": "Items with plan confidence >= 0.9 AND local validation PASS skip Review entirely."
+    },
+
+    "speculative_execution": {
+        "enabled": true,
+        "max_lookahead": 1,
+        "enable_condition": "health_delta > 0",
+        "disable_on_stall": true,
+        "waste_budget_per_iteration": 0.02,
+        "notes": "Start next iteration's Research+Plan while current Review is in-flight. 15% waste risk for 40% speed gain."
+    },
+
+    "diff_based_review": {
+        "enabled": true,
+        "max_diff_tokens": 12000,
+        "include_error_context": true,
+        "include_acceptance_criteria": true,
+        "notes": "Send diffs + error output to Review instead of full files. ~75% token reduction, better review accuracy."
+    },
+
+    "two_stage_execute": {
+        "enabled": true,
+        "skeleton_output_ratio": 0.30,
+        "fill_output_ratio": 0.70,
+        "validate_skeleton": true,
+        "notes": "Pass 1: types/interfaces/stubs. Pass 2: implementations. Catches structural errors between passes."
+    },
+
+    "structured_output": {
+        "enabled": true,
+        "enforce_json_mode": true,
+        "schema_validation": true,
+        "retry_on_schema_failure": true,
+        "max_schema_retries": 1,
+        "notes": "All Sonnet calls use response_format: json_object. Eliminates parsing failures."
+    },
+
+    "quality_gates": {
+        "database_completeness": {
+            "enabled": true,
+            "min_coverage_pct": 90,
+            "require_seed_data": true
+        },
+        "security_compliance": {
+            "enabled": true,
+            "block_on_critical": true,
+            "warn_on_high": true
+        },
+        "spec_quality": {
+            "enabled": true,
+            "min_clarity_score": 70,
+            "check_cross_artifact": true
+        }
+    },
+
+    "api_contract_validation": {
+        "enabled": true,
+        "block_on_missing": true,
+        "warn_on_undocumented": true,
+        "scan_patterns": ["*Controller*.cs", "*controller*.ts", "*routes*.ts"]
+    },
+
+    "visual_validation": {
+        "enabled": true,
+        "max_diff_pct": 15,
+        "screenshot_dir": "design/screenshots",
+        "viewport_width": 1280,
+        "viewport_height": 720,
+        "block_on_high_diff": false,
+        "playwright_timeout_ms": 30000
+    },
+
+    "design_token_enforcement": {
+        "enabled": true,
+        "block_on_violation": false,
+        "scan_extensions": [".css", ".scss", ".tsx", ".jsx", ".ts"],
+        "ignore_files": ["*.min.css", "*.bundle.*", "node_modules/*"],
+        "allowed_raw_colors": ["#000000", "#ffffff", "#000", "#fff", "transparent", "inherit", "currentColor"]
+    },
+
+    "compliance_engine": {
+        "per_iteration_audit": { "enabled": true, "block_on_critical": true },
+        "db_migration": {
+            "enabled": true,
+            "check_foreign_keys": true,
+            "check_index_coverage": true,
+            "check_seed_integrity": true
+        },
+        "pii_tracking": {
+            "enabled": true,
+            "pii_fields": [
+                "email", "ssn", "social_security", "date_of_birth", "dob",
+                "phone", "address", "name", "first_name", "last_name",
+                "credit_card", "card_number", "cvv", "password", "secret", "token"
+            ],
+            "check_logging": true,
+            "check_encryption": true,
+            "check_ui_masking": true
+        }
+    },
+
+    "acceptance_tests": {
+        "enabled": true,
+        "block_on_failure": true,
+        "block_types": ["file_exists", "pattern_match", "build_check"],
+        "test_types": ["file_exists", "pattern_match", "build_check", "dotnet_test", "npm_test"],
+        "max_test_time_seconds": 60
+    },
+
+    "runtime_smoke_test": {
+        "enabled": true,
+        "startup_timeout_seconds": 30,
+        "request_timeout_seconds": 10,
+        "max_endpoints_to_test": 50,
+        "health_endpoint": "/api/health",
+        "fail_on_any_500": true,
+        "kill_after_test": true,
+        "dotnet_launch_profile": "",
+        "port_override": 0,
+        "seed_fk_check_enabled": true
+    },
+
+    "loc_tracking": {
+        "enabled": true,
+        "include_extensions": [
+            ".cs", ".ts", ".tsx", ".js", ".jsx", ".css", ".scss",
+            ".html", ".sql", ".json", ".md", ".ps1", ".py", ".yaml", ".yml"
+        ],
+        "exclude_paths": [
+            ".gsd/", "node_modules/", "bin/", "obj/", "dist/",
+            "build/", ".vs/", ".idea/", "*.min.*", "*.bundle.*",
+            "package-lock.json", "yarn.lock"
+        ],
+        "track_per_file": true,
+        "cost_per_line": true
+    },
+
+    "notifications": {
+        "notify_on": [
+            "iteration_complete",
+            "converged",
+            "stalled",
+            "budget_threshold",
+            "error",
+            "cache_invalidated",
+            "opus_escalation",
+            "batch_completed",
+            "speculative_waste"
+        ],
+        "ntfy_topic": "auto",
+        "budget_alert_threshold_pct": 80
+    },
+
+    "escape_hatches": {
+        "opus_escalation": {
+            "enabled": true,
+            "trigger": "item fails verify 3+ times",
+            "phases_affected": ["plan", "review"],
+            "max_escalations_per_project": 10
+        },
+        "codex_full_escalation": {
+            "enabled": true,
+            "trigger": "codex-mini output incomplete (>10K expected, <3K generated)",
+            "phases_affected": ["execute-fill"],
+            "max_escalations_per_project": 5
+        },
+        "budget_cap": {
+            "enabled": true,
+            "max_usd": 50.00,
+            "action_at_cap": "halt",
+            "warn_at_pct": 80
+        }
+    },
+
+    "cost_tracking": {
+        "enabled": true,
+        "track_per_phase": true,
+        "track_per_model": true,
+        "track_per_requirement": true,
+        "track_cache_hits": true,
+        "track_batch_savings": true,
+        "summary_file": ".gsd/costs/cost-summary.json",
+        "loc_baseline_file": ".gsd/costs/loc-baseline.json"
+    },
+
+    "checkpoint_recovery": {
+        "enabled": true,
+        "checkpoint_file": ".gsd/.gsd-checkpoint.json",
+        "save_after_each_phase": true,
+        "include_cache_state": true
+    },
+
+    "removed_v2_features": {
+        "council_requirements": { "enabled": false, "reason": "Replaced by 2-model deterministic routing" },
+        "partitioned_code_review": { "enabled": false, "reason": "Replaced by diff-based single-model review" },
+        "parallel_research": { "enabled": false, "reason": "Single Sonnet model with batch API" },
+        "complexity_routing": { "enabled": false, "reason": "All reasoning → Sonnet, all code → Codex Mini" },
+        "review_chunked": { "enabled": false, "reason": "Batch API handles throughput" },
+        "differential_review": { "enabled": false, "reason": "Superseded by diff_based_review" }
+    }
+}
