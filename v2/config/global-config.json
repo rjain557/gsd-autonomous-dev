@@ -1,0 +1,100 @@
+{
+    "version": "2.0.0",
+    "pipeline": "requirements-first",
+
+    "steps": [
+        "01-spec-quality-gate",
+        "02-requirements-derivation",
+        "03-requirements-reconciliation",
+        "04-dependency-graph",
+        "05-token-forecaster",
+        "06-requirement-decomposer",
+        "07a-research",
+        "07b-plan",
+        "08-iteration-planner",
+        "09-execute-loop",
+        "10-final-validation"
+    ],
+
+    "limits": {
+        "max_iterations": 50,
+        "max_fix_attempts_per_iteration": 3,
+        "max_final_validation_attempts": 3,
+        "watchdog_timeout_minutes": 30,
+        "requirement_timeout_minutes": 45
+    },
+
+    "token_forecasting": {
+        "oversize_threshold_multiplier": 0.8,
+        "feedback_recalibration_threshold": 1.5,
+        "model_limits": {
+            "research": { "max_input_tokens": 128000, "max_output_tokens": 8192, "description": "Tier 2 minimum (Kimi 128K)" },
+            "plan":     { "max_input_tokens": 200000, "max_output_tokens": 64000, "description": "Tier 1 Claude/Codex" },
+            "execute":  { "max_input_tokens": 200000, "max_output_tokens": 64000, "description": "Codex + Tier 2" }
+        }
+    },
+
+    "quality_gates": {
+        "spec_quality": {
+            "enabled": true,
+            "min_clarity_score": 70,
+            "block_on_critical_conflicts": true
+        },
+        "build_validation": {
+            "dotnet_build": true,
+            "npm_build": true,
+            "dotnet_test": true,
+            "npm_test": true
+        },
+        "security_compliance": {
+            "enabled": true,
+            "block_on_critical": true,
+            "warn_on_high": true
+        },
+        "database_completeness": {
+            "enabled": true,
+            "require_seed_data": true,
+            "min_coverage_pct": 90
+        },
+        "final_validation": {
+            "sql_validation": true,
+            "vulnerability_audit": true,
+            "seed_data_fk_order": true,
+            "runtime_smoke_test": true
+        }
+    },
+
+    "notifications": {
+        "ntfy_topic": "auto",
+        "heartbeat_interval_minutes": 10,
+        "notify_on": [
+            "step_complete",
+            "iteration_complete",
+            "converged",
+            "fix_loop",
+            "quota_exhausted",
+            "error",
+            "escalation"
+        ]
+    },
+
+    "sdlc_docs": {
+        "path": "docs",
+        "phases": ["Phase-A", "Phase-B", "Phase-C", "Phase-D", "Phase-E"]
+    },
+
+    "figma": {
+        "auto_detect_latest": true,
+        "version_pattern": "^v(\\d+)$"
+    },
+
+    "patterns": {
+        "backend": ".NET 8 with Dapper",
+        "database": "SQL Server stored procedures only",
+        "frontend": "React 18",
+        "api": "Contract-first, API-first",
+        "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"]
+    },
+
+    "project_gsd_dir": ".gsd"
+}
