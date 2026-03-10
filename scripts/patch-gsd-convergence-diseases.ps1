@@ -17,6 +17,8 @@
     14. Decompose try/catch: already applied
     15. All Invoke-LlmCouncil/BuildValidation/CouncilRequirements wrapped
     16. Quota rotation phase-aware: CLI-only for execute/plan/spec (prevents kimi crashes)
+    17. Gemini removed from execute pool (spec-fix only, can't write source files)
+    18. Subtask timeout reduced 30→15 min (prevents codex hanging in quota loop)
 
 .NOTES
     Install chain position: #43
@@ -38,12 +40,13 @@ if (Test-Path $agentMapPath) {
     $pool = $amContent.execute_parallel.agent_pool
     $restAgents = @("deepseek", "kimi", "minimax", "glm5")
     $hasRest = $pool | Where-Object { $_ -in $restAgents }
-    if ($hasRest) {
-        $amContent.execute_parallel.agent_pool = @("codex", "gemini", "claude")
+    if ($hasRest -or ($pool -contains "gemini")) {
+        $amContent.execute_parallel.agent_pool = @("codex", "claude")
         $amContent | ConvertTo-Json -Depth 10 | Set-Content $agentMapPath -Encoding UTF8
-        Write-Host "  [OK] Execute pool: CLI-only (codex, gemini, claude)" -ForegroundColor Green
+        $amContent.execute_parallel.subtask_timeout_minutes = 15
+        Write-Host "  [OK] Execute pool: codex+claude only, timeout 15min" -ForegroundColor Green
     } else {
-        Write-Host "  [SKIP] Execute pool already CLI-only" -ForegroundColor DarkGray
+        Write-Host "  [SKIP] Execute pool already correct" -ForegroundColor DarkGray
     }
 }
 
