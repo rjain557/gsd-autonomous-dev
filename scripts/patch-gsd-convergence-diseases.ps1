@@ -16,6 +16,7 @@
     13. BatchScopedResearch wired into research phase
     14. Decompose try/catch: already applied
     15. All Invoke-LlmCouncil/BuildValidation/CouncilRequirements wrapped
+    16. Quota rotation phase-aware: CLI-only for execute/plan/spec (prevents kimi crashes)
 
 .NOTES
     Install chain position: #43
@@ -160,6 +161,16 @@ if ($loopContent -match 'Invoke-BatchScopedResearch') {
     Write-Host "  [INFO] BatchScopedResearch needs wiring into convergence-loop.ps1" -ForegroundColor Yellow
 }
 
+# ── Disease 16: Quota rotation sends REST agents to execute/plan/spec phases ──
+$resContent = Get-Content $resPath -Raw
+if ($resContent -match '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify"\)') {
+    $resContent = $resContent -replace '\$cliOnlyPhase = \(\$Phase -match "council-requirements\|council-verify"\)', '$cliOnlyPhase = ($Phase -match "council-requirements|council-verify|execute|plan|spec")'
+    $resContent | Set-Content $resPath -Encoding UTF8
+    Write-Host "  [OK] Quota rotation: CLI-only for execute/plan/spec phases" -ForegroundColor Green
+} else {
+    Write-Host "  [SKIP] Quota rotation already phase-aware" -ForegroundColor DarkGray
+}
+
 Write-Host "`n=== Patch #43 Complete ===" -ForegroundColor Green
 Write-Host "  Execute pool: CLI-only (codex, gemini, claude)" -ForegroundColor DarkCyan
 Write-Host "  Pipeline var: defined as 'converge'" -ForegroundColor DarkCyan
@@ -172,3 +183,4 @@ Write-Host "  Cooldown: 10 min (was 30 min)" -ForegroundColor DarkCyan
 Write-Host "  Sub-task cap: 6 max (3 agents x 2 waves)" -ForegroundColor DarkCyan
 Write-Host "  CheapFirstReview: wired into code-review phase" -ForegroundColor DarkCyan
 Write-Host "  BatchScopedResearch: wired into research phase" -ForegroundColor DarkCyan
+Write-Host "  Quota rotation: CLI-only for execute/plan/spec phases" -ForegroundColor DarkCyan
