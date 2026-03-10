@@ -327,7 +327,47 @@ if (Test-Path $configPath) {
     }
 }
 
+# ── STEP 6: Add req-assess phase before code-review in convergence-loop ──
+$clContent = Get-Content $convergenceLoopPath -Raw
+
+if ($clContent -match 'REQUIREMENT ASSESSMENT') {
+    Write-Host "  [SKIP] Req-assess phase already exists" -ForegroundColor DarkGray
+} else {
+    $oldCodeReviewStart = '    # 1. CODE REVIEW (Claude)'
+    $newReqAssess = @'
+    # 1. REQUIREMENT ASSESSMENT (lightweight, no LLM — scan matrix for batch candidates)
+    Send-HeartbeatIfDue -Phase "req-assess" -Iteration $Iteration -Health $Health -RepoName $repoName
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "req-assess" -Agent "" -Iteration $Iteration -HealthScore $Health
+    }
+    $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
+    if (Test-Path $matrixPath) {
+        try {
+            $assessMatrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $pendingReqs = @($assessMatrix.requirements | Where-Object { $_.status -eq 'not_started' -and -not $_.decomposed })
+            $partialReqs = @($assessMatrix.requirements | Where-Object { $_.status -eq 'partial' -and -not $_.decomposed })
+            $satisfiedReqs = @($assessMatrix.requirements | Where-Object { $_.status -eq 'satisfied' })
+            Write-Host "  [ASSESS] Satisfied: $($satisfiedReqs.Count) | Partial: $($partialReqs.Count) | Pending: $($pendingReqs.Count)" -ForegroundColor Cyan
+        } catch {
+            Write-Host "  [ASSESS] Could not read matrix: $_" -ForegroundColor Yellow
+        }
+    }
+
+    # 2. CODE REVIEW (focused: verifies previous iteration's generated code only)
+    # Differential review: only reviews changed files, not full codebase scan
+    # Full code review + spec/Figma verification deferred to final validation gate at 100%
+'@
+    if ($clContent -match [regex]::Escape($oldCodeReviewStart)) {
+        $clContent = $clContent.Replace($oldCodeReviewStart, $newReqAssess)
+        $clContent | Set-Content $convergenceLoopPath -Encoding UTF8
+        Write-Host "  [OK] Added req-assess phase + relabeled code-review as focused" -ForegroundColor Green
+    } else {
+        Write-Host "  [WARN] Could not find code-review marker in convergence-loop.ps1" -ForegroundColor Yellow
+    }
+}
+
 Write-Host "`n=== Patch #41 Complete ===" -ForegroundColor Green
+Write-Host "  Flow: req-assess -> focused-review -> decompose -> wave-research -> plan -> execute" -ForegroundColor DarkCyan
 Write-Host "  Wave research: picks 4-6 target reqs, dispatches in waves of 2" -ForegroundColor DarkCyan
 Write-Host "  Decompose: runs on ANY iteration, scans all partials if no queue" -ForegroundColor DarkCyan
-Write-Host "  Prompt: prompts/shared/research-targeted.md (8K max output)" -ForegroundColor DarkCyan
+Write-Host "  Full code review: deferred to final validation gate at 100% convergence" -ForegroundColor DarkCyan
