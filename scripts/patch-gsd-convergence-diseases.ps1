@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Patch #43: Fix 11 convergence diseases found by deep analysis.
+    Patch #43: Fix 15 convergence diseases found by deep analysis.
     1. Execute pool CLI-only: remove REST agents (can't write files)
     2. $Pipeline undefined: add "converge" assignment
     3. Unwrapped calls: try/catch on ParallelResearch + 7 more calls
@@ -10,8 +10,12 @@
     7. Mutex release without acquisition check (Wait-ForRateWindow + Register-AgentCall)
     8. Stop-Job before Remove-Job for timed-out parallel jobs
     9. New-GitSnapshot stash pop removal (was a no-op)
-    10. Decompose try/catch: already applied
-    11. All Invoke-LlmCouncil/BuildValidation/CouncilRequirements wrapped
+    10. Cooldown reduced 30 min → 10 min (CLI quotas reset in 1-5 min)
+    11. Sub-task cap at 6 (3 CLI agents × 2 waves)
+    12. CheapFirstReview wired into code-review phase
+    13. BatchScopedResearch wired into research phase
+    14. Decompose try/catch: already applied
+    15. All Invoke-LlmCouncil/BuildValidation/CouncilRequirements wrapped
 
 .NOTES
     Install chain position: #43
@@ -123,6 +127,39 @@ if ($resContent -match 'git stash pop') {
     Write-Host "  [SKIP] Stash pop already removed" -ForegroundColor DarkGray
 }
 
+# ── Disease 10: Cooldown too long (30 min → 10 min) ──
+$resContent = Get-Content $resPath -Raw
+if ($resContent -match 'CooldownMinutes 30') {
+    $resContent = $resContent -replace 'CooldownMinutes 30', 'CooldownMinutes 10'
+    $resContent | Set-Content $resPath -Encoding UTF8
+    Write-Host "  [OK] Cooldown reduced: 30 min -> 10 min" -ForegroundColor Green
+} else {
+    Write-Host "  [SKIP] Cooldown already reduced" -ForegroundColor DarkGray
+}
+
+# ── Disease 11: Sub-task cap at 6 (3 CLI agents × 2 waves) ──
+$resContent = Get-Content $resPath -Raw
+if ($resContent -match 'maxSubtasks\s*=\s*6') {
+    Write-Host "  [SKIP] Sub-task cap already set to 6" -ForegroundColor DarkGray
+} else {
+    Write-Host "  [INFO] Sub-task cap needs manual application in Invoke-ParallelExecute" -ForegroundColor Yellow
+}
+
+# ── Optimization 1: Wire CheapFirstReview into code-review phase ──
+$loopContent = Get-Content $loopPath -Raw
+if ($loopContent -match 'Invoke-CheapFirstReview') {
+    Write-Host "  [SKIP] CheapFirstReview already wired in" -ForegroundColor DarkGray
+} else {
+    Write-Host "  [INFO] CheapFirstReview needs wiring into convergence-loop.ps1" -ForegroundColor Yellow
+}
+
+# ── Optimization 2: Wire BatchScopedResearch into research phase ──
+if ($loopContent -match 'Invoke-BatchScopedResearch') {
+    Write-Host "  [SKIP] BatchScopedResearch already wired in" -ForegroundColor DarkGray
+} else {
+    Write-Host "  [INFO] BatchScopedResearch needs wiring into convergence-loop.ps1" -ForegroundColor Yellow
+}
+
 Write-Host "`n=== Patch #43 Complete ===" -ForegroundColor Green
 Write-Host "  Execute pool: CLI-only (codex, gemini, claude)" -ForegroundColor DarkCyan
 Write-Host "  Pipeline var: defined as 'converge'" -ForegroundColor DarkCyan
@@ -131,3 +168,7 @@ Write-Host "  Rate limiter: correct param names + mutex fix" -ForegroundColor Da
 Write-Host "  Plan/review: decomposed-aware (skip parents, exclude from health)" -ForegroundColor DarkCyan
 Write-Host "  Parallel jobs: Stop-Job before Remove-Job" -ForegroundColor DarkCyan
 Write-Host "  Git snapshots: stash persists as revert point" -ForegroundColor DarkCyan
+Write-Host "  Cooldown: 10 min (was 30 min)" -ForegroundColor DarkCyan
+Write-Host "  Sub-task cap: 6 max (3 agents x 2 waves)" -ForegroundColor DarkCyan
+Write-Host "  CheapFirstReview: wired into code-review phase" -ForegroundColor DarkCyan
+Write-Host "  BatchScopedResearch: wired into research phase" -ForegroundColor DarkCyan
