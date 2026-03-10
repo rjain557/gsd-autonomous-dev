@@ -524,16 +524,17 @@ function Invoke-LlmCouncil {
 
         # Quorum check on chunks
         if ($totalChunkSuccesses -lt 1) {
-            Write-Host "  [SCALES] All chunk reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
+            # All reviewers failed - do not auto-approve; return blocking state for supervisor escalation
+            Write-Host "  [SCALES] All chunk reviews failed -- blocking (no auto-approve)" -ForegroundColor Red
             $fallbackResult = @{
-                Approved = $true
+                Approved = $false
                 Findings = @{
-                    approved   = $true
-                    confidence = 50
+                    approved   = $false
+                    confidence = 0
                     votes      = @{}
-                    concerns   = @("Council quorum not met (0/$($chunks.Count) chunks had successful reviews)")
+                    concerns   = @("Council quorum not met (0/$($chunks.Count) chunks had successful reviews). All reviewers failed.")
                     strengths  = @()
-                    reason     = "Auto-approved: no chunk reviews succeeded"
+                    reason     = "ERROR: All council reviewers failed. Pipeline blocked pending supervisor intervention."
                 }
                 Report = ""
             }
@@ -554,16 +555,25 @@ function Invoke-LlmCouncil {
             $synthesisPrompt = "You are the synthesis judge. Read all chunk review verdicts below. Produce a JSON verdict."
         }
 
-        # Append all chunk verdicts
+        # Append all chunk verdicts (with per-chunk truncation to prevent oversized prompts)
+        $maxCharsPerChunkAgent = [math]::Max(500, [int](40000 / [math]::Max(1, $allChunkVerdicts.Count * 2)))
         foreach ($cv in $allChunkVerdicts) {
             $synthesisPrompt += "`n`n## Chunk: $($cv.ChunkName) ($($cv.ReqCount) requirements)"
             foreach ($agentName in $cv.AgentResults.Keys) {
-                $synthesisPrompt += "`n### $($agentName.ToUpper())`n$($cv.AgentResults[$agentName])"
+                $agentText = $cv.AgentResults[$agentName]
+                if ($agentText.Length -gt $maxCharsPerChunkAgent) {
+                    $agentText = $agentText.Substring(0, $maxCharsPerChunkAgent) + "`n... [truncated]"
+                }
+                $synthesisPrompt += "`n### $($agentName.ToUpper())`n$agentText"
             }
+        }
+        # Hard cap: 80KB to stay within Claude prompt limits
+        if ($synthesisPrompt.Length -gt 80000) {
+            $synthesisPrompt = $synthesisPrompt.Substring(0, 80000) + "`n`n[TRUNCATED - too many chunk verdicts]"
         }
 
         $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
-            -LogFile "$logDir\council-convergence-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
+            -LogFile "$logDir\council-convergence-synthesis.log" -MaxAttempts 3 -CurrentBatchSize 1 -GsdDir $GsdDir `
             -AllowedTools "Read"
 
     } else {
@@ -611,16 +621,17 @@ function Invoke-LlmCouncil {
         # Count successful reviews
         $successCount = ($reviews.Values | Where-Object { $_.Success }).Count
         if ($successCount -lt 1) {
-            Write-Host "  [SCALES] All reviews failed -- auto-approving (no quorum)" -ForegroundColor DarkYellow
+            # All reviewers failed - do not auto-approve; return blocking state for supervisor escalation
+            Write-Host "  [SCALES] All reviews failed -- blocking (no auto-approve)" -ForegroundColor Red
             $fallbackResult = @{
-                Approved = $true
+                Approved = $false
                 Findings = @{
-                    approved   = $true
-                    confidence = 50
+                    approved   = $false
+                    confidence = 0
                     votes      = @{}
-                    concerns   = @("Council quorum not met ($successCount/2 reviewers responded)")
+                    concerns   = @("Council quorum not met ($successCount/$($agents.Count) reviewers responded). All reviewers failed.")
                     strengths  = @()
-                    reason     = "Auto-approved: insufficient council quorum"
+                    reason     = "ERROR: All council reviewers failed. Pipeline blocked pending supervisor intervention."
                 }
                 Report = ""
             }
@@ -652,9 +663,13 @@ function Invoke-LlmCouncil {
                 }
             }
         }
+        # Hard cap: 80KB to stay within Claude prompt limits
+        if ($synthesisPrompt.Length -gt 80000) {
+            $synthesisPrompt = $synthesisPrompt.Substring(0, 80000) + "`n`n[TRUNCATED - synthesis prompt too large]"
+        }
 
         $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthesisPrompt -Phase "council-synthesize" `
-            -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
+            -LogFile "$logDir\council-$CouncilType-synthesis.log" -MaxAttempts 3 -CurrentBatchSize 1 -GsdDir $GsdDir `
             -AllowedTools "Read"
     }
 
@@ -699,8 +714,12 @@ function Invoke-LlmCouncil {
             }
         }
     } else {
-        Write-Host "  [SCALES] Synthesis failed -- auto-approving" -ForegroundColor DarkYellow
-        $findings.reason = "Synthesis agent failed; auto-approved"
+        # Synthesis failure — block, do not auto-approve
+        Write-Host "  [SCALES] Synthesis failed -- blocking (no auto-approve)" -ForegroundColor Red
+        $approved = $false
+        $findings.approved = $false
+        $findings.confidence = 0
+        $findings.reason = "ERROR: Council synthesis agent failed. Pipeline blocked pending supervisor intervention."
     }
 
     # Write council-review.json
@@ -1186,7 +1205,7 @@ Review the generated blueprint manifest for spec completeness.
 
 ## Context
 - Iteration: {{ITERATION}} | Health: {{HEALTH}}%
-- Read: {{GSD_DIR}}\blueprint\blueprint.json, specs in docs\, design\figma\
+- Read: {{GSD_DIR}}\blueprint\blueprint.json, specs in docs\, design\{interface}\
 
 ## Review Focus
 1. Does every spec requirement have at least one blueprint item?

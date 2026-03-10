@@ -1,0 +1,159 @@
+﻿{
+    "version":  "2.0.0",
+    "description":  "Central registry for all LLM agents with rate limit specs. CLI agents use native CLIs; openai-compat agents use REST API.",
+    "agents":  {
+                   "claude":  {
+                                  "type":  "cli",
+                                  "cli_cmd":  "claude",
+                                  "role":  [
+                                               "review",
+                                               "plan",
+                                               "synthesize",
+                                               "execute"
+                                           ],
+                                  "rate_limits":  {
+                                      "rpm":  10,
+                                      "tpm":  80000,
+                                      "daily_requests":  1000,
+                                      "context_window":  200000,
+                                      "cooldown_minutes":  30,
+                                      "notes":  "Pro plan. Opus/Sonnet shared quota. Heavy token usage per call (~3K-5K output)."
+                                  }
+                              },
+                   "codex":  {
+                                 "type":  "cli",
+                                 "cli_cmd":  "codex",
+                                 "role":  [
+                                              "execute",
+                                              "review"
+                                          ],
+                                 "rate_limits":  {
+                                     "rpm":  10,
+                                     "tpm":  100000,
+                                     "daily_requests":  1000,
+                                     "context_window":  200000,
+                                     "cooldown_minutes":  30,
+                                     "notes":  "Pro plan. Full-auto mode for execute. Shares OpenAI quota pool."
+                                 }
+                             },
+                   "gemini":  {
+                                  "type":  "cli",
+                                  "cli_cmd":  "gemini",
+                                  "role":  [
+                                               "research",
+                                               "spec-fix",
+                                               "review"
+                                           ],
+                                  "rate_limits":  {
+                                      "rpm":  15,
+                                      "tpm":  1000000,
+                                      "daily_requests":  1500,
+                                      "context_window":  1000000,
+                                      "cooldown_minutes":  15,
+                                      "notes":  "Ultra plan. High RPM and TPM. Best for bulk review chunks."
+                                  }
+                              },
+                   "kimi":  {
+                                "type":  "cli",
+                                "cli_cmd":  "kimi",
+                                "api_key_env":  "KIMI_API_KEY",
+                                "model_id":  "kimi-k2.5",
+                                "role":  [
+                                             "review",
+                                             "research",
+                                             "requirements"
+                                         ],
+                                "enabled":  true,
+                                "thinking_flag":  "--thinking",
+                                "no_thinking_flag":  "--no-thinking",
+                                "note":  "Kimi Code CLI v1.17+. Install: pip install kimi-cli. Auth: KIMI_API_KEY env var.",
+                                "rate_limits":  {
+                                    "rpm":  20,
+                                    "tpm":  200000,
+                                    "daily_requests":  2000,
+                                    "context_window":  131072,
+                                    "cooldown_minutes":  10,
+                                    "notes":  "High RPM. International endpoint via Cloudflare CDN. $0.60/$2.50 per M tokens."
+                                }
+                            },
+                   "deepseek":  {
+                                    "type":  "openai-compat",
+                                    "endpoint":  "https://api.deepseek.com/v1/chat/completions",
+                                    "api_key_env":  "DEEPSEEK_API_KEY",
+                                    "model_id":  "deepseek-chat",
+                                    "max_tokens":  8192,
+                                    "temperature":  0.3,
+                                    "role":  [
+                                                 "execute",
+                                                 "review",
+                                                 "research"
+                                             ],
+                                    "supports_tools":  true,
+                                    "enabled":  true,
+                                    "rate_limits":  {
+                                        "rpm":  60,
+                                        "tpm":  500000,
+                                        "daily_requests":  10000,
+                                        "context_window":  65536,
+                                        "cooldown_minutes":  5,
+                                        "notes":  "Very high RPM and cheap ($0.28/$0.42/M). Excellent for bulk review chunks."
+                                    }
+                                },
+                   "glm5":  {
+                                "type":  "openai-compat",
+                                "endpoint":  "https://api.z.ai/api/paas/v4/chat/completions",
+                                "api_key_env":  "GLM_API_KEY",
+                                "model_id":  "glm-5",
+                                "max_tokens":  8192,
+                                "temperature":  0.3,
+                                "role":  [
+                                             "execute",
+                                             "review",
+                                             "research"
+                                         ],
+                                "supports_tools":  true,
+                                "enabled":  true,
+                                "endpoint_note":  "International endpoint (api.z.ai). Get API key from z.ai. Requires firewall whitelist for 128.14.69.x",
+                                "rate_limits":  {
+                                    "rpm":  30,
+                                    "tpm":  300000,
+                                    "daily_requests":  5000,
+                                    "context_window":  131072,
+                                    "cooldown_minutes":  10,
+                                    "notes":  "Moderate RPM ($1.00/$3.20/M). International endpoint may have latency."
+                                }
+                            },
+                   "minimax":  {
+                                   "type":  "openai-compat",
+                                   "endpoint":  "https://api.minimax.io/v1/chat/completions",
+                                   "api_key_env":  "MINIMAX_API_KEY",
+                                   "model_id":  "MiniMax-M2.5",
+                                   "max_tokens":  8192,
+                                   "temperature":  0.3,
+                                   "role":  [
+                                                "execute",
+                                                "review",
+                                                "research"
+                                            ],
+                                   "supports_tools":  true,
+                                   "enabled":  true,
+                                   "rate_limits":  {
+                                       "rpm":  30,
+                                       "tpm":  300000,
+                                       "daily_requests":  5000,
+                                       "context_window":  131072,
+                                       "cooldown_minutes":  10,
+                                       "notes":  "Moderate RPM ($0.29/$1.20/M). Good value for bulk review."
+                                   }
+                               }
+               },
+    "rotation_pool_default":  [
+                                  "claude",
+                                  "codex",
+                                  "gemini",
+                                  "kimi",
+                                  "deepseek",
+                                  "glm5",
+                                  "minimax"
+                              ]
+}

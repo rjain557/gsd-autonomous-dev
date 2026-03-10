@@ -376,7 +376,8 @@ Write your analysis to: $GsdDir\supervisor\diagnosis-$AttemptNumber.md
             -LogFile $diagLogFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
             -AllowedTools "Read,Write,Bash"
     } else {
-        $output = claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1
+        $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+        $output = claude -p $prompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1
         $output | Out-File -FilePath $diagLogFile -Encoding UTF8
         $result = @{ Success = ($LASTEXITCODE -eq 0) }
     }
@@ -541,7 +542,8 @@ Also write a summary to $GsdDir\supervisor\decomposition-$AttemptNumber.md
                     -LogFile $logFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
                     -AllowedTools "Read,Write,Bash" | Out-Null
             } else {
-                claude -p $decompPrompt --allowedTools "Read,Write,Bash" 2>&1 |
+                $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+                claude -p $decompPrompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1 |
                     Out-File -FilePath $logFile -Encoding UTF8
             }
             Write-Host "    [OK] Requirements decomposed" -ForegroundColor DarkGreen
@@ -579,7 +581,8 @@ to follow the clarifications.
                     -LogFile $logFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
                     -AllowedTools "Read,Write,Bash" | Out-Null
             } else {
-                claude -p $clarifyPrompt --allowedTools "Read,Write,Bash" 2>&1 |
+                $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+                claude -p $clarifyPrompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1 |
                     Out-File -FilePath $logFile -Encoding UTF8
             }
             Write-Host "    [OK] Spec clarifications written" -ForegroundColor DarkGreen
@@ -621,7 +624,9 @@ function Save-FailurePattern {
     )
     $memoryDir = Join-Path $env:USERPROFILE ".gsd-global\supervisor"
     if (-not (Test-Path $memoryDir)) { New-Item -ItemType Directory -Path $memoryDir -Force | Out-Null }
-    $memoryFile = Join-Path $memoryDir "pattern-memory.jsonl"
+    # Write to per-project file to avoid cross-project pattern pollution
+    $projectSlug = if ($Project) { $Project -replace '[^a-zA-Z0-9_-]', '_' } else { "global" }
+    $memoryFile = Join-Path $memoryDir "pattern-memory-$projectSlug.jsonl"
 
     $entry = @{
         category = $Category
@@ -637,18 +642,32 @@ function Save-FailurePattern {
 }
 
 function Find-KnownFix {
-    param([string]$Category, [string]$RootCause)
-    $memoryFile = Join-Path $env:USERPROFILE ".gsd-global\supervisor\pattern-memory.jsonl"
-    if (-not (Test-Path $memoryFile)) { return $null }
+    param([string]$Category, [string]$RootCause, [string]$Project = "")
+    $memoryDir = Join-Path $env:USERPROFILE ".gsd-global\supervisor"
 
-    $patterns = Get-Content $memoryFile -ErrorAction SilentlyContinue | ForEach-Object {
-        try { $_ | ConvertFrom-Json } catch {}
+    # Read per-project file first (more specific), then fall back to global
+    $allPatterns = @()
+    if ($Project) {
+        $projectSlug = $Project -replace '[^a-zA-Z0-9_-]', '_'
+        $projectFile = Join-Path $memoryDir "pattern-memory-$projectSlug.jsonl"
+        if (Test-Path $projectFile) {
+            $allPatterns += Get-Content $projectFile -ErrorAction SilentlyContinue | ForEach-Object {
+                try { $_ | ConvertFrom-Json } catch {}
+            }
+        }
+    }
+    $globalFile = Join-Path $memoryDir "pattern-memory.jsonl"
+    if (Test-Path $globalFile) {
+        $allPatterns += Get-Content $globalFile -ErrorAction SilentlyContinue | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch {}
+        }
     }
 
-    # Find successful fixes for this category
-    $matches = $patterns | Where-Object { $_.success -eq $true -and $_.category -eq $Category }
+    if (-not $allPatterns) { return $null }
+
+    # Find successful fixes for this category (per-project entries appear first = higher priority)
+    $matches = $allPatterns | Where-Object { $_.success -eq $true -and $_.category -eq $Category }
     if ($matches) {
-        # Return most recent successful fix for this category
         return $matches | Select-Object -Last 1
     }
     return $null
@@ -901,7 +920,7 @@ function Invoke-SupervisorLoop {
         }
 
         # Health monotonicity check (after 3+ attempts, health should be going up)
-        if ($attempt -ge 3 -and $summary.final_health -lt $lastHealth -and $lastHealth -gt 0) {
+        if ($attempt -ge 2 -and $summary.final_health -lt $lastHealth -and $lastHealth -gt 0) {
             Write-Host "  [!!] Health declining across supervisor attempts ($lastHealth% -> $($summary.final_health)%). Escalating." -ForegroundColor Red
             break
         }

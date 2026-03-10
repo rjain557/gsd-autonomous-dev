@@ -8,6 +8,13 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 
 ```json
 {
+  "git": {
+    "enabled": true,
+    "commit_on_iteration": true,
+    "push_on_iteration": false,
+    "push_on_terminal": true,
+    "tag_on_terminal": true
+  },
   "notifications": {
     "ntfy_topic": "auto",
     "notify_on": ["iteration_complete", "converged", "stalled", "quota_exhausted", "error"]
@@ -24,6 +31,11 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
     "enabled": true,
     "max_attempts": 2,
     "consensus_threshold": 0.66
+  },
+  "agent_models": {
+    "claude": "claude-sonnet-4-6",
+    "gemini": "gemini-3.0-pro",
+    "codex": "gpt-5.4"
   }
 }
 ```
@@ -38,6 +50,30 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
 Notification events: `iteration_complete`, `no_progress`, `execute_failed`, `build_failed`, `regression_reverted`, `converged`, `stalled`, `quota_exhausted`, `error`, `heartbeat`, `agent_timeout`, `progress_response`, `supervisor_active`, `supervisor_diagnosis`, `supervisor_fix`, `supervisor_restart`, `supervisor_recovered`, `supervisor_escalation`, `validation_failed`, `validation_passed`
 
 All notification types that include status information (heartbeat, iteration_complete, converged, stalled, max_iterations, progress_response) also include running token cost data read from `.gsd/costs/cost-summary.json`. Terminal notifications (converged, stalled, max_iterations) and progress responses include a per-agent cost breakdown.
+
+#### git
+
+Controls commit/push behavior during autonomous runs. The default is local commits during iterations, with remote push reserved for terminal states.
+
+```json
+"git": {
+  "enabled": true,
+  "commit_on_iteration": true,
+  "push_on_iteration": false,
+  "push_on_terminal": true,
+  "tag_on_terminal": true,
+  "commit_developer_handoff": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Master switch for git automation |
+| `commit_on_iteration` | bool | true | Commit generated work during iterations |
+| `push_on_iteration` | bool | false | Push after each iteration commit |
+| `push_on_terminal` | bool | true | Push on converged/stalled/max-iteration exit |
+| `tag_on_terminal` | bool | true | Create terminal tags on successful completion |
+| `commit_developer_handoff` | bool | true | Commit the generated developer handoff report |
 
 #### patterns
 
@@ -54,6 +90,27 @@ Project technology patterns enforced by all pipelines. These are injected into a
 #### phase_order
 
 Defines the convergence loop phase sequence. Each phase maps to a specific agent and prompt template.
+
+#### agent_models
+
+Controls which exact model version each CLI agent uses. Defaults are set in the hardening module and overridden from this config at startup. Changing these values does not require re-running the installer — the engine reads them on every pipeline start.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| claude | string | `claude-sonnet-4-6` | Model passed to `claude --model`. Use `claude-opus-4-6` for higher quality at higher cost |
+| gemini | string | `gemini-3.0-pro` | Model passed to `gemini --model` |
+| codex | string | `gpt-5.4` | Model passed to `codex exec --model` |
+
+These values are passed via `--model` flag to every CLI invocation (both production dispatch in `Invoke-WithRetry` and fallback paths). REST agents (Kimi, DeepSeek, GLM-5, MiniMax) use the `model_id` field in `model-registry.json` instead.
+
+To upgrade a model without reinstalling:
+```json
+"agent_models": {
+  "claude": "claude-opus-4-6",
+  "gemini": "gemini-3.0-pro",
+  "codex": "gpt-5.4"
+}
+```
 
 #### council
 
@@ -372,6 +429,34 @@ Controls post-launch maintenance features: bug fix mode, incremental updates, an
 | `incremental_phases.preserve_satisfied` | bool | Never modify satisfied requirements during incremental |
 | `incremental_phases.add_spec_version_tag` | bool | Tag new requirements with spec_version field |
 
+#### council_requirements
+
+Controls the 3-phase parallel council requirements extraction pipeline (`gsd-verify-requirements` command and convergence Phase 0 integration).
+
+```json
+"council_requirements": {
+    "enabled": true,
+    "agents": ["claude", "codex", "gemini"],
+    "min_agents_for_merge": 2,
+    "chunk_size": 10,
+    "timeout_seconds": 600,
+    "cooldown_between_agents": 5,
+    "fallback_to_single": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | true | Enable council extraction in convergence Phase 0 |
+| `agents` | string[] | ["claude","codex","gemini"] | Agents to use (partitioned round-robin) |
+| `min_agents_for_merge` | int | 2 | Minimum agents required to produce valid output |
+| `chunk_size` | int | 10 | Spec files per LLM call (smaller = less tokens per call) |
+| `timeout_seconds` | int | 600 | Timeout per chunk (total timeout = chunks × timeout + 120s) |
+| `cooldown_between_agents` | int | 5 | Seconds between sequential chunks within each agent |
+| `fallback_to_single` | bool | true | Fall back to single-agent create-phases if council fails |
+
+Prompt templates: `%USERPROFILE%\.gsd-global\prompts\council\requirements-extract-chunk.md`, `requirements-verify.md`, `requirements-synthesize.md`, `requirements-synthesize-partial.md`.
+
 ### Prompt Templates
 
 Quality gate prompt templates are stored in:
@@ -545,9 +630,9 @@ Auto-generated by `gsd-costs` (token cost calculator). Stores cached LLM pricing
 | claude_sonnet | claude-sonnet-4-6, claude-sonnet-4-5, claude-sonnet-4-1 | Review, Plan, Verify, Blueprint |
 | claude_opus | claude-opus-4-6, claude-opus-4-5, claude-opus-4-1 | (premium alternative to Sonnet) |
 | claude_haiku | claude-haiku-4-5, claude-haiku-4-5-20251001 | (economy alternative to Sonnet) |
-| codex | gpt-5.3-codex, codex-mini-latest | Build, Execute |
+| codex | gpt-5.4, gpt-5.4-codex, gpt-5.3-codex, codex-mini-latest | Build, Execute |
 | codex_gpt51 | gpt-5.1-codex, gpt-5.1 | (alternative code gen) |
-| gemini | gemini-3.1-pro-preview, gemini-3-pro-preview, gemini-2.5-pro | Research, Spec-fix |
+| gemini | gemini-3.0-pro, gemini-3-pro, gemini-3.1-pro-preview, gemini-2.5-pro | Research, Spec-fix |
 | kimi | kimi-k2.5, moonshot-v1-128k | Rotation fallback, Council review |
 | deepseek | deepseek-chat, deepseek-coder | Rotation fallback, Council review |
 | glm5 | glm-5, glm-4-plus | Rotation fallback, Council review |

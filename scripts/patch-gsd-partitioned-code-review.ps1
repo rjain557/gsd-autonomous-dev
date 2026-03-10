@@ -65,11 +65,11 @@ if (Test-Path $configPath) {
     if (-not $config.partitioned_code_review) {
         $config | Add-Member -NotePropertyName "partitioned_code_review" -NotePropertyValue ([PSCustomObject]@{
             enabled              = $true
-            partition_count      = 3
-            agents               = @("claude", "codex", "gemini")
+            partition_count      = 7
+            agents               = @("claude", "codex", "gemini", "kimi", "deepseek", "glm5", "minimax")
             rotation_enabled     = $true
             merge_strategy       = "strict_union"
-            timeout_seconds      = 600
+            timeout_seconds      = 900
             validate_against_spec = $true
             validate_against_figma = $true
             fallback_to_single   = $true
@@ -224,7 +224,7 @@ Max 30 lines. Bullet list of integration gaps.
 $templateC = @'
 # Code Review - Partition C: Security, Compliance & UX
 
-You are reviewing **Partition C** of the codebase. Another agent is reviewing partitions A and B simultaneously.
+You are reviewing **Partition C** of the codebase. Other agents are reviewing other partitions simultaneously.
 
 ## Your Assigned Requirements
 {{PARTITION_REQUIREMENTS}}
@@ -275,10 +275,94 @@ Max 30 lines. Bullet list of security/compliance/UX gaps.
 ## Token Budget: 3000 tokens max. Tables and bullets only. No prose.
 '@
 
+# Template D: UI/UX & Accessibility Focus
+$templateD = @'
+# Code Review - Partition D: UI/UX & Accessibility
+
+You are reviewing **Partition D** of the codebase. Other agents are reviewing other partitions simultaneously.
+
+## Your Assigned Requirements
+{{PARTITION_REQUIREMENTS}}
+
+## Your Assigned Files
+{{PARTITION_FILES}}
+
+## Review Against Deliverables
+{{SPEC_PATHS}}
+{{FIGMA_PATHS}}
+
+### Output Format
+Follow the standard Output Format instructions. Write to .gsd/code-review/partition-D-review.md.
+'@
+
+# Template E: Performance & Optimization Focus
+$templateE = @'
+# Code Review - Partition E: Performance & Optimization
+
+You are reviewing **Partition E** of the codebase. Other agents are reviewing other partitions simultaneously.
+
+## Your Assigned Requirements
+{{PARTITION_REQUIREMENTS}}
+
+## Your Assigned Files
+{{PARTITION_FILES}}
+
+## Review Against Deliverables
+{{SPEC_PATHS}}
+{{FIGMA_PATHS}}
+
+### Output Format
+Follow the standard Output Format instructions. Write to .gsd/code-review/partition-E-review.md.
+'@
+
+# Template F: Security & Edge Cases Focus
+$templateF = @'
+# Code Review - Partition F: Security & Edge Cases
+
+You are reviewing **Partition F** of the codebase. Other agents are reviewing other partitions simultaneously.
+
+## Your Assigned Requirements
+{{PARTITION_REQUIREMENTS}}
+
+## Your Assigned Files
+{{PARTITION_FILES}}
+
+## Review Against Deliverables
+{{SPEC_PATHS}}
+{{FIGMA_PATHS}}
+
+### Output Format
+Follow the standard Output Format instructions. Write to .gsd/code-review/partition-F-review.md.
+'@
+
+# Template G: Maintainability & Standards Focus
+$templateG = @'
+# Code Review - Partition G: Maintainability & Standards
+
+You are reviewing **Partition G** of the codebase. Other agents are reviewing other partitions simultaneously.
+
+## Your Assigned Requirements
+{{PARTITION_REQUIREMENTS}}
+
+## Your Assigned Files
+{{PARTITION_FILES}}
+
+## Review Against Deliverables
+{{SPEC_PATHS}}
+{{FIGMA_PATHS}}
+
+### Output Format
+Follow the standard Output Format instructions. Write to .gsd/code-review/partition-G-review.md.
+'@
+
 Set-Content -Path (Join-Path $sharedDir "code-review-partition-A.md") -Value $templateA -Encoding UTF8
 Set-Content -Path (Join-Path $sharedDir "code-review-partition-B.md") -Value $templateB -Encoding UTF8
 Set-Content -Path (Join-Path $sharedDir "code-review-partition-C.md") -Value $templateC -Encoding UTF8
-Write-Host "  [OK] Created 3 partition prompt templates" -ForegroundColor Green
+Set-Content -Path (Join-Path $sharedDir "code-review-partition-D.md") -Value $templateD -Encoding UTF8
+Set-Content -Path (Join-Path $sharedDir "code-review-partition-E.md") -Value $templateE -Encoding UTF8
+Set-Content -Path (Join-Path $sharedDir "code-review-partition-F.md") -Value $templateF -Encoding UTF8
+Set-Content -Path (Join-Path $sharedDir "code-review-partition-G.md") -Value $templateG -Encoding UTF8
+Write-Host "  [OK] Created 7 partition prompt templates" -ForegroundColor Green
 
 # ── 2b. Ensure Invoke-WithRetry supports gemini dispatch ──
 
@@ -296,15 +380,17 @@ if (Test-Path $resilienceFile) {
                 $exitCode = $LASTEXITCODE
             }
 '@
-    $newCodexDispatch = @'
+$newCodexDispatch = @'
             } elseif ($Agent -eq "codex") {
-                $output = codex exec --full-auto $effectivePrompt 2>&1
+                $output = $effectivePrompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1
                 $exitCode = $LASTEXITCODE
             } elseif ($Agent -eq "gemini") {
-                $geminiArgs = @("-p", $effectivePrompt)
-                if ($GeminiMode) { $geminiArgs += "--approval-mode"; $geminiArgs += $GeminiMode }
-                else { $geminiArgs += "--approval-mode"; $geminiArgs += "plan" }
-                $output = gemini @geminiArgs 2>&1
+                $geminiArgs = if ($GeminiMode) {
+                    $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+                } else {
+                    @("--approval-mode", "plan")
+                }
+                $output = $effectivePrompt | gemini --model $script:GEMINI_MODEL @geminiArgs 2>&1
                 $exitCode = $LASTEXITCODE
             }
 '@
@@ -350,18 +436,19 @@ if (Test-Path $resilienceFile) {
 # GSD PARTITIONED CODE REVIEW MODULES - appended to resilience.ps1
 # ===============================================================
 
-# Agent rotation matrix: maps (iteration % 3) to agent assignments for partitions A, B, C
+# Agent rotation matrix: maps (iteration % 3) to agent assignments for partitions A-C
+# Code review uses CLI agents ONLY (claude/codex/gemini) for quality assurance
 $script:PARTITION_ROTATION = @(
-    @{ A = "claude";  B = "gemini"; C = "codex"  }  # Iter 1, 4, 7, ...
-    @{ A = "gemini";  B = "codex";  C = "claude" }  # Iter 2, 5, 8, ...
-    @{ A = "codex";   B = "claude"; C = "gemini" }  # Iter 3, 6, 9, ...
+    @{ A = "claude"; B = "codex";  C = "gemini" } # Iter 1
+    @{ A = "gemini"; B = "claude"; C = "codex"  } # Iter 2
+    @{ A = "codex";  B = "gemini"; C = "claude" } # Iter 3
 )
 
 
 function Split-RequirementsIntoPartitions {
     <#
     .SYNOPSIS
-        Splits requirements matrix into 3 roughly equal partitions.
+        Splits requirements matrix into 3 roughly equal partitions (one per CLI agent).
         Each partition includes the requirement IDs and their associated files.
     #>
     param(
@@ -389,7 +476,6 @@ function Split-RequirementsIntoPartitions {
     }
 
     # Sort requirements: not_started first, then partial, then satisfied
-    # This ensures each partition gets a mix of statuses
     $sorted = $reqs | Sort-Object @{
         Expression = {
             switch ($_.status) {
@@ -414,7 +500,7 @@ function Split-RequirementsIntoPartitions {
     }
 
     # Build partition objects with file lists
-    $labels = @("A", "B", "C")
+    $labels = @("A", "B", "C", "D", "E", "F", "G")
     $result = @()
     for ($i = 0; $i -lt $PartitionCount; $i++) {
         $reqIds = @($partitions[$i] | ForEach-Object { $_.id })
@@ -552,7 +638,7 @@ function Invoke-PartitionedCodeReview {
     $cooldown = if ($pcConfig.cooldown_between_agents) { [int]$pcConfig.cooldown_between_agents } else { 5 }
 
     # 1. Split requirements into partitions
-    Write-Host "  [PARTITION] Splitting requirements into 3 partitions..." -ForegroundColor Cyan
+    Write-Host "  [PARTITION] Splitting requirements into 3 partitions (CLI agents only)..." -ForegroundColor Cyan
     $partitions = Split-RequirementsIntoPartitions -GsdDir $GsdDir -PartitionCount 3
 
     if (-not $partitions -or $partitions.Count -lt 3) {
@@ -705,8 +791,8 @@ function Invoke-PartitionedCodeReview {
     }
 
     # 6. Wait for all jobs to complete
-    $timeout = if ($pcConfig.timeout_seconds) { [int]$pcConfig.timeout_seconds } else { 600 }
-    Write-Host "  [PARTITION] Waiting for all 3 reviews (timeout: ${timeout}s)..." -ForegroundColor Cyan
+    $timeout = if ($pcConfig.timeout_seconds) { [int]$pcConfig.timeout_seconds } else { 900 }
+    Write-Host "  [PARTITION] Waiting for all 7 reviews (timeout: ${timeout}s)..." -ForegroundColor Cyan
 
     $completedJobs = @{}
     $failedPartitions = @()
@@ -744,7 +830,7 @@ function Invoke-PartitionedCodeReview {
 
     if ($failedPartitions.Count -gt 0) {
         $result.Error = "Partitions failed: $($failedPartitions -join ', ')"
-        if ($failedPartitions.Count -ge 3) {
+        if ($failedPartitions.Count -ge 7) {
             $result.Success = $false
         }
     }
@@ -832,7 +918,7 @@ function Merge-PartitionedReviews {
     $mergedLines += "| Partition | Agent | Status |"
     $mergedLines += "|-----------|-------|--------|"
 
-    $labels = @("A", "B", "C")
+    $labels = @("A", "B", "C", "D", "E", "F", "G")
     foreach ($label in $labels) {
         $agent = $Rotation[$label]
         $status = if ($CompletedLabels -contains $label) { "Completed" } else { "FAILED" }
@@ -881,7 +967,7 @@ function Update-CoverageMatrix {
     <#
     .SYNOPSIS
         Tracks which agent has reviewed which requirements across iterations.
-        After 3 iterations, every requirement should be reviewed by all 3 agents.
+        After 7 iterations, every requirement should be reviewed by all 7 agents.
     #>
     param(
         [string]$GsdDir,
@@ -915,14 +1001,14 @@ function Update-CoverageMatrix {
     # Save and report
     $coverage | ConvertTo-Json -Depth 4 | Set-Content $coveragePath -Encoding UTF8
 
-    # Count full-coverage requirements (reviewed by all 3 agents)
+    # Count full-coverage requirements (reviewed by all 7 agents)
     $fullCoverage = 0
     $totalReqs = $coverage.Keys.Count
     foreach ($reqId in $coverage.Keys) {
-        if ($coverage[$reqId].Keys.Count -ge 3) { $fullCoverage++ }
+        if ($coverage[$reqId].Keys.Count -ge 7) { $fullCoverage++ }
     }
 
-    Write-Host "  [COVERAGE] $fullCoverage/$totalReqs requirements reviewed by all 3 agents" -ForegroundColor $(if ($fullCoverage -eq $totalReqs) { "Green" } else { "Yellow" })
+    Write-Host "  [COVERAGE] $fullCoverage/$totalReqs requirements reviewed by all 7 agents" -ForegroundColor $(if ($fullCoverage -eq $totalReqs) { "Green" } else { "Yellow" })
 }
 
 Write-Host "  Partitioned code review modules loaded." -ForegroundColor DarkGray
@@ -1037,30 +1123,31 @@ Write-Host "=========================================================" -Foregrou
 Write-Host ""
 Write-Host "  HOW IT WORKS:" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  [PARTITION] Requirements split into 3 groups (A, B, C)" -ForegroundColor White
+Write-Host "  [PARTITION] Requirements split into 3 groups (A-C)" -ForegroundColor White
 Write-Host "     - Even distribution with mixed statuses per partition" -ForegroundColor DarkGray
 Write-Host "     - Each partition includes source files + spec + Figma refs" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  [ROTATION] Agent assignments rotate every iteration:" -ForegroundColor White
-Write-Host "     Iter 1: A=Claude  B=Gemini  C=Codex" -ForegroundColor DarkGray
-Write-Host "     Iter 2: A=Gemini  B=Codex   C=Claude" -ForegroundColor DarkGray
-Write-Host "     Iter 3: A=Codex   B=Claude  C=Gemini" -ForegroundColor DarkGray
+Write-Host "  [ROTATION] Agent assignments rotate every iteration (CLI agents only)" -ForegroundColor White
+Write-Host "     Iter 1: A=Claude B=Codex C=Gemini" -ForegroundColor DarkGray
 Write-Host "     (repeats every 3 iterations)" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  [PARALLEL] All 3 agents run simultaneously" -ForegroundColor White
+Write-Host "  [PARALLEL] All 3 CLI agents run simultaneously" -ForegroundColor White
 Write-Host "     - 3x faster than sequential single-agent review" -ForegroundColor DarkGray
 Write-Host "     - Each agent validates against spec AND Figma deliverables" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  [COVERAGE] After 3 iterations, every requirement reviewed by all 3 LLMs" -ForegroundColor White
+Write-Host "  [COVERAGE] After 7 iterations, every requirement reviewed by all 7 LLMs" -ForegroundColor White
 Write-Host "     - Coverage matrix tracked in .gsd/code-review/coverage-matrix.json" -ForegroundColor DarkGray
-Write-Host "     - Rotation history in .gsd/code-review/rotation-history.jsonl" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  PARTITION FOCUS AREAS:" -ForegroundColor Yellow
-Write-Host "     A: Implementation & Architecture (DI, patterns, contracts)" -ForegroundColor DarkGray
-Write-Host "     B: Data Flow & Integration (E2E chains, wiring, seed data)" -ForegroundColor DarkGray
-Write-Host "     C: Security, Compliance & UX (OWASP, HIPAA, Figma match)" -ForegroundColor DarkGray
+Write-Host "     A: Implementation & Architecture" -ForegroundColor DarkGray
+Write-Host "     B: Data Flow & Integration" -ForegroundColor DarkGray
+Write-Host "     C: Security, Compliance & UX" -ForegroundColor DarkGray
+Write-Host "     D: UI/UX & Accessibility" -ForegroundColor DarkGray
+Write-Host "     E: Performance & Optimization" -ForegroundColor DarkGray
+Write-Host "     F: Security & Edge Cases" -ForegroundColor DarkGray
+Write-Host "     G: Maintainability & Standards" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  CONFIG: global-config.json -> partitioned_code_review" -ForegroundColor Yellow
 Write-Host "  DISABLE: set partitioned_code_review.enabled = false" -ForegroundColor DarkGray
-Write-Host "  FALLBACK: auto-falls back to single Claude review if < 3 requirements" -ForegroundColor DarkGray
+Write-Host "  FALLBACK: auto-falls back to single Claude review if < 7 requirements" -ForegroundColor DarkGray
 Write-Host ""

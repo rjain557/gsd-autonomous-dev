@@ -243,7 +243,7 @@ function Test-RequirementAcceptance {
                         $passed = ($LASTEXITCODE -eq 0)
                         $reason = if ($passed) { "Tests passed" } else { "Tests failed" }
                     } else {
-                        $results.Skipped++; $results.Total--
+                        $results.Skipped++
                         continue
                     }
                 }
@@ -258,7 +258,7 @@ function Test-RequirementAcceptance {
                         $passed = ($LASTEXITCODE -eq 0)
                         $reason = if ($passed) { "Tests passed" } else { "Tests failed" }
                     } else {
-                        $results.Skipped++; $results.Total--
+                        $results.Skipped++
                         continue
                     }
                 }
@@ -308,7 +308,8 @@ function Test-RequirementAcceptance {
     $historyLine = @{ iteration = $Iteration; passed = $results.Passed; failed = $results.Failed; skipped = $results.Skipped; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") } | ConvertTo-Json -Compress
     Add-Content -Path $historyPath -Value $historyLine -Encoding UTF8
 
-    $passRate = if ($results.Total -gt 0) { [math]::Round(($results.Passed / $results.Total) * 100, 1) } else { 0 }
+    $tested = $results.Total - $results.Skipped
+    $passRate = if ($tested -gt 0) { [math]::Round(($results.Passed / $tested) * 100, 1) } else { 0 }
     Write-Host "  [TEST] Results: $($results.Passed)/$($results.Total) passed ($passRate%), $($results.Skipped) skipped" -ForegroundColor $(if ($results.Failed -eq 0) { "Green" } else { "Yellow" })
 
     return $results

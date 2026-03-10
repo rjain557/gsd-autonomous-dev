@@ -8,13 +8,36 @@ param(
     [int]$ThrottleSeconds = 30,
     [string]$NtfyTopic = "",
     [switch]$DryRun, [switch]$SkipInit, [switch]$SkipResearch, [switch]$SkipSpecCheck,
-    [switch]$AutoResolve, [switch]$ForceCodeReview
+    [switch]$AutoResolve, [switch]$ForceCodeReview,
+    [string]$Scope = "",
+    [switch]$Incremental
 )
 
 $ErrorActionPreference = "Continue"
+
+# CRITICAL: Remove CLAUDECODE env var so nested claude CLI calls work
+# (When convergence-loop is launched from within a Claude Code session)
+Remove-Item Env:\CLAUDECODE -ErrorAction SilentlyContinue
+[System.Environment]::SetEnvironmentVariable("CLAUDECODE", $null, [System.EnvironmentVariableTarget]::Process)
+
 $RepoRoot = (Get-Location).Path
 $UserHome = $env:USERPROFILE
 $GlobalDir = Join-Path $UserHome ".gsd-global"
+
+# GUARD: Prevent running against the GSD engine's own repo
+$engineMarker = Join-Path $RepoRoot "scripts\convergence-loop.ps1"
+if (Test-Path $engineMarker) {
+    Write-Host ""
+    Write-Host "  [!!] ERROR: You are running convergence-loop inside the GSD engine repo!" -ForegroundColor Red
+    Write-Host "       Current dir: $RepoRoot" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Fix: cd into your TARGET PROJECT directory first, then run:" -ForegroundColor Yellow
+    Write-Host "       cd D:\vscode\your-project" -ForegroundColor Cyan
+    Write-Host "       & `"$GlobalDir\scripts\convergence-loop.ps1`"" -ForegroundColor Cyan
+    Write-Host ""
+    exit 1
+}
+
 $GsdDir = Join-Path $RepoRoot ".gsd"
 
 # Load ALL modules
@@ -63,6 +86,13 @@ Write-Host "  GSD Convergence - Final Integrated Edition" -ForegroundColor Green
 Write-Host "=========================================================" -ForegroundColor Green
 
 if (-not $DryRun) {
+    # Always remove existing lock before startup so we start clean
+    $existingLock = Join-Path $GsdDir ".gsd-lock"
+    if (Test-Path $existingLock) {
+        $lockAge = [math]::Round(((Get-Date) - (Get-Item $existingLock).LastWriteTime).TotalMinutes)
+        Write-Host "    [LOCK] Removing stale lock (${lockAge}m old) - starting clean" -ForegroundColor DarkYellow
+        Remove-Item $existingLock -Force -ErrorAction SilentlyContinue
+    }
     $preFlight = Test-PreFlight -RepoRoot $RepoRoot -GsdDir $GsdDir
     if (-not $preFlight) { exit 1 }
     New-GsdLock -GsdDir $GsdDir -Pipeline "converge"
@@ -102,6 +132,9 @@ Send-GsdNotification -Title "GSD Converge Started" `
     -Message "$repoName | Health: ${Health}% | Batch: $CurrentBatchSize | Throttle: ${ThrottleSeconds}s" `
     -Tags "rocket" -Priority "default"
 
+# Save LOC baseline (starting commit hash for total diff at exit)
+if (Get-Command Save-LocBaseline -ErrorAction SilentlyContinue) { Save-LocBaseline -GsdDir $GsdDir }
+
 # Start background heartbeat (sends progress every 10 min even during long agent calls)
 Start-BackgroundHeartbeat -GsdDir $GsdDir -NtfyTopic $script:NTFY_TOPIC `
     -Pipeline "converge" -RepoName $repoName -IntervalMinutes 10
@@ -132,6 +165,11 @@ function Local-ResolvePrompt($templatePath, $iter, $health) {
     }
     if (Test-Path $hintPath) {
         $resolved += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw)
+    }
+    # LOC context: inject AI code generation metrics into review prompts
+    if ($templatePath -match "code-review" -and (Get-Command Get-LocContextForReview -ErrorAction SilentlyContinue)) {
+        $locCtx = Get-LocContextForReview -GsdDir $GsdDir
+        if ($locCtx) { $resolved += "`n`n$locCtx" }
     }
     # Council: inject feedback from previous council review
     $councilFeedbackPath = Join-Path $GsdDir "supervisor\council-feedback.md"
@@ -182,10 +220,46 @@ trap { Remove-GsdLock -GsdDir $GsdDir }
 
 try {
 
-# Phase 0: Create phases
+# Phase 0: Create phases (or incremental update)
 $matrixContent = Get-Content $MatrixFile -Raw | ConvertFrom-Json
-if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
+if ($Incremental -and $matrixContent.requirements.Count -gt 0) {
+    Write-Host "[CLIP] Phase 0: INCREMENTAL CREATE PHASES (adding new requirements)" -ForegroundColor Magenta
+    Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration 0 -Phase "create-phases-incremental" -Health $Health -BatchSize $CurrentBatchSize
+    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\create-phases-incremental.md" 0 $Health
+    if (-not $DryRun) {
+        Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "create-phases" `
+            -LogFile "$GsdDir\logs\phase0-incremental.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+            -AllowedTools "Read,Write,Bash" | Out-Null
+    }
+    $Health = Get-Health
+    Write-Host "  [OK] Matrix updated incrementally. Health: ${Health}%" -ForegroundColor Green
+    Write-Host ""
+} elseif ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
     Write-Host "[CLIP] Phase 0: CREATE PHASES" -ForegroundColor Magenta
+
+    # Check if council requirements extraction is enabled
+    $useCouncilReqs = $false
+    if (Get-Command Invoke-CouncilRequirements -ErrorAction SilentlyContinue) {
+        $crCfgPath = Join-Path $GlobalDir "config\global-config.json"
+        if (Test-Path $crCfgPath) {
+            try {
+                $crCfg = (Get-Content $crCfgPath -Raw | ConvertFrom-Json).council_requirements
+                if ($crCfg -and $crCfg.enabled) { $useCouncilReqs = $true }
+            } catch {}
+        }
+    }
+
+    if ($useCouncilReqs -and -not $DryRun) {
+        Write-Host "  [SCALES] Council requirements extraction (3-agent parallel)" -ForegroundColor Cyan
+        Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration 0 -Phase "council-create-phases" -Health 0 -BatchSize $CurrentBatchSize
+        $crResult = Invoke-CouncilRequirements -RepoRoot $RepoRoot -GsdDir $GsdDir
+        if (-not $crResult.Success) {
+            Write-Host "  [WARN] Council extraction failed. Falling back to single-agent." -ForegroundColor Yellow
+            $useCouncilReqs = $false
+        }
+    }
+
+    if (-not $useCouncilReqs) {
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration 0 -Phase "create-phases" -Health 0 -BatchSize $CurrentBatchSize
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\create-phases.md" 0 0
     if (-not $DryRun) {
@@ -196,7 +270,8 @@ if ($matrixContent.requirements.Count -eq 0 -and -not $SkipInit) {
     $Health = Get-Health
     Write-Host "  [OK] Matrix built. Health: ${Health}%" -ForegroundColor Green
     Write-Host ""
-}
+    }
+} # end if/elseif (create-phases)
 
 # Main loop
 $ValidationAttempts = 0; $MaxValidationAttempts = 3; $validationResult = $null
@@ -226,6 +301,10 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     $errorsThisIter = 0
 
+    # Reasoning effort: medium/no-thinking for review/research/plan, full for execute
+    $env:GSD_CODEX_EFFORT = "medium"
+    $env:GSD_KIMI_THINKING = "false"
+
     # 1. CODE REVIEW (Claude)
     Send-HeartbeatIfDue -Phase "code-review" -Iteration $Iteration -Health $Health -RepoName $repoName
     Write-Host "  [SEARCH] CLAUDE -> code-review" -ForegroundColor Cyan
@@ -233,16 +312,70 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
         Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "code-review" -Agent "claude" -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize -Attempt "1/$($script:RETRY_MAX)" -ErrorsThisIteration 0
     }
-    $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
-    if (-not $DryRun) {
-        Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
+
+        # â”€â”€ Differential Review Check â”€â”€
+        $useDiffReview = $false
+        if (Get-Command Get-DifferentialContext -ErrorAction SilentlyContinue) {
+            $diffCtx = Get-DifferentialContext -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration -RepoRoot $RepoRoot
+            if ($diffCtx.UseDifferential -and $diffCtx.ChangedFiles.Count -gt 0) {
+                Write-Host "  [DIFF] Differential review: $($diffCtx.ChangedFiles.Count) files changed" -ForegroundColor Cyan
+                $diffPromptPath = "$GlobalDir\prompts\claude\code-review-differential.md"
+                if (Test-Path $diffPromptPath) {
+                    $prompt = Local-ResolvePrompt $diffPromptPath $Iteration $Health
+                    $prompt = $prompt.Replace("{{DIFF_CONTENT}}", $diffCtx.DiffContent)
+                    $prompt = $prompt.Replace("{{CHANGED_FILES}}", ($diffCtx.ChangedFiles -join "`n"))
+                    $useDiffReview = $true
+                }
+            } elseif ($diffCtx.UseDifferential -and $diffCtx.ChangedFiles.Count -eq 0) {
+                Write-Host "  [DIFF] No files changed since last review -- skipping code-review phase" -ForegroundColor DarkGray
+                $useDiffReview = $true  # prevents the full-review block below from firing
+                # Still need to save checkpoint
+                if (Get-Command Save-ReviewedCommit -ErrorAction SilentlyContinue) {
+                    Save-ReviewedCommit -GsdDir $GsdDir -Iteration $Iteration
+                }
+            } else {
+                Write-Host "  [DIFF] Full review: $($diffCtx.Reason)" -ForegroundColor DarkGray
+            }
+        }
+        if (-not $useDiffReview) {
+    # Rate-limit-aware chunked review: dynamically splits requirements across all available agents
+    if (-not $DryRun -and (Get-Command Invoke-SequentialChunkedReview -ErrorAction SilentlyContinue)) {
+        Write-Host "  [REVIEW] Rate-limit-aware chunked review (all available agents)" -ForegroundColor Cyan
+        $chunkResult = Invoke-SequentialChunkedReview -GsdDir $GsdDir -GlobalDir $GlobalDir -RepoRoot $RepoRoot `
+            -Iteration $Iteration -Health $Health -CurrentBatchSize $CurrentBatchSize -InterfaceContext $InterfaceContext
+        if ($chunkResult.Success) {
+            Write-Host "  [REVIEW] Chunked review completed ($($chunkResult.ChunksCompleted)/$($chunkResult.ChunksTotal) chunks)" -ForegroundColor Green
+        } else {
+            Write-Host "  [REVIEW] Chunked review partial ($($chunkResult.ChunksCompleted)/$($chunkResult.ChunksTotal)) — falling back to single-agent" -ForegroundColor Yellow
+            if ($chunkResult.ChunksCompleted -lt 2) {
+                $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
+                $reviewResult = Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "code-review" `
+                    -LogFile "$GsdDir\logs\iter${Iteration}-1-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
+            }
+        }
+    } elseif (-not $DryRun) {
+        # Legacy single-agent path
+        $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
+        $reviewResult = Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "code-review" `
             -LogFile "$GsdDir\logs\iter${Iteration}-1.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-            -AllowedTools "Read,Write,Bash" | Out-Null
+            -AllowedTools "Read,Write,Bash"
+        if (-not $reviewResult -or $reviewResult.ExitCode -ne 0) {
+            Write-Host "  [FALLBACK] claude code-review failed -- retrying with codex" -ForegroundColor Yellow
+            Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "code-review" `
+                -LogFile "$GsdDir\logs\iter${Iteration}-1-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+        }
     }
     $Health = Get-Health
     if ($Health -ge $TargetHealth) { Write-Host "  [OK] CONVERGED!" -ForegroundColor Green; break }
 
-    # Throttle between phases
+    
+        }  # end differential review fallback
+
+        # Save reviewed commit for next differential
+        if (Get-Command Save-ReviewedCommit -ErrorAction SilentlyContinue) {
+            Save-ReviewedCommit -GsdDir $GsdDir -Iteration $Iteration
+        }
+        # Throttle between phases
     if ($ThrottleSeconds -gt 0 -and -not $DryRun) {
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
             Update-EngineStatus -GsdDir $GsdDir -State "sleeping" -Phase "throttle" -SleepReason "throttle" -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($ThrottleSeconds))
@@ -252,30 +385,67 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "running" }
     }
 
-    # 2. RESEARCH (Gemini plan mode, read-only - saves Claude/Codex quota)
+    # 2. RESEARCH (Parallel: Gemini->PhaseA+B, DeepSeek->PhaseC+D, Kimi->PhaseE+Figma)
     if (-not $SkipResearch) {
         Send-HeartbeatIfDue -Phase "research" -Iteration $Iteration -Health $Health -RepoName $repoName
-        Write-Host "  GEMINI -> research (read-only)" -ForegroundColor Magenta
         if (-not (Test-Path "$GsdDir\research")) { New-Item -ItemType Directory -Path "$GsdDir\research" -Force | Out-Null }
-        # Try Gemini first; fall back to Codex if gemini CLI not available
-        $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
-        if ($useGemini) {
+
+        $parallelResearchOk = $false
+        if ((Get-Command Invoke-ParallelResearch -ErrorAction SilentlyContinue) -and -not $DryRun) {
+            Write-Host "  [PAR-RESEARCH] Gemini+DeepSeek+Kimi -> parallel research" -ForegroundColor Magenta
             if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "gemini" -Iteration $Iteration -HealthScore $Health
+                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" `
+                    -Agent "parallel(gemini+deepseek+kimi)" -Iteration $Iteration -HealthScore $Health
             }
-            $prompt = Local-ResolvePrompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
-            if (-not $DryRun) {
+            Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "research" -Health $Health -BatchSize $CurrentBatchSize
+            $prResult = Invoke-ParallelResearch -GsdDir $GsdDir -GlobalDir $GlobalDir `
+                -Iteration $Iteration -Health $Health -RepoRoot $RepoRoot -InterfaceContext $InterfaceContext
+            if ($prResult.Success) {
+                $parallelResearchOk = $true
+            } else {
+                Write-Host "  [PAR-RESEARCH] Parallel research failed ($($prResult.Error)) -- falling back to sequential" -ForegroundColor Yellow
+            }
+        }
+
+        # Pre-check: if all research-capable agents are on cooldown, skip research entirely
+        # This prevents rotating research to Claude/Codex and burning their quota
+        if (-not $parallelResearchOk -and -not $DryRun) {
+            $researchCapableAgents = @("gemini", "deepseek", "kimi", "minimax", "glm5")
+            $cooldownPath = Join-Path $GsdDir "supervisor\agent-cooldowns.json"
+            $agentCooldowns = @{}
+            if (Test-Path $cooldownPath) {
+                try { $raw = Get-Content $cooldownPath -Raw | ConvertFrom-Json
+                      foreach ($p in $raw.PSObject.Properties) { try { $agentCooldowns[$p.Name] = [datetime]$p.Value } catch {} }
+                } catch {}
+            }
+            $now = Get-Date
+            $anyResearchAvail = $researchCapableAgents | Where-Object {
+                -not $agentCooldowns.ContainsKey($_) -or $now -ge $agentCooldowns[$_]
+            }
+            if (-not $anyResearchAvail) {
+                Write-Host "  [SKIP] All research-capable agents on cooldown -- skipping research this iteration" -ForegroundColor DarkYellow
+                $parallelResearchOk = $true   # suppress sequential fallback
+            }
+        }
+
+        # Sequential fallback: original Gemini -> Codex chain
+        if (-not $parallelResearchOk -and -not $DryRun) {
+            $useGemini = $null -ne (Get-Command gemini -ErrorAction SilentlyContinue)
+            if ($useGemini) {
+                Write-Host "  GEMINI -> research (sequential fallback)" -ForegroundColor Magenta
+                if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                    Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "gemini" -Iteration $Iteration -HealthScore $Health
+                }
+                $prompt = Local-ResolvePrompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
                 Invoke-WithRetry -Agent "gemini" -Prompt $prompt -Phase "research" `
                     -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
                     -GeminiMode "--approval-mode plan" | Out-Null
-            }
-        } else {
-            Write-Host "    (gemini not found, falling back to codex)" -ForegroundColor DarkYellow
-            if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
-                Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "codex" -Iteration $Iteration -HealthScore $Health
-            }
-            $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
-            if (-not $DryRun) {
+            } else {
+                Write-Host "  CODEX -> research (sequential fallback, gemini unavailable)" -ForegroundColor Magenta
+                if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+                    Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "research" -Agent "codex" -Iteration $Iteration -HealthScore $Health
+                }
+                $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
                 Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "research" `
                     -LogFile "$GsdDir\logs\iter${Iteration}-2.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
             }
@@ -283,7 +453,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # ── POST-RESEARCH COUNCIL (validate research before planning) ──
-    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+    if ($SkipResearch) {
+        Write-Host "  [SCALES] Skipping post-research council (research was skipped)" -ForegroundColor DarkGray
+    } elseif (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Post-research council..." -ForegroundColor DarkCyan
         $prResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "post-research"
         if (-not $prResult.Approved) {
@@ -308,11 +480,38 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
         Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "plan" -Agent "claude" -Iteration $Iteration -HealthScore $Health
     }
+    # Auto-decompose stuck partials from previous iteration before planning
+    if ($Iteration -gt 1 -and -not $DryRun -and (Get-Command Invoke-PartialDecompose -ErrorAction SilentlyContinue)) {
+        Invoke-PartialDecompose -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration
+    }
     $prompt = Local-ResolvePrompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
     if (-not $DryRun) {
-        Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
-            -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
-            -AllowedTools "Read,Write,Bash" | Out-Null
+        # Pre-check: skip plan LLM call only if queue was written for THIS iteration (same health score = same iteration)
+        $queueFile = Join-Path $GsdDir "generation-queue\queue-current.json"
+        $planWritten = $false
+        if (Test-Path $queueFile) {
+            try {
+                $qContent = Get-Content $queueFile -Raw | ConvertFrom-Json
+                # Queue is fresh only if it was written at the current health level AND within 45 min
+                $planWritten = ($qContent.health_at_plan -eq $Health) -and ((Get-Item $queueFile).LastWriteTime -gt (Get-Date).AddMinutes(-45))
+            } catch { $planWritten = $false }
+        }
+        if ($planWritten) {
+            Write-Host "  [PLAN] Plan output files already written for health=$Health ($(((Get-Item $queueFile).LastWriteTime).ToString('HH:mm'))) -- skipping plan LLM call" -ForegroundColor Green
+        } else {
+            $planResult = Invoke-WithRetry -Agent "claude" -Prompt $prompt -Phase "plan" `
+                -LogFile "$GsdDir\logs\iter${Iteration}-3.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+                -AllowedTools "Read,Write,Bash" -MaxAttempts 1
+            # Re-check after Invoke-WithRetry returns (agent may have written files before hitting quota)
+            $planWritten = (Test-Path $queueFile) -and ((Get-Item $queueFile).LastWriteTime -gt (Get-Date).AddMinutes(-45))
+            if ($planWritten) {
+                Write-Host "  [PLAN] Plan output files written during attempt -- skipping fallback" -ForegroundColor Green
+            } elseif (-not $planResult -or $planResult.ExitCode -ne 0) {
+                Write-Host "  [FALLBACK] claude plan failed -- retrying with codex" -ForegroundColor Yellow
+                Invoke-WithRetry -Agent "codex" -Prompt $prompt -Phase "plan" `
+                    -LogFile "$GsdDir\logs\iter${Iteration}-3-fallback.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir | Out-Null
+            }
+        }
     }
 
     # Throttle between phases
@@ -326,7 +525,9 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # ── PRE-EXECUTE COUNCIL (validate plan before code generation) ──
-    if (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
+    if ($SkipResearch) {
+        Write-Host "  [SCALES] Skipping pre-execute council (research was skipped)" -ForegroundColor DarkGray
+    } elseif (-not $DryRun -and (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue)) {
         Write-Host "  [SCALES] Pre-execute council..." -ForegroundColor DarkCyan
         $peResult = Invoke-LlmCouncil -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration -Health $Health -Pipeline $Pipeline -CouncilType "pre-execute"
         if (-not $peResult.Approved) {
@@ -335,6 +536,8 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     }
 
     # 4. EXECUTE -- Parallel sub-task or monolithic fallback
+    $env:GSD_CODEX_EFFORT = "xhigh"       # Restore full reasoning for code generation
+    $env:GSD_KIMI_THINKING = "true"        # Restore thinking for kimi execute
     Send-HeartbeatIfDue -Phase "execute" -Iteration $Iteration -Health $Health -RepoName $repoName
     Save-Checkpoint -GsdDir $GsdDir -Pipeline "converge" -Iteration $Iteration -Phase "execute" -Health $Health -BatchSize $CurrentBatchSize
 
@@ -431,7 +634,11 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     # ── MONOLITHIC PATH (original behavior, also used as fallback) ──
     if ((-not $useParallel -or $fallback) -and -not $DryRun) {
-        $executeAgent = "codex"
+        # Agent intelligence: use best-performing agent for execute phase
+        $executeAgent = if (Get-Command Get-BestAgentForPhase -ErrorAction SilentlyContinue) {
+            Get-BestAgentForPhase -GsdDir $GsdDir -GlobalDir $GlobalDir -Phase "execute" -DefaultAgent "codex"
+        } else { "codex" }
+        # Supervisor override takes highest priority
         $overridePath = Join-Path $GsdDir "supervisor\agent-override.json"
         if (Test-Path $overridePath) {
             try { $ov = Get-Content $overridePath -Raw | ConvertFrom-Json
@@ -441,9 +648,32 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
         if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
             Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "execute" -Agent $executeAgent -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize
         }
+
+        # Figma-First mode: prepend instruction header when batch contains UI requirements
+        $figmaFirstHeader = ""
+        $queueDataPath = Join-Path $GsdDir "generation-queue\queue-current.json"
+        if (Test-Path $queueDataPath) {
+            try {
+                $queueData = Get-Content $queueDataPath -Raw | ConvertFrom-Json
+                $uiItems = @($queueData.batch | Where-Object {
+                    ($_.target_files -join " ") -match "\.(tsx|jsx|css|scss)" -or
+                    ($_.description  -match "component|UI|frontend|screen|page|modal|form|layout|nav")
+                })
+                if ($uiItems.Count -gt 0) {
+                    $figmaFirstHeader = "## FIGMA-FIRST MODE ($($uiItems.Count) UI requirements detected)`n`n"
+                    $figmaFirstHeader += "**READ FIGMA ANALYSIS FILES BEFORE WRITING ANY CODE.**`n"
+                    $figmaFirstHeader += "Every UI component MUST match Figma exactly: layout, spacing, typography, colors, interactive states (hover/focus/active/disabled/loading/error/empty).`n"
+                    $figmaFirstHeader += "Reference figma-mapping.md and all Figma analysis files in design/ FIRST, then generate components.`n`n---`n`n"
+                    Write-Host "  [FIGMA-FIRST] $($uiItems.Count) UI item(s) in batch -- Figma-First mode enabled" -ForegroundColor Cyan
+                }
+            } catch {}
+        }
+
         $prompt = Local-ResolvePrompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
+        if ($figmaFirstHeader) { $prompt = $figmaFirstHeader + $prompt }
         $result = Invoke-WithRetry -Agent $executeAgent -Prompt $prompt -Phase "execute" `
-            -LogFile "$GsdDir\logs\iter${Iteration}-4.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir
+            -LogFile "$GsdDir\logs\iter${Iteration}-4.log" -CurrentBatchSize $CurrentBatchSize -GsdDir $GsdDir `
+            -GeminiMode "--yolo"
         if ($result.Success) {
             $CurrentBatchSize = $result.FinalBatchSize
             $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
@@ -516,10 +746,14 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $Health = $NewHealth
     Show-ProgressBar -Health $Health -Iteration $Iteration -MaxIterations $MaxIterations -Phase "done"
     $iterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir } else { "" }
-    $iterDiffLine = if (Get-Command Get-GitDiffStats -ErrorAction SilentlyContinue) { Get-GitDiffStats -RepoRoot $RepoRoot } else { "" }
     $iterMsg = "$repoName | Health: ${Health}% (+$([math]::Round($Health - $PrevHealth, 1))%) | Batch: $CurrentBatchSize"
-    if ($iterDiffLine) { $iterMsg += "`n$iterDiffLine" }
     if ($iterCostLine) { $iterMsg += "`n$iterCostLine" }
+    # LOC tracking
+    if (Get-Command Update-LocMetrics -ErrorAction SilentlyContinue) {
+        Update-LocMetrics -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration -Pipeline "convergence"
+    }
+    $locLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir } else { "" }
+    if ($locLine) { $iterMsg += "`n$locLine" }
     Send-GsdNotification -Title "Iter $Iteration Complete" -Message $iterMsg -Tags "chart_with_upwards_trend"
     $script:LAST_NOTIFY_TIME = Get-Date
     Write-Host ""; Start-Sleep -Seconds 2
@@ -642,27 +876,34 @@ if ($FinalHealth -ge $TargetHealth) {
     }
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "converged" -HealthScore $FinalHealth -Iteration $Iteration }
     $finalCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $finalDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $convergedMsg = "$repoName | 100% in $Iteration iterations"
-    if ($finalDiffLine) { $convergedMsg += "`n$finalDiffLine" }
+    # LOC vs Cost summary for final notification
+    $locCostSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostSummary) { $convergedMsg += "`n$locCostSummary" }
+    $locFinalLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locFinalLine) { $convergedMsg += "`n$locFinalLine" }
     if ($finalCostLine) { $convergedMsg += "`n$finalCostLine" }
     Send-GsdNotification -Title "CONVERGED!" -Message $convergedMsg -Tags "tada,white_check_mark" -Priority "high"
 } elseif ($StallCount -ge $StallThreshold) {
     Write-Host "  [STOP] STALLED at ${FinalHealth}%" -ForegroundColor Red
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "stalled" -HealthScore $FinalHealth -Iteration $Iteration }
     $stalledCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $stalledDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $stalledMsg = "$repoName | Stuck at ${FinalHealth}% after $Iteration iterations"
-    if ($stalledDiffLine) { $stalledMsg += "`n$stalledDiffLine" }
+    $locCostStalledSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostStalledSummary) { $stalledMsg += "`n$locCostStalledSummary" }
+    $locStalledLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locStalledLine) { $stalledMsg += "`n$locStalledLine" }
     if ($stalledCostLine) { $stalledMsg += "`n$stalledCostLine" }
     Send-GsdNotification -Title "STALLED" -Message $stalledMsg -Tags "warning" -Priority "high"
 } else {
     Write-Host "  [!!]  MAX ITERATIONS at ${FinalHealth}%" -ForegroundColor Yellow
     if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) { Update-EngineStatus -GsdDir $GsdDir -State "completed" -HealthScore $FinalHealth -Iteration $Iteration }
     $maxIterCostLine = if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) { Get-CostNotificationText -GsdDir $GsdDir -Detailed } else { "" }
-    $maxIterDiffLine = if (Get-Command Get-GitCumulativeStats -ErrorAction SilentlyContinue) { Get-GitCumulativeStats -RepoRoot $RepoRoot -Iterations $Iteration } else { "" }
     $maxIterMsg = "$repoName | ${FinalHealth}% after $Iteration iterations"
-    if ($maxIterDiffLine) { $maxIterMsg += "`n$maxIterDiffLine" }
+    $locCostMaxSummary = if (Get-Command Get-LocCostSummaryText -ErrorAction SilentlyContinue) { Get-LocCostSummaryText -GsdDir $GsdDir } else { "" }
+    if ($locCostMaxSummary) { $maxIterMsg += "`n$locCostMaxSummary" }
+    $locMaxLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+    if ($locMaxLine) { $maxIterMsg += "`n$locMaxLine" }
     if ($maxIterCostLine) { $maxIterMsg += "`n$maxIterCostLine" }
     Send-GsdNotification -Title "MAX ITERATIONS" -Message $maxIterMsg -Tags "warning" -Priority "high"
 }
@@ -674,6 +915,11 @@ Write-Host "=========================================================" -Foregrou
     Stop-CommandListener
     if (Get-Command Stop-EngineStatusHeartbeat -ErrorAction SilentlyContinue) { Stop-EngineStatusHeartbeat }
     if (Get-Command Complete-CostTrackingRun -ErrorAction SilentlyContinue) { Complete-CostTrackingRun -GsdDir $GsdDir }
+
+    # Final LOC tracking: compute total lines from baseline to HEAD
+    if (Get-Command Complete-LocTracking -ErrorAction SilentlyContinue) {
+        Complete-LocTracking -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GlobalDir -Pipeline "convergence"
+    }
 
     # Supervisor: save terminal summary so supervisor can read exit state
     $FinalHealth = Get-Health
@@ -698,7 +944,15 @@ Write-Host "=========================================================" -Foregrou
     }
 
     Clear-Checkpoint -GsdDir $GsdDir; Remove-GsdLock -GsdDir $GsdDir
+} catch {
+    Write-Host "  [FATAL] $($_.Exception.Message)" -ForegroundColor Red
+    Remove-GsdLock -GsdDir $GsdDir
+    throw
 }
+
+
+
+
 
 
 

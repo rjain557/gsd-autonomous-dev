@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 35 scripts in correct order.
+    GSD Master Installer - Runs ALL 36 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -102,12 +102,14 @@ $scripts = @(
     @{ File="patch-gsd-partitioned-code-review.ps1"; Desc="Partitioned Code Review (3-way parallel, agent rotation, spec+Figma validation)" }
     @{ File="patch-gsd-loc-cost-integration.ps1"; Desc="LOC-Cost Integration (running cost-per-line, code review LOC awareness, enhanced ntfy)" }
     @{ File="patch-gsd-maintenance-mode.ps1";    Desc="Maintenance Mode (incremental create-phases, scoped convergence, post-launch fixes)" }
+    @{ File="patch-gsd-council-requirements.ps1"; Desc="Council Requirements Verification (3-agent extraction, dedup, confidence scoring)" }
+    @{ File="patch-gsd-partial-decompose.ps1";    Desc="Partial Decompose (auto-split stuck partials into atomic sub-requirements each iteration)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 35 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 36 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

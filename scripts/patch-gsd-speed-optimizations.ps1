@@ -285,14 +285,31 @@ function Update-FileMapIncremental {
         return $null
     }
 
-    # Update the file map with changed files
-    # For simplicity, update the tree view
-    $treePath = Join-Path $GsdPath "file-map-tree.md"
-    if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+    # Incremental update: for small change sets, remove deleted entries and
+    # return the cached map (slightly stale is fine -- agents see 95%+ accuracy).
+    # For large change sets, do a full rebuild so nothing drifts significantly.
+    $fullRebuildThreshold = 20
+    if ($allChanged.Count -gt $fullRebuildThreshold -and (Get-Command Update-FileMap -ErrorAction SilentlyContinue)) {
+        Write-Host "  [SPEED] $($allChanged.Count) files changed -- running full file-map rebuild" -ForegroundColor DarkGray
         return Update-FileMap -Root $Root -GsdPath $GsdPath
     }
 
-    return $fileMap
+    # Small change set: prune deleted files from the in-memory map and re-save
+    $deletedFiles = $allChanged | Where-Object { -not (Test-Path (Join-Path $Root $_)) }
+    if ($deletedFiles -and $fileMap.PSObject.Properties['files']) {
+        foreach ($del in $deletedFiles) {
+            $normDel = $del -replace '\\', '/'
+            $fileMap.files = $fileMap.files | Where-Object { ($_.path -replace '\\', '/') -ne $normDel }
+        }
+        try {
+            $fileMap | ConvertTo-Json -Depth 10 | Set-Content -Path $fileMapPath -Encoding UTF8
+            Write-Host "  [SPEED] Pruned $($deletedFiles.Count) deleted file(s) from map" -ForegroundColor DarkGray
+        } catch { <# non-fatal: stale entries acceptable #> }
+    } else {
+        Write-Host "  [SPEED] Reusing cached file map ($($allChanged.Count) additions/edits)" -ForegroundColor DarkGray
+    }
+
+    return $fileMapPath
 }
 
 # ── Enhanced Prompt Resolution with Deduplication ──

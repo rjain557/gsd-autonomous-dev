@@ -1,0 +1,77 @@
+﻿{
+    "runs":  [
+                 {
+                     "cost_usd":  0.022136,
+                     "ended":  "2026-03-08T15:44:09.4660063Z",
+                     "started":  "2026-03-08T15:19:58.1920091Z",
+                     "calls":  9
+                 },
+                 {
+                     "cost_usd":  0.012194,
+                     "ended":  "2026-03-08T15:49:45.2338848Z",
+                     "started":  "2026-03-08T15:44:09.4660063Z",
+                     "calls":  5
+                 },
+                 {
+                     "cost_usd":  0.005262,
+                     "ended":  "2026-03-08T16:11:09.2319619Z",
+                     "started":  "2026-03-08T15:49:45.2338848Z",
+                     "calls":  2
+                 },
+                 {
+                     "cost_usd":  0,
+                     "ended":  "2026-03-08T16:16:34.3756268Z",
+                     "started":  "2026-03-08T16:11:09.2319619Z",
+                     "calls":  0
+                 },
+                 {
+                     "cost_usd":  0.877558,
+                     "ended":  null,
+                     "started":  "2026-03-08T16:16:34.3756268Z",
+                     "calls":  1
+                 }
+             ],
+    "by_phase":  {
+                     "council-requirements":  {
+                                                  "cost_usd":  0.907208,
+                                                  "calls":  13
+                                              },
+                     "create-phases":  {
+                                           "calls":  2,
+                                           "cost_usd":  0.00462
+                                       },
+                     "code-review":  {
+                                         "calls":  2,
+                                         "cost_usd":  0.005322
+                                     }
+                 },
+    "total_cost_usd":  0.91715,
+    "total_calls":  17,
+    "last_updated":  "2026-03-08T16:20:22.0373121Z",
+    "total_tokens":  {
+                         "input":  9703,
+                         "cached":  30822,
+                         "output":  1802
+                     },
+    "by_agent":  {
+                     "gemini":  {
+                                    "cost_usd":  0.003616,
+                                    "tokens":  {
+                                                   "input":  1208,
+                                                   "cached":  0,
+                                                   "output":  100
+                                               },
+                                    "calls":  2
+                                },
+                     "claude":  {
+                                    "cost_usd":  0.913534,
+                                    "tokens":  {
+                                                   "input":  8495,
+                                                   "cached":  30822,
+                                                   "output":  1702
+                                               },
+                                    "calls":  15
+                                }
+                 },
+    "project_start":  "2026-03-08T15:19:58.1920091Z"
+}

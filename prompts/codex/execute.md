@@ -65,6 +65,11 @@ For each requirement in the batch:
 4. Add JSDoc/XML doc comments
 5. Create corresponding stored procedures for any new data access
 6. Create corresponding React components for any new UI
+7. Preserve requirement traceability in your implementation choices:
+   - keep Figma-linked UI changes aligned to the referenced deliverable and storyboard
+   - keep API work aligned to the referenced contract
+   - keep DB work aligned to the referenced tables/stored procedures/migrations
+   - if a queued requirement lacks enough downstream context, prefer minimal safe progress and document the gap in the handoff log
 
 ## After Generating
 - Verify files have no syntax errors (run quick checks if possible)

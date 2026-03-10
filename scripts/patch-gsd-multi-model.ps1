@@ -148,8 +148,8 @@ if (Test-Path $registryPath) {
                 model_id = "kimi-k2.5"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
             deepseek = [ordered]@{
@@ -159,8 +159,8 @@ if (Test-Path $registryPath) {
                 model_id = "deepseek-chat"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
             glm5 = [ordered]@{
@@ -170,8 +170,8 @@ if (Test-Path $registryPath) {
                 model_id = "glm-5"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
             minimax = [ordered]@{
@@ -181,8 +181,8 @@ if (Test-Path $registryPath) {
                 model_id = "MiniMax-M2.5"
                 max_tokens = 8192
                 temperature = 0.3
-                role = @("execute", "review", "research")
-                supports_tools = $true
+                role = @("review", "research")
+                supports_tools = $false
                 enabled = $true
             }
         }
@@ -206,20 +206,8 @@ if (-not (Test-Path $agentMapPath)) {
     $agentMap = Get-Content $agentMapPath -Raw | ConvertFrom-Json
     $changed = $false
 
-    # Expand execute_parallel.agent_pool
-    if ($agentMap.execute_parallel -and $agentMap.execute_parallel.agent_pool) {
-        $pool = @($agentMap.execute_parallel.agent_pool)
-        $newAgents = @("kimi", "deepseek", "glm5", "minimax")
-        foreach ($a in $newAgents) {
-            if ($pool -notcontains $a) {
-                $pool += $a
-                $changed = $true
-            }
-        }
-        $agentMap.execute_parallel.agent_pool = $pool
-    }
-
-    # Expand council.reviewers
+    # Expand council.reviewers only.
+    # REST agents are text-only helpers and must not be treated as write-capable execute agents.
     if ($agentMap.council -and $agentMap.council.reviewers) {
         $reviewers = @($agentMap.council.reviewers)
         $newAgents = @("kimi", "deepseek", "glm5", "minimax")
@@ -234,7 +222,7 @@ if (-not (Test-Path $agentMapPath)) {
 
     if ($changed) {
         $agentMap | ConvertTo-Json -Depth 10 | Set-Content $agentMapPath -Encoding UTF8
-        Write-Host "  [OK] Updated execute_parallel.agent_pool + council.reviewers" -ForegroundColor Green
+        Write-Host "  [OK] Updated council.reviewers with REST reviewer pool" -ForegroundColor Green
         $changeCount++
     } else {
         Write-Host "  [SKIP] Pools already contain new agents" -ForegroundColor DarkGray
@@ -285,7 +273,7 @@ function Invoke-OpenAICompatibleAgent {
     param(
         [string]$AgentName,
         [string]$Prompt,
-        [int]$TimeoutSeconds = 600
+        [int]$TimeoutSeconds = 60
     )
 
     # Load registry config
@@ -302,7 +290,7 @@ function Invoke-OpenAICompatibleAgent {
     # Check if agent is disabled in registry
     if ($cfg.enabled -eq $false) {
         $reason = if ($cfg.disabled_reason) { $cfg.disabled_reason } else { "disabled in model-registry.json" }
-        return "connection_failed: Agent '$AgentName' is disabled - $reason"
+        return "disabled: Agent '$AgentName' is disabled - $reason"
     }
 
     # Resolve API key from environment (check Process, then User, then Machine store)
@@ -392,6 +380,12 @@ function Invoke-OpenAICompatibleAgent {
             } else {
                 return "unauthorized: access denied - $errMsg (HTTP 403)"
             }
+        } elseif ($statusCode -eq 400) {
+            # 400 Bad Request -- typically prompt too large or malformed input
+            # Treat as rate_limit so pipeline rotates to a different agent gracefully
+            return "rate_limit: prompt too large or bad request for $AgentName (HTTP 400) - $errMsg"
+        } elseif ($statusCode -in @(502, 503)) {
+            return "rate_limit: server temporarily unavailable (HTTP $statusCode) - $errMsg"
         } elseif ($statusCode -ge 500) {
             return "server_error: $errMsg (HTTP $statusCode)"
         } elseif ($errMsg -match "(Unable to connect|No such host|name.*(not|could not).*resolve|ConnectFailure|connection refused|actively refused|unreachable|SocketException|NameResolutionFailure)") {
@@ -434,7 +428,7 @@ $newEnhancedDispatchEnd = @'
             } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
                 # OpenAI-compatible REST API agents (kimi, deepseek, glm5, minimax, etc.)
                 $rawOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt $effectivePrompt
-                $exitCode = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted)") { 1 } else { 0 }
+                $exitCode = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted|disabled:|connection_failed:)") { 1 } else { 0 }
                 $parsed = Extract-TokensFromOutput -Agent $Agent -RawOutput $rawOutput
                 if ($parsed -and $parsed.TextOutput) {
                     $output = $parsed.TextOutput -split "`n"
@@ -521,7 +515,7 @@ $oldFallbackEnhanced = @'
 
 $newFallbackEnhanced = @'
         } elseif ($FallbackAgent -eq "gemini") {
-            $rawOutput = $Prompt | gemini --approval-mode plan --output-format json 2>&1
+            $rawOutput = $Prompt | gemini --model $script:GEMINI_MODEL --approval-mode plan --output-format json 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -532,7 +526,7 @@ $newFallbackEnhanced = @'
             }
         } elseif (Test-IsOpenAICompatAgent -AgentName $FallbackAgent) {
             $rawOutput = Invoke-OpenAICompatibleAgent -AgentName $FallbackAgent -Prompt $Prompt
-            $fbExit = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted)") { 1 } else { 0 }
+            $fbExit = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted|disabled:|connection_failed:)") { 1 } else { 0 }
             $parsed = Extract-TokensFromOutput -Agent $FallbackAgent -RawOutput $rawOutput
             if ($parsed -and $parsed.TextOutput) {
                 $fbOutput = $parsed.TextOutput -split "`n"
@@ -693,11 +687,13 @@ Write-Host "[STEP 9] Patching Get-NextAvailableAgent pool..." -ForegroundColor Y
 $oldPool = @'
     # Agent pool -- order matters (preference order)
     $pool = @("claude", "codex", "gemini")
+    $researchCapable = @("gemini", "deepseek", "kimi", "minimax", "glm5")
 '@
 
 $newPool = @'
     # Agent pool -- read from model-registry.json, fall back to legacy 3-agent list
     $pool = @("claude", "codex", "gemini")  # legacy fallback
+    $researchCapable = @("gemini", "deepseek", "kimi", "minimax", "glm5")
     $regPath = Join-Path $env:USERPROFILE ".gsd-global\config\model-registry.json"
     if (Test-Path $regPath) {
         try {
@@ -768,11 +764,11 @@ $oldProbe = @'
 
 $newProbe = @'
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
+                    $testOutput = "Reply with just the word READY" | gemini --model $script:GEMINI_MODEL --approval-mode plan 2>&1
                 } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
                     $testOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt "Reply with just the word READY" -TimeoutSeconds 30
                 } else {
-                    $testOutput = claude -p "Reply with just the word READY" 2>&1
+                    $testOutput = claude -p "Reply with just the word READY" --model $script:CLAUDE_MODEL 2>&1
                 }
 '@
 
@@ -924,7 +920,15 @@ $oldDiagEnhancedElse = @'
 $newDiagEnhancedElse = @'
     # -- OpenAI-compatible REST agents (kimi, deepseek, glm5, minimax) --
     elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent -AgentName $Agent)) {
-        if ($OutputText -match "rate_limit|429|too.many.requests") {
+        if ($OutputText -match "^disabled:") {
+            $diagnosis = "$Agent is disabled in model-registry.json"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "^connection_failed:") {
+            $diagnosis = "$Agent endpoint unreachable"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "rate_limit|429|too.many.requests") {
             $diagnosis = "$Agent rate-limited (HTTP 429)"
         } elseif ($OutputText -match "quota_exhausted|402|payment|insufficient") {
             $diagnosis = "$Agent quota exhausted"
@@ -941,11 +945,13 @@ $newDiagEnhancedElse = @'
             $diagnosis = "$Agent exit code $ExitCode"
         }
         # REST agents fall back to claude for read-only phases, retry for write phases
-        if ($Phase -match "research|review|verify|plan|council") {
-            $action = "fallback"
-            $fallbackAgent = "claude"
-        } else {
-            $action = "retry"
+        if ($action -ne "fallback" -and $action -ne "fail") {
+            if ($Phase -match "research|review|verify|plan|council") {
+                $action = "fallback"
+                $fallbackAgent = "claude"
+            } else {
+                $action = "retry"
+            }
         }
     }
 
@@ -962,7 +968,7 @@ $newDiagEnhancedElse = @'
 }
 '@
 
-if ($content.Contains("Test-IsOpenAICompatAgent -AgentName `$Agent") -and $content.Contains("`$Agent rate-limited")) {
+if ($content.Contains("Test-IsOpenAICompatAgent -AgentName `$Agent") -and $content.Contains("`$Agent rate-limited") -and $content.Contains("^disabled:")) {
     Write-Host "  [SKIP] Enhanced Get-FailureDiagnosis already patched" -ForegroundColor DarkGray
 } elseif (NormContains $content $oldDiagEnhancedElse) {
     $content = NormReplace $content $oldDiagEnhancedElse $newDiagEnhancedElse
@@ -989,7 +995,15 @@ $oldDiagOriginalElse = @'
 
 $newDiagOriginalElse = @'
     } elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent -AgentName $Agent)) {
-        if ($OutputText -match "rate_limit|429|too.many.requests") {
+        if ($OutputText -match "^disabled:") {
+            $diagnosis = "$Agent is disabled in model-registry.json"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "^connection_failed:") {
+            $diagnosis = "$Agent endpoint unreachable"
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } elseif ($OutputText -match "rate_limit|429|too.many.requests") {
             $diagnosis = "$Agent rate-limited (HTTP 429)"
         } elseif ($OutputText -match "quota_exhausted|402|payment|insufficient") {
             $diagnosis = "$Agent quota exhausted"
@@ -1003,11 +1017,13 @@ $newDiagOriginalElse = @'
         } else {
             $diagnosis = "$Agent exit code $ExitCode"
         }
-        if ($Phase -match "research|review|verify|plan|council") {
-            $action = "fallback"
-            $fallbackAgent = "claude"
-        } else {
-            $action = "retry"
+        if ($action -ne "fallback" -and $action -ne "fail") {
+            if ($Phase -match "research|review|verify|plan|council") {
+                $action = "fallback"
+                $fallbackAgent = "claude"
+            } else {
+                $action = "retry"
+            }
         }
     } else {
         $diagnosis = "Unknown agent '$Agent' exit code $ExitCode"
@@ -1017,7 +1033,7 @@ $newDiagOriginalElse = @'
 }
 '@
 
-if ($content.Contains('$Agent rate-limited (HTTP 429)') -and $content.Contains('return @{ Diagnosis = $diagnosis; Action = $action;')) {
+if ($content.Contains('$Agent rate-limited (HTTP 429)') -and $content.Contains('return @{ Diagnosis = $diagnosis; Action = $action; FallbackAgent = $fallbackAgent; FallbackMode = $fallbackMode }')) {
     Write-Host "  [SKIP] Original Get-FailureDiagnosis already patched" -ForegroundColor DarkGray
 } elseif (NormContains $content $oldDiagOriginalElse) {
     $content = NormReplace $content $oldDiagOriginalElse $newDiagOriginalElse
@@ -1053,7 +1069,7 @@ if (-not (Test-Path $supervisorPath)) {
             -LogFile $diagLogFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
             -AllowedTools "Read,Write,Bash"
     } else {
-        $output = claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1
+        $output = claude -p $prompt --allowed-tools "Read,Write,Bash" 2>&1
 '@
 
     $newSupervisorDiag = @'
@@ -1084,7 +1100,8 @@ if (-not (Test-Path $supervisorPath)) {
             -LogFile $diagLogFile -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2 `
             -AllowedTools "Read,Write,Bash"
     } else {
-        $output = claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1
+        $_cm = if ($script:CLAUDE_MODEL) { $script:CLAUDE_MODEL } else { "claude-sonnet-4-6" }
+        $output = claude -p $prompt --model $_cm --allowed-tools "Read,Write,Bash" 2>&1
 '@
 
     if ($supContent.Contains('$diagAgent = "claude"')) {
@@ -1139,12 +1156,12 @@ if (-not (Test-Path $calculatorPath)) {
 
     # 15B: Expand $modelLookups
     $oldCalcLookups = @'
-        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3.1 Pro" }
+        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.0-pro","gemini-3-pro","gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3 Pro" }
     )
 '@
 
     $newCalcLookups = @'
-        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3.1 Pro" }
+        @{ CacheKey = "gemini";        LiteLLMKeys = @("gemini-3.0-pro","gemini-3-pro","gemini-3.1-pro-preview","gemini-3-pro-preview","gemini-2.5-pro"); NamePrefix = "Gemini 3 Pro" }
         @{ CacheKey = "kimi";          LiteLLMKeys = @("moonshot-v1-128k","moonshot-v1-32k","kimi-k2.5"); NamePrefix = "Kimi K2.5" }
         @{ CacheKey = "deepseek";      LiteLLMKeys = @("deepseek-chat","deepseek-coder"); NamePrefix = "DeepSeek" }
         @{ CacheKey = "glm5";          LiteLLMKeys = @("glm-5","glm-4","glm-4-0520"); NamePrefix = "GLM" }

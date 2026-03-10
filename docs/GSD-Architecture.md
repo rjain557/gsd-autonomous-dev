@@ -4,7 +4,9 @@
 
 The GSD Engine orchestrates seven AI agents (3 CLI-based + 4 REST API) through PowerShell scripts to autonomously develop, fix, and verify code against specifications. It runs unattended with comprehensive self-healing for network failures, quota limits, disk space, JSON corruption, agent boundary violations, and stalls.
 
-The multi-model strategy distributes work across independent quota pools: Claude handles reasoning (review, plan, verify), Codex handles code generation (execute), and Gemini handles research and spec-fix. Four additional REST API agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) expand the rotation pool — when any CLI agent exhausts its quota, the engine immediately rotates to the next available agent instead of waiting in sleep loops.
+The multi-model strategy distributes work across independent quota pools: Claude (claude-sonnet-4-6) handles reasoning (review, plan, verify), Codex (gpt-5.4) handles code generation (execute), and Gemini (gemini-3.0-pro) handles research and spec-fix. Four additional REST API agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) expand the rotation pool — when any CLI agent exhausts its quota, the engine immediately rotates to the next available agent instead of waiting in sleep loops.
+
+Model versions are controlled by `agent_models` in `global-config.json` and passed via `--model` flag to every CLI invocation. Changing model versions requires only a config edit — no reinstall needed.
 
 ## Installed Directory Structure
 
@@ -225,7 +227,7 @@ All API keys are stored as persistent environment variables (Windows registry), 
 
 ### Gemini Fallback
 
-If the Gemini CLI (`gemini`) is not installed, the engine automatically falls back to Codex for research and spec-fix phases. Install Gemini CLI to get the full benefit of three-model optimization:
+If the Gemini CLI (`gemini`) is not installed, the engine automatically falls back to Codex for research and spec-fix phases. Install Gemini CLI to get the full benefit of the core 3-model phase routing and the broader 7-model architecture:
 
 ```
 npm install -g @google/gemini-cli
@@ -1070,9 +1072,11 @@ Pricing is fetched from the [LiteLLM open-source pricing database](https://githu
 | Claude Sonnet 4.6 | $3.00 | $15.00 | Blueprint, verify (default) |
 | Claude Opus 4.6 | $5.00 | $25.00 | Blueprint, verify (premium) |
 | Claude Haiku 4.5 | $1.00 | $5.00 | Blueprint, verify (economy) |
-| GPT 5.3 Codex | $1.75 | $14.00 | Code generation (build/execute) |
+| GPT 5.4 Codex | TBD | TBD | Code generation (build/execute) — default |
+| GPT 5.3 Codex | $1.75 | $14.00 | Code generation (fallback) |
 | GPT-5.1 Codex | $1.25 | $10.00 | Code generation (alternative) |
-| Gemini 3.1 Pro | $2.00 | $12.00 | Research, spec-fix |
+| Gemini 3 Pro | TBD | TBD | Research, spec-fix — default |
+| Gemini 3.1 Pro Preview | $2.00 | $12.00 | Research, spec-fix (fallback) |
 
 ### Pricing Cache
 

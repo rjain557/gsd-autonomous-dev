@@ -636,6 +636,40 @@ The incremental Phase 0 uses `create-phases-incremental.md` which instructs Clau
 1. New specs are in the correct directory (e.g., `design/web/v02/_analysis/`)
 2. Each version contains the COMPLETE spec set, not just deltas
 
+## Council Requirements Issues
+
+### gsd-verify-requirements not sending ntfy notifications
+
+The council function initializes the ntfy topic on first run. If you don't see notifications:
+1. Check the terminal output for `ntfy topic (auto):` or `ntfy topic (config):` at startup
+2. If no topic line appears, the function failed to call `Initialize-GsdNotifications`. Reload your profile: `. "$env:USERPROFILE\.gsd-global\scripts\gsd-profile-functions.ps1"`
+3. Verify manually: open `https://ntfy.sh/gsd-{username}-{reponame}` in a browser to check for messages
+
+### Gemini fails with CLI help text in log
+
+Gemini was invoked with `--approval-mode full` which is not a valid option. Valid choices are: `default`, `auto_edit`, `yolo`, `plan`. The council uses `--approval-mode yolo` (auto-approve all tool calls). If you see CLI help text in `council-requirements-gemini-chunk1.log`, re-run the installer or reload your profile to get the fix.
+
+Also check `~/.gemini/settings.json` -- if `model` is a string instead of an object, Gemini CLI will error. It should be: `"model": { "default": "gemini-3.1-pro-preview" }`.
+
+### No progress updates during parallel extraction
+
+Background jobs (`Start-Job`) don't print to the parent terminal. The main process polls for new chunk output files on disk every 15 seconds and prints `[PROGRESS]` lines. If you see only `[HEARTBEAT]` messages, agents are still working but haven't completed a chunk yet. Each chunk (10 files) may take 1-5 minutes depending on file sizes.
+
+### Agent job shows "Running" after timeout
+
+The polling loop waits up to `(timeout_seconds × chunks_per_agent) + 120` seconds. If a job exceeds this, it's stopped and partial results are recovered from disk. Increase `timeout_seconds` in `global-config.json` → `council_requirements` if agents consistently time out.
+
+### Only 1 agent produced output (min_agents_for_merge = 2)
+
+The pipeline requires at least `min_agents_for_merge` agents (default: 2) to produce valid output. If only 1 succeeds:
+1. Use `-SkipAgent` to exclude the problematic agent and run with the remaining 2
+2. Lower `min_agents_for_merge` to 1 in `global-config.json` (single-agent extraction, no cross-verify)
+3. Check agent-specific logs in `.gsd/logs/council-requirements-{agent}-chunk*.log`
+
+### Cross-verification adds too many false requirements
+
+The verifier is instructed to add only clearly missed requirements. If it's too aggressive, use `-SkipVerify` to extract without cross-verification. The synthesis phase will still merge and deduplicate, just without verification confidence scores.
+
 ## Developer Handoff Issues
 
 ### developer-handoff.md is empty or missing sections

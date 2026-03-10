@@ -150,6 +150,7 @@ This runs all 35 install/patch scripts in dependency order. The installer also r
 | 33 | patch-gsd-partitioned-code-review.ps1 | Partitioned code review (3-way parallel, agent rotation) |
 | 34 | patch-gsd-loc-cost-integration.ps1 | LOC-Cost integration (cost-per-line, review LOC awareness, ntfy) |
 | 35 | patch-gsd-maintenance-mode.ps1 | Maintenance mode (gsd-fix, gsd-update, --Scope, --Incremental) |
+| 36 | patch-gsd-council-requirements.ps1 | Council requirements (3-phase parallel extract, cross-verify, synthesize) |
 
 Optional standalone scripts (not run by installer):
 - **setup-gsd-api-keys.ps1** -- manage CLI agent API key environment variables (set, show, clear)
@@ -157,7 +158,7 @@ Optional standalone scripts (not run by installer):
 - **install-gsd-keybindings.ps1** -- VS Code keyboard shortcuts (Ctrl+Shift+G chords)
 - **token-cost-calculator.ps1** -- token cost estimator (also installed globally as `gsd-costs` by install-gsd-global.ps1)
 
-The repository contains 41 scripts total: 1 master installer, 1 pre-flight check, 35 scripts run by installer (31 core patches + 1 bug fix + 1 resilience hardening + 1 maintenance mode + 1 LOC-cost integration), and 4 standalone utilities.
+The repository contains 42 scripts total: 1 master installer, 1 pre-flight check, 36 scripts run by installer (31 core patches + 1 bug fix + 1 resilience hardening + 1 maintenance mode + 1 LOC-cost integration + 1 council requirements), and 4 standalone utilities.
 
 ### Step 3: Restart Terminal
 

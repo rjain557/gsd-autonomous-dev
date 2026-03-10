@@ -171,11 +171,11 @@ $newProbeBlock = @'
             # Test if quota has reset - use the SAME agent that was exhausted
             try {
                 if ($Agent -eq "codex") {
-                    $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
+                    $testOutput = "Reply with just the word READY" | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
+                    $testOutput = "Reply with just the word READY" | gemini --model $script:GEMINI_MODEL --approval-mode plan 2>&1
                 } else {
-                    $testOutput = claude -p "Reply with just the word READY" 2>&1
+                    $testOutput = claude -p "Reply with just the word READY" --model $script:CLAUDE_MODEL 2>&1
                 }
 
                 # Track probe token cost (small but adds up over 24 cycles)
@@ -283,6 +283,8 @@ $oldQuotaHandler = @'
             if ($outputText -match "(unauthorized|invalid.*key|auth.*fail|401|403)") {
                 $result.Error = "AUTH_ERROR"
                 Write-Host "    [XX] Auth error - cannot retry" -ForegroundColor Red
+                # Long cooldown so this agent is skipped for the rest of the run
+                if ($GsdDir) { Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 480 }
                 return $result
             }
 
@@ -322,7 +324,7 @@ $newQuotaHandler = @'
 
                 # CHECK: Should we rotate to a different agent instead of waiting?
                 if ($consecutiveQuotaFails[$Agent] -ge $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) {
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -Phase $Phase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent exhausted $($consecutiveQuotaFails[$Agent])x. Switching to $rotatedAgent" -ForegroundColor Yellow
                         Write-GsdError -GsdDir $GsdDir -Category "agent_rotate" -Phase $Phase -Iteration $i `
@@ -336,10 +338,12 @@ $newQuotaHandler = @'
                     }
                 }
 
-                # CHECK: Have we exceeded the cumulative wait cap?
-                if ($totalQuotaWaitMinutes -ge $script:QUOTA_CUMULATIVE_MAX_MINUTES) {
-                    Write-Host "    [XX] Cumulative quota wait ($totalQuotaWaitMinutes min) exceeds cap ($($script:QUOTA_CUMULATIVE_MAX_MINUTES) min). Giving up." -ForegroundColor Red
-                    $result.Error = "Quota exhausted: waited $totalQuotaWaitMinutes min total across all agents"
+                # CHECK: Have we exceeded the cumulative wait cap? (wall-clock, not sum of waits)
+                if ($null -eq $quotaWallClockStart) { $quotaWallClockStart = Get-Date }
+                $wallClockMinutes = ((Get-Date) - $quotaWallClockStart).TotalMinutes
+                if ($wallClockMinutes -ge $script:QUOTA_CUMULATIVE_MAX_MINUTES) {
+                    Write-Host "    [XX] Quota wall-clock wait ($([math]::Round($wallClockMinutes,1)) min) exceeds cap ($($script:QUOTA_CUMULATIVE_MAX_MINUTES) min). Giving up." -ForegroundColor Red
+                    $result.Error = "Quota exhausted: waited $([math]::Round($wallClockMinutes,1)) min wall-clock across all agents"
                     return $result
                 }
 
@@ -363,7 +367,7 @@ $newQuotaHandler = @'
                     continue
                 } else {
                     # Quota didn't reset -- try rotating agent before giving up
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -Phase $Phase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent quota didn't reset. Trying $rotatedAgent" -ForegroundColor Yellow
                         Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
@@ -394,6 +398,8 @@ $newQuotaHandler = @'
 
                 $result.Error = "AUTH_ERROR"
                 Write-Host "    [XX] Auth error - cannot retry" -ForegroundColor Red
+                # Long cooldown so this agent is skipped for the rest of the run
+                if ($GsdDir) { Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 480 }
                 return $result
             }
 
@@ -441,8 +447,9 @@ $oldRetryLoopInit = @'
 $newRetryLoopInit = @'
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }
 
-    # Cumulative quota wait tracking (Fix P3)
+    # Cumulative quota wait tracking (Fix P3) - uses wall-clock time to prevent multi-agent rotation from exceeding cap
     $totalQuotaWaitMinutes = 0
+    $quotaWallClockStart = $null   # Set on first quota hit; caps on actual elapsed time not summed waits
     $consecutiveQuotaFails = @{}  # Per-agent: @{ "codex" = 3; "gemini" = 1 }
 
     for ($i = $Attempt; $i -le $MaxAttempts; $i++) {
@@ -482,7 +489,7 @@ $script:QUOTA_CUMULATIVE_MAX_MINUTES = 120          # Give up after 2 hours TOTA
 $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE = 3   # Try different agent after 3 consecutive quota hits
 '@
 
-if (-not $content.Contains('QUOTA_CUMULATIVE_MAX_MINUTES')) {
+if (-not $content.Contains('QUOTA_CUMULATIVE_MAX_MINUTES = ')) {
     Add-Content -Path $resiliencePath -Value $configConstants -Encoding UTF8
     Write-Host "   [OK] Config constants added" -ForegroundColor DarkGreen
 } else {
@@ -538,14 +545,17 @@ function Get-NextAvailableAgent {
     .SYNOPSIS
         Returns the next agent from the pool that hasn't recently been quota-exhausted.
         Uses a cooldown file to track which agents are in quota backoff.
+        Phase-aware: research phase only rotates within research-capable agents.
     #>
     param(
         [string]$CurrentAgent,
-        [string]$GsdDir
+        [string]$GsdDir,
+        [string]$Phase = ""
     )
 
     # Agent pool -- order matters (preference order)
     $pool = @("claude", "codex", "gemini")
+    $researchCapable = @("gemini", "deepseek", "kimi", "minimax", "glm5")
 
     # Read cooldown state
     $cooldownPath = Join-Path $GsdDir "supervisor\agent-cooldowns.json"
@@ -554,12 +564,24 @@ function Get-NextAvailableAgent {
         try {
             $raw = Get-Content $cooldownPath -Raw | ConvertFrom-Json
             foreach ($prop in $raw.PSObject.Properties) {
-                $cooldowns[$prop.Name] = [datetime]$prop.Value
+                try { $cooldowns[$prop.Name] = [datetime]$prop.Value } catch { <# skip corrupted entry #> }
             }
         } catch { }
     }
 
     $now = Get-Date
+
+    # For research phase: restrict pool to research-capable agents only (never rotate to claude/codex)
+    if ($Phase -eq "research") {
+        $pool = @($pool | Where-Object { $_ -in $researchCapable })
+        if ($pool.Count -eq 0) { return $null }
+    }
+
+    # Council phases are CLI-only — REST agents lack tool-use support needed for council prompts
+    if ($Phase -like "council-*") {
+        $pool = @($pool | Where-Object { $_ -in @("claude", "codex", "gemini") })
+        if ($pool.Count -eq 0) { return $null }
+    }
 
     foreach ($agent in $pool) {
         if ($agent -eq $CurrentAgent) { continue }

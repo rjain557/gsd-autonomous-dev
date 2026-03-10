@@ -1,0 +1,10 @@
+﻿{
+    "pid":  324,
+    "iteration":  0,
+    "timestamp":  "2026-03-08T09:17:11.7123631-07:00",
+    "pipeline":  "converge",
+    "health":  0,
+    "status":  "in_progress",
+    "phase":  "council-create-phases",
+    "batch_size":  8
+}

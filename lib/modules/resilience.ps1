@@ -3,9 +3,6 @@
 # Usage: . "$env:USERPROFILE\.gsd-global\lib\modules\resilience.ps1"
 # ===============================================================
 
-# -- Load API agents module --
-. "$PSScriptRoot\api-agents.ps1"
-
 # -- Configuration --
 $script:RETRY_MAX = 3
 $script:RETRY_DELAY_SECONDS = 10
@@ -15,8 +12,6 @@ $script:BUILD_TIMEOUT_SECONDS = 300
 $script:AGENT_TIMEOUT_SECONDS = 600
 $script:AGENT_WATCHDOG_MINUTES = 30     # Kill hung agent after this many minutes
 $script:LOCK_STALE_MINUTES = 120
-$script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE = 1  # Rotate immediately on first quota failure
-$script:QUOTA_CUMULATIVE_MAX_MINUTES = 15           # Give up after 15 min total waiting
 
 # ===========================================
 # PRE-FLIGHT VALIDATION
@@ -38,6 +33,7 @@ function Test-PreFlight {
         @{ Name="claude"; Cmd="claude --version" },
         @{ Name="codex"; Cmd="codex --version" },
         @{ Name="gemini"; Cmd="gemini --version" },
+        @{ Name="kimi"; Cmd="kimi --version" },
         @{ Name="git"; Cmd="git --version" }
     )
     foreach ($tool in $tools) {
@@ -47,6 +43,9 @@ function Test-PreFlight {
         } catch {
             if ($tool.Name -eq "gemini") {
                 $warnings += "gemini CLI not found - research/spec-fix will fall back to codex"
+                Write-Host "    [!!]  $($tool.Name) not found (optional)" -ForegroundColor DarkYellow
+            } elseif ($tool.Name -eq "kimi") {
+                $warnings += "kimi CLI not found - 4th agent slot will be unavailable (install: pip install kimi-cli)"
                 Write-Host "    [!!]  $($tool.Name) not found (optional)" -ForegroundColor DarkYellow
             } else {
                 $errors += "$($tool.Name) CLI not found in PATH"
@@ -132,6 +131,37 @@ function Test-PreFlight {
             $errors += "Another GSD process is running (lock file age: $([math]::Round($lockAge.TotalMinutes)) min)"
             Write-Host "    Lock file active ($([math]::Round($lockAge.TotalMinutes)) min)" -ForegroundColor Red
         }
+    }
+
+    # -- REST agent API key checks (warnings only) --
+    $restAgentChecks = @(
+        @{ Name = "kimi";     EnvVar = "KIMI_API_KEY" }
+        @{ Name = "deepseek"; EnvVar = "DEEPSEEK_API_KEY" }
+        @{ Name = "glm5";     EnvVar = "GLM_API_KEY" }
+        @{ Name = "minimax";  EnvVar = "MINIMAX_API_KEY" }
+    )
+    $restCount = 0
+    foreach ($ra in $restAgentChecks) {
+        $keyVal = [System.Environment]::GetEnvironmentVariable($ra.EnvVar)
+        if (-not $keyVal) {
+            $userVal = [System.Environment]::GetEnvironmentVariable($ra.EnvVar, 'User')
+            if (-not $userVal) { $userVal = [System.Environment]::GetEnvironmentVariable($ra.EnvVar, 'Machine') }
+            if ($userVal) {
+                [System.Environment]::SetEnvironmentVariable($ra.EnvVar, $userVal, 'Process')
+                $keyVal = $userVal
+            }
+        }
+        if ($keyVal) {
+            Write-Host "    [OK] $($ra.EnvVar) set (REST agent: $($ra.Name))" -ForegroundColor DarkGreen
+            $restCount++
+        } else {
+            Write-Host "    [--] $($ra.EnvVar) not set ($($ra.Name) disabled)" -ForegroundColor DarkGray
+        }
+    }
+    if ($restCount -gt 0) {
+        Write-Host "    $restCount REST agent(s) available for rotation" -ForegroundColor DarkGreen
+    } else {
+        $warnings += "No REST agent API keys set. Set KIMI_API_KEY, DEEPSEEK_API_KEY, GLM_API_KEY, or MINIMAX_API_KEY for expanded rotation pool."
     }
 
     # -- Results --
@@ -268,6 +298,22 @@ function Get-FailureDiagnosis {
         } else {
             $diagnosis = "Claude exit code $ExitCode"
         }
+    } elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent $Agent)) {
+        if ($OutputText -match "connection_failed:") {
+            $diagnosis = "$Agent connection failed (endpoint unreachable)"
+        } elseif ($OutputText -match "rate_limit|429") {
+            $diagnosis = "$Agent rate limited"
+        } elseif ($OutputText -match "quota_exhausted|402") {
+            $diagnosis = "$Agent quota exhausted"
+        } elseif ($OutputText -match "unauthorized|401") {
+            $diagnosis = "$Agent unauthorized (check API key)"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "$Agent produced no output"
+        } else {
+            $diagnosis = "$Agent exit code $ExitCode"
+        }
+        $action = "fallback"
+        $fallbackAgent = "codex"
     } else {
         $diagnosis = "Unknown agent '$Agent' exit code $ExitCode"
     }
@@ -294,8 +340,12 @@ function Invoke-AgentFallback {
             $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "gemini") {
-            $fbOutput = $Prompt | gemini --approval-mode plan 2>&1
+            $fbOutput = gemini -p $Prompt --approval-mode plan 2>&1
             $fbExit = $LASTEXITCODE
+        } elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent $FallbackAgent)) {
+            $fbResult = Invoke-OpenAICompatibleAgent -Agent $FallbackAgent -Prompt $Prompt
+            $fbOutput = $fbResult.Output
+            $fbExit = $fbResult.ExitCode
         }
         if ($LogFile -and $fbOutput) {
             $fbOutput | Out-File -FilePath $LogFile -Encoding UTF8 -Append
@@ -370,7 +420,7 @@ exit `$LASTEXITCODE
                     $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) -join ' '
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = `$prompt | gemini $geminiArgs 2>&1
+`$output = gemini -p `$prompt $geminiArgs 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
@@ -836,8 +886,10 @@ $script:QUOTA_SLEEP_MAX = 60            # cap at 60 minutes
 $script:QUOTA_SLEEP_BACKOFF = 2         # double each cycle: 5, 10, 20, 40, 60, 60...
 $script:QUOTA_SLEEP_MINUTES = $script:QUOTA_SLEEP_INITIAL  # compat alias
 $script:QUOTA_MAX_SLEEPS = 24           # max total sleep cycles
-$script:NETWORK_POLL_SECONDS = 30
-$script:NETWORK_MAX_POLLS = 120        # max 1 hour of polling
+$script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE = 1  # rotate after 1 consecutive quota failure
+$script:QUOTA_CUMULATIVE_MAX_MINUTES = 120         # give up after 120 min total quota wait
+$script:NETWORK_POLL_SECONDS = 10
+$script:NETWORK_MAX_POLLS = 6          # max 60s of polling, then skip
 $script:DISK_MIN_FREE_GB = 0.5
 $script:JSON_BACKUP_SUFFIX = ".last-good"
 
@@ -992,7 +1044,9 @@ function Wait-ForQuotaReset {
                 if ($Agent -eq "codex") {
                     $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
+                    $testOutput = gemini -p "Reply with just the word READY" --approval-mode plan 2>&1
+                } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
+                    $testOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt "Reply with just the word READY" -TimeoutSeconds 30
                 } else {
                     $testOutput = claude -p "Reply with just the word READY" 2>&1
                 }
@@ -1046,17 +1100,29 @@ function Wait-ForQuotaReset {
 function Wait-ForNetwork {
     <#
     .SYNOPSIS
-        Polls for internet connectivity. Returns true when online, false after timeout.
+        Polls for internet connectivity using fast HTTP check. Returns true when online, false after timeout.
+        Uses lightweight HTTP HEAD to api.anthropic.com instead of claude CLI (which can hang).
     #>
     param([string]$GsdDir)
 
-    # Quick check first
-    try {
-        $null = claude -p "PING" --max-turns 1 2>$null; if ($LASTEXITCODE -ne 0) { throw "offline" }
-        return $true
-    } catch {}
+    # Fast HTTP-based connectivity check (5s timeout, no CLI dependency)
+    function Test-NetworkFast {
+        try {
+            $null = Invoke-WebRequest -Uri "https://api.anthropic.com" -Method HEAD `
+                -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+            return $true
+        }
+        catch {
+            # Any HTTP response (even 4xx) means network is reachable
+            if ($_.Exception.Response) { return $true }
+            return $false
+        }
+    }
 
-    Write-Host "    Network unavailable. Polling every $($script:NETWORK_POLL_SECONDS)s..." -ForegroundColor Yellow
+    # Quick check first
+    if (Test-NetworkFast) { return $true }
+
+    Write-Host "    Network unavailable. Polling every $($script:NETWORK_POLL_SECONDS)s (max $($script:NETWORK_MAX_POLLS) polls)..." -ForegroundColor Yellow
     Write-GsdError -GsdDir $GsdDir -Category "network" -Phase "connectivity" -Iteration 0 `
         -Message "Network unavailable" -Resolution "Polling for connectivity"
 
@@ -1065,18 +1131,16 @@ function Wait-ForNetwork {
         $polls++
         Start-Sleep -Seconds $script:NETWORK_POLL_SECONDS
 
-        try {
-            $null = claude -p "PING" --max-turns 1 2>$null; if ($LASTEXITCODE -ne 0) { throw "offline" }
+        if (Test-NetworkFast) {
             Write-Host "    [OK] Network restored after $($polls * $script:NETWORK_POLL_SECONDS)s" -ForegroundColor Green
             return $true
-        } catch {
-            if ($polls % 10 -eq 0) {
-                Write-Host "    Still offline... ($polls polls)" -ForegroundColor DarkGray
-            }
+        }
+        else {
+            Write-Host "    Still offline... (poll $polls/$($script:NETWORK_MAX_POLLS))" -ForegroundColor DarkGray
         }
     }
 
-    Write-Host "    [XX] Network did not recover after $($script:NETWORK_MAX_POLLS * $script:NETWORK_POLL_SECONDS)s" -ForegroundColor Red
+    Write-Host "    [!!] Network did not recover after $($script:NETWORK_MAX_POLLS * $script:NETWORK_POLL_SECONDS)s - skipping" -ForegroundColor Red
     return $false
 }
 
@@ -1438,6 +1502,33 @@ function Get-FailureDiagnosis {
         $action = "retry"
     }
 
+    # -- OpenAI-compatible REST agents (kimi, deepseek, glm5, minimax) --
+    elseif ((Get-Command Test-IsOpenAICompatAgent -ErrorAction SilentlyContinue) -and (Test-IsOpenAICompatAgent -AgentName $Agent)) {
+        if ($OutputText -match "rate_limit|429|too.many.requests") {
+            $diagnosis = "$Agent rate-limited (HTTP 429)"
+        } elseif ($OutputText -match "quota_exhausted|402|payment|insufficient") {
+            $diagnosis = "$Agent quota exhausted"
+        } elseif ($OutputText -match "unauthorized|401|invalid.*key|auth") {
+            $diagnosis = "$Agent authentication failed (check API key)"
+            $action = "fail"
+        } elseif ($OutputText -match "server_error|500|502|503|504") {
+            $diagnosis = "$Agent server error (transient)"
+        } elseif ($OutputText -match "timeout|timed.out|deadline") {
+            $diagnosis = "$Agent request timed out"
+        } elseif (-not $OutputText -or $OutputText.Trim().Length -eq 0) {
+            $diagnosis = "$Agent produced no output"
+        } else {
+            $diagnosis = "$Agent exit code $ExitCode"
+        }
+        # REST agents fall back to claude for read-only phases, retry for write phases
+        if ($Phase -match "research|review|verify|plan|council") {
+            $action = "fallback"
+            $fallbackAgent = "claude"
+        } else {
+            $action = "retry"
+        }
+    }
+
     else {
         $diagnosis = "Unknown agent '$Agent' exit code $ExitCode"
     }
@@ -1468,8 +1559,19 @@ function Invoke-AgentFallback {
     $fbTokenData = $null
 
     try {
-        if ($FallbackAgent -eq "codex") {
-            $rawOutput = $Prompt | codex exec --full-auto --json - 2>&1
+        if ($FallbackAgent -eq "kimi") {
+            $kimiFbArgs = @("--print")
+            if ($env:GSD_KIMI_THINKING -eq "false") { $kimiFbArgs += "--no-thinking" } else { $kimiFbArgs += "--thinking" }
+            $rawOutput = $Prompt | kimi @kimiFbArgs 2>&1
+            $fbExit = $LASTEXITCODE
+            $parsed = Extract-TokensFromOutput -Agent "kimi" -RawOutput ($rawOutput -join "`n")
+            if ($parsed -and $parsed.TextOutput) { $fbOutput = $parsed.TextOutput -split "`n"; $fbTokenData = $parsed }
+            else { $fbOutput = $rawOutput }
+        } elseif ($FallbackAgent -eq "codex") {
+            $codexFbArgs = @("exec", "--full-auto", "--json", "-")
+            $codexFbEffort = $env:GSD_CODEX_EFFORT
+            if ($codexFbEffort) { $codexFbArgs = @("exec", "--full-auto", "--json", "-c", "model_reasoning_effort=$codexFbEffort", "-") }
+            $rawOutput = $Prompt | codex @codexFbArgs 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "codex" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -1489,7 +1591,7 @@ function Invoke-AgentFallback {
                 $fbOutput = $rawOutput
             }
         } elseif ($FallbackAgent -eq "gemini") {
-            $rawOutput = $Prompt | gemini --approval-mode plan --output-format json 2>&1
+            $rawOutput = gemini -p $Prompt --approval-mode plan --output-format json 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -1497,6 +1599,16 @@ function Invoke-AgentFallback {
                 $fbTokenData = $parsed
             } else {
                 $fbOutput = $rawOutput
+            }
+        } elseif (Test-IsOpenAICompatAgent -AgentName $FallbackAgent) {
+            $rawOutput = Invoke-OpenAICompatibleAgent -AgentName $FallbackAgent -Prompt $Prompt
+            $fbExit = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted)") { 1 } else { 0 }
+            $parsed = Extract-TokensFromOutput -Agent $FallbackAgent -RawOutput $rawOutput
+            if ($parsed -and $parsed.TextOutput) {
+                $fbOutput = $parsed.TextOutput -split "`n"
+                $fbTokenData = $parsed
+            } else {
+                $fbOutput = @($rawOutput)
             }
         }
 
@@ -1533,7 +1645,8 @@ function Invoke-WithRetry {
         [int]$CurrentBatchSize = 15,
         [string]$GsdDir,
         [string]$AllowedTools = "Read,Write,Bash,mcp__*",
-        [string]$GeminiMode = "--approval-mode plan"   # "--approval-mode plan" (read-only) or "--yolo" (write)
+        [string]$GeminiMode = "--approval-mode plan",   # "--approval-mode plan" (read-only) or "--yolo" (write)
+        [int]$MaxCallMinutes = 15   # Per-call timeout: kill hung agents after this many minutes (patch-gsd-rate-limiter.ps1)
     )
 
     $result = @{ Success = $false; Attempts = 0; FinalBatchSize = $CurrentBatchSize; Error = $null }
@@ -1570,120 +1683,77 @@ function Invoke-WithRetry {
             $output = $null
             $tokenData = $null
             $callStart = Get-Date
-            $timeoutSec = $script:AGENT_TIMEOUT_SECONDS  # 600s = 10 min
 
-            # --- Invoke agent CLI (with timeout via background job) ---
-            $rawOutput = $null
-            $timedOut = $false
+            # -- RATE LIMIT PRE-CHECK (patch-gsd-rate-limiter.ps1) --
+            if (Get-Command Wait-ForRateWindow -ErrorAction SilentlyContinue) {
+                $rlWait = Wait-ForRateWindow -AgentName $Agent -GsdDir $GsdDir
+                if ($rlWait -gt 0) {
+                    Write-Host "    [RATE-LIMIT] Paced $Agent for ${rlWait}s to stay within RPM" -ForegroundColor DarkYellow
+                }
+            }
 
-            # Write prompt to temp file for all agents
-            $tmpPrompt = Join-Path ([System.IO.Path]::GetTempPath()) "gsd-prompt-$([guid]::NewGuid().ToString('N').Substring(0,8)).txt"
-            Set-Content -Path $tmpPrompt -Value $effectivePrompt -Encoding UTF8
-
-            $jobScript = $null
             if ($Agent -eq "claude") {
-                $jobScript = {
-                    param($pf, $tools)
-                    $p = Get-Content $pf -Raw
-                    claude -p $p --allowedTools $tools --output-format json 2>&1
-                }
-                $jobArgs = @($tmpPrompt, $AllowedTools)
-            } elseif ($Agent -eq "codex") {
-                $jobScript = {
-                    param($pf)
-                    $p = Get-Content $pf -Raw
-                    $p | codex exec --full-auto --json - 2>&1
-                }
-                $jobArgs = @($tmpPrompt)
-            } elseif ($Agent -eq "gemini") {
-                $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-                $jobScript = {
-                    param($pf, $gArgs)
-                    $p = Get-Content $pf -Raw
-                    $p | gemini @gArgs --output-format json 2>&1
-                }
-                $jobArgs = @($tmpPrompt, $geminiArgs)
-            }
-
-            if ($jobScript) {
-                $job = Start-Job -ScriptBlock $jobScript -ArgumentList $jobArgs
-                $finished = $job | Wait-Job -Timeout $timeoutSec
-                if ($job.State -eq 'Running') {
-                    $job | Stop-Job
-                    $job | Remove-Job -Force
-                    $timedOut = $true
-                } else {
-                    $rawOutput = Receive-Job -Job $job
-                    $exitCode = if ($job.State -eq 'Failed') { 1 } else { 0 }
-                    $job | Remove-Job -Force
-                }
-            }
-
-            # --- API-based agents (deepseek, glm5, minimax) ---
-            if (-not $jobScript -and $Agent -in $script:API_AGENTS) {
-                Write-Host "    [$($Agent.ToUpper())] Calling via REST API..." -ForegroundColor DarkCyan
-                $apiResult = Invoke-ApiAgent -Agent $Agent -Prompt $effectivePrompt -TimeoutSec $timeoutSec
-                Remove-Item $tmpPrompt -Force -ErrorAction SilentlyContinue
-                if ($apiResult.Success) {
-                    $rawOutput = $apiResult.RawOutput
-                    $output = $apiResult.Output
-                    $tokenData = $apiResult.TokenData
-                    $exitCode = 0
-                } elseif ($apiResult.Error -eq "rate_limit") {
-                    # Let the quota handling below deal with it
-                    $rawOutput = "rate_limit quota_exhausted resource_exhausted"
-                    $exitCode = 1
-                } elseif ($apiResult.Error -eq "timeout") {
-                    Remove-Item $tmpPrompt -Force -ErrorAction SilentlyContinue
-                    Write-Host "    [TIMEOUT] $Agent API timed out. Rotating..." -ForegroundColor Yellow
-                    Write-GsdError -GsdDir $GsdDir -Category "timeout" -Phase $Phase -Iteration $i `
-                        -Message "$Agent API timed out after ${timeoutSec}s" -Resolution "Rotating agent"
-                    Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
-                    if ($rotatedAgent) {
-                        Write-Host "    [ROTATE] $Agent -> $rotatedAgent (API timeout)" -ForegroundColor Yellow
-                        $Agent = $rotatedAgent
-                        $i--
-                        continue
-                    }
-                    $result.Error = "All agents timed out"
-                    return $result
-                } else {
-                    # Other API error - treat as crash, let retry logic handle
-                    $rawOutput = "API error: $($apiResult.Error)"
-                    $exitCode = 1
-                }
-            } else {
-                Remove-Item $tmpPrompt -Force -ErrorAction SilentlyContinue
-            }
-
-            if ($timedOut) {
-                Write-Host "    [TIMEOUT] $Agent exceeded ${timeoutSec}s. Rotating..." -ForegroundColor Yellow
-                Write-GsdError -GsdDir $GsdDir -Category "timeout" -Phase $Phase -Iteration $i `
-                    -Message "$Agent timed out after ${timeoutSec}s" -Resolution "Rotating agent"
-                Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
-                $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
-                if ($rotatedAgent) {
-                    Write-Host "    [ROTATE] $Agent -> $rotatedAgent (timeout)" -ForegroundColor Yellow
-                    Write-GsdError -GsdDir $GsdDir -Category "agent_rotate" -Phase $Phase -Iteration $i `
-                        -Message "$Agent -> $rotatedAgent after timeout" -Resolution "Rotated agent"
-                    $Agent = $rotatedAgent
-                    $i--
-                    continue
-                }
-                $result.Error = "All agents timed out"
-                return $result
-            }
-
-            # --- Parse output (unified for all agents) ---
-            if ($rawOutput) {
-                $outputStr = if ($rawOutput -is [array]) { $rawOutput -join "`n" } else { "$rawOutput" }
-                $parsed = Extract-TokensFromOutput -Agent $Agent -RawOutput $outputStr
+                # Use --output-format json to capture token usage + cost data
+                $rawOutput = claude -p $effectivePrompt --allowedTools $AllowedTools --output-format json 2>&1
+                $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "claude" -RawOutput ($rawOutput -join "`n")
                 if ($parsed -and $parsed.TextOutput) {
                     $output = $parsed.TextOutput -split "`n"
                     $tokenData = $parsed
                 } else {
-                    $output = if ($rawOutput -is [array]) { $rawOutput } else { $rawOutput -split "`n" }
+                    $output = $rawOutput  # Fallback: preserve current behavior
+                }
+            } elseif ($Agent -eq "codex") {
+                # Pass prompt via stdin, use --json to capture token usage
+                # GSD_CODEX_EFFORT env var overrides reasoning level per-call (e.g. "medium" for bulk tasks)
+                $codexArgs = @("exec", "--full-auto", "--json", "-")
+                $codexEffort = $env:GSD_CODEX_EFFORT
+                if ($codexEffort) { $codexArgs = @("exec", "--full-auto", "--json", "-c", "model_reasoning_effort=$codexEffort", "-") }
+                $rawOutput = $effectivePrompt | codex @codexArgs 2>&1
+                $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "codex" -RawOutput ($rawOutput -join "`n")
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = $rawOutput
+                }
+            } elseif ($Agent -eq "gemini") {
+                # Gemini CLI: --approval-mode plan (read-only) or --yolo (write)
+                $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+                $rawOutput = gemini -p $effectivePrompt @geminiArgs --output-format json 2>&1
+                $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = $rawOutput
+                }
+            } elseif ($Agent -eq "kimi") {
+                # Kimi CLI: --print for non-interactive mode (implicitly --yolo)
+                # GSD_KIMI_THINKING=false uses --no-thinking for bulk tasks (faster)
+                $kimiArgs = @("--print")
+                if ($env:GSD_KIMI_THINKING -eq "false") { $kimiArgs += "--no-thinking" } else { $kimiArgs += "--thinking" }
+                $rawOutput = $effectivePrompt | kimi @kimiArgs 2>&1
+                $exitCode = $LASTEXITCODE
+                $parsed = Extract-TokensFromOutput -Agent "kimi" -RawOutput ($rawOutput -join "`n")
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = $rawOutput
+                }
+            } elseif (Test-IsOpenAICompatAgent -AgentName $Agent) {
+                # OpenAI-compatible REST API agents (deepseek, glm5, minimax, etc.)
+                $rawOutput = Invoke-OpenAICompatibleAgent -AgentName $Agent -Prompt $effectivePrompt
+                $exitCode = if ($rawOutput -match "^(unauthorized|rate_limit|error|server_error|quota_exhausted)") { 1 } else { 0 }
+                $parsed = Extract-TokensFromOutput -Agent $Agent -RawOutput $rawOutput
+                if ($parsed -and $parsed.TextOutput) {
+                    $output = $parsed.TextOutput -split "`n"
+                    $tokenData = $parsed
+                } else {
+                    $output = @($rawOutput)
                 }
             }
 
@@ -1693,9 +1763,25 @@ function Invoke-WithRetry {
                 $tokenData.DurationMs = $callDuration * 1000
             }
 
+            # -- TIMEOUT CHECK (patch-gsd-rate-limiter.ps1) --
+            # If a call took longer than MaxCallMinutes and produced no useful output, treat as hung
+            $callMinutes = $callDuration / 60
+            if ($callMinutes -gt $MaxCallMinutes -and (-not $output -or ($output -join "`n").Trim().Length -lt 50)) {
+                Write-Host "    [TIMEOUT] $($Agent.ToUpper()) took ${callMinutes}min with no useful output (limit: ${MaxCallMinutes}min)" -ForegroundColor Red
+                $exitCode = 1
+                $output = @("error: agent call timed out after ${callMinutes} minutes with no output")
+                Write-GsdError -GsdDir $GsdDir -Category "timeout" -Phase $Phase -Iteration $i `
+                    -Message "$Agent timed out after $([math]::Round($callMinutes,1))min" -Resolution "Rotating to next agent"
+            }
+
             if ($LogFile) { $output | Out-File -FilePath $LogFile -Encoding UTF8 -Append }
 
             $outputText = if ($output) { $output -join "`n" } else { "" }
+
+            # -- REGISTER CALL FOR RATE TRACKING (patch-gsd-rate-limiter.ps1) --
+            if (Get-Command Register-AgentCall -ErrorAction SilentlyContinue) {
+                Register-AgentCall -AgentName $Agent
+            }
 
             # -- Check for quota errors --
             $quotaType = Test-IsQuotaError $outputText
@@ -1722,9 +1808,11 @@ function Invoke-WithRetry {
                 Write-GsdError -GsdDir $GsdDir -Category "quota" -Phase $Phase -Iteration $i `
                     -Message "$Agent $quotaType" -Resolution "Waiting for reset"
 
-                # Rotate to different agent after N consecutive quota hits
-                if ($consecutiveQuotaFails[$Agent] -ge $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) {
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                # Rotate to different agent after N consecutive quota hits (default 1 if variable not in scope)
+                $rotateThreshold = if ($script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE) { $script:QUOTA_CONSECUTIVE_FAILS_BEFORE_ROTATE } else { 1 }
+                if ($consecutiveQuotaFails[$Agent] -ge $rotateThreshold) {
+                    $cliOnlyPhase = ($Phase -match "council-requirements|council-verify")
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -CliOnly:$cliOnlyPhase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent exhausted $($consecutiveQuotaFails[$Agent])x. Switching to $rotatedAgent" -ForegroundColor Yellow
                         Write-GsdError -GsdDir $GsdDir -Category "agent_rotate" -Phase $Phase -Iteration $i `
@@ -1738,9 +1826,10 @@ function Invoke-WithRetry {
                     }
                 }
 
-                # Check cumulative wait cap
-                if ($totalQuotaWaitMinutes -ge $script:QUOTA_CUMULATIVE_MAX_MINUTES) {
-                    Write-Host "    [XX] Cumulative quota wait ($totalQuotaWaitMinutes min) exceeds cap ($($script:QUOTA_CUMULATIVE_MAX_MINUTES) min). Giving up." -ForegroundColor Red
+                # Check cumulative wait cap (default 120 min if variable not in scope)
+                $cumulativeCap = if ($script:QUOTA_CUMULATIVE_MAX_MINUTES) { $script:QUOTA_CUMULATIVE_MAX_MINUTES } else { 120 }
+                if ($totalQuotaWaitMinutes -ge $cumulativeCap) {
+                    Write-Host "    [XX] Cumulative quota wait ($totalQuotaWaitMinutes min) exceeds cap (${cumulativeCap} min). Giving up." -ForegroundColor Red
                     $result.Error = "Quota exhausted: waited $totalQuotaWaitMinutes min total across all agents"
                     return $result
                 }
@@ -1764,7 +1853,8 @@ function Invoke-WithRetry {
                     continue
                 } else {
                     # Quota didn't reset -- try rotating before giving up
-                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir
+                    $cliOnlyPhase = ($Phase -match "council-requirements|council-verify")
+                    $rotatedAgent = Get-NextAvailableAgent -CurrentAgent $Agent -GsdDir $GsdDir -CliOnly:$cliOnlyPhase
                     if ($rotatedAgent) {
                         Write-Host "    [ROTATE] $Agent quota didn't reset. Trying $rotatedAgent" -ForegroundColor Yellow
                         Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 30
@@ -1971,7 +2061,7 @@ function Invoke-ParallelExecute {
         Error          = ""
     }
 
-    # ── 1. Load parallel config ──
+    # â”€â”€ 1. Load parallel config â”€â”€
     $agentMapPath = Join-Path $GlobalDir "config\agent-map.json"
     $agentMap = Get-Content $agentMapPath -Raw | ConvertFrom-Json
     $parallelCfg = $agentMap.execute_parallel
@@ -1986,7 +2076,7 @@ function Invoke-ParallelExecute {
     $strategy       = $parallelCfg.strategy        # "round-robin" or "all-same"
     $subtaskTimeout = [int]$parallelCfg.subtask_timeout_minutes
 
-    # ── 2. Load queue and decompose into sub-tasks ──
+    # â”€â”€ 2. Load queue and decompose into sub-tasks â”€â”€
     $queuePath = Join-Path $GsdDir "generation-queue\queue-current.json"
     $queue = Get-Content $queuePath -Raw | ConvertFrom-Json
     $batch = @($queue.batch)
@@ -1998,15 +2088,18 @@ function Invoke-ParallelExecute {
 
     Write-Host "  [PARALLEL] Decomposing batch: $($batch.Count) sub-tasks" -ForegroundColor Cyan
 
-    # ── 3. Build per-subtask prompts ──
+    # â”€â”€ 3. Build per-subtask prompts â”€â”€
     $templateText = Get-Content $PromptTemplatePath -Raw
     $subtasks = @()
 
     for ($idx = 0; $idx -lt $batch.Count; $idx++) {
         $item = $batch[$idx]
 
-        # Select agent: round-robin across pool
-        if ($strategy -eq "round-robin") {
+        # Select agent: complexity-based routing with round-robin fallback
+        $itemComplexity = if ($item.complexity) { $item.complexity } else { "medium" }
+        if ((Get-Command Get-AgentForComplexity -ErrorAction SilentlyContinue) -and $strategy -ne "all-same") {
+            $agent = Get-AgentForComplexity -Complexity $itemComplexity -GlobalDir $GlobalDir -AvailableAgents $agentPool -Index $idx
+        } elseif ($strategy -eq "round-robin") {
             $agent = $agentPool[$idx % $agentPool.Count]
         } else {
             $agent = $agentPool[0]
@@ -2049,7 +2142,7 @@ function Invoke-ParallelExecute {
         }
     }
 
-    # ── 4. Dispatch sub-tasks ──
+    # â”€â”€ 4. Dispatch sub-tasks â”€â”€
     Write-Host "  [PARALLEL] Dispatching $($subtasks.Count) sub-tasks (max concurrent: $maxConcurrent)" -ForegroundColor Cyan
     foreach ($st in $subtasks) {
         Write-Host "    [$($st.Index + 1)] $($st.ReqId) -> $($st.Agent)" -ForegroundColor DarkCyan
@@ -2062,7 +2155,7 @@ function Invoke-ParallelExecute {
         return $result
     }
 
-    # ── 5. Execute in batches of $maxConcurrent using PowerShell jobs ──
+    # â”€â”€ 5. Execute in batches of $maxConcurrent using PowerShell jobs â”€â”€
     $completedReqs = @()
     $failedReqs    = @()
 
@@ -2145,14 +2238,28 @@ function Invoke-ParallelExecute {
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
 
-        # Throttle between waves (avoid quota spike)
+        # Throttle between waves (adaptive: 3s clean / 30s when quota pressure detected)
         if ($batchEnd -lt ($subtasks.Count - 1)) {
-            Write-Host "  [PARALLEL] Wave complete. 10s cooldown..." -ForegroundColor DarkGray
-            Start-Sleep -Seconds 10
+            $cooldownSec = 3
+            $cooldownsPath = Join-Path $GsdDir "supervisor\agent-cooldowns.json"
+            if (Test-Path $cooldownsPath) {
+                try {
+                    $cooldowns = Get-Content $cooldownsPath -Raw | ConvertFrom-Json
+                    $cutoff = (Get-Date).AddMinutes(-5)
+                    foreach ($prop in $cooldowns.PSObject.Properties) {
+                        if ([string]$prop.Value -ne "" -and ([DateTime]::Parse($prop.Value)) -gt $cutoff) {
+                            $cooldownSec = 30
+                            break
+                        }
+                    }
+                } catch { $cooldownSec = 10 }
+            }
+            Write-Host "  [PARALLEL] Wave complete. ${cooldownSec}s adaptive cooldown..." -ForegroundColor DarkGray
+            Start-Sleep -Seconds $cooldownSec
         }
     }
 
-    # ── 6. Aggregate results ──
+    # â”€â”€ 6. Aggregate results â”€â”€
     $result.Completed = $completedReqs
     $result.Failed    = $failedReqs
     $result.FinalBatchSize = $CurrentBatchSize
@@ -2417,66 +2524,6 @@ function Send-GsdNotification {
     }
 }
 
-function Get-GitDiffStats {
-    <#
-    .SYNOPSIS
-        Returns a compact string with lines added/removed and files changed from the last git commit.
-        Call AFTER git commit. Returns empty string if git is unavailable or no changes.
-    #>
-    param(
-        [string]$RepoRoot = "."
-    )
-    try {
-        Push-Location $RepoRoot
-        $stat = git diff --stat HEAD~1 HEAD 2>$null
-        if (-not $stat) { Pop-Location; return "" }
-
-        $summary = $stat | Select-Object -Last 1
-        $filesChanged = 0; $insertions = 0; $deletions = 0
-        if ($summary -match '(\d+)\s+file') { $filesChanged = [int]$Matches[1] }
-        if ($summary -match '(\d+)\s+insertion') { $insertions = [int]$Matches[1] }
-        if ($summary -match '(\d+)\s+deletion') { $deletions = [int]$Matches[1] }
-        Pop-Location
-
-        if ($filesChanged -eq 0 -and $insertions -eq 0 -and $deletions -eq 0) { return "" }
-        return "Code: +${insertions}/-${deletions} lines | ${filesChanged} files"
-    } catch {
-        if ((Get-Location).Path -ne $RepoRoot) { Pop-Location -ErrorAction SilentlyContinue }
-        return ""
-    }
-}
-
-function Get-GitCumulativeStats {
-    <#
-    .SYNOPSIS
-        Returns cumulative lines added/removed across all gsd commits in the current run.
-    #>
-    param(
-        [string]$RepoRoot = ".",
-        [int]$Iterations = 1
-    )
-    try {
-        Push-Location $RepoRoot
-        $stat = git log --numstat --format="" -n $Iterations --grep="gsd:" 2>$null
-        if (-not $stat) { Pop-Location; return "" }
-
-        $totalAdded = 0; $totalRemoved = 0; $allFiles = @{}
-        foreach ($line in $stat) {
-            if ($line -match '^(\d+)\s+(\d+)\s+(.+)$') {
-                $totalAdded += [int]$Matches[1]
-                $totalRemoved += [int]$Matches[2]
-                $allFiles[$Matches[3]] = $true
-            }
-        }
-        Pop-Location
-        if ($totalAdded -eq 0 -and $totalRemoved -eq 0) { return "" }
-        return "Total code: +${totalAdded}/-${totalRemoved} lines | $($allFiles.Count) files touched"
-    } catch {
-        if ((Get-Location).Path -ne $RepoRoot) { Pop-Location -ErrorAction SilentlyContinue }
-        return ""
-    }
-}
-
 function Get-CostNotificationText {
     <#
     .SYNOPSIS
@@ -2539,6 +2586,8 @@ function Send-HeartbeatIfDue {
         if ($GsdDir) {
             $costLine = Get-CostNotificationText -GsdDir $GsdDir
             if ($costLine) { $msg += "`n$costLine" }
+            $locLine = if (Get-Command Get-LocNotificationText -ErrorAction SilentlyContinue) { Get-LocNotificationText -GsdDir $GsdDir -Cumulative } else { "" }
+            if ($locLine) { $msg += "`n$locLine" }
         }
         Send-GsdNotification -Title "Working: $Phase" `
             -Message $msg -Tags "hourglass_flowing_sand" -Priority "low"
@@ -2713,7 +2762,48 @@ function Start-CommandListener {
                         $msg = $line | ConvertFrom-Json
                         if ($msg.event -ne "message") { continue }
                         $text = ($msg.message -as [string]).Trim().ToLower()
-                        if ($text -ne "progress" -and $text -ne "token" -and $text -ne "tokens" -and $text -ne "cost" -and $text -ne "costs") { continue }
+                        if ($text -ne "progress" -and $text -ne "token" -and $text -ne "tokens" -and $text -ne "cost" -and $text -ne "costs" -and $text -ne "whatsapp") { continue }
+
+                        # -- WHATSAPP RESTART COMMAND --
+                        if ($text -eq "whatsapp") {
+                            $waBridgeDir = Join-Path $env:USERPROFILE ".gsd-global\whatsapp-bridge"
+                            $waBody = "[GSD] WhatsApp Bridge Restart"
+                            try {
+                                # Kill existing bridge processes
+                                $killed = 0
+                                Get-Process node -ErrorAction SilentlyContinue | Where-Object {
+                                    try { $_.MainModule.FileName -match "node" -and ($_.CommandLine -match "bridge" -or $_.Path -match "node") } catch { $false }
+                                } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; $killed++ }
+                                # Broader kill: any node process with bridge.mjs in command line
+                                $bridgeProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+                                    Where-Object { $_.CommandLine -match "bridge\.mjs" }
+                                foreach ($bp in $bridgeProcs) {
+                                    Stop-Process -Id $bp.ProcessId -Force -ErrorAction SilentlyContinue; $killed++
+                                }
+                                Start-Sleep -Seconds 2
+
+                                # Restart bridge
+                                if (Test-Path "$waBridgeDir\bridge.mjs") {
+                                    Start-Process -FilePath "node" -ArgumentList "`"$waBridgeDir\bridge.mjs`"" `
+                                        -WorkingDirectory $waBridgeDir -WindowStyle Normal
+                                    $waBody += "`nKilled $killed old process(es), started new bridge"
+                                    $waBody += "`nBridge dir: $waBridgeDir"
+                                } else {
+                                    $waBody += "`nERROR: bridge.mjs not found at $waBridgeDir"
+                                }
+                            } catch {
+                                $waBody += "`nERROR: $($_.Exception.Message)"
+                            }
+
+                            $waHeaders = @{
+                                "Title"    = "[GSD] WhatsApp Restarted"
+                                "Priority" = "high"
+                                "Tags"     = "phone,recycle"
+                            }
+                            Invoke-RestMethod -Uri "https://ntfy.sh/$Topic" -Method Post `
+                                -Body $waBody -Headers $waHeaders -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+                            continue
+                        }
 
                         # -- TOKEN/COST COMMAND --
                         if ($text -eq "token" -or $text -eq "tokens" -or $text -eq "cost" -or $text -eq "costs") {
@@ -3185,16 +3275,24 @@ function Get-TokenPrice {
     )
 
     $fallback = @{
-        claude = @{ InputPerM = 3.00; OutputPerM = 15.00; CacheReadPerM = 0.30; ModelKey = "claude_sonnet" }
-        codex  = @{ InputPerM = 1.50; OutputPerM = 6.00;  CacheReadPerM = 0.00; ModelKey = "codex" }
-        gemini = @{ InputPerM = 1.25; OutputPerM = 10.00; CacheReadPerM = 0.125; ModelKey = "gemini" }
+        claude   = @{ InputPerM = 3.00; OutputPerM = 15.00; CacheReadPerM = 0.30;  ModelKey = "claude_sonnet" }
+        codex    = @{ InputPerM = 1.50; OutputPerM = 6.00;  CacheReadPerM = 0.00;  ModelKey = "codex" }
+        gemini   = @{ InputPerM = 1.25; OutputPerM = 10.00; CacheReadPerM = 0.125; ModelKey = "gemini" }
+        kimi     = @{ InputPerM = 0.60; OutputPerM = 2.50;  CacheReadPerM = 0.10;  ModelKey = "kimi" }
+        deepseek = @{ InputPerM = 0.28; OutputPerM = 0.42;  CacheReadPerM = 0.028; ModelKey = "deepseek" }
+        glm5     = @{ InputPerM = 1.00; OutputPerM = 3.20;  CacheReadPerM = 0.10;  ModelKey = "glm5" }
+        minimax  = @{ InputPerM = 0.29; OutputPerM = 1.20;  CacheReadPerM = 0.03;  ModelKey = "minimax" }
     }
 
     $modelKey = switch ($Agent) {
-        "claude" { "claude_sonnet" }
-        "codex"  { "codex" }
-        "gemini" { "gemini" }
-        default  { $Agent }
+        "claude"   { "claude_sonnet" }
+        "codex"    { "codex" }
+        "gemini"   { "gemini" }
+        "kimi"     { "kimi" }
+        "deepseek" { "deepseek" }
+        "glm5"     { "glm5" }
+        "minimax"  { "minimax" }
+        default    { $Agent }
     }
 
     try {
@@ -4312,6 +4410,37 @@ function New-DeveloperHandoff {
         }
     }
 
+    # ===== LOC METRICS =====
+    $locPath = Join-Path $GsdDir "costs\loc-metrics.json"
+    if (Test-Path $locPath) {
+        try {
+            $locData = Get-Content $locPath -Raw | ConvertFrom-Json
+            $md += "## Lines of Code (AI-Generated)"
+            $md += ""
+            $md += "| Metric | Value |"
+            $md += "|--------|-------|"
+            $md += "| Lines Added | $($locData.cumulative.lines_added) |"
+            $md += "| Lines Deleted | $($locData.cumulative.lines_deleted) |"
+            $md += "| Net Lines | $($locData.cumulative.lines_net) |"
+            $md += "| Files Changed | $($locData.cumulative.files_changed) |"
+            $md += "| Iterations | $($locData.cumulative.iterations) |"
+            if ($locData.cost_per_line -and [double]$locData.cost_per_line.cost_per_added_line -gt 0) {
+                $md += "| Cost per Added Line | `$$($locData.cost_per_line.cost_per_added_line) |"
+                $md += "| Cost per Net Line | `$$($locData.cost_per_line.cost_per_net_line) |"
+                $md += "| Total API Cost | `$$($locData.cost_per_line.total_cost_usd) |"
+            }
+            $md += ""
+            $md += "### Per-Iteration LOC Breakdown"
+            $md += ""
+            $md += "| Iter | Added | Deleted | Net | Files |"
+            $md += "|------|-------|---------|-----|-------|"
+            foreach ($locIter in $locData.iterations) {
+                $md += "| $($locIter.iteration) | +$($locIter.lines_added) | -$($locIter.lines_deleted) | $($locIter.lines_net) | $($locIter.files_changed) |"
+            }
+            $md += ""
+        } catch {}
+    }
+
     # ===== COST SUMMARY =====
     $costPath = Join-Path $GsdDir "costs\cost-summary.json"
     if (Test-Path $costPath) {
@@ -4621,7 +4750,7 @@ function Invoke-LlmCouncil {
 
     Write-Host "  [SCALES] Building council context..." -ForegroundColor DarkGray
 
-    # ── 1. BUILD SHARED CONTEXT ──
+    # â”€â”€ 1. BUILD SHARED CONTEXT â”€â”€
     $context = @()
     $context += "# LLM Council Review Context ($CouncilType)"
     $context += "- Health: ${Health}% | Iteration: $Iteration | Pipeline: $Pipeline | Type: $CouncilType"
@@ -4682,7 +4811,7 @@ function Invoke-LlmCouncil {
 
     $sharedContext = $context -join "`n"
 
-    # ── 2. PARALLEL AGENT REVIEWS (Codex + Gemini only, Claude synthesizes) ──
+    # â”€â”€ 2. PARALLEL AGENT REVIEWS (Codex + Gemini only, Claude synthesizes) â”€â”€
     # Select agents and templates based on council type
     switch ($CouncilType) {
         "post-research" {
@@ -4721,17 +4850,45 @@ function Invoke-LlmCouncil {
             $phaseName = "council-post-spec-fix"
         }
         default {
-            # "convergence" -- 2-agent review (claude + gemini), claude synthesizes
-            # codex swapped out due to persistent quota exhaustion / hanging
+            # "convergence" -- 2-agent review (codex + gemini), claude synthesizes
             $agents = @(
-                @{ Name = "claude";  Template = "claude-review.md";  Mode = ""; AllowedTools = "" }
+                @{ Name = "codex";  Template = "codex-review.md";  Mode = ""; AllowedTools = "" }
                 @{ Name = "gemini"; Template = "gemini-review.md"; Mode = "--approval-mode plan"; AllowedTools = "" }
             )
             $phaseName = "council-review"
         }
     }
 
-    # ── CHUNKING DECISION ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ MULTI-MODEL: Dynamic reviewer pool expansion from agent-map.json Ã¢â€â‚¬Ã¢â€â‚¬
+    if ($CouncilType -in @("convergence", "post-research", "pre-execute", "post-blueprint", "stall-diagnosis", "post-spec-fix")) {
+        $agentMapPathMM = Join-Path $globalDir "config\agent-map.json"
+        if (Test-Path $agentMapPathMM) {
+            try {
+                $amCfg = Get-Content $agentMapPathMM -Raw | ConvertFrom-Json
+                if ($amCfg.council -and $amCfg.council.reviewers) {
+                    $alreadyInPool = @($agents | ForEach-Object { $_.Name })
+                    foreach ($reviewerName in @($amCfg.council.reviewers)) {
+                        if ($alreadyInPool -contains $reviewerName) { continue }
+                        if (-not (Test-IsOpenAICompatAgent -AgentName $reviewerName)) { continue }
+
+                        # Use agent-specific template if exists, otherwise generic
+                        $specificTpl = "$reviewerName-review.md"
+                        $genericTpl  = "openai-compat-review.md"
+                        $tplToUse = if (Test-Path (Join-Path $promptDir $specificTpl)) { $specificTpl } else { $genericTpl }
+
+                        $agents += @{
+                            Name         = $reviewerName
+                            Template     = $tplToUse
+                            Mode         = ""
+                            AllowedTools = ""
+                        }
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    # â”€â”€ CHUNKING DECISION â”€â”€
     $useChunking = $false
     $chunkingCfg = $null
     $groupFieldUsed = ""
@@ -4759,7 +4916,7 @@ function Invoke-LlmCouncil {
     }
 
     if ($useChunking) {
-        # ── CHUNKED CONVERGENCE PATH ──
+        # â”€â”€ CHUNKED CONVERGENCE PATH â”€â”€
         $maxChunk = if ($chunkingCfg.max_chunk_size) { [int]$chunkingCfg.max_chunk_size } else { 25 }
         $minGroup = if ($chunkingCfg.min_group_size) { [int]$chunkingCfg.min_group_size } else { 5 }
         $chunkStrategy = if ($chunkingCfg.strategy) { $chunkingCfg.strategy } else { "auto" }
@@ -4862,7 +5019,7 @@ function Invoke-LlmCouncil {
             return $fallbackResult
         }
 
-        # ── CHUNKED SYNTHESIS ──
+        # â”€â”€ CHUNKED SYNTHESIS â”€â”€
         Write-Host "  [SCALES] Synthesizing $($chunks.Count) chunk verdicts..." -ForegroundColor DarkGray
 
         $synthesisPrompt = ""
@@ -4888,7 +5045,7 @@ function Invoke-LlmCouncil {
             -AllowedTools "Read"
 
     } else {
-        # ── MONOLITHIC PATH (non-convergence or chunking disabled) ──
+        # â”€â”€ MONOLITHIC PATH (non-convergence or chunking disabled) â”€â”€
         Write-Host "  [SCALES] Dispatching $($agents.Count) independent reviews ($CouncilType)..." -ForegroundColor DarkGray
 
         $reviews = @{}
@@ -4949,7 +5106,7 @@ function Invoke-LlmCouncil {
             return $fallbackResult
         }
 
-        # ── 3. SYNTHESIS (Claude reads all reviews) ──
+        # â”€â”€ 3. SYNTHESIS (Claude reads all reviews) â”€â”€
         Write-Host "  [SCALES] Synthesizing council verdict..." -ForegroundColor DarkGray
 
         $synthesisPrompt = ""
@@ -4979,7 +5136,7 @@ function Invoke-LlmCouncil {
             -AllowedTools "Read"
     }
 
-    # ── 4. PARSE VERDICT & WRITE OUTPUTS ──
+    # â”€â”€ 4. PARSE VERDICT & WRITE OUTPUTS â”€â”€
     $approved = $true
     $findings = @{
         approved   = $true
@@ -5476,7 +5633,7 @@ function Invoke-SpecConflictResolution {
         if ($recheck.Passed) {
             Write-Host "    [OK] All conflicts resolved after $attempt attempt(s)!" -ForegroundColor Green
 
-            # â”€â”€ POST-SPEC-FIX COUNCIL â”€â”€
+            # Ã¢â€â‚¬Ã¢â€â‚¬ POST-SPEC-FIX COUNCIL Ã¢â€â‚¬Ã¢â€â‚¬
             # Validate Gemini's spec resolution via multi-agent review before declaring success
             if (Get-Command Invoke-LlmCouncil -ErrorAction SilentlyContinue) {
                 Write-Host "    [SCALES] Post-spec-fix council review..." -ForegroundColor DarkCyan
@@ -5560,15 +5717,34 @@ function Get-NextAvailableAgent {
     #>
     param(
         [string]$CurrentAgent,
-        [string]$GsdDir
+        [string]$GsdDir,
+        [switch]$CliOnly   # Restrict rotation to CLI agents only (e.g. for council-requirements)
     )
 
-    # Agent pool -- order matters (preference order)
-    # CLI agents first (fastest), then API agents with keys
-    $pool = @("claude", "gemini")
-    # Add API agents that have keys configured
-    foreach ($apiAgent in @("deepseek", "glm5", "minimax", "kimi")) {
-        if (Test-ApiAgentAvailable -Agent $apiAgent) { $pool += $apiAgent }
+    # Agent pool -- read from model-registry.json, fall back to legacy 3-agent list
+    $pool = @("claude", "codex", "gemini")  # legacy fallback
+    $regPath = Join-Path $env:USERPROFILE ".gsd-global\config\model-registry.json"
+    if (Test-Path $regPath) {
+        try {
+            $reg = Get-Content $regPath -Raw | ConvertFrom-Json
+            if ($reg.rotation_pool_default) {
+                # Only include agents whose API keys are set (REST) or CLIs exist (CLI)
+                $validPool = @()
+                foreach ($agentName in $reg.rotation_pool_default) {
+                    $agentCfg = $reg.agents.$agentName
+                    if (-not $agentCfg) { continue }
+                    if ($agentCfg.type -eq "cli") {
+                        $validPool += $agentName
+                    } elseif (-not $CliOnly -and $agentCfg.type -eq "openai-compat" -and $agentCfg.enabled -ne $false) {
+                        $keyVal = [System.Environment]::GetEnvironmentVariable($agentCfg.api_key_env)
+                        if (-not $keyVal) { $keyVal = [System.Environment]::GetEnvironmentVariable($agentCfg.api_key_env, 'User') }
+                        if (-not $keyVal) { $keyVal = [System.Environment]::GetEnvironmentVariable($agentCfg.api_key_env, 'Machine') }
+                        if ($keyVal) { $validPool += $agentName }
+                    }
+                }
+                if ($validPool.Count -ge 2) { $pool = $validPool }
+            }
+        } catch { }
     }
 
     # Read cooldown state
@@ -5847,67 +6023,121 @@ function Invoke-SpecQualityGate {
     }
     if (-not $qgEnabled) { Write-Host "    [>>]  Spec quality gate disabled" -ForegroundColor DarkGray; return @{ Passed = $true; ClarityScore = 100; ConsistencyPassed = $true; Issues = @(); Skipped = $true } }
 
+    # -- CACHE CHECK: skip if specs haven't changed since last successful gate --
+    $assessDir = Join-Path $GsdDir "assessment"
+    if (-not (Test-Path $assessDir)) { New-Item -Path $assessDir -ItemType Directory -Force | Out-Null }
+    $cacheFile = Join-Path $assessDir "spec-quality-gate.json"
+    $specHash = ""
+    try {
+        # Hash all spec files to detect changes
+        $specFiles = @()
+        foreach ($iface in $Interfaces) {
+            if ($iface.VersionPath -and (Test-Path $iface.VersionPath)) {
+                $specFiles += Get-ChildItem -Path $iface.VersionPath -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            }
+        }
+        $docsPath = Join-Path $RepoRoot "docs"
+        if (Test-Path $docsPath) { $specFiles += Get-ChildItem -Path $docsPath -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName }
+        if ($specFiles.Count -gt 0) {
+            $hashInput = ($specFiles | Sort-Object | ForEach-Object { "$_`:$((Get-Item $_).LastWriteTime.Ticks)" }) -join "|"
+            $specHash = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($hashInput))).Replace("-","").Substring(0,16)
+        }
+    } catch { }
+
+    if ($specHash -and (Test-Path $cacheFile)) {
+        try {
+            $cached = Get-Content $cacheFile -Raw | ConvertFrom-Json
+            if ($cached.spec_hash -eq $specHash -and $cached.passed -eq $true) {
+                Write-Host "    [CACHE] Spec quality gate cached PASS (specs unchanged, hash=$specHash)" -ForegroundColor DarkGreen
+                return @{ Passed = $true; ClarityScore = [int]$cached.clarity_score; ConsistencyPassed = $true; Issues = @(); Verdict = "PASS"; Cached = $true }
+            }
+        } catch { }
+    }
+
     $issues = @(); $clarityScore = 100; $consistencyPassed = $true
 
-    # Step 1: Existing consistency check
-    if (Get-Command Invoke-SpecConsistencyCheck -ErrorAction SilentlyContinue) {
+    # -- Pick cheapest available agent (not hardcoded claude) --
+    $specAgent = "claude"
+    if (Get-Command Get-NextAvailableAgent -ErrorAction SilentlyContinue) {
         try {
-            $specResult = Invoke-SpecConsistencyCheck -RepoRoot $RepoRoot -GsdDir $GsdDir -Interfaces $Interfaces
-            if (-not $specResult.Passed) { $issues += "Spec consistency check found conflicts"; $consistencyPassed = $false }
-        } catch { Write-Host "    [!!]  Spec consistency check error: $_" -ForegroundColor DarkYellow }
+            $availAgent = Get-NextAvailableAgent -Phase "review" -GsdDir $GsdDir
+            if ($availAgent) { $specAgent = $availAgent }
+        } catch { }
     }
+    Write-Host "    [SEARCH] Using $($specAgent.ToUpper()) for spec quality gate" -ForegroundColor DarkGray
 
-    # Step 2: Clarity check via Claude
+    # Step 1: SINGLE COMBINED spec check (was 3 separate LLM calls — consolidated to 1)
     if (-not $DryRun) {
-        $clarityPrompt = Join-Path $env:USERPROFILE ".gsd-global\prompts\claude\spec-clarity-check.md"
-        if (Test-Path $clarityPrompt) {
-            try {
-                $promptContent = (Get-Content $clarityPrompt -Raw).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{GSD_DIR}}", $GsdDir)
-                $figmaPath = ""; $amPath = Join-Path $env:USERPROFILE ".gsd-global\config\agent-map.json"
-                if (Test-Path $amPath) { try { $figmaPath = (Get-Content $amPath -Raw | ConvertFrom-Json).figma_path } catch { } }
-                $promptContent = $promptContent.Replace("{{FIGMA_PATH}}", $figmaPath)
-                $ifaceCtx = ""; foreach ($iface in $Interfaces) { $aDir = Join-Path $RepoRoot "$($iface.name)\_analysis"; if (Test-Path $aDir) { $ifaceCtx += "- $($iface.name): has _analysis/ dir`n" } }
-                $promptContent = $promptContent.Replace("{{INTERFACE_ANALYSIS}}", $ifaceCtx)
-                Write-Host "    [SEARCH] Running spec clarity check via Claude..." -ForegroundColor DarkGray
-                $clarityResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "spec-clarity-check" -RepoRoot $RepoRoot -GsdDir $GsdDir -MaxOutputTokens 4000
-                if ($clarityResult.Success) {
-                    $scoreMatch = [regex]::Match($clarityResult.Response, '"clarity_score"\s*:\s*(\d+)')
-                    if ($scoreMatch.Success) { $clarityScore = [int]$scoreMatch.Groups[1].Value }
-                    Write-Host "    [OK] Spec clarity score: $clarityScore" -ForegroundColor $(if ($clarityScore -ge 85) { "DarkGreen" } elseif ($clarityScore -ge 70) { "DarkYellow" } else { "Red" })
-                }
-            } catch { Write-Host "    [!!]  Spec clarity check error: $_" -ForegroundColor DarkYellow }
+        $specSources = @()
+        foreach ($iface in $Interfaces) {
+            if ($iface.HasAnalysis) { $specSources += "$($iface.VersionPath)\_analysis\ ($($iface.Label))" }
         }
-    }
+        $docsPath = Join-Path $RepoRoot "docs"
+        if (Test-Path $docsPath) { $specSources += "docs\ (SDLC)" }
+        $sourceList = ($specSources | ForEach-Object { "- $_" }) -join "`n"
 
-    # Step 3: Cross-artifact consistency
-    if ($checkCrossArtifact -and -not $DryRun) {
-        $hasAnalysis = $false
-        foreach ($iface in $Interfaces) { if (Test-Path (Join-Path $RepoRoot "$($iface.name)\_analysis")) { $hasAnalysis = $true; break } }
-        if (Test-Path (Join-Path $RepoRoot "_analysis")) { $hasAnalysis = $true }
-        if ($hasAnalysis) {
-            $cPrompt = Join-Path $env:USERPROFILE ".gsd-global\prompts\claude\cross-artifact-consistency.md"
-            if (Test-Path $cPrompt) {
+        $combinedPrompt = @"
+You are a SPEC AUDITOR. Perform a FAST combined quality check on all specification documents.
+
+## Spec Sources
+$sourceList
+
+## Three Checks in One Pass
+1. **Consistency**: Flag data type, API contract, navigation, business rule, database, design system conflicts
+2. **Clarity**: Score specs 0-100 on clarity (unambiguous, complete, testable)
+3. **Cross-artifact**: Verify specs + Figma analysis + code contracts are aligned
+
+## Output (MANDATORY JSON)
+Write to: $GsdDir\spec-consistency-report.json
+``json
+{
+  "status": "pass|conflicts_found|warnings_only",
+  "clarity_score": <0-100>,
+  "consistent": <true|false>,
+  "conflicts": [{"severity":"critical|warning","type":"<type>","description":"<what>","recommendation":"<fix>"}],
+  "summary": {"total_conflicts": <N>, "critical": <N>, "warnings": <N>, "specs_checked": <N>}
+}
+``
+
+Also write human-readable summary to: $GsdDir\spec-consistency-report.md
+
+Rules: Be FAST. Only flag REAL conflicts. MAX 2000 tokens output. One pass, one call.
+"@
+
+        $result = Invoke-WithRetry -Agent $specAgent -Prompt $combinedPrompt -Phase "spec-quality-gate" `
+            -LogFile "$GsdDir\logs\spec-consistency.log" -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 2
+
+        if ($result.Success) {
+            # Parse clarity score from output or report file
+            $reportFile = Join-Path $GsdDir "spec-consistency-report.json"
+            if (Test-Path $reportFile) {
                 try {
-                    $promptContent = (Get-Content $cPrompt -Raw).Replace("{{REPO_ROOT}}", $RepoRoot).Replace("{{GSD_DIR}}", $GsdDir)
-                    $ifaceName = if ($Interfaces.Count -gt 0) { $Interfaces[0].name } else { "" }
-                    $ifaceAnalysis = if ($ifaceName) { Join-Path $RepoRoot "$ifaceName\_analysis" } else { Join-Path $RepoRoot "_analysis" }
-                    $promptContent = $promptContent.Replace("{{INTERFACE_NAME}}", $ifaceName).Replace("{{INTERFACE_ANALYSIS}}", $ifaceAnalysis)
-                    Write-Host "    [SEARCH] Running cross-artifact consistency check..." -ForegroundColor DarkGray
-                    $crossResult = Invoke-WithRetry -Agent "claude" -Prompt $promptContent -Phase "cross-artifact-check" -RepoRoot $RepoRoot -GsdDir $GsdDir -MaxOutputTokens 4000
-                    if ($crossResult.Success) {
-                        $cm = [regex]::Match($crossResult.Response, '"consistent"\s*:\s*(true|false)')
-                        if ($cm.Success -and $cm.Groups[1].Value -eq "false") { $consistencyPassed = $false; $issues += "Cross-artifact consistency check found mismatches" }
+                    $report = Get-Content $reportFile -Raw | ConvertFrom-Json
+                    if ($report.clarity_score) { $clarityScore = [int]$report.clarity_score }
+                    if ($report.consistent -eq $false) { $consistencyPassed = $false; $issues += "Cross-artifact consistency issues found" }
+                    if ($report.status -eq "conflicts_found") {
+                        $criticals = @($report.conflicts | Where-Object { $_.severity -eq "critical" })
+                        if ($criticals.Count -gt 0) { $consistencyPassed = $false; $issues += "$($criticals.Count) critical spec conflicts" }
                     }
-                } catch { Write-Host "    [!!]  Cross-artifact check error: $_" -ForegroundColor DarkYellow }
+                } catch { }
             }
+            # Fallback: parse from raw output
+            if ($clarityScore -eq 100) {
+                $scoreMatch = [regex]::Match(($result.Output -join "`n"), '"clarity_score"\s*:\s*(\d+)')
+                if ($scoreMatch.Success) { $clarityScore = [int]$scoreMatch.Groups[1].Value }
+            }
+            Write-Host "    [OK] Spec clarity score: $clarityScore" -ForegroundColor $(if ($clarityScore -ge 85) { "DarkGreen" } elseif ($clarityScore -ge 70) { "DarkYellow" } else { "Red" })
+        } else {
+            Write-Host "    [!!]  Spec quality gate LLM call failed — proceeding with WARN" -ForegroundColor DarkYellow
+            $issues += "Spec quality check failed (agent: $specAgent)"
         }
     }
 
     $passed = $clarityScore -ge $MinClarityScore -and $consistencyPassed
-    $assessDir = Join-Path $GsdDir "assessment"
-    if (-not (Test-Path $assessDir)) { New-Item -Path $assessDir -ItemType Directory -Force | Out-Null }
     $verdict = if ($clarityScore -ge 90) { "PASS" } elseif ($clarityScore -ge 70) { "WARN" } else { "BLOCK" }
-    @{ timestamp = (Get-Date).ToString("o"); passed = $passed; clarity_score = $clarityScore; min_clarity_score = $MinClarityScore; consistency_passed = $consistencyPassed; issues = $issues; verdict = $verdict } | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $assessDir "spec-quality-gate.json") -Encoding UTF8
+
+    # Save result with spec hash for caching
+    @{ timestamp = (Get-Date).ToString("o"); passed = $passed; clarity_score = $clarityScore; min_clarity_score = $MinClarityScore; consistency_passed = $consistencyPassed; issues = $issues; verdict = $verdict; spec_hash = $specHash; agent = $specAgent } | ConvertTo-Json -Depth 3 | Set-Content $cacheFile -Encoding UTF8
 
     if ($passed) { Write-Host "    [OK] Spec quality gate: $verdict (clarity=$clarityScore, consistency=$consistencyPassed)" -ForegroundColor DarkGreen }
     else { Write-Host "    [!!]  Spec quality gate: $verdict (clarity=$clarityScore, consistency=$consistencyPassed)" -ForegroundColor $(if ($clarityScore -lt 70) { "Red" } else { "DarkYellow" }); $issues | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkYellow } }
@@ -5915,5 +6145,5721 @@ function Invoke-SpecQualityGate {
     return @{ Passed = $passed; ClarityScore = $clarityScore; ConsistencyPassed = $consistencyPassed; Issues = $issues; Verdict = $verdict }
 }
 
+# ===============================================================
+# GSD MULTI-MODEL -- OpenAI-Compatible REST API Adapter
+# Appended by patch-gsd-multi-model.ps1
+# ===============================================================
 
+function Test-IsOpenAICompatAgent {
+    <#
+    .SYNOPSIS
+        Checks if the given agent name is an enabled openai-compat agent in model-registry.json.
+    #>
+    param([string]$AgentName)
+
+    $regPath = Join-Path $env:USERPROFILE ".gsd-global\config\model-registry.json"
+    if (-not (Test-Path $regPath)) { return $false }
+    try {
+        $registry = Get-Content $regPath -Raw | ConvertFrom-Json
+        $cfg = $registry.agents.$AgentName
+        return ($null -ne $cfg -and $cfg.type -eq "openai-compat" -and $cfg.enabled -ne $false)
+    } catch { return $false }
+}
+
+function Invoke-OpenAICompatibleAgent {
+    <#
+    .SYNOPSIS
+        Calls an OpenAI-compatible chat completions API via REST.
+        Returns a synthetic JSON envelope that Extract-TokensFromOutput can parse,
+        or an error string matching the GSD error taxonomy (rate_limit:, unauthorized:, etc.)
+    #>
+    param(
+        [string]$AgentName,
+        [string]$Prompt,
+        [int]$TimeoutSeconds = 600
+    )
+
+    # Load registry config
+    $regPath = Join-Path $env:USERPROFILE ".gsd-global\config\model-registry.json"
+    if (-not (Test-Path $regPath)) {
+        return "error: model-registry.json not found at $regPath"
+    }
+    $registry = Get-Content $regPath -Raw | ConvertFrom-Json
+    $cfg = $registry.agents.$AgentName
+    if (-not $cfg -or $cfg.type -ne "openai-compat") {
+        return "error: Agent '$AgentName' not found in model-registry.json or not openai-compat type"
+    }
+
+    # Check if agent is disabled in registry
+    if ($cfg.enabled -eq $false) {
+        $reason = if ($cfg.disabled_reason) { $cfg.disabled_reason } else { "disabled in model-registry.json" }
+        return "connection_failed: Agent '$AgentName' is disabled - $reason"
+    }
+
+    # Resolve API key from environment (check Process, then User, then Machine store)
+    $apiKey = [System.Environment]::GetEnvironmentVariable($cfg.api_key_env)
+    if (-not $apiKey) {
+        $apiKey = [System.Environment]::GetEnvironmentVariable($cfg.api_key_env, 'User')
+        if (-not $apiKey) { $apiKey = [System.Environment]::GetEnvironmentVariable($cfg.api_key_env, 'Machine') }
+        if ($apiKey) { [System.Environment]::SetEnvironmentVariable($cfg.api_key_env, $apiKey, 'Process') }
+    }
+    if (-not $apiKey) {
+        return "unauthorized: $($cfg.api_key_env) environment variable not set"
+    }
+
+    # Enforce TLS 1.2+ (required by many API providers, especially Chinese endpoints)
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+
+    # Build request body
+    $requestBody = @{
+        model       = $cfg.model_id
+        messages    = @(
+            @{ role = "user"; content = $Prompt }
+        )
+        max_tokens  = [int]$cfg.max_tokens
+        temperature = [double]$cfg.temperature
+    } | ConvertTo-Json -Depth 5 -Compress
+
+    # Call REST API
+    try {
+        $headers = @{
+            "Authorization" = "Bearer $apiKey"
+            "Content-Type"  = "application/json"
+        }
+
+        # -- REST RATE LIMIT PRE-CHECK (patch-gsd-rate-limiter.ps1) --
+    if (Get-Command Wait-ForRateWindow -ErrorAction SilentlyContinue) {
+        $rlWait = Wait-ForRateWindow -AgentName $AgentName
+        if ($rlWait -gt 0) {
+            Write-Host "    [RATE-LIMIT] Paced REST agent $AgentName for ${rlWait}s" -ForegroundColor DarkYellow
+        }
+    }
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $response = Invoke-RestMethod -Uri $cfg.endpoint -Method POST `
+            -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($requestBody)) `
+            -TimeoutSec $TimeoutSeconds -ErrorAction Stop
+        $stopwatch.Stop()
+
+        # -- REGISTER REST CALL FOR RATE TRACKING (patch-gsd-rate-limiter.ps1) --
+        if (Get-Command Register-AgentCall -ErrorAction SilentlyContinue) {
+            Register-AgentCall -AgentName $AgentName
+        }
+
+        # Extract response content
+        $textContent = ""
+        if ($response.choices -and $response.choices.Count -gt 0) {
+            $textContent = $response.choices[0].message.content
+        }
+
+        # Extract usage tokens
+        $inputTokens = 0; $outputTokens = 0; $cachedTokens = 0
+        if ($response.usage) {
+            $inputTokens  = if ($response.usage.prompt_tokens)     { [int]$response.usage.prompt_tokens }     else { 0 }
+            $outputTokens = if ($response.usage.completion_tokens) { [int]$response.usage.completion_tokens } else { 0 }
+            $cachedTokens = if ($response.usage.cached_tokens)     { [int]$response.usage.cached_tokens }     else { 0 }
+        }
+
+        # Return synthetic JSON envelope for Extract-TokensFromOutput
+        $envelope = @{
+            type        = "openai-compat-result"
+            agent       = $AgentName
+            result      = $textContent
+            usage       = @{
+                input_tokens  = $inputTokens
+                output_tokens = $outputTokens
+                cached_tokens = $cachedTokens
+            }
+            duration_ms = [int]$stopwatch.ElapsedMilliseconds
+        }
+        return ($envelope | ConvertTo-Json -Depth 5 -Compress)
+
+    } catch {
+        $errMsg = $_.Exception.Message
+        $statusCode = $null
+        if ($_.Exception.Response) {
+            try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+        }
+
+        # Map HTTP status codes to GSD error taxonomy strings
+        # These must match the regex patterns in Test-IsQuotaError and auth detection
+        if ($statusCode -eq 429) {
+            return "rate_limit: too many requests - $errMsg (HTTP 429)"
+        } elseif ($statusCode -eq 402) {
+            return "quota_exhausted: billing limit reached - $errMsg (HTTP 402)"
+        } elseif ($statusCode -eq 401) {
+            return "unauthorized: invalid API key - $errMsg (HTTP 401)"
+        } elseif ($statusCode -eq 403) {
+            # Could be auth or rate limit -- check message content
+            if ($errMsg -match "(resource|exhausted|limit|capacity|quota)") {
+                return "rate_limit: resource exhausted - $errMsg (HTTP 403)"
+            } else {
+                return "unauthorized: access denied - $errMsg (HTTP 403)"
+            }
+        } elseif ($statusCode -ge 500) {
+            return "server_error: $errMsg (HTTP $statusCode)"
+        } elseif ($errMsg -match "(Unable to connect|No such host|name.*(not|could not).*resolve|ConnectFailure|connection refused|actively refused|unreachable|SocketException|NameResolutionFailure)") {
+            # Endpoint unreachable Ã¢â‚¬â€ fail fast, don't retry
+            return "connection_failed: endpoint unreachable for $AgentName ($($cfg.endpoint)) - $errMsg"
+        } else {
+            return "error: $errMsg"
+        }
+    }
+}
+
+
+# ===========================================
+# DIFFERENTIAL CODE REVIEW
+# ===========================================
+
+function Get-DifferentialContext {
+    param(
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration,
+        [string]$RepoRoot
+    )
+
+    $result = @{
+        UseDifferential = $false
+        DiffContent     = ""
+        ChangedFiles    = @()
+        Reason          = ""
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (-not (Test-Path $configPath)) {
+        $result.Reason = "No global-config.json"
+        return $result
+    }
+
+    try {
+        $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    } catch {
+        $result.Reason = "Failed to parse global-config.json"
+        return $result
+    }
+
+    $diffCfg = $config.differential_review
+    if (-not $diffCfg -or -not $diffCfg.enabled) {
+        $result.Reason = "Differential review disabled in config"
+        return $result
+    }
+
+    # Check cache
+    $cacheDir = Join-Path $GsdDir "cache"
+    if (-not (Test-Path $cacheDir)) {
+        New-Item -Path $cacheDir -ItemType Directory -Force | Out-Null
+    }
+    $cachePath = Join-Path $cacheDir "reviewed-files.json"
+
+    # Get last reviewed commit
+    $lastCommit = $null
+    if (Test-Path $cachePath) {
+        try {
+            $cache = Get-Content $cachePath -Raw | ConvertFrom-Json
+            $lastCommit = $cache.last_reviewed_commit
+            $lastIteration = [int]$cache.last_iteration
+
+            # Check cache TTL
+            $ttl = [int]$diffCfg.cache_ttl_iterations
+            if ($ttl -gt 0 -and ($Iteration - $lastIteration) -ge $ttl) {
+                $result.Reason = "Cache TTL expired (last: iter $lastIteration, current: iter $Iteration, TTL: $ttl)"
+                return $result
+            }
+        } catch {
+            $result.Reason = "Failed to parse reviewed-files cache"
+            return $result
+        }
+    } else {
+        $result.Reason = "No reviewed-files cache (first run)"
+        return $result
+    }
+
+    if (-not $lastCommit) {
+        $result.Reason = "No last_reviewed_commit in cache"
+        return $result
+    }
+
+    # Verify commit still exists
+    $commitExists = git rev-parse --verify "$lastCommit^{commit}" 2>$null
+    if (-not $commitExists) {
+        $result.Reason = "Last reviewed commit $lastCommit no longer exists"
+        return $result
+    }
+
+    # Get changed files
+    $changedFiles = @(git diff --name-only $lastCommit HEAD 2>$null)
+
+    if ($changedFiles.Count -eq 0) {
+        $result.Reason = "No files changed since last review"
+        $result.UseDifferential = $true
+        $result.ChangedFiles = @()
+        return $result
+    }
+
+    # Filter out .gsd/ and non-source files
+    $sourceFiles = $changedFiles | Where-Object {
+        $_ -notlike ".gsd/*" -and
+        $_ -notlike "node_modules/*" -and
+        $_ -notlike "bin/*" -and
+        $_ -notlike "obj/*" -and
+        $_ -notlike ".git/*" -and
+        $_ -notlike "dist/*" -and
+        $_ -notlike "build/*"
+    }
+
+    # Check diff percentage
+    $totalFiles = @(git ls-files 2>$null | Where-Object {
+        $_ -notlike "node_modules/*" -and $_ -notlike "bin/*" -and
+        $_ -notlike "obj/*" -and $_ -notlike ".git/*"
+    })
+
+    if ($totalFiles.Count -gt 0) {
+        $diffPct = [math]::Round(($sourceFiles.Count / $totalFiles.Count) * 100, 1)
+        $maxPct = [int]$diffCfg.max_diff_pct
+
+        if ($diffPct -gt $maxPct) {
+            $result.Reason = "Diff too large: $diffPct% > max $maxPct% ($($sourceFiles.Count)/$($totalFiles.Count) files)"
+            return $result
+        }
+    }
+
+    # Get actual diff content (truncated to 50KB to avoid token overflow)
+    $diffOutput = git diff $lastCommit HEAD -- $sourceFiles 2>$null
+    if ($diffOutput.Length -gt 51200) {
+        $diffOutput = $diffOutput.Substring(0, 51200) + "`n... (diff truncated at 50KB)"
+    }
+
+    $result.UseDifferential = $true
+    $result.DiffContent = $diffOutput
+    $result.ChangedFiles = $sourceFiles
+    $result.Reason = "Differential: $($sourceFiles.Count) files changed ($diffPct%)"
+
+    return $result
+}
+
+function Save-ReviewedCommit {
+    param(
+        [string]$GsdDir,
+        [int]$Iteration
+    )
+
+    $cacheDir = Join-Path $GsdDir "cache"
+    if (-not (Test-Path $cacheDir)) {
+        New-Item -Path $cacheDir -ItemType Directory -Force | Out-Null
+    }
+
+    $currentCommit = git rev-parse HEAD 2>$null
+    if ($currentCommit) {
+        $cache = @{
+            last_reviewed_commit = $currentCommit
+            last_iteration       = $Iteration
+            timestamp            = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        }
+        $cachePath = Join-Path $cacheDir "reviewed-files.json"
+        $cache | ConvertTo-Json -Depth 5 | Set-Content -Path $cachePath -Encoding UTF8
+    }
+}
+
+# ===========================================
+# PRE-EXECUTE COMPILE GATE
+# ===========================================
+
+function Invoke-PreExecuteGate {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration,
+        [decimal]$Health,
+        [string]$ExecuteAgent = "codex"
+    )
+
+    $result = @{
+        Passed     = $true
+        FixApplied = $false
+        Errors     = ""
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            $gateCfg = $config.pre_execute_gate
+            if (-not $gateCfg -or -not $gateCfg.enabled) {
+                Write-Host "  [GATE] Pre-execute gate disabled" -ForegroundColor DarkGray
+                return $result
+            }
+        } catch {
+            return $result
+        }
+    } else {
+        return $result
+    }
+
+    $maxAttempts = if ($gateCfg.max_fix_attempts) { [int]$gateCfg.max_fix_attempts } else { 2 }
+    $includeTests = if ($gateCfg.include_tests) { $gateCfg.include_tests } else { $false }
+
+    Write-Host "  [GATE] Running pre-execute compile gate..." -ForegroundColor Cyan
+
+    for ($attempt = 1; $attempt -le ($maxAttempts + 1); $attempt++) {
+        $errors = @()
+
+        # Check for .sln (dotnet build)
+        $slnFiles = Get-ChildItem -Path $RepoRoot -Filter "*.sln" -ErrorAction SilentlyContinue
+        if ($slnFiles) {
+            $buildOutput = & dotnet build $slnFiles[0].FullName --no-restore 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+                $errors += "=== DOTNET BUILD ERRORS ===`n$buildOutput"
+            }
+        }
+
+        # Check for package.json (npm build)
+        $pkgJson = Join-Path $RepoRoot "package.json"
+        if (Test-Path $pkgJson) {
+            Push-Location $RepoRoot
+            $npmOutput = & npm run build 2>&1 | Out-String
+            Pop-Location
+            if ($LASTEXITCODE -ne 0) {
+                $errors += "=== NPM BUILD ERRORS ===`n$npmOutput"
+            }
+        }
+
+        # Optional: run tests
+        if ($includeTests) {
+            if ($slnFiles) {
+                $testOutput = & dotnet test $slnFiles[0].FullName --no-build 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    $errors += "=== DOTNET TEST ERRORS ===`n$testOutput"
+                }
+            }
+            if (Test-Path $pkgJson) {
+                Push-Location $RepoRoot
+                $npmTestOutput = & npm test 2>&1 | Out-String
+                Pop-Location
+                if ($LASTEXITCODE -ne 0) {
+                    $errors += "=== NPM TEST ERRORS ===`n$npmTestOutput"
+                }
+            }
+        }
+
+        if ($errors.Count -eq 0) {
+            if ($attempt -gt 1) {
+                Write-Host "  [GATE] Build passed after $($attempt - 1) fix attempt(s)" -ForegroundColor Green
+                $result.FixApplied = $true
+            } else {
+                Write-Host "  [GATE] Build passed on first check" -ForegroundColor Green
+            }
+            $result.Passed = $true
+            return $result
+        }
+
+        # Build failed
+        $allErrors = $errors -join "`n`n"
+
+        if ($attempt -le $maxAttempts) {
+            Write-Host "  [GATE] Build failed (attempt $attempt/$maxAttempts) -- sending errors to $ExecuteAgent for fix" -ForegroundColor Yellow
+
+            # Truncate errors to 8KB
+            if ($allErrors.Length -gt 8192) {
+                $allErrors = $allErrors.Substring(0, 8192) + "`n... (truncated)"
+            }
+
+            # Build fix prompt
+            $fixTemplatePath = Join-Path $GlobalDir "prompts\codex\fix-compile-errors.md"
+            if (Test-Path $fixTemplatePath) {
+                $fixPrompt = Get-Content $fixTemplatePath -Raw
+                $fixPrompt = $fixPrompt.Replace("{{ITERATION}}", "$Iteration")
+                $fixPrompt = $fixPrompt.Replace("{{COMPILE_ERRORS}}", $allErrors)
+            } else {
+                $fixPrompt = "Fix these compile errors. Only fix what's broken, don't refactor:`n`n$allErrors"
+            }
+
+            # Call the executing agent to fix
+            $fixResult = Invoke-WithRetry -Agent $ExecuteAgent -Prompt $fixPrompt `
+                -Phase "fix-compile" -LogFile "$GsdDir\logs\iter${Iteration}-fix-${attempt}.log" `
+                -CurrentBatchSize 1 -GsdDir $GsdDir -MaxAttempts 1
+
+            if (-not $fixResult.Success) {
+                Write-Host "  [GATE] Fix attempt $attempt failed -- agent error" -ForegroundColor Red
+            }
+        } else {
+            # Exhausted fix attempts -- fall through (commit broken code, handle in next iteration)
+            Write-Host "  [GATE] Build still failing after $maxAttempts fix attempts -- committing as-is" -ForegroundColor Yellow
+            $result.Passed = $false
+            $result.Errors = $allErrors
+
+            # Log to errors.jsonl
+            if (Get-Command Write-GsdError -ErrorAction SilentlyContinue) {
+                Write-GsdError -GsdDir $GsdDir -Category "pre_execute_gate_failed" `
+                    -Phase "execute" -Iteration $Iteration -Message "Build failed after $maxAttempts fix attempts"
+            }
+        }
+    }
+
+    return $result
+}
+
+# ===========================================
+# PER-REQUIREMENT ACCEPTANCE TESTS
+# ===========================================
+
+function Test-RequirementAcceptance {
+    param(
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [string]$RepoRoot,
+        [int]$Iteration
+    )
+
+    $results = @{
+        Total   = 0
+        Passed  = 0
+        Failed  = 0
+        Skipped = 0
+        Details = @()
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.acceptance_tests -or -not $config.acceptance_tests.enabled) {
+                Write-Host "  [TEST] Acceptance tests disabled" -ForegroundColor DarkGray
+                return $results
+            }
+        } catch { return $results }
+    } else { return $results }
+
+    $maxTime = if ($config.acceptance_tests.max_test_time_seconds) {
+        [int]$config.acceptance_tests.max_test_time_seconds
+    } else { 60 }
+
+    # Load queue
+    $queuePath = Join-Path $GsdDir "generation-queue\queue-current.json"
+    if (-not (Test-Path $queuePath)) {
+        Write-Host "  [TEST] No queue-current.json -- skipping acceptance tests" -ForegroundColor DarkGray
+        return $results
+    }
+
+    try {
+        $queue = Get-Content $queuePath -Raw | ConvertFrom-Json
+        $batch = @($queue.batch)
+    } catch {
+        Write-Host "  [TEST] Failed to parse queue-current.json" -ForegroundColor Yellow
+        return $results
+    }
+
+    Write-Host "  [TEST] Running acceptance tests for $($batch.Count) requirements..." -ForegroundColor Cyan
+
+    foreach ($item in $batch) {
+        $results.Total++
+        $reqId = $item.req_id
+        $test = $item.acceptance_test
+
+        if (-not $test) {
+            $results.Skipped++
+            $results.Details += @{ req_id = $reqId; status = "skipped"; reason = "No acceptance_test defined" }
+            continue
+        }
+
+        $testType = $test.type
+        $passed = $false
+        $reason = ""
+
+        try {
+            switch ($testType) {
+                "file_exists" {
+                    $allExist = $true
+                    foreach ($p in $test.paths) {
+                        $fullPath = Join-Path $RepoRoot $p
+                        if (-not (Test-Path $fullPath)) {
+                            $allExist = $false
+                            $reason = "File not found: $p"
+                            break
+                        }
+                    }
+                    $passed = $allExist
+                    if ($passed) { $reason = "All $($test.paths.Count) files exist" }
+                }
+
+                "pattern_match" {
+                    $filePath = Join-Path $RepoRoot $test.file
+                    if (-not (Test-Path $filePath)) {
+                        $reason = "File not found: $($test.file)"
+                    } else {
+                        $content = Get-Content $filePath -Raw
+                        $missingPatterns = @()
+                        foreach ($pattern in $test.patterns) {
+                            if ($content -notmatch [regex]::Escape($pattern)) {
+                                $missingPatterns += $pattern
+                            }
+                        }
+                        if ($missingPatterns.Count -eq 0) {
+                            $passed = $true
+                            $reason = "All $($test.patterns.Count) patterns found"
+                        } else {
+                            $reason = "Missing patterns: $($missingPatterns -join ', ')"
+                        }
+                    }
+                }
+
+                "build_check" {
+                    $slnFiles = Get-ChildItem -Path $RepoRoot -Filter "*.sln" -ErrorAction SilentlyContinue
+                    if ($slnFiles) {
+                        $output = & dotnet build $slnFiles[0].FullName --no-restore 2>&1 | Out-String
+                        $passed = ($LASTEXITCODE -eq 0)
+                        $reason = if ($passed) { "Build succeeded" } else { "Build failed" }
+                    } else {
+                        $passed = $true
+                        $reason = "No .sln found -- skipped"
+                    }
+                }
+
+                "dotnet_test" {
+                    $slnFiles = Get-ChildItem -Path $RepoRoot -Filter "*.sln" -ErrorAction SilentlyContinue
+                    if ($slnFiles -and $test.filter) {
+                        $output = & dotnet test $slnFiles[0].FullName --filter $test.filter --no-build 2>&1 | Out-String
+                        $passed = ($LASTEXITCODE -eq 0)
+                        $reason = if ($passed) { "Tests passed" } else { "Tests failed" }
+                    } else {
+                        $results.Skipped++; $results.Total--
+                        continue
+                    }
+                }
+
+                "npm_test" {
+                    $pkgJson = Join-Path $RepoRoot "package.json"
+                    if ((Test-Path $pkgJson) -and $test.filter) {
+                        Push-Location $RepoRoot
+                        $env:TEST_FILTER = $test.filter
+                        $output = & npm test -- --testPathPattern="$($test.filter)" 2>&1 | Out-String
+                        Pop-Location
+                        $passed = ($LASTEXITCODE -eq 0)
+                        $reason = if ($passed) { "Tests passed" } else { "Tests failed" }
+                    } else {
+                        $results.Skipped++; $results.Total--
+                        continue
+                    }
+                }
+
+                default {
+                    $results.Skipped++
+                    $results.Details += @{ req_id = $reqId; status = "skipped"; reason = "Unknown test type: $testType" }
+                    continue
+                }
+            }
+        } catch {
+            $reason = "Exception: $($_.Exception.Message)"
+            $passed = $false
+        }
+
+        if ($passed) {
+            $results.Passed++
+            Write-Host "    [PASS] $reqId ($testType)" -ForegroundColor Green
+        } else {
+            $results.Failed++
+            Write-Host "    [FAIL] $reqId ($testType): $reason" -ForegroundColor Red
+        }
+
+        $results.Details += @{
+            req_id  = $reqId
+            status  = if ($passed) { "passed" } else { "failed" }
+            type    = $testType
+            reason  = $reason
+        }
+    }
+
+    # Save results
+    $testDir = Join-Path $GsdDir "tests"
+    if (-not (Test-Path $testDir)) {
+        New-Item -Path $testDir -ItemType Directory -Force | Out-Null
+    }
+    $resultsPath = Join-Path $testDir "acceptance-results.json"
+    @{
+        iteration = $Iteration
+        timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        summary   = @{ total = $results.Total; passed = $results.Passed; failed = $results.Failed; skipped = $results.Skipped }
+        details   = $results.Details
+    } | ConvertTo-Json -Depth 10 | Set-Content -Path $resultsPath -Encoding UTF8
+
+    # Append to history
+    $historyPath = Join-Path $testDir "acceptance-history.jsonl"
+    $historyLine = @{ iteration = $Iteration; passed = $results.Passed; failed = $results.Failed; skipped = $results.Skipped; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") } | ConvertTo-Json -Compress
+    Add-Content -Path $historyPath -Value $historyLine -Encoding UTF8
+
+    $passRate = if ($results.Total -gt 0) { [math]::Round(($results.Passed / $results.Total) * 100, 1) } else { 0 }
+    Write-Host "  [TEST] Results: $($results.Passed)/$($results.Total) passed ($passRate%), $($results.Skipped) skipped" -ForegroundColor $(if ($results.Failed -eq 0) { "Green" } else { "Yellow" })
+
+    return $results
+}
+
+# ===========================================
+# CONTRACT-FIRST API VALIDATION
+# ===========================================
+
+function Test-ApiContractCompliance {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir
+    )
+
+    $result = @{
+        Passed   = $true
+        Blocking = @()
+        Warnings = @()
+        Summary  = ""
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.api_contract_validation -or -not $config.api_contract_validation.enabled) {
+                return $result
+            }
+        } catch { return $result }
+    } else { return $result }
+
+    Write-Host "  [API] Running contract compliance scan..." -ForegroundColor Cyan
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 1. Find API contract source Ã¢â€â‚¬Ã¢â€â‚¬
+    $contractPaths = @(
+        (Join-Path $RepoRoot "docs\_analysis\06-api-contracts.md"),
+        (Join-Path $RepoRoot "_analysis\06-api-contracts.md"),
+        (Join-Path $RepoRoot "design\api\06-api-contracts.md")
+    )
+
+    $contractFile = $null
+    foreach ($cp in $contractPaths) {
+        if (Test-Path $cp) { $contractFile = $cp; break }
+    }
+
+    if (-not $contractFile) {
+        Write-Host "  [API] No 06-api-contracts.md found -- skipping" -ForegroundColor DarkGray
+        return $result
+    }
+
+    $contractContent = Get-Content $contractFile -Raw
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 2. Extract documented endpoints from contract Ã¢â€â‚¬Ã¢â€â‚¬
+    $endpoints = @()
+    $endpointRegex = '(?i)(GET|POST|PUT|PATCH|DELETE)\s+(/api/[^\s\|]+)'
+    $matches = [regex]::Matches($contractContent, $endpointRegex)
+    foreach ($m in $matches) {
+        $endpoints += @{
+            Method = $m.Groups[1].Value.ToUpper()
+            Route  = $m.Groups[2].Value
+        }
+    }
+
+    if ($endpoints.Count -eq 0) {
+        Write-Host "  [API] No endpoints found in contract -- skipping" -ForegroundColor DarkGray
+        return $result
+    }
+
+    Write-Host "  [API] Found $($endpoints.Count) documented endpoints" -ForegroundColor DarkCyan
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 3. Find controller files Ã¢â€â‚¬Ã¢â€â‚¬
+    $scanPatterns = @($config.api_contract_validation.scan_patterns)
+    if ($scanPatterns.Count -eq 0) { $scanPatterns = @("*Controller*.cs") }
+
+    $controllers = @()
+    foreach ($pattern in $scanPatterns) {
+        $found = Get-ChildItem -Path $RepoRoot -Filter $pattern -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notlike "*\bin\*" -and $_.FullName -notlike "*\obj\*" -and $_.FullName -notlike "*\node_modules\*" }
+        $controllers += $found
+    }
+
+    if ($controllers.Count -eq 0) {
+        Write-Host "  [API] No controller files found -- all endpoints missing" -ForegroundColor Yellow
+        foreach ($ep in $endpoints) {
+            $result.Blocking += "Missing: $($ep.Method) $($ep.Route) -- no controller file"
+        }
+        $result.Passed = $false
+        return $result
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 4. Read all controller content Ã¢â€â‚¬Ã¢â€â‚¬
+    $allControllerContent = ""
+    foreach ($ctrl in $controllers) {
+        $allControllerContent += Get-Content $ctrl.FullName -Raw + "`n"
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 5. Validate each documented endpoint Ã¢â€â‚¬Ã¢â€â‚¬
+    foreach ($ep in $endpoints) {
+        $method = $ep.Method
+        $route = $ep.Route
+
+        # Convert route to regex pattern: /api/users/{id} -> api/users/\{?\w+\}?
+        $routePattern = [regex]::Escape($route) -replace '\\{[^}]+\\}', '\{?\w+\}?'
+        $routePattern = $routePattern -replace '^/', ''
+
+        # Check for route attribute
+        $httpAttr = "[Http${method}"
+        $hasRoute = $allControllerContent -match $routePattern
+        $hasMethod = $allControllerContent -match [regex]::Escape($httpAttr)
+
+        if (-not $hasRoute -and -not $hasMethod) {
+            $result.Blocking += "Missing endpoint: $method $route"
+        } elseif (-not $hasMethod) {
+            $result.Warnings += "Route exists but HTTP method may not match: $method $route"
+        }
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 6. Check for [Authorize] on controllers Ã¢â€â‚¬Ã¢â€â‚¬
+    foreach ($ctrl in $controllers) {
+        $ctrlContent = Get-Content $ctrl.FullName -Raw
+        $hasAuthorize = $ctrlContent -match '\[Authorize'
+        $hasAllowAnon = $ctrlContent -match '\[AllowAnonymous\]'
+
+        if (-not $hasAuthorize -and -not $hasAllowAnon) {
+            $ctrlName = $ctrl.Name
+            $result.Warnings += "Controller $ctrlName has no [Authorize] or [AllowAnonymous] attribute"
+        }
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 7. Check for inline SQL (should use stored procedures) Ã¢â€â‚¬Ã¢â€â‚¬
+    $inlineSqlPatterns = @(
+        'new SqlCommand\(',
+        'ExecuteSqlRaw\(',
+        'FromSqlRaw\(',
+        '"SELECT\s+',
+        '"INSERT\s+INTO',
+        '"UPDATE\s+\w+\s+SET',
+        '"DELETE\s+FROM'
+    )
+
+    foreach ($ctrl in $controllers) {
+        $ctrlContent = Get-Content $ctrl.FullName -Raw
+        foreach ($sqlPattern in $inlineSqlPatterns) {
+            if ($ctrlContent -match $sqlPattern) {
+                $result.Blocking += "Inline SQL detected in $($ctrl.Name) (must use stored procedures): $sqlPattern"
+                break
+            }
+        }
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 8. SP mapping validation Ã¢â€â‚¬Ã¢â€â‚¬
+    $spMapPaths = @(
+        (Join-Path $RepoRoot "docs\_analysis\11-api-to-sp-map.md"),
+        (Join-Path $RepoRoot "_analysis\11-api-to-sp-map.md")
+    )
+
+    $spMapFile = $null
+    foreach ($sp in $spMapPaths) {
+        if (Test-Path $sp) { $spMapFile = $sp; break }
+    }
+
+    if ($spMapFile) {
+        $spMapContent = Get-Content $spMapFile -Raw
+        # Extract SP names from the map
+        $spNames = @()
+        $spRegex = '(?i)(usp_\w+|sp_\w+)'
+        $spMatches = [regex]::Matches($spMapContent, $spRegex)
+        foreach ($m in $spMatches) { $spNames += $m.Value }
+
+        # Check if controllers reference the documented SPs
+        $spNames = $spNames | Select-Object -Unique
+        foreach ($sp in $spNames) {
+            if ($allControllerContent -notmatch [regex]::Escape($sp)) {
+                $result.Warnings += "Documented SP '$sp' not referenced in any controller"
+            }
+        }
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 9. Summary Ã¢â€â‚¬Ã¢â€â‚¬
+    if ($result.Blocking.Count -gt 0) {
+        $result.Passed = $false
+    }
+
+    $result.Summary = "Endpoints: $($endpoints.Count) documented, $($result.Blocking.Count) blocking, $($result.Warnings.Count) warnings"
+    Write-Host "  [API] $($result.Summary)" -ForegroundColor $(if ($result.Passed) { "Green" } else { "Yellow" })
+
+    if ($result.Blocking.Count -gt 0) {
+        Write-Host "  [API] Blocking issues:" -ForegroundColor Red
+        foreach ($b in $result.Blocking) {
+            Write-Host "    - $b" -ForegroundColor Red
+        }
+    }
+
+    # Save results
+    $apiDir = Join-Path $GsdDir "validation"
+    if (-not (Test-Path $apiDir)) {
+        New-Item -Path $apiDir -ItemType Directory -Force | Out-Null
+    }
+    @{
+        timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        passed    = $result.Passed
+        blocking  = $result.Blocking
+        warnings  = $result.Warnings
+        summary   = $result.Summary
+    } | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $apiDir "api-contract-results.json") -Encoding UTF8
+
+    return $result
+}
+
+# ===========================================
+# VISUAL VALIDATION (FIGMA SCREENSHOT DIFF)
+# ===========================================
+
+function Invoke-VisualValidation {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration
+    )
+
+    $result = @{
+        Passed     = $true
+        Components = @()
+        Summary    = ""
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.visual_validation -or -not $config.visual_validation.enabled) {
+                return $result
+            }
+        } catch { return $result }
+    } else { return $result }
+
+    $maxDiffPct = [int]$config.visual_validation.max_diff_pct
+    $screenshotDir = $config.visual_validation.screenshot_dir
+    $blockOnDiff = $config.visual_validation.block_on_high_diff
+
+    # Check for Figma screenshots
+    $screenshotPath = Join-Path $RepoRoot $screenshotDir
+    if (-not (Test-Path $screenshotPath)) {
+        # Also check design/{interface}/screenshots/
+        $designScreenshots = Get-ChildItem -Path $RepoRoot -Filter "screenshots" -Directory -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*design*" }
+
+        if ($designScreenshots.Count -eq 0) {
+            Write-Host "  [VISUAL] No screenshot directory found -- skipping visual validation" -ForegroundColor DarkGray
+            Write-Host "  [VISUAL] Place Figma exports in: $screenshotDir" -ForegroundColor DarkGray
+            return $result
+        }
+        $screenshotPath = $designScreenshots[0].FullName
+    }
+
+    # Find reference screenshots (PNG/JPG)
+    $refScreenshots = Get-ChildItem -Path $screenshotPath -Include "*.png","*.jpg","*.jpeg" -Recurse -ErrorAction SilentlyContinue
+    if ($refScreenshots.Count -eq 0) {
+        Write-Host "  [VISUAL] No reference screenshots found in $screenshotPath" -ForegroundColor DarkGray
+        return $result
+    }
+
+    Write-Host "  [VISUAL] Found $($refScreenshots.Count) reference screenshots" -ForegroundColor Cyan
+
+    # Check for Playwright
+    $hasPlaywright = $null -ne (Get-Command npx -ErrorAction SilentlyContinue)
+    $hasPixelmatch = $false
+
+    if ($hasPlaywright) {
+        # Check if playwright and pixelmatch are available
+        $playwrightCheck = & npx playwright --version 2>$null
+        $hasPlaywright = ($LASTEXITCODE -eq 0)
+    }
+
+    if (-not $hasPlaywright) {
+        Write-Host "  [VISUAL] Playwright not available -- using file-size heuristic comparison" -ForegroundColor Yellow
+        Write-Host "  [VISUAL] Install: npm install -D playwright @playwright/test" -ForegroundColor DarkGray
+
+        # Fallback: just report which screenshots exist vs which components exist
+        foreach ($ref in $refScreenshots) {
+            $componentName = [System.IO.Path]::GetFileNameWithoutExtension($ref.Name)
+            $componentFiles = Get-ChildItem -Path $RepoRoot -Filter "*${componentName}*" -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in ".tsx", ".jsx", ".ts", ".js" -and $_.FullName -notlike "*node_modules*" }
+
+            $status = if ($componentFiles.Count -gt 0) { "implemented" } else { "missing" }
+            $result.Components += @{
+                name        = $componentName
+                reference   = $ref.FullName
+                status      = $status
+                component   = if ($componentFiles.Count -gt 0) { $componentFiles[0].FullName } else { $null }
+                diff_pct    = if ($status -eq "missing") { 100 } else { -1 }
+            }
+
+            if ($status -eq "missing") {
+                Write-Host "    [MISS] $componentName -- no matching component file" -ForegroundColor Red
+            } else {
+                Write-Host "    [OK] $componentName -> $($componentFiles[0].Name)" -ForegroundColor Green
+            }
+        }
+    } else {
+        # Full Playwright screenshot comparison
+        $viewport_w = [int]$config.visual_validation.viewport_width
+        $viewport_h = [int]$config.visual_validation.viewport_height
+        $timeout = [int]$config.visual_validation.playwright_timeout_ms
+
+        # Check if dev server is running (React typically on port 3000)
+        $devServerRunning = $false
+        try {
+            $response = Invoke-WebRequest -Uri "http://localhost:3000" -TimeoutSec 3 -ErrorAction SilentlyContinue
+            $devServerRunning = ($response.StatusCode -eq 200)
+        } catch {
+            $devServerRunning = $false
+        }
+
+        if (-not $devServerRunning) {
+            Write-Host "  [VISUAL] Dev server not running on localhost:3000 -- using component-match only" -ForegroundColor Yellow
+
+            foreach ($ref in $refScreenshots) {
+                $componentName = [System.IO.Path]::GetFileNameWithoutExtension($ref.Name)
+                $componentFiles = Get-ChildItem -Path $RepoRoot -Filter "*${componentName}*" -Recurse -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -in ".tsx", ".jsx", ".ts", ".js" -and $_.FullName -notlike "*node_modules*" }
+
+                $status = if ($componentFiles.Count -gt 0) { "implemented" } else { "missing" }
+                $result.Components += @{
+                    name      = $componentName
+                    reference = $ref.FullName
+                    status    = $status
+                    diff_pct  = if ($status -eq "missing") { 100 } else { -1 }
+                }
+            }
+        } else {
+            Write-Host "  [VISUAL] Dev server detected. Running Playwright screenshot capture..." -ForegroundColor Cyan
+
+            # Create temp screenshot dir for captured screenshots
+            $captureDir = Join-Path $GsdDir "validation\screenshots-captured"
+            if (-not (Test-Path $captureDir)) {
+                New-Item -Path $captureDir -ItemType Directory -Force | Out-Null
+            }
+
+            foreach ($ref in $refScreenshots) {
+                $componentName = [System.IO.Path]::GetFileNameWithoutExtension($ref.Name)
+
+                # Try to capture screenshot of the component route
+                $route = $componentName.ToLower() -replace '_', '/' -replace '-', '/'
+                $url = "http://localhost:3000/$route"
+
+                $capturedPath = Join-Path $captureDir "$componentName.png"
+
+                try {
+                    # Use Playwright to capture
+                    $playwrightScript = @"
+const { chromium } = require('playwright');
+(async () => {
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: $viewport_w, height: $viewport_h } });
+    await page.goto('$url', { timeout: $timeout });
+    await page.screenshot({ path: '$($capturedPath -replace '\\', '/')' });
+    await browser.close();
+})();
+"@
+                    $scriptPath = Join-Path $GsdDir "validation\.playwright-capture.js"
+                    Set-Content -Path $scriptPath -Value $playwrightScript -Encoding UTF8
+                    & node $scriptPath 2>$null
+
+                    if (Test-Path $capturedPath) {
+                        # Compare file sizes as rough diff metric (full pixel diff requires additional npm package)
+                        $refSize = (Get-Item $ref.FullName).Length
+                        $capSize = (Get-Item $capturedPath).Length
+                        $sizeDiff = [math]::Abs($refSize - $capSize) / [math]::Max($refSize, 1) * 100
+
+                        $result.Components += @{
+                            name       = $componentName
+                            reference  = $ref.FullName
+                            captured   = $capturedPath
+                            status     = "captured"
+                            diff_pct   = [math]::Round($sizeDiff, 1)
+                        }
+
+                        if ($sizeDiff -gt $maxDiffPct) {
+                            Write-Host "    [DIFF] ${componentName}: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Yellow
+                        } else {
+                            Write-Host "    [OK] ${componentName}: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Green
+                        }
+                    } else {
+                        $result.Components += @{
+                            name     = $componentName
+                            status   = "capture_failed"
+                            diff_pct = -1
+                        }
+                        Write-Host "    [FAIL] ${componentName}: screenshot capture failed" -ForegroundColor Red
+                    }
+
+                    Remove-Item $scriptPath -ErrorAction SilentlyContinue
+                } catch {
+                    $result.Components += @{
+                        name     = $componentName
+                        status   = "error"
+                        diff_pct = -1
+                        error    = $_.Exception.Message
+                    }
+                }
+            }
+        }
+    }
+
+    # Determine pass/fail
+    $highDiffCount = ($result.Components | Where-Object { $_.diff_pct -gt $maxDiffPct }).Count
+    $missingCount = ($result.Components | Where-Object { $_.status -eq "missing" }).Count
+
+    if ($blockOnDiff -and ($highDiffCount -gt 0 -or $missingCount -gt 0)) {
+        $result.Passed = $false
+    }
+
+    $result.Summary = "Components: $($result.Components.Count), High diff: $highDiffCount, Missing: $missingCount"
+    Write-Host "  [VISUAL] $($result.Summary)" -ForegroundColor $(if ($highDiffCount -eq 0 -and $missingCount -eq 0) { "Green" } else { "Yellow" })
+
+    # Save results
+    $valDir = Join-Path $GsdDir "validation"
+    if (-not (Test-Path $valDir)) {
+        New-Item -Path $valDir -ItemType Directory -Force | Out-Null
+    }
+    @{
+        iteration  = $Iteration
+        timestamp  = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        passed     = $result.Passed
+        max_diff   = $maxDiffPct
+        components = $result.Components
+        summary    = $result.Summary
+    } | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $valDir "visual-results.json") -Encoding UTF8
+
+    return $result
+}
+
+# ===========================================
+# DESIGN TOKEN ENFORCEMENT
+# ===========================================
+
+function Test-DesignTokenCompliance {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir
+    )
+
+    $result = @{
+        Passed     = $true
+        Violations = @()
+        Summary    = ""
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.design_token_enforcement -or -not $config.design_token_enforcement.enabled) {
+                return $result
+            }
+        } catch { return $result }
+    } else { return $result }
+
+    $blockOnViolation = $config.design_token_enforcement.block_on_violation
+    $scanExtensions = @($config.design_token_enforcement.scan_extensions)
+    $allowedRawColors = @($config.design_token_enforcement.allowed_raw_colors)
+
+    Write-Host "  [TOKEN] Running design token compliance scan..." -ForegroundColor Cyan
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 1. Load design tokens if available Ã¢â€â‚¬Ã¢â€â‚¬
+    $tokenPaths = @(
+        (Join-Path $RepoRoot "_analysis\design-tokens.json"),
+        (Join-Path $RepoRoot "design\tokens\tokens.json"),
+        (Join-Path $RepoRoot "design\web\tokens.json"),
+        (Join-Path $RepoRoot "src\styles\tokens.json"),
+        (Join-Path $RepoRoot "src\theme\tokens.json")
+    )
+
+    $tokenFile = $null
+    $designTokens = @{}
+    foreach ($tp in $tokenPaths) {
+        if (Test-Path $tp) {
+            try {
+                $designTokens = Get-Content $tp -Raw | ConvertFrom-Json
+                $tokenFile = $tp
+                Write-Host "  [TOKEN] Loaded design tokens from: $tp" -ForegroundColor DarkCyan
+            } catch {}
+            break
+        }
+    }
+
+    if (-not $tokenFile) {
+        Write-Host "  [TOKEN] No design tokens file found -- scanning for hardcoded values only" -ForegroundColor DarkGray
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 2. Find source files to scan Ã¢â€â‚¬Ã¢â€â‚¬
+    $filesToScan = @()
+    foreach ($ext in $scanExtensions) {
+        $pattern = "*$ext"
+        $found = Get-ChildItem -Path $RepoRoot -Filter $pattern -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.FullName -notlike "*\node_modules\*" -and
+                $_.FullName -notlike "*\bin\*" -and
+                $_.FullName -notlike "*\obj\*" -and
+                $_.FullName -notlike "*\dist\*" -and
+                $_.FullName -notlike "*\build\*" -and
+                $_.FullName -notlike "*\.gsd\*" -and
+                $_.Name -notlike "*.min.*" -and
+                $_.Name -notlike "*.bundle.*"
+            }
+        $filesToScan += $found
+    }
+
+    if ($filesToScan.Count -eq 0) {
+        Write-Host "  [TOKEN] No source files to scan" -ForegroundColor DarkGray
+        return $result
+    }
+
+    Write-Host "  [TOKEN] Scanning $($filesToScan.Count) files..." -ForegroundColor DarkCyan
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 3. Hardcoded value patterns Ã¢â€â‚¬Ã¢â€â‚¬
+    $patterns = @(
+        @{
+            Name    = "Hardcoded hex color"
+            Regex   = '#[0-9a-fA-F]{3,8}(?![\w-])'
+            Type    = "color"
+        },
+        @{
+            Name    = "Hardcoded rgb/rgba"
+            Regex   = 'rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+'
+            Type    = "color"
+        },
+        @{
+            Name    = "Hardcoded pixel font-size"
+            Regex   = 'font-size:\s*\d+px'
+            Type    = "typography"
+        },
+        @{
+            Name    = "Hardcoded pixel spacing"
+            Regex   = '(?:margin|padding|gap):\s*\d+px'
+            Type    = "spacing"
+        },
+        @{
+            Name    = "Hardcoded pixel border-radius"
+            Regex   = 'border-radius:\s*\d+px'
+            Type    = "border"
+        },
+        @{
+            Name    = "Inline style with hardcoded color"
+            Regex   = 'color:\s*[''"]#[0-9a-fA-F]{3,8}[''"]'
+            Type    = "color"
+        },
+        @{
+            Name    = "Inline style object color"
+            Regex   = "color:\s*['""]#[0-9a-fA-F]{3,8}['""]"
+            Type    = "color"
+        }
+    )
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 4. Scan files Ã¢â€â‚¬Ã¢â€â‚¬
+    foreach ($file in $filesToScan) {
+        $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $content) { continue }
+
+        $relativePath = $file.FullName.Substring($RepoRoot.Length + 1)
+
+        foreach ($pattern in $patterns) {
+            $matches = [regex]::Matches($content, $pattern.Regex)
+            foreach ($match in $matches) {
+                $value = $match.Value
+
+                # Skip allowed raw colors
+                $isAllowed = $false
+                foreach ($allowed in $allowedRawColors) {
+                    if ($value -like "*$allowed*") { $isAllowed = $true; break }
+                }
+                if ($isAllowed) { continue }
+
+                # Skip CSS custom property references (var(--xxx))
+                $lineContent = ""
+                $matchIdx = $match.Index
+                $lineStart = $content.LastIndexOf("`n", [math]::Max(0, $matchIdx - 1)) + 1
+                $lineEnd = $content.IndexOf("`n", $matchIdx)
+                if ($lineEnd -lt 0) { $lineEnd = $content.Length }
+                $lineContent = $content.Substring($lineStart, $lineEnd - $lineStart).Trim()
+
+                if ($lineContent -match 'var\(--') { continue }
+
+                # Calculate line number
+                $lineNum = ($content.Substring(0, $matchIdx) -split "`n").Count
+
+                $result.Violations += @{
+                    file    = $relativePath
+                    line    = $lineNum
+                    type    = $pattern.Type
+                    pattern = $pattern.Name
+                    value   = $value
+                    context = $lineContent.Substring(0, [math]::Min(120, $lineContent.Length))
+                }
+            }
+        }
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 5. Summary Ã¢â€â‚¬Ã¢â€â‚¬
+    if ($result.Violations.Count -gt 0) {
+        $byType = $result.Violations | Group-Object -Property type
+        $typeSummary = ($byType | ForEach-Object { "$($_.Name): $($_.Count)" }) -join ", "
+        $result.Summary = "$($result.Violations.Count) hardcoded values found ($typeSummary)"
+
+        if ($blockOnViolation) { $result.Passed = $false }
+
+        Write-Host "  [TOKEN] $($result.Summary)" -ForegroundColor Yellow
+
+        # Show top 10 violations
+        $top = $result.Violations | Select-Object -First 10
+        foreach ($v in $top) {
+            Write-Host "    $($v.file):$($v.line) -- $($v.pattern): $($v.value)" -ForegroundColor DarkYellow
+        }
+        if ($result.Violations.Count -gt 10) {
+            Write-Host "    ... and $($result.Violations.Count - 10) more" -ForegroundColor DarkGray
+        }
+    } else {
+        $result.Summary = "No hardcoded design values found"
+        Write-Host "  [TOKEN] $($result.Summary)" -ForegroundColor Green
+    }
+
+    # Save results
+    $valDir = Join-Path $GsdDir "validation"
+    if (-not (Test-Path $valDir)) {
+        New-Item -Path $valDir -ItemType Directory -Force | Out-Null
+    }
+    @{
+        timestamp  = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        passed     = $result.Passed
+        violations = $result.Violations.Count
+        by_type    = ($result.Violations | Group-Object type | ForEach-Object { @{ type = $_.Name; count = $_.Count } })
+        details    = $result.Violations | Select-Object -First 50
+        summary    = $result.Summary
+    } | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $valDir "design-token-results.json") -Encoding UTF8
+
+    return $result
+}
+
+# ===========================================
+# COMPLIANCE ENGINE
+# ===========================================
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Per-Iteration Compliance Audit Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Invoke-PerIterationCompliance {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration
+    )
+
+    $result = @{
+        Passed   = $true
+        Critical = @()
+        High     = @()
+        Medium   = @()
+        RuleResults = @()
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.compliance_engine -or -not $config.compliance_engine.per_iteration_audit -or
+                -not $config.compliance_engine.per_iteration_audit.enabled) {
+                return $result
+            }
+        } catch { return $result }
+    } else { return $result }
+
+    Write-Host "  [COMPLIANCE] Running per-iteration compliance audit..." -ForegroundColor Cyan
+
+    # Structured rule engine: ID -> regex -> severity -> file glob
+    $rules = @(
+        # Network Security (SEC-NET-*)
+        @{ Id="SEC-NET-01"; Name="SQL Injection"; Severity="critical"; Glob="*.cs"; Pattern='string\.Format\s*\(\s*".*SELECT|".*\+.*sql|SqlCommand\(\s*\$"|\.ExecuteSqlRaw\(\s*\$"' }
+        @{ Id="SEC-NET-02"; Name="XSS via innerHTML"; Severity="critical"; Glob="*.tsx,*.jsx"; Pattern='dangerouslySetInnerHTML|\.innerHTML\s*=' }
+        @{ Id="SEC-NET-03"; Name="Eval usage"; Severity="critical"; Glob="*.ts,*.tsx,*.js,*.jsx"; Pattern='\beval\s*\(|new\s+Function\s*\(' }
+        @{ Id="SEC-NET-04"; Name="Hardcoded secrets"; Severity="critical"; Glob="*.cs,*.ts,*.json"; Pattern='(?i)(password|secret|api_key|apikey|connection_string)\s*[:=]\s*"[^"]{8,}"' }
+        @{ Id="SEC-NET-05"; Name="Missing Authorize"; Severity="high"; Glob="*Controller*.cs"; Pattern='(?s)\[ApiController\](?!.*\[Authorize)' }
+        @{ Id="SEC-NET-06"; Name="HTTP instead of HTTPS"; Severity="high"; Glob="*.cs,*.ts"; Pattern='http://(?!localhost|127\.0\.0\.1|0\.0\.0\.0)' }
+        @{ Id="SEC-NET-07"; Name="Console.log sensitive data"; Severity="medium"; Glob="*.ts,*.tsx,*.js"; Pattern='console\.\w+\(.*(?i)(password|token|secret|ssn|credit)' }
+        @{ Id="SEC-NET-08"; Name="localStorage for tokens"; Severity="high"; Glob="*.ts,*.tsx,*.js"; Pattern='localStorage\.\w+\(.*(?i)(token|jwt|auth|session)' }
+
+        # SQL Security (SEC-SQL-*)
+        @{ Id="SEC-SQL-01"; Name="String concatenation in SQL"; Severity="critical"; Glob="*.sql"; Pattern='\+\s*@|\+\s*CAST|''.*\+' }
+        @{ Id="SEC-SQL-02"; Name="Missing parameterized query"; Severity="high"; Glob="*.cs"; Pattern='new SqlCommand\(\s*\$"|SqlCommand\(\s*".*\+' }
+        @{ Id="SEC-SQL-03"; Name="Dynamic SQL without sp_executesql"; Severity="high"; Glob="*.sql"; Pattern='EXEC\s*\(\s*@(?!.*sp_executesql)' }
+
+        # Frontend Security (SEC-FE-*)
+        @{ Id="SEC-FE-01"; Name="Missing CSRF token"; Severity="high"; Glob="*.cs"; Pattern='\[HttpPost\](?!.*\[ValidateAntiForgeryToken\])' }
+        @{ Id="SEC-FE-02"; Name="Unvalidated redirect"; Severity="medium"; Glob="*.cs"; Pattern='Redirect\(\s*\w+\)(?!.*IsLocalUrl)' }
+
+        # HIPAA (COMP-HIPAA-*)
+        @{ Id="COMP-HIPAA-01"; Name="PII in log output"; Severity="critical"; Glob="*.cs"; Pattern='(?i)_logger\.\w+\(.*(?:ssn|social.*security|date.*birth|medical)' }
+        @{ Id="COMP-HIPAA-02"; Name="Unencrypted PII storage"; Severity="critical"; Glob="*.cs"; Pattern='(?i)(?:ssn|social_security)\s*=\s*(?!.*Encrypt|.*Hash)' }
+
+        # SOC 2 (COMP-SOC2-*)
+        @{ Id="COMP-SOC2-01"; Name="Missing audit log"; Severity="high"; Glob="*.cs"; Pattern='(?s)(?:INSERT|UPDATE|DELETE)(?!.*AuditLog|.*_logger|.*LogAudit)' }
+
+        # PCI (COMP-PCI-*)
+        @{ Id="COMP-PCI-01"; Name="Credit card in logs"; Severity="critical"; Glob="*.cs,*.ts"; Pattern='(?i)_logger\.\w+\(.*(?:card.*number|credit.*card|cvv|ccv)' }
+        @{ Id="COMP-PCI-02"; Name="Unmasked card display"; Severity="high"; Glob="*.tsx,*.jsx"; Pattern='(?i)card.*number.*\{(?!.*mask|.*\*\*\*|.*slice\(-4\))' }
+
+        # GDPR (COMP-GDPR-*)
+        @{ Id="COMP-GDPR-01"; Name="Missing data deletion endpoint"; Severity="medium"; Glob="*Controller*.cs"; Pattern='(?!)' }  # placeholder -- checked separately
+    )
+
+    # Scan source files
+    $sourceFiles = Get-ChildItem -Path $RepoRoot -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notlike "*\node_modules\*" -and
+            $_.FullName -notlike "*\bin\*" -and
+            $_.FullName -notlike "*\obj\*" -and
+            $_.FullName -notlike "*\.gsd\*" -and
+            $_.FullName -notlike "*\.git\*" -and
+            $_.Extension -in ".cs", ".ts", ".tsx", ".jsx", ".js", ".sql", ".json"
+        }
+
+    $fileContents = @{}
+    foreach ($f in $sourceFiles) {
+        try {
+            $fileContents[$f.FullName] = @{
+                Content  = Get-Content $f.FullName -Raw
+                Relative = $f.FullName.Substring($RepoRoot.Length + 1)
+                Extension = $f.Extension
+            }
+        } catch {}
+    }
+
+    foreach ($rule in $rules) {
+        if ($rule.Pattern -eq '(?!)') { continue }  # skip placeholder rules
+
+        $ruleGlobs = $rule.Glob -split ','
+        $violations = @()
+
+        foreach ($kvp in $fileContents.GetEnumerator()) {
+            $info = $kvp.Value
+            $matchesGlob = $false
+            foreach ($g in $ruleGlobs) {
+                if ($info.Relative -like $g.Trim()) { $matchesGlob = $true; break }
+            }
+            if (-not $matchesGlob) { continue }
+
+            try {
+                $regexMatches = [regex]::Matches($info.Content, $rule.Pattern)
+                foreach ($m in $regexMatches) {
+                    $lineNum = ($info.Content.Substring(0, $m.Index) -split "`n").Count
+                    $violations += @{
+                        file = $info.Relative
+                        line = $lineNum
+                        match = $m.Value.Substring(0, [math]::Min(80, $m.Value.Length))
+                    }
+                }
+            } catch {}
+        }
+
+        $status = if ($violations.Count -eq 0) { "passed" } else { "failed" }
+        $result.RuleResults += @{
+            id         = $rule.Id
+            name       = $rule.Name
+            severity   = $rule.Severity
+            status     = $status
+            violations = $violations.Count
+            details    = $violations | Select-Object -First 5
+        }
+
+        if ($violations.Count -gt 0) {
+            switch ($rule.Severity) {
+                "critical" { $result.Critical += "$($rule.Id): $($rule.Name) ($($violations.Count) violations)" }
+                "high"     { $result.High += "$($rule.Id): $($rule.Name) ($($violations.Count) violations)" }
+                "medium"   { $result.Medium += "$($rule.Id): $($rule.Name) ($($violations.Count) violations)" }
+            }
+        }
+    }
+
+    # Determine pass/fail
+    $blockOnCritical = $config.compliance_engine.per_iteration_audit.block_on_critical
+    if ($blockOnCritical -and $result.Critical.Count -gt 0) {
+        $result.Passed = $false
+    }
+
+    $total = $result.RuleResults.Count
+    $passed = ($result.RuleResults | Where-Object { $_.status -eq "passed" }).Count
+    $result.Summary = "Rules: $passed/$total passed. Critical: $($result.Critical.Count), High: $($result.High.Count), Medium: $($result.Medium.Count)"
+
+    Write-Host "  [COMPLIANCE] $($result.Summary)" -ForegroundColor $(if ($result.Critical.Count -eq 0) { "Green" } else { "Red" })
+
+    if ($result.Critical.Count -gt 0) {
+        foreach ($c in $result.Critical) { Write-Host "    [CRITICAL] $c" -ForegroundColor Red }
+    }
+
+    # Save results
+    $valDir = Join-Path $GsdDir "validation"
+    if (-not (Test-Path $valDir)) { New-Item -Path $valDir -ItemType Directory -Force | Out-Null }
+    @{
+        iteration = $Iteration
+        timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        passed    = $result.Passed
+        summary   = $result.Summary
+        critical  = $result.Critical
+        high      = $result.High
+        medium    = $result.Medium
+        rules     = $result.RuleResults
+    } | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $valDir "compliance-scan.json") -Encoding UTF8
+
+    return $result
+}
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Database Migration Validation Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Test-DatabaseMigrationIntegrity {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir
+    )
+
+    $result = @{
+        Passed   = $true
+        Issues   = @()
+        Summary  = ""
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.compliance_engine -or -not $config.compliance_engine.db_migration -or
+                -not $config.compliance_engine.db_migration.enabled) {
+                return $result
+            }
+        } catch { return $result }
+    } else { return $result }
+
+    Write-Host "  [DB] Running database migration integrity scan..." -ForegroundColor Cyan
+
+    # Find SQL files
+    $sqlFiles = Get-ChildItem -Path $RepoRoot -Filter "*.sql" -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notlike "*\node_modules\*" -and $_.FullName -notlike "*\.gsd\*" }
+
+    if ($sqlFiles.Count -eq 0) {
+        Write-Host "  [DB] No SQL files found -- skipping" -ForegroundColor DarkGray
+        return $result
+    }
+
+    $allSqlContent = ""
+    foreach ($sf in $sqlFiles) {
+        $allSqlContent += (Get-Content $sf.FullName -Raw) + "`n"
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 1. Foreign Key Consistency Ã¢â€â‚¬Ã¢â€â‚¬
+    if ($config.compliance_engine.db_migration.check_foreign_keys) {
+        # Find REFERENCES clauses and verify target tables exist
+        $fkRegex = '(?i)REFERENCES\s+\[?(\w+)\]?\s*\(\s*\[?(\w+)\]?\s*\)'
+        $fkMatches = [regex]::Matches($allSqlContent, $fkRegex)
+
+        $createTableRegex = '(?i)CREATE\s+TABLE\s+\[?(?:dbo\.)?\]?\[?(\w+)\]?'
+        $tables = @([regex]::Matches($allSqlContent, $createTableRegex) | ForEach-Object { $_.Groups[1].Value.ToLower() })
+
+        foreach ($fk in $fkMatches) {
+            $refTable = $fk.Groups[1].Value.ToLower()
+            if ($refTable -notin $tables) {
+                $result.Issues += @{
+                    type    = "foreign_key"
+                    severity = "high"
+                    message = "FK references table '$($fk.Groups[1].Value)' which is not defined in any CREATE TABLE"
+                }
+            }
+        }
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 2. Index Coverage Ã¢â€â‚¬Ã¢â€â‚¬
+    if ($config.compliance_engine.db_migration.check_index_coverage) {
+        # Find WHERE clauses in SPs and check for indexes
+        $whereRegex = '(?i)WHERE\s+\[?(\w+)\]?\s*='
+        $whereMatches = [regex]::Matches($allSqlContent, $whereRegex)
+        $queriedColumns = @($whereMatches | ForEach-Object { $_.Groups[1].Value.ToLower() } | Select-Object -Unique)
+
+        $indexRegex = '(?i)CREATE\s+(?:UNIQUE\s+)?(?:NONCLUSTERED\s+)?INDEX\s+\w+\s+ON\s+\[?\w+\]?\s*\(\s*\[?(\w+)\]?'
+        $pkRegex = '(?i)PRIMARY\s+KEY\s*\(\s*\[?(\w+)\]?'
+        $indexedColumns = @()
+        $indexedColumns += [regex]::Matches($allSqlContent, $indexRegex) | ForEach-Object { $_.Groups[1].Value.ToLower() }
+        $indexedColumns += [regex]::Matches($allSqlContent, $pkRegex) | ForEach-Object { $_.Groups[1].Value.ToLower() }
+        $indexedColumns = $indexedColumns | Select-Object -Unique
+
+        foreach ($col in $queriedColumns) {
+            if ($col -notin $indexedColumns -and $col -ne "id") {
+                $result.Issues += @{
+                    type    = "index_coverage"
+                    severity = "medium"
+                    message = "Column '$col' used in WHERE clause but no index found"
+                }
+            }
+        }
+    }
+
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 3. Seed Data Integrity Ã¢â€â‚¬Ã¢â€â‚¬
+    if ($config.compliance_engine.db_migration.check_seed_integrity) {
+        # Find INSERT statements and verify referenced tables exist
+        $insertRegex = '(?i)INSERT\s+INTO\s+\[?(?:dbo\.)?\]?\[?(\w+)\]?'
+        $insertMatches = [regex]::Matches($allSqlContent, $insertRegex)
+        $seededTables = @($insertMatches | ForEach-Object { $_.Groups[1].Value.ToLower() } | Select-Object -Unique)
+
+        $createTableRegex2 = '(?i)CREATE\s+TABLE\s+\[?(?:dbo\.)?\]?\[?(\w+)\]?'
+        $tables2 = @([regex]::Matches($allSqlContent, $createTableRegex2) | ForEach-Object { $_.Groups[1].Value.ToLower() })
+
+        foreach ($st in $seededTables) {
+            if ($st -notin $tables2) {
+                $result.Issues += @{
+                    type    = "seed_integrity"
+                    severity = "high"
+                    message = "INSERT INTO '$st' but table not defined in CREATE TABLE"
+                }
+            }
+        }
+    }
+
+    # Summary
+    $highCount = ($result.Issues | Where-Object { $_.severity -eq "high" }).Count
+    $medCount = ($result.Issues | Where-Object { $_.severity -eq "medium" }).Count
+    $result.Summary = "DB integrity: $($result.Issues.Count) issues (high: $highCount, medium: $medCount)"
+    if ($highCount -gt 0) { $result.Passed = $false }
+
+    Write-Host "  [DB] $($result.Summary)" -ForegroundColor $(if ($result.Passed) { "Green" } else { "Yellow" })
+
+    # Save results
+    $valDir = Join-Path $GsdDir "validation"
+    if (-not (Test-Path $valDir)) { New-Item -Path $valDir -ItemType Directory -Force | Out-Null }
+    @{
+        timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        passed    = $result.Passed
+        issues    = $result.Issues
+        summary   = $result.Summary
+    } | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $valDir "db-migration-results.json") -Encoding UTF8
+
+    return $result
+}
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ PII Flow Tracking Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Invoke-PiiFlowAnalysis {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir
+    )
+
+    $result = @{
+        Passed    = $true
+        Risks     = @()
+        PiiFields = @()
+        Summary   = ""
+    }
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.compliance_engine -or -not $config.compliance_engine.pii_tracking -or
+                -not $config.compliance_engine.pii_tracking.enabled) {
+                return $result
+            }
+        } catch { return $result }
+    } else { return $result }
+
+    $piiFieldNames = @($config.compliance_engine.pii_tracking.pii_fields)
+
+    Write-Host "  [PII] Running PII flow analysis..." -ForegroundColor Cyan
+
+    # Find source files
+    $sourceFiles = Get-ChildItem -Path $RepoRoot -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Extension -in ".cs", ".ts", ".tsx", ".sql" -and
+            $_.FullName -notlike "*\node_modules\*" -and
+            $_.FullName -notlike "*\bin\*" -and
+            $_.FullName -notlike "*\obj\*" -and
+            $_.FullName -notlike "*\.gsd\*"
+        }
+
+    foreach ($field in $piiFieldNames) {
+        $fieldPattern = "(?i)$([regex]::Escape($field))"
+        $foundIn = @()
+
+        foreach ($f in $sourceFiles) {
+            $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+            if (-not $content) { continue }
+
+            if ($content -match $fieldPattern) {
+                $relativePath = $f.FullName.Substring($RepoRoot.Length + 1)
+                $foundIn += $relativePath
+
+                # Check for logging risks (PII in log output)
+                if ($config.compliance_engine.pii_tracking.check_logging) {
+                    if ($content -match "(?i)(_logger|Console|console)\.\w+\(.*$field") {
+                        $result.Risks += @{
+                            type    = "pii_in_logs"
+                            field   = $field
+                            file    = $relativePath
+                            severity = "critical"
+                            message = "PII field '$field' appears in log output"
+                        }
+                    }
+                }
+
+                # Check for encryption (PII stored without encryption)
+                if ($config.compliance_engine.pii_tracking.check_encryption -and $f.Extension -eq ".cs") {
+                    if ($content -match "(?i)$field\s*=" -and $content -notmatch "(?i)(Encrypt|Hash|Protect|DataProtect).*$field|$field.*(Encrypt|Hash)") {
+                        # Only flag if it looks like storage (not just reading)
+                        if ($content -match "(?i)(INSERT|UPDATE|SaveChanges|Repository)") {
+                            $result.Risks += @{
+                                type    = "pii_unencrypted"
+                                field   = $field
+                                file    = $relativePath
+                                severity = "high"
+                                message = "PII field '$field' may be stored without encryption"
+                            }
+                        }
+                    }
+                }
+
+                # Check UI masking (PII displayed without masking)
+                if ($config.compliance_engine.pii_tracking.check_ui_masking -and $f.Extension -in ".tsx", ".jsx") {
+                    if ($content -match "(?i)\{.*$field.*\}" -and $content -notmatch "(?i)(mask|hide|\*\*\*|slice\(-4\)|substring).*$field|$field.*(mask|hide)") {
+                        $result.Risks += @{
+                            type    = "pii_unmasked_ui"
+                            field   = $field
+                            file    = $relativePath
+                            severity = "high"
+                            message = "PII field '$field' displayed in UI without masking"
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($foundIn.Count -gt 0) {
+            $result.PiiFields += @{
+                field    = $field
+                found_in = $foundIn
+                count    = $foundIn.Count
+            }
+        }
+    }
+
+    # Summary
+    $criticalCount = ($result.Risks | Where-Object { $_.severity -eq "critical" }).Count
+    $highCount = ($result.Risks | Where-Object { $_.severity -eq "high" }).Count
+    $result.Summary = "PII fields: $($result.PiiFields.Count) tracked, Risks: $($result.Risks.Count) (critical: $criticalCount, high: $highCount)"
+
+    if ($criticalCount -gt 0) { $result.Passed = $false }
+
+    Write-Host "  [PII] $($result.Summary)" -ForegroundColor $(if ($criticalCount -eq 0) { "Green" } else { "Red" })
+
+    if ($criticalCount -gt 0) {
+        foreach ($r in ($result.Risks | Where-Object { $_.severity -eq "critical" })) {
+            Write-Host "    [CRITICAL] $($r.message) ($($r.file))" -ForegroundColor Red
+        }
+    }
+
+    # Save results
+    $valDir = Join-Path $GsdDir "validation"
+    if (-not (Test-Path $valDir)) { New-Item -Path $valDir -ItemType Directory -Force | Out-Null }
+    @{
+        timestamp  = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        passed     = $result.Passed
+        pii_fields = $result.PiiFields
+        risks      = $result.Risks
+        summary    = $result.Summary
+    } | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $valDir "pii-flow-results.json") -Encoding UTF8
+
+    return $result
+}
+
+# ===========================================
+# SPEED OPTIMIZATIONS
+# ===========================================
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Conditional Research Skip Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Test-ShouldSkipResearch {
+    param(
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [decimal]$CurrentHealth,
+        [decimal]$PreviousHealth,
+        [int]$Iteration
+    )
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            $skipCfg = $config.speed_optimizations.conditional_research_skip
+            if (-not $skipCfg -or -not $skipCfg.enabled) { return $false }
+        } catch { return $false }
+    } else { return $false }
+
+    # Don't skip on first iteration
+    if ($Iteration -le 1) { return $false }
+
+    # Check health improvement
+    $minDelta = if ($skipCfg.min_health_delta) { [decimal]$skipCfg.min_health_delta } else { 1 }
+    $healthDelta = $CurrentHealth - $PreviousHealth
+
+    if ($healthDelta -lt $minDelta) {
+        # Health not improving -- DO research (might be stuck)
+        return $false
+    }
+
+    # Check if batch has new "not_started" requirements
+    $queuePath = Join-Path $GsdDir "generation-queue\queue-current.json"
+    if (Test-Path $queuePath) {
+        try {
+            $queue = Get-Content $queuePath -Raw | ConvertFrom-Json
+            $batch = @($queue.batch)
+            $newItems = $batch | Where-Object { $_.status -eq "not_started" }
+            if ($newItems.Count -gt 0) {
+                # New requirements need research
+                return $false
+            }
+        } catch {}
+    }
+
+    Write-Host "  [SPEED] Skipping research: health improving (+$healthDelta%), no new requirements" -ForegroundColor DarkGray
+    return $true
+}
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Smart Batch Sizing Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Get-OptimalBatchSize {
+    param(
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$CurrentBatchSize,
+        [int]$Iteration
+    )
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            $batchCfg = $config.speed_optimizations.smart_batch_sizing
+            if (-not $batchCfg -or -not $batchCfg.enabled) { return $CurrentBatchSize }
+        } catch { return $CurrentBatchSize }
+    } else { return $CurrentBatchSize }
+
+    $contextLimit = [int]$batchCfg.context_limit_tokens
+    $utilTarget = [decimal]$batchCfg.utilization_target
+    $minBatch = [int]$batchCfg.min_batch
+    $maxBatch = [int]$batchCfg.max_batch
+
+    # Read cost history to compute avg tokens per requirement
+    $costPath = Join-Path $GsdDir "costs\cost-summary.json"
+    if (-not (Test-Path $costPath)) { return $CurrentBatchSize }
+
+    try {
+        $costs = Get-Content $costPath -Raw | ConvertFrom-Json
+    } catch { return $CurrentBatchSize }
+
+    # Calculate from runs history
+    $runs = @($costs.runs)
+    if ($runs.Count -lt 2) { return $CurrentBatchSize }
+
+    # Get execute phase token usage
+    $executeTokens = @()
+    $executeBatches = @()
+    foreach ($run in $runs) {
+        if ($run.by_phase) {
+            $execPhase = $run.by_phase | Where-Object { $_.phase -eq "execute" }
+            if ($execPhase -and $execPhase.output_tokens -gt 0) {
+                $executeTokens += [int]$execPhase.output_tokens
+                $executeBatches += [int]$(if ($run.batch_size) { $run.batch_size } else { $CurrentBatchSize })
+            }
+        }
+    }
+
+    if ($executeTokens.Count -eq 0) { return $CurrentBatchSize }
+
+    # Average tokens per requirement
+    $totalTokens = ($executeTokens | Measure-Object -Sum).Sum
+    $totalBatchItems = ($executeBatches | Measure-Object -Sum).Sum
+    if ($totalBatchItems -eq 0) { return $CurrentBatchSize }
+
+    $avgTokensPerReq = [math]::Ceiling($totalTokens / $totalBatchItems)
+    if ($avgTokensPerReq -le 0) { return $CurrentBatchSize }
+
+    # Calculate optimal batch
+    $optimal = [math]::Floor(($contextLimit * $utilTarget) / $avgTokensPerReq)
+    $optimal = [math]::Max($minBatch, [math]::Min($maxBatch, $optimal))
+
+    if ($optimal -ne $CurrentBatchSize) {
+        Write-Host "  [SPEED] Smart batch: $CurrentBatchSize -> $optimal (avg $avgTokensPerReq tokens/req)" -ForegroundColor Cyan
+    }
+
+    return [int]$optimal
+}
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Incremental File Map Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Update-FileMapIncremental {
+    param(
+        [string]$Root,
+        [string]$GsdPath
+    )
+
+    # Check if git is available and we have a previous file map
+    $fileMapPath = Join-Path $GsdPath "file-map.json"
+    if (-not (Test-Path $fileMapPath)) {
+        # No existing file map -- do full scan
+        if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+            return Update-FileMap -Root $Root -GsdPath $GsdPath
+        }
+        return $null
+    }
+
+    # Check config
+    $configPath = Join-Path (Split-Path (Split-Path $GsdPath)) ".gsd-global\config\global-config.json"
+    # Try standard global path
+    $globalConfigPath = Join-Path $env:USERPROFILE ".gsd-global\config\global-config.json"
+    if (Test-Path $globalConfigPath) {
+        try {
+            $config = Get-Content $globalConfigPath -Raw | ConvertFrom-Json
+            if (-not $config.speed_optimizations -or -not $config.speed_optimizations.incremental_file_map -or
+                -not $config.speed_optimizations.incremental_file_map.enabled) {
+                if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+                    return Update-FileMap -Root $Root -GsdPath $GsdPath
+                }
+                return $null
+            }
+        } catch {}
+    }
+
+    # Get changed files since last file map update
+    $changedFiles = @(git diff --name-only HEAD~1 HEAD 2>$null)
+    $untrackedFiles = @(git ls-files --others --exclude-standard 2>$null)
+    $allChanged = $changedFiles + $untrackedFiles | Select-Object -Unique
+
+    if ($allChanged.Count -eq 0) {
+        Write-Host "  [SPEED] File map unchanged (no file changes detected)" -ForegroundColor DarkGray
+        return $null
+    }
+
+    # If more than 30% files changed, do full scan
+    $totalFiles = @(git ls-files 2>$null).Count
+    if ($totalFiles -gt 0 -and ($allChanged.Count / $totalFiles) -gt 0.3) {
+        Write-Host "  [SPEED] >30% files changed -- doing full file map scan" -ForegroundColor DarkGray
+        if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+            return Update-FileMap -Root $Root -GsdPath $GsdPath
+        }
+        return $null
+    }
+
+    Write-Host "  [SPEED] Incremental file map: $($allChanged.Count) files changed" -ForegroundColor DarkGray
+
+    # Load existing file map and update only changed entries
+    try {
+        $fileMap = Get-Content $fileMapPath -Raw | ConvertFrom-Json
+    } catch {
+        if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+            return Update-FileMap -Root $Root -GsdPath $GsdPath
+        }
+        return $null
+    }
+
+    # Update the file map with changed files
+    # For simplicity, update the tree view
+    $treePath = Join-Path $GsdPath "file-map-tree.md"
+    if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+        return Update-FileMap -Root $Root -GsdPath $GsdPath
+    }
+
+    return $fileMap
+}
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Enhanced Prompt Resolution with Deduplication Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Resolve-PromptWithDedup {
+    param(
+        [string]$PromptText,
+        [string]$GlobalDir
+    )
+
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            $dedupCfg = $config.speed_optimizations.prompt_deduplication
+            if (-not $dedupCfg -or -not $dedupCfg.enabled) { return $PromptText }
+        } catch { return $PromptText }
+    } else { return $PromptText }
+
+    # Inject {{SECURITY_STANDARDS}} if referenced
+    if ($dedupCfg.inject_security_standards -and $PromptText -match '{{SECURITY_STANDARDS}}') {
+        $secPath = Join-Path $GlobalDir "prompts\shared\security-standards.md"
+        if (Test-Path $secPath) {
+            $secContent = Get-Content $secPath -Raw
+            $PromptText = $PromptText.Replace("{{SECURITY_STANDARDS}}", $secContent)
+        }
+    }
+
+    # Inject {{CODING_CONVENTIONS}} if referenced
+    if ($dedupCfg.inject_coding_conventions -and $PromptText -match '{{CODING_CONVENTIONS}}') {
+        $convPath = Join-Path $GlobalDir "prompts\shared\coding-conventions.md"
+        if (Test-Path $convPath) {
+            $convContent = Get-Content $convPath -Raw
+            $PromptText = $PromptText.Replace("{{CODING_CONVENTIONS}}", $convContent)
+        }
+    }
+
+    return $PromptText
+}
+
+# ===========================================
+# AGENT INTELLIGENCE
+# ===========================================
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Agent Performance Scoring Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Update-AgentPerformanceScore {
+    param(
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [string]$Agent,
+        [string]$Phase,
+        [int]$TokensUsed,
+        [int]$RequirementsSatisfied,
+        [int]$RequirementsRegressed,
+        [int]$Iteration
+    )
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.agent_intelligence -or -not $config.agent_intelligence.performance_scoring -or
+                -not $config.agent_intelligence.performance_scoring.enabled) { return }
+        } catch { return }
+    } else { return }
+
+    # Load or create scores
+    $scoresDir = Join-Path $GsdDir "intelligence"
+    if (-not (Test-Path $scoresDir)) {
+        New-Item -Path $scoresDir -ItemType Directory -Force | Out-Null
+    }
+    $scoresPath = Join-Path $scoresDir "agent-scores.json"
+
+    $scores = @{}
+    if (Test-Path $scoresPath) {
+        try { $scores = Get-Content $scoresPath -Raw | ConvertFrom-Json -AsHashtable } catch { $scores = @{} }
+    }
+
+    # Initialize agent entry if missing
+    if (-not $scores.ContainsKey($Agent)) {
+        $scores[$Agent] = @{
+            total_tokens             = 0
+            total_requirements_done  = 0
+            total_regressions        = 0
+            samples                  = 0
+            efficiency_score         = 0.0
+            reliability_score        = 0.0
+            overall_score            = 0.0
+            history                  = @()
+        }
+    }
+
+    $agentData = $scores[$Agent]
+    $agentData.total_tokens += $TokensUsed
+    $agentData.total_requirements_done += $RequirementsSatisfied
+    $agentData.total_regressions += $RequirementsRegressed
+    $agentData.samples += 1
+
+    # Record history entry
+    $agentData.history += @{
+        iteration    = $Iteration
+        phase        = $Phase
+        tokens       = $TokensUsed
+        satisfied    = $RequirementsSatisfied
+        regressed    = $RequirementsRegressed
+        timestamp    = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    }
+
+    # Keep last 50 entries
+    if ($agentData.history.Count -gt 50) {
+        $agentData.history = $agentData.history | Select-Object -Last 50
+    }
+
+    # Calculate scores
+    if ($agentData.total_tokens -gt 0) {
+        # Efficiency: requirements satisfied per 1000 tokens
+        $agentData.efficiency_score = [math]::Round(($agentData.total_requirements_done / ($agentData.total_tokens / 1000)), 3)
+    }
+
+    if ($agentData.total_requirements_done -gt 0) {
+        # Reliability: 1 - (regressions / total done)
+        $agentData.reliability_score = [math]::Round(1 - ($agentData.total_regressions / $agentData.total_requirements_done), 3)
+    } else {
+        $agentData.reliability_score = 0
+    }
+
+    # Overall: weighted average (60% reliability, 40% efficiency normalized)
+    $agentData.overall_score = [math]::Round(($agentData.reliability_score * 0.6) + ([math]::Min(1.0, $agentData.efficiency_score) * 0.4), 3)
+
+    $scores[$Agent] = $agentData
+    $scores | ConvertTo-Json -Depth 10 | Set-Content -Path $scoresPath -Encoding UTF8
+
+    # Also update global intelligence
+    $globalScoresDir = Join-Path $GlobalDir "intelligence"
+    if (-not (Test-Path $globalScoresDir)) {
+        New-Item -Path $globalScoresDir -ItemType Directory -Force | Out-Null
+    }
+    $globalScoresPath = Join-Path $globalScoresDir "agent-scores-global.json"
+
+    $globalScores = @{}
+    if (Test-Path $globalScoresPath) {
+        try { $globalScores = Get-Content $globalScoresPath -Raw | ConvertFrom-Json -AsHashtable } catch { $globalScores = @{} }
+    }
+
+    if (-not $globalScores.ContainsKey($Agent)) {
+        $globalScores[$Agent] = @{
+            total_tokens = 0; total_requirements_done = 0; total_regressions = 0; samples = 0;
+            efficiency_score = 0.0; reliability_score = 0.0; overall_score = 0.0;
+            projects = @()
+        }
+    }
+
+    $globalData = $globalScores[$Agent]
+    $globalData.total_tokens += $TokensUsed
+    $globalData.total_requirements_done += $RequirementsSatisfied
+    $globalData.total_regressions += $RequirementsRegressed
+    $globalData.samples += 1
+
+    if ($globalData.total_tokens -gt 0) {
+        $globalData.efficiency_score = [math]::Round(($globalData.total_requirements_done / ($globalData.total_tokens / 1000)), 3)
+    }
+    if ($globalData.total_requirements_done -gt 0) {
+        $globalData.reliability_score = [math]::Round(1 - ($globalData.total_regressions / $globalData.total_requirements_done), 3)
+    }
+    $globalData.overall_score = [math]::Round(($globalData.reliability_score * 0.6) + ([math]::Min(1.0, $globalData.efficiency_score) * 0.4), 3)
+
+    $globalScores[$Agent] = $globalData
+    $globalScores | ConvertTo-Json -Depth 10 | Set-Content -Path $globalScoresPath -Encoding UTF8
+}
+
+function Get-BestAgentForPhase {
+    param(
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [string]$Phase,
+        [string]$DefaultAgent
+    )
+
+    $scoresPath = Join-Path $GsdDir "intelligence\agent-scores.json"
+    if (-not (Test-Path $scoresPath)) { return $DefaultAgent }
+
+    try {
+        $scores = Get-Content $scoresPath -Raw | ConvertFrom-Json -AsHashtable
+    } catch { return $DefaultAgent }
+
+    # Check config for min samples
+    $minSamples = 3
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if ($config.agent_intelligence.performance_scoring.min_samples) {
+                $minSamples = [int]$config.agent_intelligence.performance_scoring.min_samples
+            }
+        } catch {}
+    }
+
+    # Find best agent for this phase
+    $bestAgent = $DefaultAgent
+    $bestScore = -1
+
+    foreach ($kvp in $scores.GetEnumerator()) {
+        $agent = $kvp.Key
+        $data = $kvp.Value
+        if ($data.samples -ge $minSamples -and $data.overall_score -gt $bestScore) {
+            # Check if this agent has history for the requested phase
+            $phaseHistory = $data.history | Where-Object { $_.phase -eq $Phase }
+            if ($phaseHistory.Count -ge $minSamples) {
+                $bestScore = $data.overall_score
+                $bestAgent = $agent
+            }
+        }
+    }
+
+    if ($bestAgent -ne $DefaultAgent) {
+        Write-Host "  [INTELLIGENCE] Agent recommendation for $Phase`: $bestAgent (score: $bestScore) vs default: $DefaultAgent" -ForegroundColor Cyan
+    }
+
+    return $bestAgent
+}
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Warm-Start Pattern Cache Ã¢â€â‚¬Ã¢â€â‚¬
+
+function Save-ProjectPatterns {
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir
+    )
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.agent_intelligence -or -not $config.agent_intelligence.warm_start -or
+                -not $config.agent_intelligence.warm_start.enabled) { return }
+        } catch { return }
+    } else { return }
+
+    # Detect project type
+    $projectType = "unknown"
+    $hasDotnet = (Get-ChildItem -Path $RepoRoot -Filter "*.sln" -ErrorAction SilentlyContinue).Count -gt 0
+    $hasReact = $false
+    $pkgJson = Join-Path $RepoRoot "package.json"
+    if (Test-Path $pkgJson) {
+        $pkg = Get-Content $pkgJson -Raw -ErrorAction SilentlyContinue
+        $hasReact = $pkg -match '"react"'
+    }
+
+    if ($hasDotnet -and $hasReact) { $projectType = "dotnet-react" }
+    elseif ($hasDotnet) { $projectType = "dotnet-api" }
+    elseif ($hasReact) { $projectType = "react-spa" }
+
+    # Save patterns to global cache
+    $cacheDir = Join-Path $GlobalDir "intelligence"
+    if (-not (Test-Path $cacheDir)) {
+        New-Item -Path $cacheDir -ItemType Directory -Force | Out-Null
+    }
+
+    $cachePath = Join-Path $cacheDir "pattern-cache.json"
+    $cache = @{}
+    if (Test-Path $cachePath) {
+        try { $cache = Get-Content $cachePath -Raw | ConvertFrom-Json -AsHashtable } catch { $cache = @{} }
+    }
+
+    # Save detected patterns
+    $patternsPath = Join-Path $GsdDir "assessment\detected-patterns.json"
+    if (Test-Path $patternsPath) {
+        $patterns = Get-Content $patternsPath -Raw
+
+        if (-not $cache.ContainsKey($projectType)) {
+            $cache[$projectType] = @{
+                patterns = @()
+                last_updated = ""
+            }
+        }
+
+        $repoName = Split-Path $RepoRoot -Leaf
+        $entry = @{
+            repo     = $repoName
+            patterns = $patterns
+            saved    = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        }
+
+        # Update or add
+        $existingIdx = -1
+        for ($i = 0; $i -lt $cache[$projectType].patterns.Count; $i++) {
+            if ($cache[$projectType].patterns[$i].repo -eq $repoName) {
+                $existingIdx = $i; break
+            }
+        }
+
+        if ($existingIdx -ge 0) {
+            $cache[$projectType].patterns[$existingIdx] = $entry
+        } else {
+            $cache[$projectType].patterns += $entry
+        }
+
+        $cache[$projectType].last_updated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+
+        $cache | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding UTF8
+        Write-Host "  [WARM] Saved project patterns to global cache (type: $projectType)" -ForegroundColor Green
+    }
+}
+
+function Get-WarmStartPatterns {
+    param(
+        [string]$RepoRoot,
+        [string]$GlobalDir
+    )
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.agent_intelligence -or -not $config.agent_intelligence.warm_start -or
+                -not $config.agent_intelligence.warm_start.enabled) { return $null }
+        } catch { return $null }
+    } else { return $null }
+
+    # Detect project type
+    $projectType = "unknown"
+    $hasDotnet = (Get-ChildItem -Path $RepoRoot -Filter "*.sln" -ErrorAction SilentlyContinue).Count -gt 0
+    $hasReact = $false
+    $pkgJson = Join-Path $RepoRoot "package.json"
+    if (Test-Path $pkgJson) {
+        $pkg = Get-Content $pkgJson -Raw -ErrorAction SilentlyContinue
+        $hasReact = $pkg -match '"react"'
+    }
+
+    if ($hasDotnet -and $hasReact) { $projectType = "dotnet-react" }
+    elseif ($hasDotnet) { $projectType = "dotnet-api" }
+    elseif ($hasReact) { $projectType = "react-spa" }
+
+    # Load global pattern cache
+    $cachePath = Join-Path $GlobalDir "intelligence\pattern-cache.json"
+    if (-not (Test-Path $cachePath)) { return $null }
+
+    try {
+        $cache = Get-Content $cachePath -Raw | ConvertFrom-Json -AsHashtable
+    } catch { return $null }
+
+    if ($cache.ContainsKey($projectType) -and $cache[$projectType].patterns.Count -gt 0) {
+        $latest = $cache[$projectType].patterns | Select-Object -Last 1
+        Write-Host "  [WARM] Loaded warm-start patterns for $projectType (from: $($latest.repo))" -ForegroundColor Green
+        return $latest.patterns
+    }
+
+    return $null
+}
+
+# ===========================================
+# LOC TRACKING (LINES OF CODE METRICS)
+# ===========================================
+
+function Update-LocMetrics {
+    <#
+    .SYNOPSIS
+        Captures git diff stats after an execute phase commit and updates
+        loc-metrics.json with per-iteration and cumulative LOC data.
+        Cross-references cost-summary.json to compute cost-per-line.
+    #>
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration,
+        [string]$Pipeline = "convergence"
+    )
+
+    # Check config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content $configPath -Raw | ConvertFrom-Json
+            if (-not $config.loc_tracking -or -not $config.loc_tracking.enabled) { return $null }
+        } catch { return $null }
+    } else { return $null }
+
+    $excludePaths = @($config.loc_tracking.exclude_paths)
+    $includeExts = @($config.loc_tracking.include_extensions)
+    $trackPerFile = if ($config.loc_tracking.track_per_file) { $true } else { $false }
+    $calcCostPerLine = if ($config.loc_tracking.cost_per_line) { $true } else { $false }
+
+    # Get git diff stats for the last commit (execute phase output)
+    $numstat = @()
+    try {
+        Push-Location $RepoRoot
+        $numstat = @(git diff --numstat HEAD~1 HEAD 2>$null)
+        Pop-Location
+    } catch {
+        Pop-Location
+        return $null
+    }
+
+    if ($numstat.Count -eq 0) {
+        Write-Host "  [LOC] No changes detected in last commit" -ForegroundColor DarkGray
+        return $null
+    }
+
+    # Parse numstat output: "added<tab>deleted<tab>filename"
+    $totalAdded = 0
+    $totalDeleted = 0
+    $filesChanged = 0
+    $fileDetails = @()
+
+    foreach ($line in $numstat) {
+        if (-not $line -or $line -eq "") { continue }
+        $parts = $line -split "\t"
+        if ($parts.Count -lt 3) { continue }
+
+        # Binary files show "-" for added/deleted
+        if ($parts[0] -eq "-" -or $parts[1] -eq "-") { continue }
+
+        $added = [int]$parts[0]
+        $deleted = [int]$parts[1]
+        $filePath = $parts[2]
+
+        # Apply exclusion filters
+        $excluded = $false
+        foreach ($excl in $excludePaths) {
+            $exclPattern = $excl -replace '\*', '.*' -replace '/', '[/\\]'
+            if ($filePath -match $exclPattern) { $excluded = $true; break }
+        }
+        if ($excluded) { continue }
+
+        # Apply inclusion filter (by extension)
+        if ($includeExts.Count -gt 0) {
+            $ext = [System.IO.Path]::GetExtension($filePath)
+            if ($ext -and $ext -notin $includeExts) { continue }
+        }
+
+        $totalAdded += $added
+        $totalDeleted += $deleted
+        $filesChanged++
+
+        if ($trackPerFile) {
+            $fileDetails += @{
+                file    = $filePath
+                added   = $added
+                deleted = $deleted
+                net     = $added - $deleted
+            }
+        }
+    }
+
+    $netLines = $totalAdded - $totalDeleted
+
+    Write-Host "  [LOC] Iteration ${Iteration}: +$totalAdded / -$totalDeleted (net $netLines) | $filesChanged files" -ForegroundColor Cyan
+
+    # Load or create metrics file
+    $costsDir = Join-Path $GsdDir "costs"
+    if (-not (Test-Path $costsDir)) {
+        New-Item -Path $costsDir -ItemType Directory -Force | Out-Null
+    }
+    $metricsPath = Join-Path $costsDir "loc-metrics.json"
+
+    $metrics = $null
+    if (Test-Path $metricsPath) {
+        try { $metrics = Get-Content $metricsPath -Raw | ConvertFrom-Json } catch {}
+    }
+    if (-not $metrics) {
+        $metrics = [PSCustomObject]@{
+            pipeline           = $Pipeline
+            started            = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            cumulative         = [PSCustomObject]@{
+                lines_added    = 0
+                lines_deleted  = 0
+                lines_net      = 0
+                files_changed  = 0
+                iterations     = 0
+            }
+            cost_per_line      = [PSCustomObject]@{
+                cost_per_added_line = 0
+                cost_per_net_line   = 0
+                total_cost_usd      = 0
+            }
+            iterations         = @()
+        }
+    }
+
+    # Build iteration entry
+    $iterEntry = [PSCustomObject]@{
+        iteration     = $Iteration
+        timestamp     = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        lines_added   = $totalAdded
+        lines_deleted = $totalDeleted
+        lines_net     = $netLines
+        files_changed = $filesChanged
+    }
+
+    if ($trackPerFile -and $fileDetails.Count -gt 0) {
+        # Sort by most lines added, top 20
+        $topFiles = $fileDetails | Sort-Object { $_.added } -Descending | Select-Object -First 20
+        $iterEntry | Add-Member -NotePropertyName "top_files" -NotePropertyValue $topFiles
+    }
+
+    # Update cumulative
+    $metrics.cumulative.lines_added = [int]$metrics.cumulative.lines_added + $totalAdded
+    $metrics.cumulative.lines_deleted = [int]$metrics.cumulative.lines_deleted + $totalDeleted
+    $metrics.cumulative.lines_net = [int]$metrics.cumulative.lines_net + $netLines
+    $metrics.cumulative.files_changed = [int]$metrics.cumulative.files_changed + $filesChanged
+    $metrics.cumulative.iterations = [int]$metrics.cumulative.iterations + 1
+
+    # Append iteration
+    $iters = @($metrics.iterations) + @($iterEntry)
+    $metrics.iterations = $iters
+
+    # Cross-reference with cost-summary.json for cost-per-line
+    if ($calcCostPerLine) {
+        $costPath = Join-Path $GsdDir "costs\cost-summary.json"
+        if (Test-Path $costPath) {
+            try {
+                $costs = Get-Content $costPath -Raw | ConvertFrom-Json
+                $totalCost = [double]$costs.total_cost_usd
+                if ($totalCost -gt 0 -and [int]$metrics.cumulative.lines_added -gt 0) {
+                    $metrics.cost_per_line.total_cost_usd = [math]::Round($totalCost, 4)
+                    $metrics.cost_per_line.cost_per_added_line = [math]::Round($totalCost / [int]$metrics.cumulative.lines_added, 4)
+                    if ([int]$metrics.cumulative.lines_net -gt 0) {
+                        $metrics.cost_per_line.cost_per_net_line = [math]::Round($totalCost / [int]$metrics.cumulative.lines_net, 4)
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    $metrics.last_updated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+
+    # Save
+    $metrics | ConvertTo-Json -Depth 10 | Set-Content -Path $metricsPath -Encoding UTF8
+
+    return @{
+        Added        = $totalAdded
+        Deleted      = $totalDeleted
+        Net          = $netLines
+        Files        = $filesChanged
+        CumAdded     = [int]$metrics.cumulative.lines_added
+        CumDeleted   = [int]$metrics.cumulative.lines_deleted
+        CumNet       = [int]$metrics.cumulative.lines_net
+        CostPerLine  = $metrics.cost_per_line.cost_per_added_line
+    }
+}
+
+function Get-LocNotificationText {
+    <#
+    .SYNOPSIS
+        Reads loc-metrics.json and returns a compact one-line LOC string for ntfy notifications.
+        Returns empty string if LOC tracking is not available.
+    #>
+    param(
+        [string]$GsdDir,
+        [switch]$Cumulative   # Show cumulative instead of last iteration
+    )
+    try {
+        $metricsPath = Join-Path $GsdDir "costs\loc-metrics.json"
+        if (-not (Test-Path $metricsPath)) { return "" }
+        $m = Get-Content $metricsPath -Raw | ConvertFrom-Json
+
+        if ($Cumulative) {
+            $added = [int]$m.cumulative.lines_added
+            $deleted = [int]$m.cumulative.lines_deleted
+            $net = [int]$m.cumulative.lines_net
+            $files = [int]$m.cumulative.files_changed
+            if ($added -eq 0 -and $deleted -eq 0) { return "" }
+            $line = "LOC total: +$added / -$deleted net $net | $files files"
+            if ($m.cost_per_line -and [double]$m.cost_per_line.cost_per_added_line -gt 0) {
+                $cpl = [math]::Round([double]$m.cost_per_line.cost_per_added_line, 4)
+                $line += " | `$$cpl/line"
+            }
+            return $line
+        } else {
+            $iters = @($m.iterations)
+            if ($iters.Count -eq 0) { return "" }
+            $last = $iters[$iters.Count - 1]
+            $added = [int]$last.lines_added
+            $deleted = [int]$last.lines_deleted
+            $net = [int]$last.lines_net
+            $files = [int]$last.files_changed
+            if ($added -eq 0 -and $deleted -eq 0) { return "" }
+            $cplText = ""
+            $metricsObj = $m
+            if ($metricsObj.cost_per_line -and [double]$metricsObj.cost_per_line.cost_per_added_line -gt 0) {
+                $cpl = [math]::Round([double]$metricsObj.cost_per_line.cost_per_added_line, 4)
+                $cplText = " | `$$cpl/line"
+            }
+            return "LOC: +$added / -$deleted net $net | $files files$cplText"
+        }
+    } catch { return "" }
+}
+
+
+# ===============================================================
+# GSD RUNTIME SMOKE TEST MODULES - appended to resilience.ps1
+# ===============================================================
+
+function Test-SeedDataFkOrder {
+    <#
+    .SYNOPSIS
+        Static scan of SQL seed files to detect FK ordering violations.
+        Zero-cost: no database connection or LLM calls needed.
+    #>
+    param(
+        [string]$RepoRoot
+    )
+
+    $result = @{ Passed = $true; Violations = @(); TablesFound = @() }
+
+    # Find SQL files that look like seed data
+    $sqlFiles = Get-ChildItem -Path $RepoRoot -Filter "*.sql" -Recurse -Depth 5 -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch "(node_modules|\.git|bin|obj|migrations)" } |
+        Sort-Object Name
+
+    if (-not $sqlFiles -or $sqlFiles.Count -eq 0) { return $result }
+
+    # Build FK dependency map from CREATE TABLE statements
+    $fkMap = @{}   # child_table -> @(parent_table, ...)
+    $insertOrder = [System.Collections.ArrayList]@()
+
+    foreach ($sf in $sqlFiles) {
+        $content = Get-Content $sf.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $content) { continue }
+
+        # Extract CREATE TABLE ... FOREIGN KEY ... REFERENCES patterns
+        $fkMatches = [regex]::Matches($content,
+            'CREATE\s+TABLE\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?.*?FOREIGN\s+KEY.*?REFERENCES\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+            [System.Text.RegularExpressions.RegexOptions]::Singleline)
+
+        foreach ($m in $fkMatches) {
+            $childTable = $m.Groups[1].Value.ToLower()
+            $parentTable = $m.Groups[2].Value.ToLower()
+            if (-not $fkMap.ContainsKey($childTable)) { $fkMap[$childTable] = @() }
+            $fkMap[$childTable] += $parentTable
+        }
+
+        # Also catch inline FK: REFERENCES [Table](Column) in column definitions
+        $inlineFkMatches = [regex]::Matches($content,
+            'CREATE\s+TABLE\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?[^;]*?REFERENCES\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+            [System.Text.RegularExpressions.RegexOptions]::Singleline)
+
+        foreach ($m in $inlineFkMatches) {
+            $childTable = $m.Groups[1].Value.ToLower()
+            $parentTable = $m.Groups[2].Value.ToLower()
+            if ($childTable -ne $parentTable) {
+                if (-not $fkMap.ContainsKey($childTable)) { $fkMap[$childTable] = @() }
+                if ($fkMap[$childTable] -notcontains $parentTable) {
+                    $fkMap[$childTable] += $parentTable
+                }
+            }
+        }
+
+        # Track INSERT order across all files
+        $insertMatches = [regex]::Matches($content,
+            'INSERT\s+INTO\s+(?:\[?dbo\]?\.)?\[?(\w+)\]?',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+        foreach ($m in $insertMatches) {
+            $tableName = $m.Groups[1].Value.ToLower()
+            if ($insertOrder -notcontains $tableName) {
+                [void]$insertOrder.Add($tableName)
+            }
+        }
+    }
+
+    $result.TablesFound = @($insertOrder)
+
+    # Check: for each child table INSERT, verify parent table was INSERTed first
+    foreach ($childTable in $insertOrder) {
+        if ($fkMap.ContainsKey($childTable)) {
+            $childIdx = $insertOrder.IndexOf($childTable)
+            foreach ($parentTable in $fkMap[$childTable]) {
+                $parentIdx = $insertOrder.IndexOf($parentTable)
+                if ($parentIdx -lt 0) {
+                    $result.Violations += "FK MISSING: '$childTable' references '$parentTable' but '$parentTable' has no INSERT statement"
+                    $result.Passed = $false
+                } elseif ($parentIdx -gt $childIdx) {
+                    $result.Violations += "FK ORDER: '$childTable' is INSERTed before its parent '$parentTable' (will cause FK violation)"
+                    $result.Passed = $false
+                }
+            }
+        }
+    }
+
+    return $result
+}
+
+
+function Find-ApiEndpoints {
+    <#
+    .SYNOPSIS
+        Discovers API endpoints from controllers, route attributes, and OpenAPI specs.
+        Returns list of @{ Method; Path } objects.
+    #>
+    param(
+        [string]$RepoRoot
+    )
+
+    $endpoints = @()
+
+    # Strategy 1: Parse .NET controller route attributes
+    $controllers = Get-ChildItem -Path $RepoRoot -Filter "*Controller*.cs" -Recurse -Depth 5 -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch "(node_modules|\.git|bin|obj|Tests?)" }
+
+    foreach ($ctrl in $controllers) {
+        $content = Get-Content $ctrl.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $content) { continue }
+
+        # Extract class-level route prefix
+        $classRoute = ""
+        $classRouteMatch = [regex]::Match($content, '\[Route\("([^"]+)"\)\]')
+        if ($classRouteMatch.Success) {
+            $classRoute = $classRouteMatch.Groups[1].Value
+            # Replace [controller] placeholder
+            $ctrlName = [regex]::Match($ctrl.BaseName, '(\w+?)Controller').Groups[1].Value.ToLower()
+            $classRoute = $classRoute -replace '\[controller\]', $ctrlName
+        }
+
+        # Extract method-level HTTP attributes
+        $httpMethods = [regex]::Matches($content,
+            '\[(Http(Get|Post|Put|Delete|Patch))(?:\("([^"]*)"\))?\]',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+        foreach ($m in $httpMethods) {
+            $method = $m.Groups[2].Value.ToUpper()
+            $methodRoute = $m.Groups[3].Value
+
+            $fullPath = if ($methodRoute) {
+                if ($methodRoute.StartsWith("/")) { $methodRoute }
+                elseif ($classRoute) { "$classRoute/$methodRoute".TrimEnd("/") }
+                else { $methodRoute }
+            } else { $classRoute }
+
+            # Normalize: ensure starts with /
+            if ($fullPath -and -not $fullPath.StartsWith("/")) { $fullPath = "/$fullPath" }
+
+            # Replace route parameters with test values
+            $testPath = $fullPath -replace '\{[^}]*:?int\}', '1' `
+                                  -replace '\{[^}]*:?guid\}', '00000000-0000-0000-0000-000000000001' `
+                                  -replace '\{[^}]*\}', 'test'
+
+            if ($testPath) {
+                $endpoints += @{ Method = $method; Path = $testPath; Source = $ctrl.Name }
+            }
+        }
+    }
+
+    # Strategy 2: Parse OpenAPI/Swagger JSON if available
+    $swaggerFiles = Get-ChildItem -Path $RepoRoot -Filter "swagger*.json" -Recurse -Depth 3 -ErrorAction SilentlyContinue
+    $swaggerFiles += Get-ChildItem -Path $RepoRoot -Filter "openapi*.json" -Recurse -Depth 3 -ErrorAction SilentlyContinue
+
+    foreach ($sf in $swaggerFiles) {
+        try {
+            $spec = Get-Content $sf.FullName -Raw | ConvertFrom-Json
+            if ($spec.paths) {
+                $spec.paths.PSObject.Properties | ForEach-Object {
+                    $path = $_.Name
+                    $testPath = $path -replace '\{[^}]*\}', 'test'
+                    $_.Value.PSObject.Properties | Where-Object { $_.Name -in @("get","post","put","delete","patch") } | ForEach-Object {
+                        $endpoints += @{ Method = $_.Name.ToUpper(); Path = $testPath; Source = $sf.Name }
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    # Deduplicate
+    $seen = @{}
+    $unique = @()
+    foreach ($ep in $endpoints) {
+        $key = "$($ep.Method):$($ep.Path)"
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $unique += $ep
+        }
+    }
+
+    return $unique
+}
+
+
+function Invoke-ApiSmokeTest {
+    <#
+    .SYNOPSIS
+        Starts the application, hits API endpoints, checks for non-500 responses.
+        This is the primary runtime validation that catches DI errors, FK violations,
+        and unhandled exceptions.
+    #>
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration
+    )
+
+    $result = @{
+        Passed       = $true
+        StartupOk    = $false
+        EndpointsTested = 0
+        Failures     = @()
+        Warnings     = @()
+        Details      = @()
+        HealthCheck  = $null
+    }
+
+    # Load config
+    $startupTimeout = 30
+    $requestTimeout = 10
+    $maxEndpoints = 50
+    $healthEndpoint = "/api/health"
+    $failOnAny500 = $true
+
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = (Get-Content $configPath -Raw | ConvertFrom-Json).runtime_smoke_test
+            if ($config) {
+                if ($config.startup_timeout_seconds) { $startupTimeout = [int]$config.startup_timeout_seconds }
+                if ($config.request_timeout_seconds) { $requestTimeout = [int]$config.request_timeout_seconds }
+                if ($config.max_endpoints_to_test) { $maxEndpoints = [int]$config.max_endpoints_to_test }
+                if ($config.health_endpoint) { $healthEndpoint = $config.health_endpoint }
+                if ($null -ne $config.fail_on_any_500) { $failOnAny500 = $config.fail_on_any_500 }
+            }
+        } catch {}
+    }
+
+    # Find the .NET project to run
+    $slnFiles = Get-ChildItem -Path $RepoRoot -Filter "*.sln" -Recurse -Depth 2 -ErrorAction SilentlyContinue
+    if (-not $slnFiles -or $slnFiles.Count -eq 0) {
+        $result.Warnings += "No .sln found -- skipping runtime smoke test"
+        return $result
+    }
+
+    # Find the web/API project (not test, not class library)
+    $apiProject = Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notmatch "(Tests?|\.Test\.|test)" -and
+            (Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -match "Microsoft\.NET\.Sdk\.Web"
+        } | Select-Object -First 1
+
+    if (-not $apiProject) {
+        $result.Warnings += "No web/API .csproj found -- skipping runtime smoke test"
+        return $result
+    }
+
+    # Determine port - check launchSettings.json
+    $port = 5000
+    $launchSettings = Join-Path (Split-Path $apiProject.FullName -Parent) "Properties\launchSettings.json"
+    if (Test-Path $launchSettings) {
+        try {
+            $ls = Get-Content $launchSettings -Raw | ConvertFrom-Json
+            $profiles = $ls.profiles.PSObject.Properties | Select-Object -First 1
+            if ($profiles.Value.applicationUrl) {
+                $urlMatch = [regex]::Match($profiles.Value.applicationUrl, 'https?://[^:]+:(\d+)')
+                if ($urlMatch.Success) { $port = [int]$urlMatch.Groups[1].Value }
+            }
+        } catch {}
+    }
+
+    # Config override
+    if ($config -and $config.port_override -and [int]$config.port_override -gt 0) {
+        $port = [int]$config.port_override
+    }
+
+    $baseUrl = "http://localhost:$port"
+    Write-Host "  [SMOKE] Starting app on port $port..." -ForegroundColor Cyan
+
+    # Start the application
+    $process = $null
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "dotnet"
+        $psi.Arguments = "run --project `"$($apiProject.FullName)`" --no-build --urls `"$baseUrl`""
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.EnvironmentVariables["ASPNETCORE_ENVIRONMENT"] = "Development"
+        $psi.EnvironmentVariables["DOTNET_ENVIRONMENT"] = "Development"
+
+        $process = [System.Diagnostics.Process]::Start($psi)
+
+        # Wait for startup - poll the health endpoint
+        $startTime = Get-Date
+        $ready = $false
+        $startupError = ""
+
+        while (((Get-Date) - $startTime).TotalSeconds -lt $startupTimeout) {
+            Start-Sleep -Seconds 2
+
+            # Check if process crashed
+            if ($process.HasExited) {
+                $stderr = $process.StandardError.ReadToEnd()
+                $stdout = $process.StandardOutput.ReadToEnd()
+                $startupError = "Application crashed on startup (exit code $($process.ExitCode))"
+
+                # Extract specific error messages
+                $allOutput = "$stderr`n$stdout"
+                if ($allOutput -match "Cannot resolve scoped service") {
+                    $startupError += "`nDI ERROR: Scoped service resolved from root provider"
+                    $diMatch = [regex]::Match($allOutput, "Cannot resolve scoped service '([^']+)'")
+                    if ($diMatch.Success) {
+                        $startupError += " - Service: $($diMatch.Groups[1].Value)"
+                    }
+                }
+                if ($allOutput -match "InvalidOperationException") {
+                    $ioMatch = [regex]::Match($allOutput, "InvalidOperationException:\s*(.+?)(?:\r?\n|$)")
+                    if ($ioMatch.Success) { $startupError += "`n$($ioMatch.Groups[1].Value)" }
+                }
+                if ($allOutput -match "SqlException") {
+                    $sqlMatch = [regex]::Match($allOutput, "SqlException:\s*(.+?)(?:\r?\n|$)")
+                    if ($sqlMatch.Success) { $startupError += "`nDB ERROR: $($sqlMatch.Groups[1].Value)" }
+                }
+                break
+            }
+
+            # Try to connect
+            try {
+                $response = Invoke-WebRequest -Uri "$baseUrl$healthEndpoint" -TimeoutSec 3 -ErrorAction Stop -UseBasicParsing
+                if ($response.StatusCode -lt 500) {
+                    $ready = $true
+                    break
+                }
+            } catch {
+                # Also try root endpoint as fallback
+                try {
+                    $response = Invoke-WebRequest -Uri "$baseUrl/" -TimeoutSec 3 -ErrorAction Stop -UseBasicParsing
+                    if ($response.StatusCode -lt 500) {
+                        $ready = $true
+                        break
+                    }
+                } catch {
+                    # Try swagger endpoint
+                    try {
+                        $response = Invoke-WebRequest -Uri "$baseUrl/swagger/index.html" -TimeoutSec 3 -ErrorAction Stop -UseBasicParsing
+                        if ($response.StatusCode -lt 500) {
+                            $ready = $true
+                            break
+                        }
+                    } catch {
+                        # Not ready yet, keep waiting
+                    }
+                }
+            }
+        }
+
+        if (-not $ready) {
+            if ($startupError) {
+                $result.Failures += "STARTUP CRASH: $startupError"
+            } else {
+                $result.Failures += "STARTUP TIMEOUT: App did not respond within ${startupTimeout}s on $baseUrl"
+            }
+            $result.Passed = $false
+            $result.StartupOk = $false
+            return $result
+        }
+
+        $result.StartupOk = $true
+        Write-Host "  [SMOKE] App ready. Testing endpoints..." -ForegroundColor Green
+
+        # Test health endpoint specifically
+        try {
+            $healthResponse = Invoke-WebRequest -Uri "$baseUrl$healthEndpoint" -TimeoutSec $requestTimeout -ErrorAction Stop -UseBasicParsing
+            $result.HealthCheck = @{
+                StatusCode = $healthResponse.StatusCode
+                Body = $healthResponse.Content.Substring(0, [math]::Min(500, $healthResponse.Content.Length))
+            }
+            if ($healthResponse.StatusCode -ge 500) {
+                $result.Failures += "HEALTH ENDPOINT: $healthEndpoint returned $($healthResponse.StatusCode)"
+                $result.Passed = $false
+            } else {
+                Write-Host "    [PASS] Health endpoint: $($healthResponse.StatusCode)" -ForegroundColor Green
+            }
+        } catch {
+            $statusCode = 0
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            if ($statusCode -ge 500) {
+                $result.Failures += "HEALTH ENDPOINT: $healthEndpoint returned $statusCode"
+                $result.Passed = $false
+                Write-Host "    [FAIL] Health endpoint: $statusCode" -ForegroundColor Red
+            } elseif ($statusCode -eq 404) {
+                $result.Warnings += "No health endpoint at $healthEndpoint (add HealthController)"
+                Write-Host "    [WARN] Health endpoint not found (404)" -ForegroundColor Yellow
+            } else {
+                $result.Warnings += "Health endpoint error: $($_.Exception.Message)"
+            }
+        }
+
+        # Discover and test API endpoints
+        $endpoints = Find-ApiEndpoints -RepoRoot $RepoRoot
+        if ($endpoints.Count -eq 0) {
+            $result.Warnings += "No API endpoints discovered from controllers"
+        } else {
+            Write-Host "  [SMOKE] Found $($endpoints.Count) endpoints to test" -ForegroundColor Cyan
+
+            $testCount = 0
+            $failCount = 0
+
+            foreach ($ep in ($endpoints | Select-Object -First $maxEndpoints)) {
+                # Only smoke-test GET endpoints (safe, no side effects)
+                if ($ep.Method -ne "GET") { continue }
+
+                $testCount++
+                $url = "$baseUrl$($ep.Path)"
+
+                try {
+                    $response = Invoke-WebRequest -Uri $url -Method GET -TimeoutSec $requestTimeout -ErrorAction Stop -UseBasicParsing
+                    $detail = @{ endpoint = $ep.Path; method = $ep.Method; status = $response.StatusCode; result = "ok"; source = $ep.Source }
+                    $result.Details += $detail
+
+                    if ($response.StatusCode -ge 500) {
+                        $failCount++
+                        $result.Failures += "HTTP $($response.StatusCode): GET $($ep.Path) (from $($ep.Source))"
+                        Write-Host "    [FAIL] GET $($ep.Path) -> $($response.StatusCode)" -ForegroundColor Red
+                    } else {
+                        Write-Host "    [PASS] GET $($ep.Path) -> $($response.StatusCode)" -ForegroundColor Green
+                    }
+                } catch {
+                    $statusCode = 0
+                    $errorBody = ""
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        try {
+                            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                            $errorBody = $reader.ReadToEnd()
+                            $reader.Close()
+                        } catch {}
+                    }
+
+                    $detail = @{ endpoint = $ep.Path; method = $ep.Method; status = $statusCode; result = "error"; error = $_.Exception.Message }
+                    $result.Details += $detail
+
+                    if ($statusCode -ge 500) {
+                        $failCount++
+                        $errorSummary = ""
+
+                        # Extract meaningful error from response body
+                        if ($errorBody -match "FOREIGN KEY constraint") {
+                            $fkMatch = [regex]::Match($errorBody, 'FOREIGN KEY constraint "([^"]+)".*?table "([^"]+)"')
+                            if ($fkMatch.Success) {
+                                $errorSummary = "FK VIOLATION: $($fkMatch.Groups[1].Value) on $($fkMatch.Groups[2].Value)"
+                            } else {
+                                $errorSummary = "FK VIOLATION in response"
+                            }
+                        } elseif ($errorBody -match "Cannot resolve scoped service") {
+                            $diMatch = [regex]::Match($errorBody, "Cannot resolve scoped service '([^']+)'")
+                            $errorSummary = "DI ERROR: $(if ($diMatch.Success) { $diMatch.Groups[1].Value } else { 'scoped from root' })"
+                        } elseif ($errorBody -match "SqlException") {
+                            $sqlMatch = [regex]::Match($errorBody, "SqlException[^:]*:\s*(.+?)(?:\r?\n|$)")
+                            $errorSummary = "DB ERROR: $(if ($sqlMatch.Success) { $sqlMatch.Groups[1].Value } else { 'SQL failure' })"
+                        } else {
+                            $errorSummary = "HTTP $statusCode"
+                        }
+
+                        $result.Failures += "${errorSummary}: GET $($ep.Path) (from $($ep.Source))"
+                        Write-Host "    [FAIL] GET $($ep.Path) -> $statusCode ($errorSummary)" -ForegroundColor Red
+                    } elseif ($statusCode -eq 401 -or $statusCode -eq 403) {
+                        # Auth-protected endpoints are expected to reject anonymous requests
+                        Write-Host "    [SKIP] GET $($ep.Path) -> $statusCode (auth required)" -ForegroundColor DarkGray
+                    } elseif ($statusCode -eq 404) {
+                        $result.Warnings += "Endpoint not found: GET $($ep.Path)"
+                        Write-Host "    [WARN] GET $($ep.Path) -> 404" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "    [PASS] GET $($ep.Path) -> $statusCode" -ForegroundColor Green
+                    }
+                }
+            }
+
+            $result.EndpointsTested = $testCount
+
+            if ($failCount -gt 0 -and $failOnAny500) {
+                $result.Passed = $false
+            }
+        }
+
+    } catch {
+        $result.Failures += "Smoke test error: $($_.Exception.Message)"
+        $result.Passed = $false
+    } finally {
+        # Kill the application process
+        if ($process -and -not $process.HasExited) {
+            try {
+                $process.Kill($true)  # Kill process tree
+                $process.WaitForExit(5000)
+            } catch {}
+        }
+        if ($process) { $process.Dispose() }
+    }
+
+    # Save results
+    $testDir = Join-Path $GsdDir "tests"
+    if (-not (Test-Path $testDir)) {
+        New-Item -Path $testDir -ItemType Directory -Force | Out-Null
+    }
+    $smokeResultsPath = Join-Path $testDir "smoke-test-results.json"
+    @{
+        iteration        = $Iteration
+        timestamp        = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        passed           = $result.Passed
+        startup_ok       = $result.StartupOk
+        endpoints_tested = $result.EndpointsTested
+        failures         = $result.Failures
+        warnings         = $result.Warnings
+        health_check     = $result.HealthCheck
+        endpoint_details = $result.Details
+    } | ConvertTo-Json -Depth 5 | Set-Content -Path $smokeResultsPath -Encoding UTF8
+
+    return $result
+}
+
+
+function Invoke-RuntimeSmokeTest {
+    <#
+    .SYNOPSIS
+        Orchestrator that runs all runtime checks: seed FK order, DI validation,
+        and API smoke test. Called from Invoke-FinalValidation as checks 8-10.
+    #>
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration
+    )
+
+    $result = @{
+        Passed       = $true
+        HardFailures = @()
+        Warnings     = @()
+        SeedCheck    = $null
+        SmokeTest    = $null
+    }
+
+    # Check if enabled
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = (Get-Content $configPath -Raw | ConvertFrom-Json).runtime_smoke_test
+            if ($config -and $config.enabled -eq $false) {
+                Write-Host "  [SMOKE] Runtime smoke test disabled" -ForegroundColor DarkGray
+                return $result
+            }
+        } catch {}
+    }
+
+    Write-Host ""
+    Write-Host "  [SMOKE] === Runtime Smoke Test ===" -ForegroundColor Cyan
+
+    # --- Check A: Seed Data FK Order ---
+    Write-Host "  [SMOKE] Check A: Seed data FK ordering..." -ForegroundColor Cyan
+    try {
+        $seedResult = Test-SeedDataFkOrder -RepoRoot $RepoRoot
+        $result.SeedCheck = $seedResult
+
+        if (-not $seedResult.Passed) {
+            foreach ($v in $seedResult.Violations) {
+                $result.HardFailures += $v
+                Write-Host "    [FAIL] $v" -ForegroundColor Red
+            }
+            $result.Passed = $false
+        } else {
+            $tableCount = if ($seedResult.TablesFound) { $seedResult.TablesFound.Count } else { 0 }
+            Write-Host "    [PASS] $tableCount tables, FK ordering correct" -ForegroundColor Green
+        }
+    } catch {
+        $result.Warnings += "Seed FK check error: $($_.Exception.Message)"
+        Write-Host "    [WARN] $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # --- Check B: Runtime API Smoke Test ---
+    Write-Host "  [SMOKE] Check B: Runtime API smoke test..." -ForegroundColor Cyan
+    try {
+        $smokeResult = Invoke-ApiSmokeTest -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration
+        $result.SmokeTest = $smokeResult
+
+        if (-not $smokeResult.Passed) {
+            foreach ($f in $smokeResult.Failures) {
+                $result.HardFailures += "RUNTIME: $f"
+            }
+            $result.Passed = $false
+        }
+        foreach ($w in $smokeResult.Warnings) {
+            $result.Warnings += $w
+        }
+    } catch {
+        $result.Warnings += "API smoke test error: $($_.Exception.Message)"
+        Write-Host "    [WARN] Smoke test error: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # Summary
+    if ($result.Passed) {
+        Write-Host "  [SMOKE] === ALL RUNTIME CHECKS PASSED ===" -ForegroundColor Green
+    } else {
+        Write-Host "  [SMOKE] === $($result.HardFailures.Count) RUNTIME FAILURE(S) ===" -ForegroundColor Red
+        Write-Host "  [SMOKE] Health will be set to 99% for auto-fix loop" -ForegroundColor Yellow
+    }
+
+    return $result
+}
+
+Write-Host "  Runtime smoke test modules loaded." -ForegroundColor DarkGray
+
+
+# ===========================================
+# RUNTIME SMOKE TEST INTEGRATION
+# ===========================================
+
+# Wrap original Invoke-FinalValidation to add runtime checks
+if (Get-Command Invoke-FinalValidation -ErrorAction SilentlyContinue) {
+    # Save reference to original
+    $script:OriginalFinalValidation = ${function:Invoke-FinalValidation}
+
+    function Invoke-FinalValidation {
+        param(
+            [string]$RepoRoot,
+            [string]$GsdDir,
+            [int]$Iteration
+        )
+
+        # Run original 7 checks
+        $result = & $script:OriginalFinalValidation -RepoRoot $RepoRoot -GsdDir $GsdDir -Iteration $Iteration
+
+        # Run runtime smoke test (checks 8-10)
+        $globalDir = Join-Path $env:USERPROFILE ".gsd-global"
+        if (Get-Command Invoke-RuntimeSmokeTest -ErrorAction SilentlyContinue) {
+            Write-Host ""
+            Write-Host "  [SHIELD] Running runtime smoke tests (checks 8-10)..." -ForegroundColor Yellow
+
+            $runtimeResult = Invoke-RuntimeSmokeTest -RepoRoot $RepoRoot -GsdDir $GsdDir -GlobalDir $globalDir -Iteration $Iteration
+
+            # Merge runtime failures into main result
+            if (-not $runtimeResult.Passed) {
+                $result.Passed = $false
+                foreach ($f in $runtimeResult.HardFailures) {
+                    $result.HardFailures += $f
+                }
+            }
+            foreach ($w in $runtimeResult.Warnings) {
+                $result.Warnings += $w
+            }
+
+            # Add to details
+            $result.Details["seed_fk_check"] = $runtimeResult.SeedCheck
+            $result.Details["api_smoke_test"] = $runtimeResult.SmokeTest
+
+            # Update saved results
+            $jsonPath = Join-Path $GsdDir "health\final-validation.json"
+            @{
+                passed        = $result.Passed
+                hard_failures = $result.HardFailures
+                warnings      = $result.Warnings
+                iteration     = $Iteration
+                timestamp     = $result.Timestamp
+                checks        = @{
+                    dotnet_build   = $result.Details["dotnet_build"]
+                    npm_build      = $result.Details["npm_build"]
+                    dotnet_test    = $result.Details["dotnet_test"]
+                    npm_test       = $result.Details["npm_test"]
+                    sql            = $result.Details["sql_validation"]
+                    dotnet_audit   = $result.Details["dotnet_audit"]
+                    npm_audit      = $result.Details["npm_audit"]
+                    seed_fk_check  = $result.Details["seed_fk_check"]
+                    api_smoke_test = $result.Details["api_smoke_test"]
+                }
+            } | ConvertTo-Json -Depth 5 | Set-Content $jsonPath -Encoding UTF8
+
+            # Log runtime failures
+            if (-not $runtimeResult.Passed -and (Get-Command Write-GsdError -ErrorAction SilentlyContinue)) {
+                Write-GsdError -GsdDir $GsdDir -Category "runtime_failure" -Phase "smoke-test" `
+                    -Iteration $Iteration -Message ($runtimeResult.HardFailures -join "; ")
+            }
+        }
+
+        return $result
+    }
+}
+
+
+# ===============================================================
+
+
+# ===============================================================
+# GSD PARTITIONED CODE REVIEW MODULES - appended to resilience.ps1
+# ===============================================================
+
+# Agent rotation matrix: maps (iteration % 7) to agent assignments for partitions A-G
+$script:PARTITION_ROTATION = @(
+    @{ A = "claude";   B = "codex";    C = "gemini";  D = "kimi";     E = "deepseek"; F = "glm5";     G = "minimax" } # Iter 1
+    @{ A = "minimax";  B = "claude";   C = "codex";   D = "gemini";   E = "kimi";     F = "deepseek"; G = "glm5"    } # Iter 2
+    @{ A = "glm5";     B = "minimax";  C = "claude";  D = "codex";    E = "gemini";   F = "kimi";     G = "deepseek" } # Iter 3
+    @{ A = "deepseek"; B = "glm5";     C = "minimax"; D = "claude";   E = "codex";    F = "gemini";   G = "kimi"     } # Iter 4
+    @{ A = "kimi";     B = "deepseek"; C = "glm5";     D = "minimax";  E = "claude";   F = "codex";    G = "gemini"   } # Iter 5
+    @{ A = "gemini";   B = "kimi";     C = "deepseek"; D = "glm5";     E = "minimax";  F = "claude";   G = "codex"    } # Iter 6
+    @{ A = "codex";    B = "gemini";   C = "kimi";     D = "deepseek"; E = "glm5";     F = "minimax";  G = "claude"   } # Iter 7
+)
+
+
+function Split-RequirementsIntoPartitions {
+    <#
+    .SYNOPSIS
+        Splits requirements matrix into 7 roughly equal partitions.
+        Each partition includes the requirement IDs and their associated files.
+    #>
+    param(
+        [string]$GsdDir,
+        [int]$PartitionCount = 7
+    )
+
+    $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
+    if (-not (Test-Path $matrixPath)) {
+        Write-Host "  [WARN] No requirements-matrix.json found" -ForegroundColor Yellow
+        return $null
+    }
+
+    try {
+        $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+        $reqs = @($matrix.requirements)
+    } catch {
+        Write-Host "  [WARN] Failed to parse requirements-matrix.json" -ForegroundColor Yellow
+        return $null
+    }
+
+    if ($reqs.Count -lt $PartitionCount) {
+        Write-Host "  [WARN] Only $($reqs.Count) requirements -- too few to partition" -ForegroundColor Yellow
+        return $null
+    }
+
+    # Sort requirements: not_started first, then partial, then satisfied
+    $sorted = $reqs | Sort-Object @{
+        Expression = {
+            switch ($_.status) {
+                "not_started" { 0 }
+                "partial"     { 1 }
+                "satisfied"   { 2 }
+                default       { 3 }
+            }
+        }
+    }
+
+    # Round-robin distribute to ensure even split
+    $partitions = @()
+    for ($i = 0; $i -lt $PartitionCount; $i++) {
+        $partitions += ,@()
+    }
+
+    $idx = 0
+    foreach ($req in $sorted) {
+        $partitions[$idx % $PartitionCount] += $req
+        $idx++
+    }
+
+    # Build partition objects with file lists
+    $labels = @("A", "B", "C", "D", "E", "F", "G")
+    $result = @()
+    for ($i = 0; $i -lt $PartitionCount; $i++) {
+        $reqIds = @($partitions[$i] | ForEach-Object { $_.id })
+        $files = @($partitions[$i] | ForEach-Object {
+            if ($_.satisfied_by) { $_.satisfied_by }
+            elseif ($_.files) { $_.files }
+            elseif ($_.target_files) { $_.target_files }
+        } | Where-Object { $_ } | Select-Object -Unique)
+
+        # Format requirements as table for prompt injection
+        $reqTable = "| ID | Description | Current Status |`n|-----|-------------|----------------|"
+        foreach ($r in $partitions[$i]) {
+            $desc = if ($r.description -and $r.description.Length -gt 60) { $r.description.Substring(0, 60) + "..." } else { $r.description }
+            $reqTable += "`n| $($r.id) | $desc | $($r.status) |"
+        }
+
+        $result += @{
+            Label         = $labels[$i]
+            Requirements  = $partitions[$i]
+            RequirementIds = $reqIds
+            Files         = $files
+            ReqTable      = $reqTable
+            Count         = $partitions[$i].Count
+        }
+    }
+
+    return $result
+}
+
+
+function Get-SpecAndFigmaPaths {
+    <#
+    .SYNOPSIS
+        Discovers spec documents and Figma analysis files in the project.
+    #>
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir
+    )
+
+    $specPaths = @()
+    $figmaPaths = @()
+
+    # Spec files: look in .gsd/specs/, design/, docs/
+    $specDirs = @(
+        (Join-Path $GsdDir "specs"),
+        (Join-Path $RepoRoot "design"),
+        (Join-Path $RepoRoot "docs"),
+        (Join-Path $RepoRoot "_analysis")
+    )
+    foreach ($dir in $specDirs) {
+        if (Test-Path $dir) {
+            $specFiles = Get-ChildItem -Path $dir -Filter "*.md" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch "(figma|screenshot|visual)" }
+            foreach ($sf in $specFiles) {
+                $relPath = $sf.FullName.Replace("$RepoRoot\", "").Replace("$GsdDir\", ".gsd\")
+                $specPaths += $relPath
+            }
+        }
+    }
+
+    # Figma analysis files: look in design/*/_analysis/, .gsd/specs/figma*
+    $figmaDirs = @(
+        (Join-Path $RepoRoot "design"),
+        (Join-Path $GsdDir "specs")
+    )
+    foreach ($dir in $figmaDirs) {
+        if (Test-Path $dir) {
+            $figmaFiles = Get-ChildItem -Path $dir -Filter "*.md" -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "(figma|_analysis|storyboard|visual|screenshot)" }
+            foreach ($ff in $figmaFiles) {
+                $relPath = $ff.FullName.Replace("$RepoRoot\", "").Replace("$GsdDir\", ".gsd\")
+                $figmaPaths += $relPath
+            }
+        }
+    }
+
+    # Also look for Figma mapping in .gsd
+    $figmaMapping = Join-Path $GsdDir "specs\figma-mapping.md"
+    if ((Test-Path $figmaMapping) -and ($figmaPaths -notcontains ".gsd\specs\figma-mapping.md")) {
+        $figmaPaths += ".gsd\specs\figma-mapping.md"
+    }
+
+    return @{
+        SpecPaths  = $specPaths | Select-Object -Unique
+        FigmaPaths = $figmaPaths | Select-Object -Unique
+    }
+}
+
+
+function Invoke-PartitionedCodeReview {
+    <#
+    .SYNOPSIS
+        Runs 3-partition parallel code review with agent rotation.
+        Replaces single-agent code review when enabled.
+    .RETURNS
+        Hashtable with merged health score and combined review findings.
+    #>
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration,
+        [double]$Health,
+        [int]$CurrentBatchSize = 8,
+        [string]$InterfaceContext = "",
+        [switch]$DryRun
+    )
+
+    $result = @{
+        Success    = $true
+        Health     = $Health
+        Error      = ""
+        AgentMap   = @{}
+        Partitions = @()
+    }
+
+    # Load config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    $pcConfig = $null
+    if (Test-Path $configPath) {
+        try {
+            $pcConfig = (Get-Content $configPath -Raw | ConvertFrom-Json).partitioned_code_review
+        } catch {}
+    }
+
+    if (-not $pcConfig -or -not $pcConfig.enabled) {
+        $result.Success = $false
+        $result.Error = "Partitioned code review disabled"
+        return $result
+    }
+
+    $agents = @($pcConfig.agents)
+    if ($agents.Count -lt 3) { $agents = @("claude", "codex", "gemini") }
+    $cooldown = if ($pcConfig.cooldown_between_agents) { [int]$pcConfig.cooldown_between_agents } else { 5 }
+
+    # 1. Split requirements into partitions
+    Write-Host "  [PARTITION] Splitting requirements into 7 partitions..." -ForegroundColor Cyan
+    $partitions = Split-RequirementsIntoPartitions -GsdDir $GsdDir -PartitionCount 7
+
+    if (-not $partitions -or $partitions.Count -lt 7) {
+        Write-Host "  [PARTITION] Cannot partition (too few requirements). Falling back to single review." -ForegroundColor Yellow
+        $result.Success = $false
+        $result.Error = "Too few requirements to partition"
+        return $result
+    }
+
+    foreach ($p in $partitions) {
+        Write-Host "    Partition $($p.Label): $($p.Count) requirements, $($p.Files.Count) files" -ForegroundColor DarkGray
+    }
+
+    # 2. Determine agent rotation for this iteration
+    $rotationIdx = ($Iteration - 1) % 7
+    $rotation = $script:PARTITION_ROTATION[$rotationIdx]
+
+    Write-Host "  [PARTITION] Rotation (iter $Iteration -> slot $rotationIdx):" -ForegroundColor Cyan
+    Write-Host "    A=$($rotation.A)  B=$($rotation.B)  C=$($rotation.C)  D=$($rotation.D)  E=$($rotation.E)  F=$($rotation.F)  G=$($rotation.G)" -ForegroundColor White
+    $result.AgentMap = $rotation
+
+    # 3. Discover spec and Figma paths
+    $deliverables = Get-SpecAndFigmaPaths -RepoRoot $RepoRoot -GsdDir $GsdDir
+    $specList = if ($deliverables.SpecPaths.Count -gt 0) {
+        ($deliverables.SpecPaths | ForEach-Object { "- Read: ``$_``" }) -join "`n"
+    } else { "- No spec documents found. Review code against requirements descriptions." }
+
+    $figmaList = if ($deliverables.FigmaPaths.Count -gt 0) {
+        ($deliverables.FigmaPaths | ForEach-Object { "- Read: ``$_``" }) -join "`n"
+    } else { "- No Figma analysis files found. Skip Figma validation." }
+
+    # 4. Build prompts for each partition
+    $templateDir = Join-Path $GlobalDir "prompts\shared"
+    $labels = @("A", "B", "C", "D", "E", "F", "G")
+    $agentKeys = @("A", "B", "C", "D", "E", "F", "G")
+    $prompts = @{}
+    $logFiles = @{}
+
+    foreach ($label in $labels) {
+        $partition = $partitions | Where-Object { $_.Label -eq $label }
+        $agent = $rotation[$label]
+        $templateFile = Join-Path $templateDir "code-review-partition-$label.md"
+
+        if (-not (Test-Path $templateFile)) {
+            Write-Host "  [WARN] Template not found: code-review-partition-$label.md" -ForegroundColor Yellow
+            continue
+        }
+
+        $template = Get-Content $templateFile -Raw
+
+        # Resolve placeholders
+        $fileList = if ($partition.Files.Count -gt 0) {
+            ($partition.Files | ForEach-Object { "- ``$_``" }) -join "`n"
+        } else { "- (No specific files mapped. Scan requirements descriptions for target files.)" }
+
+        $prompt = $template.Replace("{{PARTITION_REQUIREMENTS}}", $partition.ReqTable)
+        $prompt = $prompt.Replace("{{PARTITION_FILES}}", $fileList)
+        $prompt = $prompt.Replace("{{SPEC_PATHS}}", $specList)
+        $prompt = $prompt.Replace("{{FIGMA_PATHS}}", $figmaList)
+        $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration")
+        $prompt = $prompt.Replace("{{AGENT_NAME}}", $agent)
+        $prompt = $prompt.Replace("{{GSD_DIR}}", $GsdDir)
+        $prompt = $prompt.Replace("{{REPO_ROOT}}", $RepoRoot)
+        $prompt = $prompt.Replace("{{BATCH_SIZE}}", "$CurrentBatchSize")
+
+        # Append interface context if available
+        if ($InterfaceContext) {
+            $prompt += "`n`n## Interface Context`n$InterfaceContext"
+        }
+
+        # Append file map
+        $fileTreePath = Join-Path $GsdDir "file-map-tree.md"
+        if (Test-Path $fileTreePath) {
+            $prompt += "`n`n## Repository File Map`nRead the tree file at: $fileTreePath"
+        }
+
+        # Append supervisor context
+        $errorCtxPath = Join-Path $GsdDir "supervisor\error-context.md"
+        $hintPath = Join-Path $GsdDir "supervisor\prompt-hints.md"
+        if (Test-Path $errorCtxPath) { $prompt += "`n`n## Previous Iteration Errors`n" + (Get-Content $errorCtxPath -Raw) }
+        if (Test-Path $hintPath) { $prompt += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw) }
+
+        # Council feedback
+        $councilFeedbackPath = Join-Path $GsdDir "supervisor\council-feedback.md"
+        if (Test-Path $councilFeedbackPath) { $prompt += "`n`n" + (Get-Content $councilFeedbackPath -Raw) }
+
+        $prompts[$label] = @{ Agent = $agent; Prompt = $prompt }
+        $logFiles[$label] = Join-Path $GsdDir "logs\iter${Iteration}-1-partition-$label.log"
+    }
+
+    if ($DryRun) {
+        Write-Host "  [DRY RUN] Would launch 3 parallel reviews" -ForegroundColor DarkGray
+        return $result
+    }
+
+    # 5. Launch all 3 agents in parallel
+    Write-Host "  [PARTITION] Launching 3 parallel reviews..." -ForegroundColor Cyan
+
+    $jobs = @{}
+    foreach ($label in $labels) {
+        $entry = $prompts[$label]
+        $agent = $entry.Agent
+        $prompt = $entry.Prompt
+        $logFile = $logFiles[$label]
+
+        Write-Host "    $($agent.ToUpper()) -> Partition $label ($($partitions | Where-Object { $_.Label -eq $label } | ForEach-Object { $_.Count }) reqs)" -ForegroundColor Magenta
+
+        # Determine allowed tools per agent type
+        $allowedTools = switch ($agent) {
+            "claude" { "Read,Write,Bash" }
+            "codex"  { $null }  # codex manages its own tools
+            "gemini" { $null }  # gemini manages its own tools
+            default  { "Read,Write,Bash" }
+        }
+
+        # Use PowerShell jobs for parallel execution
+        $jobParams = @{
+            ScriptBlock = {
+                param($GlobalDir, $Agent, $Prompt, $Phase, $LogFile, $BatchSize, $GsdDir, $AllowedTools, $GeminiMode)
+                . "$GlobalDir\lib\modules\resilience.ps1"
+                $invokeParams = @{
+                    Agent = $Agent
+                    Prompt = $Prompt
+                    Phase = $Phase
+                    LogFile = $LogFile
+                    CurrentBatchSize = $BatchSize
+                    GsdDir = $GsdDir
+                }
+                if ($AllowedTools) { $invokeParams["AllowedTools"] = $AllowedTools }
+                if ($GeminiMode) { $invokeParams["GeminiMode"] = $GeminiMode }
+                Invoke-WithRetry @invokeParams
+            }
+            ArgumentList = @(
+                $GlobalDir,
+                $agent,
+                $prompt,
+                "code-review",
+                $logFile,
+                $CurrentBatchSize,
+                $GsdDir,
+                $allowedTools,
+                $(if ($agent -eq "gemini") { "--approval-mode plan" } else { $null })
+            )
+        }
+
+        $jobs[$label] = Start-Job @jobParams
+
+        # Small cooldown between launches to avoid burst
+        if ($cooldown -gt 0) { Start-Sleep -Seconds $cooldown }
+    }
+
+    # 6. Wait for all jobs to complete
+    $timeout = if ($pcConfig.timeout_seconds) { [int]$pcConfig.timeout_seconds } else { 900 }
+    Write-Host "  [PARTITION] Waiting for all 7 reviews (timeout: ${timeout}s)..." -ForegroundColor Cyan
+
+    $completedJobs = @{}
+    $failedPartitions = @()
+
+    foreach ($label in $labels) {
+        $job = $jobs[$label]
+        $agent = $prompts[$label].Agent
+
+        try {
+            $jobResult = $job | Wait-Job -Timeout $timeout | Receive-Job -ErrorAction SilentlyContinue
+            if ($job.State -eq "Completed") {
+                $completedJobs[$label] = $jobResult
+                Write-Host "    [PASS] Partition $label ($agent) completed" -ForegroundColor Green
+            } else {
+                $failedPartitions += $label
+                Write-Host "    [FAIL] Partition $label ($agent) timed out or failed" -ForegroundColor Red
+            }
+        } catch {
+            $failedPartitions += $label
+            Write-Host "    [FAIL] Partition $label ($agent): $($_.Exception.Message)" -ForegroundColor Red
+        } finally {
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # 7. Merge partition results
+    Write-Host "  [PARTITION] Merging results from $($completedJobs.Count)/7 partitions..." -ForegroundColor Cyan
+
+    $mergeResult = Merge-PartitionedReviews -GsdDir $GsdDir -Partitions $partitions `
+        -CompletedLabels @($completedJobs.Keys) -FailedLabels $failedPartitions `
+        -Rotation $rotation -Iteration $Iteration
+
+    $result.Health = $mergeResult.Health
+    $result.Partitions = $partitions
+
+    if ($failedPartitions.Count -gt 0) {
+        $result.Error = "Partitions failed: $($failedPartitions -join ', ')"
+        if ($failedPartitions.Count -ge 7) {
+            $result.Success = $false
+        }
+    }
+
+    # 8. Save rotation history
+    $rotHistoryPath = Join-Path $GsdDir "code-review\rotation-history.jsonl"
+    $rotEntry = @{
+        iteration = $Iteration
+        rotation_slot = $rotationIdx
+        agent_map = $rotation
+        partitions = @($partitions | ForEach-Object { @{ label=$_.Label; count=$_.Count; req_ids=$_.RequirementIds } })
+        completed = @($completedJobs.Keys)
+        failed = $failedPartitions
+        timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    } | ConvertTo-Json -Compress -Depth 4
+    Add-Content -Path $rotHistoryPath -Value $rotEntry -Encoding UTF8
+
+    # Show coverage summary
+    $coverageFile = Join-Path $GsdDir "code-review\coverage-matrix.json"
+    Update-CoverageMatrix -GsdDir $GsdDir -Iteration $Iteration -Rotation $rotation `
+        -CompletedLabels @($completedJobs.Keys) -PartitionReqIds @(
+            $partitions | ForEach-Object { @{ Label=$_.Label; ReqIds=$_.RequirementIds } }
+        )
+
+    return $result
+}
+
+
+function Merge-PartitionedReviews {
+    <#
+    .SYNOPSIS
+        Merges partition review outputs into unified health score and review files.
+    #>
+    param(
+        [string]$GsdDir,
+        [array]$Partitions,
+        [array]$CompletedLabels,
+        [array]$FailedLabels,
+        [hashtable]$Rotation,
+        [int]$Iteration
+    )
+
+    $result = @{ Health = 0; MergedReview = "" }
+
+    # Re-read the requirements matrix (agents may have updated it)
+    $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
+    if (Test-Path $matrixPath) {
+        try {
+            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $reqs = @($matrix.requirements)
+            $total = $reqs.Count
+            $satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
+            $health = if ($total -gt 0) { [math]::Round(($satisfied / $total) * 100, 1) } else { 0 }
+
+            # Update health
+            $matrix.meta.health_score = $health
+            $matrix.meta.satisfied = $satisfied
+            $matrix.meta.iteration = $Iteration
+            $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+
+            # Update health file
+            $healthFile = Join-Path $GsdDir "health\health-current.json"
+            @{
+                health_score = $health
+                total_requirements = $total
+                satisfied = $satisfied
+                partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
+                not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                iteration = $Iteration
+            } | ConvertTo-Json | Set-Content $healthFile -Encoding UTF8
+
+            # Append to health history
+            $historyPath = Join-Path $GsdDir "health\health-history.jsonl"
+            @{ iteration=$Iteration; health_score=$health; satisfied=$satisfied; total=$total; timestamp=(Get-Date -Format "o"); review_type="partitioned" } |
+                ConvertTo-Json -Compress | Add-Content $historyPath -Encoding UTF8
+
+            $result.Health = $health
+        } catch {
+            Write-Host "  [WARN] Failed to merge health: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    # Merge partition reviews into unified review-current.md
+    $mergedLines = @("# Code Review - Iteration $Iteration (Partitioned)", "")
+    $mergedLines += "| Partition | Agent | Status |"
+    $mergedLines += "|-----------|-------|--------|"
+
+    $labels = @("A", "B", "C", "D", "E", "F", "G")
+    foreach ($label in $labels) {
+        $agent = $Rotation[$label]
+        $status = if ($CompletedLabels -contains $label) { "Completed" } else { "FAILED" }
+        $mergedLines += "| $label | $agent | $status |"
+    }
+    $mergedLines += ""
+
+    foreach ($label in $labels) {
+        $partReviewPath = Join-Path $GsdDir "code-review\partition-$label-review.md"
+        if (Test-Path $partReviewPath) {
+            $content = (Get-Content $partReviewPath -Raw).Trim()
+            $mergedLines += $content
+            $mergedLines += ""
+        }
+    }
+
+    # Merge drift reports
+    $mergedDrift = @()
+    foreach ($label in $labels) {
+        $driftPath = Join-Path $GsdDir "code-review\partition-$label-drift.md"
+        if (Test-Path $driftPath) {
+            $content = (Get-Content $driftPath -Raw).Trim()
+            if ($content.Length -gt 5) {
+                $mergedDrift += "### Partition $label ($($Rotation[$label]))"
+                $mergedDrift += $content
+                $mergedDrift += ""
+            }
+        }
+    }
+
+    # Write merged files
+    $reviewPath = Join-Path $GsdDir "code-review\review-current.md"
+    ($mergedLines -join "`n") | Set-Content $reviewPath -Encoding UTF8
+
+    $driftPath = Join-Path $GsdDir "health\drift-report.md"
+    if ($mergedDrift.Count -gt 0) {
+        ($mergedDrift -join "`n") | Set-Content $driftPath -Encoding UTF8
+    }
+
+    $result.MergedReview = $reviewPath
+    return $result
+}
+
+
+function Update-CoverageMatrix {
+    <#
+    .SYNOPSIS
+        Tracks which agent has reviewed which requirements across iterations.
+        After 7 iterations, every requirement should be reviewed by all 7 agents.
+    #>
+    param(
+        [string]$GsdDir,
+        [int]$Iteration,
+        [hashtable]$Rotation,
+        [array]$CompletedLabels,
+        [array]$PartitionReqIds
+    )
+
+    $coveragePath = Join-Path $GsdDir "code-review\coverage-matrix.json"
+    $coverage = @{}
+
+    if (Test-Path $coveragePath) {
+        try { $coverage = Get-Content $coveragePath -Raw | ConvertFrom-Json -AsHashtable } catch { $coverage = @{} }
+    }
+
+    # Update coverage for completed partitions
+    foreach ($pInfo in $PartitionReqIds) {
+        $label = $pInfo.Label
+        if ($CompletedLabels -notcontains $label) { continue }
+
+        $agent = $Rotation[$label]
+        foreach ($reqId in $pInfo.ReqIds) {
+            if (-not $coverage.ContainsKey($reqId)) {
+                $coverage[$reqId] = @{}
+            }
+            $coverage[$reqId][$agent] = $Iteration
+        }
+    }
+
+    # Save and report
+    $coverage | ConvertTo-Json -Depth 4 | Set-Content $coveragePath -Encoding UTF8
+
+    # Count full-coverage requirements (reviewed by all 7 agents)
+    $fullCoverage = 0
+    $totalReqs = $coverage.Keys.Count
+    foreach ($reqId in $coverage.Keys) {
+        if ($coverage[$reqId].Keys.Count -ge 7) { $fullCoverage++ }
+    }
+
+    Write-Host "  [COVERAGE] $fullCoverage/$totalReqs requirements reviewed by all 7 agents" -ForegroundColor $(if ($fullCoverage -eq $totalReqs) { "Green" } else { "Yellow" })
+}
+
+Write-Host "  Partitioned code review modules loaded." -ForegroundColor DarkGray
+
+# ===========================================
+# 7-MODEL OPTIMIZATION: PARALLEL RESEARCH
+# ===========================================
+
+function Invoke-ParallelResearch {
+    <#
+    .SYNOPSIS
+        Dispatches research across 3 agents in parallel: Gemini (Phase A+B),
+        DeepSeek (Phase C+D), Kimi (Phase E+Figma). Merges outputs into
+        research-findings.md for the planner.
+    #>
+    param(
+        [string]$GsdDir,
+        [string]$GlobalDir,
+        [int]$Iteration,
+        [decimal]$Health,
+        [string]$RepoRoot,
+        [string]$InterfaceContext = ""
+    )
+
+    $result = @{ Success = $false; Error = "" }
+
+    # Load config
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (-not (Test-Path $configPath)) { $result.Error = "global-config.json not found"; return $result }
+    try {
+        $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    } catch { $result.Error = "Failed to parse global-config.json"; return $result }
+
+    if (-not $config.parallel_research -or -not $config.parallel_research.enabled) {
+        $result.Error = "parallel_research not enabled in global-config.json"
+        return $result
+    }
+
+    $researchCfg = $config.parallel_research
+    $timeoutSec  = [int]$researchCfg.timeout_minutes * 60
+
+    # Resolve Figma path for prompt injection
+    $figmaPath = Join-Path $RepoRoot "design\figma"
+    if (-not (Test-Path $figmaPath)) { $figmaPath = Join-Path $RepoRoot "design" }
+
+    # Dispatch one job per agent config
+    $jobs = @()
+    foreach ($agentCfg in $researchCfg.agents) {
+        $agentName  = $agentCfg.agent
+        $promptDir  = if ($agentCfg.prompt_dir) { $agentCfg.prompt_dir } else { "shared" }
+        $promptFile = Join-Path $GlobalDir "prompts\$promptDir\$($agentCfg.prompt)"
+
+        if (-not (Test-Path $promptFile)) {
+            Write-Host "  [PAR-RESEARCH] Prompt not found for $agentName ($promptFile) -- skipping" -ForegroundColor Yellow
+            continue
+        }
+
+        $phases = if ($agentCfg.phases) { ($agentCfg.phases -join "+") } else { "?" }
+        Write-Host "  [PAR-RESEARCH] Dispatching $agentName -> Phase $phases" -ForegroundColor DarkCyan
+
+        $job = Start-Job -Name "gsd-research-$agentName" -ScriptBlock {
+            param($Agent, $PromptFile, $GsdDir, $GlobalDir, $Iteration, $Health, $RepoRoot, $FigmaPath, $InterfaceContext)
+
+            . "$GlobalDir\lib\modules\resilience.ps1"
+
+            $promptText = Get-Content $PromptFile -Raw
+            $promptText = $promptText.Replace("{{ITERATION}}", "$Iteration")
+            $promptText = $promptText.Replace("{{HEALTH}}",    "$Health")
+            $promptText = $promptText.Replace("{{GSD_DIR}}",   $GsdDir)
+            $promptText = $promptText.Replace("{{REPO_ROOT}}", $RepoRoot)
+            $promptText = $promptText.Replace("{{FIGMA_PATH}}", $FigmaPath)
+            $promptText = $promptText.Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext)
+
+            $logFile = "$GsdDir\logs\iter${Iteration}-2-research-${Agent}.log"
+
+            $subResult = Invoke-WithRetry -Agent $Agent -Prompt $promptText `
+                -Phase "research" -LogFile $logFile `
+                -CurrentBatchSize 1 -GsdDir $GsdDir `
+                -MaxAttempts 2
+
+            return @{ Agent = $Agent; Success = $subResult.Success; Error = $subResult.Error }
+        } -ArgumentList $agentName, $promptFile, $GsdDir, $GlobalDir, $Iteration, $Health, $RepoRoot, $figmaPath, $InterfaceContext
+
+        $jobs += $job
+    }
+
+    if ($jobs.Count -eq 0) {
+        $result.Error = "No parallel research agents could be dispatched"
+        return $result
+    }
+
+    # Wait for all jobs
+    $jobs | Wait-Job -Timeout $timeoutSec | Out-Null
+
+    $succeeded = 0
+    $failed    = 0
+    foreach ($job in $jobs) {
+        $jr = $null
+        if ($job.State -eq "Completed") {
+            $jr = Receive-Job $job -ErrorAction SilentlyContinue
+        }
+        if ($jr -and $jr.Success) {
+            $succeeded++
+            Write-Host "  [PAR-RESEARCH] $($jr.Agent): OK" -ForegroundColor Green
+        } else {
+            $failed++
+            $errMsg = if ($jr) { $jr.Error } else { "timed out or crashed" }
+            Write-Host "  [PAR-RESEARCH] $($job.Name): FAIL ($errMsg)" -ForegroundColor Yellow
+        }
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+    }
+
+    # Merge sub-findings into unified research-findings.md for the planner
+    if ($succeeded -gt 0) {
+        $mergedPath = Join-Path $GsdDir "research\research-findings.md"
+        $merged     = "# Research Findings -- Parallel (Iteration $Iteration)`n`n"
+        $merged    += "> Generated by 3-agent parallel research: Gemini (Phase A+B), DeepSeek (Phase C+D), Kimi (Phase E+Figma)`n`n"
+
+        foreach ($suffix in @("ab", "cd", "e-figma")) {
+            $subFile = Join-Path $GsdDir "research\research-findings-$suffix.md"
+            if (Test-Path $subFile) {
+                $subContent = Get-Content $subFile -Raw
+                $merged += $subContent.Trim() + "`n`n---`n`n"
+            }
+        }
+
+        $merged | Set-Content $mergedPath -Encoding UTF8
+        Write-Host "  [PAR-RESEARCH] Merged research-findings.md ($succeeded/$($succeeded+$failed) agents OK)" -ForegroundColor Green
+        $result.Success = $true
+    } else {
+        $result.Error = "All parallel research agents failed"
+    }
+
+    return $result
+}
+
+# ===========================================
+# 7-MODEL OPTIMIZATION: COMPLEXITY ROUTING
+# ===========================================
+
+function Get-AgentForComplexity {
+    <#
+    .SYNOPSIS
+        Returns the best available agent for a given requirement complexity level.
+        Falls back to round-robin if complexity routing is disabled or no preferred
+        agent is in the available pool.
+    #>
+    param(
+        [string]$Complexity,       # low | medium | high
+        [string]$GlobalDir,
+        [string[]]$AvailableAgents,
+        [int]$Index = 0            # for round-robin fallback
+    )
+
+    $fallback = $AvailableAgents[$Index % $AvailableAgents.Count]
+
+    $configPath = Join-Path $GlobalDir "config\global-config.json"
+    if (-not (Test-Path $configPath)) { return $fallback }
+
+    try {
+        $config = Get-Content $configPath -Raw | ConvertFrom-Json
+        if (-not $config.complexity_routing -or -not $config.complexity_routing.enabled) {
+            return $fallback
+        }
+
+        $preferred = switch ($Complexity) {
+            "low"    { @($config.complexity_routing.low.preferred_agents) }
+            "medium" { @($config.complexity_routing.medium.preferred_agents) }
+            "high"   { @($config.complexity_routing.high.preferred_agents) }
+            default  { @() }
+        }
+
+        # Filter to only preferred agents that are in the available pool
+        $eligible = @($preferred | Where-Object { $AvailableAgents -contains $_ })
+        if ($eligible.Count -gt 0) {
+            # Distribute across eligible preferred agents using Index (round-robin within preferred tier)
+            $pick = $eligible[$Index % $eligible.Count]
+            if ($pick -ne $fallback) {
+                Write-Host "  [COMPLEXITY] $Complexity requirement -> $pick (preferred #$($Index % $eligible.Count + 1)/$($eligible.Count), round-robin: $fallback)" -ForegroundColor DarkCyan
+            }
+            return $pick
+        }
+    } catch {}
+
+    return $fallback
+}
+
+# ===============================================================
+# GSD COUNCIL REQUIREMENTS MODULE - appended to resilience.ps1
+# Partitioned extract + cross-verify: each agent reads 1/3,
+# then a different agent verifies the extraction
+# ===============================================================
+
+function Get-SpecFiles {
+    <#
+    .SYNOPSIS
+        Scans docs/ and design/ for spec files to partition across agents.
+        Returns array of relative file paths.
+    #>
+    param([string]$RepoRoot)
+
+    $specFiles = @()
+
+    # Scan docs/ recursively for .md files
+    $docsDir = Join-Path $RepoRoot "docs"
+    if (Test-Path $docsDir) {
+        Get-ChildItem -Path $docsDir -Recurse -Filter "*.md" -File | ForEach-Object {
+            $rel = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
+            $specFiles += $rel
+        }
+    }
+
+    # Scan design/ for _analysis .md files (latest version only)
+    $designDir = Join-Path $RepoRoot "design"
+    if (Test-Path $designDir) {
+        $versions = Get-ChildItem -Path $designDir -Recurse -Directory | Where-Object {
+            $_.Name -match '^v\d+$'
+        } | Sort-Object { [int]($_.Name -replace 'v','') } -Descending
+
+        if ($versions.Count -gt 0) {
+            $latestVersion = $versions[0].FullName
+            Get-ChildItem -Path $latestVersion -Recurse -Filter "*.md" -File | Where-Object {
+                $_.FullName -like "*_analysis*" -or $_.FullName -like "*_stubs*"
+            } | ForEach-Object {
+                $rel = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
+                $specFiles += $rel
+            }
+        }
+    }
+
+    return $specFiles
+}
+
+function Split-IntoChunks {
+    <#
+    .SYNOPSIS Splits an array into chunks of specified size.
+    #>
+    param([array]$Items, [int]$ChunkSize = 10)
+
+    $chunks = @()
+    for ($i = 0; $i -lt $Items.Count; $i += $ChunkSize) {
+        $end = [math]::Min($i + $ChunkSize, $Items.Count)
+        $chunk = @($Items[$i..($end - 1)])
+        $chunks += ,@($chunk)
+    }
+    return $chunks
+}
+
+function Invoke-CouncilRequirements {
+    <#
+    .SYNOPSIS
+        Two-phase council requirements: partitioned extract + cross-verify.
+        Phase 1: Each agent extracts from 1/3 of specs (chunked).
+        Phase 2: A different agent verifies each extraction.
+        Phase 3: Claude synthesizes all verified outputs.
+    .RETURNS
+        @{ Success = bool; MatrixPath = string; AgentsSucceeded = int; Error = string }
+    #>
+    param(
+        [string]$RepoRoot,
+        [string]$GsdDir,
+        [switch]$DryRun,
+        [bool]$UseJobs = $false,
+        [string]$SkipAgent = "",
+        [switch]$SkipVerify
+    )
+
+    $result = @{
+        Success         = $false
+        MatrixPath      = Join-Path $GsdDir "health\requirements-matrix.json"
+        AgentsSucceeded = 0
+        Error           = ""
+    }
+
+    $globalDir = Join-Path $env:USERPROFILE ".gsd-global"
+    $promptDir = Join-Path $globalDir "prompts\council"
+    $healthDir = Join-Path $GsdDir "health"
+    $logDir    = Join-Path $GsdDir "logs"
+
+    foreach ($d in @($healthDir, $logDir)) {
+        if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+
+    # Initialize ntfy notifications (so push notifications work standalone)
+    if (Get-Command Initialize-GsdNotifications -ErrorAction SilentlyContinue) {
+        if (-not $script:NTFY_TOPIC) {
+            Initialize-GsdNotifications -GsdGlobalDir $globalDir
+        }
+    }
+
+    # Load config
+    $crConfig = $null
+    $configPath = Join-Path $globalDir "config\global-config.json"
+    if (Test-Path $configPath) {
+        try { $crConfig = (Get-Content $configPath -Raw | ConvertFrom-Json).council_requirements } catch {}
+    }
+    $timeout   = if ($crConfig -and $crConfig.timeout_seconds) { [int]$crConfig.timeout_seconds } else { 600 }
+    $cooldown  = if ($crConfig -and $crConfig.cooldown_between_agents) { [int]$crConfig.cooldown_between_agents } else { 5 }
+    $minAgents = if ($crConfig -and $crConfig.min_agents_for_merge) { [int]$crConfig.min_agents_for_merge } else { 2 }
+    $chunkSize = if ($crConfig -and $crConfig.chunk_size) { [int]$crConfig.chunk_size } else { 10 }
+
+    # Build interface context
+    $InterfaceContext = ""
+    if (Get-Command Initialize-ProjectInterfaces -ErrorAction SilentlyContinue) {
+        try {
+            $ifaceResult = Initialize-ProjectInterfaces -RepoRoot $RepoRoot -GsdDir $GsdDir
+            $InterfaceContext = $ifaceResult.Context
+        } catch {}
+    }
+
+    # Agent definitions with cross-verify assignments (4-agent ring: claude→codex→gemini→kimi→claude)
+    $agents = @(
+        @{ Name = "claude";  Prefix = "CL";  Verifier = "codex";  AllowedTools = "Read,Write,Bash"; GeminiMode = $null; KimiMode = $null }
+        @{ Name = "codex";   Prefix = "CX";  Verifier = "gemini"; AllowedTools = $null;             GeminiMode = $null; KimiMode = $null }
+        @{ Name = "gemini";  Prefix = "GM";  Verifier = "kimi";   AllowedTools = $null;             GeminiMode = "--approval-mode yolo"; KimiMode = $null }
+        @{ Name = "kimi";    Prefix = "KM";  Verifier = "claude"; AllowedTools = $null;             GeminiMode = $null; KimiMode = "--no-thinking" }
+    )
+    # Remove kimi if not installed
+    if (-not (Get-Command kimi -ErrorAction SilentlyContinue)) {
+        $agents = @($agents | Where-Object { $_.Name -ne "kimi" })
+        # Fix broken verifier chain: gemini now verifies back to claude
+        ($agents | Where-Object { $_.Name -eq "gemini" }).Verifier = "claude"
+    }
+
+    # Filter out skipped agent and adjust verifier chain
+    if ($SkipAgent) {
+        $agents = @($agents | Where-Object { $_.Name -ne $SkipAgent })
+        # Fix broken verifier chain
+        foreach ($agent in $agents) {
+            if ($agent.Verifier -eq $SkipAgent) {
+                $otherAgent = $agents | Where-Object { $_.Name -ne $agent.Name } | Select-Object -First 1
+                $agent.Verifier = $otherAgent.Name
+            }
+        }
+        Write-Host "  [SKIP] $SkipAgent excluded -- running with $($agents.Count) agents" -ForegroundColor DarkYellow
+    }
+
+    # Check CLI availability
+    $availableAgents = @()
+    foreach ($agent in $agents) {
+        $cliAvailable = $null -ne (Get-Command $agent.Name -ErrorAction SilentlyContinue)
+        if ($cliAvailable) {
+            $availableAgents += $agent
+        } else {
+            Write-Host "  [!!] $($agent.Name) CLI not found -- skipping" -ForegroundColor DarkYellow
+        }
+    }
+    $agents = $availableAgents
+
+    # Fix verifier chain for unavailable agents
+    foreach ($agent in $agents) {
+        $verifierAvailable = $agents | Where-Object { $_.Name -eq $agent.Verifier }
+        if (-not $verifierAvailable) {
+            $otherAgent = $agents | Where-Object { $_.Name -ne $agent.Name } | Select-Object -First 1
+            if ($otherAgent) { $agent.Verifier = $otherAgent.Name }
+        }
+    }
+
+    if ($agents.Count -lt $minAgents) {
+        $result.Error = "Only $($agents.Count) agents available (need $minAgents)"
+        Write-Host "  [XX] $($result.Error)" -ForegroundColor Red
+        return $result
+    }
+
+    # Scan for spec files
+    Write-Host "  [SCAN] Scanning for specification files..." -ForegroundColor Cyan
+    $specFiles = @(Get-SpecFiles -RepoRoot $RepoRoot)
+    Write-Host "  [SCAN] Found $($specFiles.Count) spec files" -ForegroundColor Cyan
+
+    if ($specFiles.Count -eq 0) {
+        $result.Error = "No spec files found in docs/ or design/"
+        Write-Host "  [XX] $($result.Error)" -ForegroundColor Red
+        return $result
+    }
+
+    # Partition files across available agents (round-robin)
+    $partitions = @{}
+    foreach ($agent in $agents) { $partitions[$agent.Name] = @() }
+    for ($i = 0; $i -lt $specFiles.Count; $i++) {
+        $agentIndex = $i % $agents.Count
+        $partitions[$agents[$agentIndex].Name] += $specFiles[$i]
+    }
+
+    foreach ($agent in $agents) {
+        $count = $partitions[$agent.Name].Count
+        $chunks = [math]::Ceiling($count / $chunkSize)
+        Write-Host "  [PARTITION] $($agent.Name): $count files in $chunks chunk(s) -- verified by $($agent.Verifier)" -ForegroundColor DarkGray
+    }
+
+    # Update file map
+    if (Get-Command Update-FileMap -ErrorAction SilentlyContinue) {
+        Update-FileMap -Root $RepoRoot -GsdPath $GsdDir 2>$null | Out-Null
+    }
+
+    if ($DryRun) {
+        Write-Host "  [DRY RUN] Would dispatch $($agents.Count) agents across $($specFiles.Count) files" -ForegroundColor DarkGray
+        Write-Host "  [DRY RUN] Then cross-verify each extraction with a different agent" -ForegroundColor DarkGray
+        $result.Success = $true
+        return $result
+    }
+
+    # Load prompt templates
+    $extractTemplatePath = Join-Path $promptDir "requirements-extract-chunk.md"
+    $verifyTemplatePath  = Join-Path $promptDir "requirements-verify.md"
+    if (-not (Test-Path $extractTemplatePath)) {
+        $result.Error = "Prompt template not found: requirements-extract-chunk.md"
+        Write-Host "  [XX] $($result.Error)" -ForegroundColor Red
+        return $result
+    }
+    $extractTemplate = Get-Content $extractTemplatePath -Raw
+    $verifyTemplate  = if (Test-Path $verifyTemplatePath) { Get-Content $verifyTemplatePath -Raw } else { $null }
+
+    # ================================================================
+    # PHASE 1: EXTRACT (parallel -- agents run simultaneously)
+    # ================================================================
+    Write-Host ""
+    Write-Host "  ============================================" -ForegroundColor Cyan
+    Write-Host "  PHASE 1: EXTRACT (parallel, partitioned, chunked)" -ForegroundColor Cyan
+    Write-Host "  ============================================" -ForegroundColor Cyan
+
+    $agentNames = @($agents | ForEach-Object { $_.Name }) -join ", "
+    if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+        Send-GsdNotification -Title "Council Phase 1: EXTRACT" `
+            -Message "$($agents.Count) agents ($agentNames) extracting from $($specFiles.Count) spec files in parallel" `
+            -Priority "default" -Tags "rocket"
+    }
+
+    $completedAgents = @()
+    $failedAgents = @()
+    $resiliencePath = Join-Path $env:USERPROFILE ".gsd-global\lib\modules\resilience.ps1"
+    $fileTreePath = Join-Path $GsdDir "file-map-tree.md"
+    $fileTreeExists = Test-Path $fileTreePath
+
+    # Launch one background job per agent (agents run in parallel, chunks sequential within each)
+    $extractJobs = @()
+    foreach ($agent in $agents) {
+        $agentFiles = @($partitions[$agent.Name])
+        if ($agentFiles.Count -eq 0) {
+            Write-Host "    $($agent.Name.ToUpper()) -> no files assigned, skipping" -ForegroundColor DarkYellow
+            continue
+        }
+
+        $totalChunks = [math]::Ceiling($agentFiles.Count / $chunkSize)
+        Write-Host "    $($agent.Name.ToUpper()) -> $($agentFiles.Count) files in $totalChunks chunk(s) [LAUNCHING]" -ForegroundColor Magenta
+
+        # Serialize file list as pipe-delimited string (avoids JSON single-item array issues)
+        $filesStr = $agentFiles -join "|"
+
+        $job = Start-Job -ScriptBlock {
+            param($resPath, $aName, $aPrefix, $aTools, $aGeminiMode, $aKimiMode,
+                  $filesStr, $chunkSz, $cooldownSec, $template,
+                  $hDir, $lDir, $rRoot, $gDir, $iCtx, $ftPath, $ftExists)
+
+            try { . $resPath } catch {
+                return @{ AgentName = $aName; Success = $false; Error = "Failed to load resilience: $($_.Exception.Message)"; ReqCount = 0; ChunksFailed = 0 }
+            }
+
+            $agentFiles = @($filesStr -split '\|')
+            $agentChunks = @(Split-IntoChunks -Items $agentFiles -ChunkSize $chunkSz)
+            $totalChunks = $agentChunks.Count
+            $agentAllReqs = @()
+            $chunksFailed = 0
+            $idCounter = 1
+
+            for ($c = 0; $c -lt $totalChunks; $c++) {
+                $chunkFiles = $agentChunks[$c]
+                $chunkNum = $c + 1
+
+                $fileListLines = @()
+                foreach ($f in $chunkFiles) {
+                    $fullPath = Join-Path $rRoot $f
+                    $fileListLines += "- Read: $fullPath"
+                }
+                $fileList = $fileListLines -join "`n"
+
+                $outputPath = Join-Path $hDir "council-extract-$aName-chunk$chunkNum.json"
+
+                $prompt = $template
+                $prompt = $prompt.Replace("{{CHUNK_NUM}}", "$chunkNum")
+                $prompt = $prompt.Replace("{{TOTAL_CHUNKS}}", "$totalChunks")
+                $prompt = $prompt.Replace("{{AGENT_NAME}}", $aName)
+                $prompt = $prompt.Replace("{{REPO_ROOT}}", $rRoot)
+                $prompt = $prompt.Replace("{{GSD_DIR}}", $gDir)
+                $prompt = $prompt.Replace("{{INTERFACE_CONTEXT}}", $iCtx)
+                $prompt = $prompt.Replace("{{FILE_LIST}}", $fileList)
+                $prompt = $prompt.Replace("{{OUTPUT_PATH}}", $outputPath)
+                $prompt = $prompt.Replace("{{ID_PREFIX}}", $aPrefix)
+                $idStart = "{0:D3}" -f $idCounter
+                $prompt = $prompt.Replace("{{ID_START}}", $idStart)
+
+                if ($ftExists) {
+                    $prompt += "`n`n## Repository File Map`nRead: $ftPath"
+                }
+
+                $logFile = Join-Path $lDir "council-requirements-$aName-chunk$chunkNum.log"
+
+                try {
+                    $invokeParams = @{
+                        Agent   = $aName
+                        Prompt  = $prompt
+                        Phase   = "council-requirements"
+                        LogFile = $logFile
+                        CurrentBatchSize = 1
+                        GsdDir  = $gDir
+                    }
+                    if ($aTools) { $invokeParams["AllowedTools"] = $aTools }
+                    if ($aGeminiMode) { $invokeParams["GeminiMode"] = $aGeminiMode }
+                    if ($aKimiMode -and $aName -eq "kimi") { $env:GSD_KIMI_THINKING = "false" }
+
+                    Invoke-WithRetry @invokeParams | Out-Null
+
+                    # Read chunk output
+                    if (Test-Path $outputPath) {
+                        try {
+                            $chunkData = Get-Content $outputPath -Raw | ConvertFrom-Json
+                            if ($chunkData.requirements) {
+                                $reqCount = @($chunkData.requirements).Count
+                                $agentAllReqs += @($chunkData.requirements)
+                                $idCounter += $reqCount
+                            }
+                        } catch { $chunksFailed++ }
+                    } else {
+                        # Try parsing from log
+                        if (Test-Path $logFile) {
+                            $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+                            if ($logContent -match '\{[\s\S]*"requirements"\s*:\s*\[[\s\S]*\][\s\S]*\}') {
+                                try {
+                                    $chunkData = $Matches[0] | ConvertFrom-Json
+                                    if ($chunkData.requirements) {
+                                        $reqCount = @($chunkData.requirements).Count
+                                        $agentAllReqs += @($chunkData.requirements)
+                                        $idCounter += $reqCount
+                                    }
+                                } catch { $chunksFailed++ }
+                            } else { $chunksFailed++ }
+                        } else { $chunksFailed++ }
+                    }
+                } catch { $chunksFailed++ }
+
+                if ($c -lt ($totalChunks - 1) -and $cooldownSec -gt 0) {
+                    Start-Sleep -Seconds $cooldownSec
+                }
+            }
+
+            # Write combined agent output to disk
+            if ($agentAllReqs.Count -gt 0) {
+                $combinedOutput = [PSCustomObject]@{
+                    agent         = $aName
+                    focus         = "partitioned"
+                    requirements  = $agentAllReqs
+                    total_found   = $agentAllReqs.Count
+                    chunks_total  = $totalChunks
+                    chunks_failed = $chunksFailed
+                }
+                $combinedPath = Join-Path $hDir "council-extract-$aName.json"
+                $combinedOutput | ConvertTo-Json -Depth 10 | Set-Content $combinedPath -Encoding UTF8
+            }
+
+            return @{
+                AgentName    = $aName
+                Success      = ($agentAllReqs.Count -gt 0)
+                ReqCount     = $agentAllReqs.Count
+                ChunksFailed = $chunksFailed
+                Error        = ""
+            }
+        } -ArgumentList @(
+            $resiliencePath, $agent.Name, $agent.Prefix,
+            $agent.AllowedTools, $agent.GeminiMode, $agent.KimiMode,
+            $filesStr, $chunkSize, $cooldown, $extractTemplate,
+            $healthDir, $logDir, $RepoRoot, $GsdDir, $InterfaceContext,
+            $fileTreePath, $fileTreeExists
+        )
+
+        $extractJobs += @{ Job = $job; Agent = $agent }
+    }
+
+    # Wait for all extraction jobs with live progress monitoring
+    if ($extractJobs.Count -gt 0) {
+        $maxChunksPerAgent = [math]::Max(1, [math]::Ceiling($specFiles.Count / ([math]::Max(1, $agents.Count) * $chunkSize)))
+        $totalTimeout = ($timeout * $maxChunksPerAgent) + 120
+        Write-Host ""
+        Write-Host "  Waiting for $($extractJobs.Count) parallel agents (timeout: ~${totalTimeout}s)..." -ForegroundColor DarkGray
+
+        # Poll for progress by watching chunk output files on disk
+        $allJobs = @($extractJobs | ForEach-Object { $_.Job })
+        $pollInterval = 15
+        $elapsed = 0
+        $lastSeen = @{}
+        foreach ($ej in $extractJobs) { $lastSeen[$ej.Agent.Name] = 0 }
+
+        while ($elapsed -lt $totalTimeout) {
+            $running = @($allJobs | Where-Object { $_.State -eq "Running" })
+            if ($running.Count -eq 0) { break }
+
+            Start-Sleep -Seconds $pollInterval
+            $elapsed += $pollInterval
+
+            # Check each agent for new chunk files
+            foreach ($ej in $extractJobs) {
+                $aName = $ej.Agent.Name
+                if ($ej.Job.State -ne "Running") { continue }
+                $chunkFiles = @(Get-ChildItem -Path $healthDir -Filter "council-extract-$aName-chunk*.json" -ErrorAction SilentlyContinue)
+                $currentChunks = $chunkFiles.Count
+                if ($currentChunks -gt $lastSeen[$aName]) {
+                    $totalExpected = [math]::Ceiling($partitions[$aName].Count / $chunkSize)
+                    $reqsSoFar = 0
+                    foreach ($cf in $chunkFiles) {
+                        try {
+                            $cd = Get-Content $cf.FullName -Raw | ConvertFrom-Json
+                            if ($cd.requirements) { $reqsSoFar += @($cd.requirements).Count }
+                        } catch {}
+                    }
+                    Write-Host "    [PROGRESS] ${aName}: chunk $currentChunks/$totalExpected done ($reqsSoFar reqs so far) [${elapsed}s]" -ForegroundColor DarkCyan
+                    if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+                        Send-GsdNotification -Title "Extract: ${aName} chunk $currentChunks/$totalExpected" `
+                            -Message "$reqsSoFar requirements so far (${elapsed}s elapsed)" `
+                            -Priority "low" -Tags "mag"
+                    }
+                    $lastSeen[$aName] = $currentChunks
+                }
+            }
+
+            # Show per-agent heartbeat every 60s with chunk counts and working indicators
+            if (($elapsed % 60) -lt $pollInterval) {
+                $statusParts = @()
+                foreach ($ej in $extractJobs) {
+                    $aName = $ej.Agent.Name
+                    $totalExpected = [math]::Ceiling($partitions[$aName].Count / $chunkSize)
+                    $doneChunks = $lastSeen[$aName]
+                    $state = $ej.Job.State
+                    if ($state -eq "Running") {
+                        # Check for log files as "working" indicator (log created before chunk completes)
+                        $logFiles = @(Get-ChildItem -Path $logDir -Filter "council-requirements-$aName-chunk*.log" -ErrorAction SilentlyContinue)
+                        $activeChunk = $logFiles.Count
+                        if ($activeChunk -gt $doneChunks) {
+                            $statusParts += "${aName}: chunk $doneChunks/$totalExpected done (working on chunk $activeChunk)"
+                        } else {
+                            # Check if agent process is alive
+                            $agentProc = Get-Process -Name $aName -ErrorAction SilentlyContinue
+                            $procStatus = if ($agentProc) { "process alive" } else { "waiting" }
+                            $statusParts += "${aName}: chunk $doneChunks/$totalExpected done ($procStatus)"
+                        }
+                    } else {
+                        $statusParts += "${aName}: $state ($doneChunks/$totalExpected)"
+                    }
+                }
+                Write-Host "    [HEARTBEAT] ${elapsed}s -- $($statusParts -join ' | ')" -ForegroundColor DarkGray
+            }
+        }
+
+        # Final check for stragglers
+        $stillRunning = @($allJobs | Where-Object { $_.State -eq "Running" })
+        if ($stillRunning.Count -gt 0) {
+            Write-Host "    [TIMEOUT] $($stillRunning.Count) job(s) still running after ${totalTimeout}s -- stopping" -ForegroundColor DarkYellow
+            $stillRunning | Stop-Job -ErrorAction SilentlyContinue
+        }
+
+        foreach ($ej in $extractJobs) {
+            $agentName = $ej.Agent.Name
+
+            if ($ej.Job.State -eq "Completed") {
+                $jobResult = Receive-Job -Job $ej.Job
+                if ($jobResult.Success) {
+                    Write-Host "    [PASS] ${agentName}: $($jobResult.ReqCount) requirements ($($jobResult.ChunksFailed) chunk failures)" -ForegroundColor Green
+                    $completedAgents += $agentName
+                } else {
+                    $errMsg = if ($jobResult.Error) { $jobResult.Error } else { "no requirements extracted" }
+                    Write-Host "    [FAIL] ${agentName}: $errMsg" -ForegroundColor Red
+                    $failedAgents += $agentName
+                }
+            } else {
+                Write-Host "    [FAIL] ${agentName}: job state=$($ej.Job.State) (timeout or error)" -ForegroundColor Red
+                $failedAgents += $agentName
+                # Check if partial results were written to disk before timeout
+                $partialPath = Join-Path $healthDir "council-extract-$agentName.json"
+                if (Test-Path $partialPath) {
+                    try {
+                        $pd = Get-Content $partialPath -Raw | ConvertFrom-Json
+                        if ($pd.requirements -and @($pd.requirements).Count -gt 0) {
+                            Write-Host "    [PARTIAL] ${agentName}: $(@($pd.requirements).Count) requirements recovered from disk" -ForegroundColor DarkYellow
+                            $completedAgents += $agentName
+                            $failedAgents = @($failedAgents | Where-Object { $_ -ne $agentName })
+                        }
+                    } catch {}
+                }
+            }
+            Remove-Job -Job $ej.Job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $result.AgentsSucceeded = $completedAgents.Count
+    Write-Host ""
+    Write-Host "  Phase 1 complete: $($completedAgents.Count)/$($agents.Count) agents succeeded" -ForegroundColor Cyan
+
+    if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+        $p1Tag = if ($completedAgents.Count -eq $agents.Count) { "white_check_mark" } else { "warning" }
+        $p1Details = @()
+        foreach ($a in $completedAgents) { $p1Details += "$a OK" }
+        foreach ($a in $failedAgents) { $p1Details += "$a FAILED" }
+        $p1Cost = ""
+        if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) {
+            $p1Cost = Get-CostNotificationText -GsdDir $GsdDir -Detailed
+        }
+        $p1Msg = ($p1Details -join " | ")
+        if ($p1Cost) { $p1Msg += "`n$p1Cost" }
+        Send-GsdNotification -Title "Phase 1 Done: $($completedAgents.Count)/$($agents.Count) agents" `
+            -Message $p1Msg -Priority "default" -Tags $p1Tag
+    }
+
+    if ($completedAgents.Count -eq 0) {
+        $result.Error = "No agent produced valid requirement output"
+        Write-Host "  [XX] $($result.Error)" -ForegroundColor Red
+        return $result
+    }
+
+    # ================================================================
+    # PHASE 2: CROSS-VERIFY (parallel -- verifiers run simultaneously)
+    # ================================================================
+    $verifiedAgents = @()
+
+    if (-not $SkipVerify -and $verifyTemplate -and $completedAgents.Count -ge 2) {
+        Write-Host ""
+        Write-Host "  ============================================" -ForegroundColor Yellow
+        Write-Host "  PHASE 2: CROSS-VERIFY (parallel)" -ForegroundColor Yellow
+        Write-Host "  ============================================" -ForegroundColor Yellow
+
+        if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+            Send-GsdNotification -Title "Council Phase 2: CROSS-VERIFY" `
+                -Message "$($completedAgents.Count) extractions being cross-verified in parallel" `
+                -Priority "default" -Tags "eyes"
+        }
+
+        $verifyJobs = @()
+        foreach ($agent in $agents) {
+            if ($agent.Name -notin $completedAgents) { continue }
+
+            $verifierName = $agent.Verifier
+            $verifierAvailable = $null -ne (Get-Command $verifierName -ErrorAction SilentlyContinue)
+            if (-not $verifierAvailable) {
+                Write-Host "    [SKIP] Cannot verify $($agent.Name) -- $verifierName not available" -ForegroundColor DarkYellow
+                continue
+            }
+
+            $extractionPath = Join-Path $healthDir "council-extract-$($agent.Name).json"
+            if (-not (Test-Path $extractionPath)) { continue }
+
+            # Build file list of the same spec files
+            $agentFiles = @($partitions[$agent.Name])
+            $fileListLines = @()
+            foreach ($f in $agentFiles) {
+                $fullPath = Join-Path $RepoRoot $f
+                $fileListLines += "- Read: $fullPath"
+            }
+            $fileList = $fileListLines -join "`n"
+
+            $verifyOutputPath = Join-Path $healthDir "council-verify-$($agent.Name)-by-$verifierName.json"
+
+            $verifierAgent = $agents | Where-Object { $_.Name -eq $verifierName }
+            $vPrefix = if ($verifierAgent) { $verifierAgent.Prefix } else { "V" }
+            $vTools = if ($verifierAgent) { $verifierAgent.AllowedTools } else { $null }
+            $vGemini = if ($verifierAgent) { $verifierAgent.GeminiMode } else { $null }
+
+            $prompt = $verifyTemplate
+            $prompt = $prompt.Replace("{{VERIFIER_NAME}}", $verifierName)
+            $prompt = $prompt.Replace("{{EXTRACTOR_NAME}}", $agent.Name)
+            $prompt = $prompt.Replace("{{REPO_ROOT}}", $RepoRoot)
+            $prompt = $prompt.Replace("{{GSD_DIR}}", $GsdDir)
+            $prompt = $prompt.Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext)
+            $prompt = $prompt.Replace("{{EXTRACTION_PATH}}", "Read: $extractionPath")
+            $prompt = $prompt.Replace("{{FILE_LIST}}", $fileList)
+            $prompt = $prompt.Replace("{{OUTPUT_PATH}}", $verifyOutputPath)
+            $prompt = $prompt.Replace("{{ID_PREFIX}}", $vPrefix)
+
+            Write-Host "    $($verifierName.ToUpper()) verifying $($agent.Name)'s extraction [LAUNCHING]" -ForegroundColor Yellow
+
+            $job = Start-Job -ScriptBlock {
+                param($resPath, $vName, $vToolsArg, $vGeminiArg, $promptText,
+                      $vLogFile, $gDir, $vOutPath, $extractorName)
+
+                try { . $resPath } catch {
+                    return @{ ExtractorName = $extractorName; Success = $false; Error = "Failed to load resilience: $($_.Exception.Message)" }
+                }
+
+                try {
+                    $invokeParams = @{
+                        Agent   = $vName
+                        Prompt  = $promptText
+                        Phase   = "council-verify"
+                        LogFile = $vLogFile
+                        CurrentBatchSize = 1
+                        GsdDir  = $gDir
+                    }
+                    if ($vToolsArg) { $invokeParams["AllowedTools"] = $vToolsArg }
+                    if ($vGeminiArg) { $invokeParams["GeminiMode"] = $vGeminiArg }
+
+                    Invoke-WithRetry @invokeParams | Out-Null
+
+                    if (Test-Path $vOutPath) {
+                        try {
+                            $verifyData = Get-Content $vOutPath -Raw | ConvertFrom-Json
+                            $confirmed = if ($verifyData.summary) { $verifyData.summary.confirmed } else { 0 }
+                            $missed    = if ($verifyData.missed_requirements) { @($verifyData.missed_requirements).Count } else { 0 }
+                            $corrected = if ($verifyData.summary) { $verifyData.summary.corrected } else { 0 }
+                            $flagged   = if ($verifyData.false_positives) { @($verifyData.false_positives).Count } else { 0 }
+                            return @{ ExtractorName = $extractorName; Success = $true; Confirmed = $confirmed; Missed = $missed; Corrected = $corrected; Flagged = $flagged; Error = "" }
+                        } catch {
+                            return @{ ExtractorName = $extractorName; Success = $false; Error = "invalid JSON output" }
+                        }
+                    } else {
+                        # Try parsing from log
+                        if (Test-Path $vLogFile) {
+                            $logContent = Get-Content $vLogFile -Raw -ErrorAction SilentlyContinue
+                            if ($logContent -match '\{[\s\S]*"verified_requirements"\s*:\s*\[[\s\S]*\][\s\S]*\}') {
+                                try {
+                                    $verifyData = $Matches[0] | ConvertFrom-Json
+                                    $verifyData | ConvertTo-Json -Depth 10 | Set-Content $vOutPath -Encoding UTF8
+                                    return @{ ExtractorName = $extractorName; Success = $true; Confirmed = 0; Missed = 0; Corrected = 0; Flagged = 0; Error = "" }
+                                } catch {}
+                            }
+                        }
+                        return @{ ExtractorName = $extractorName; Success = $false; Error = "no output file produced" }
+                    }
+                } catch {
+                    return @{ ExtractorName = $extractorName; Success = $false; Error = $_.Exception.Message }
+                }
+            } -ArgumentList @(
+                $resiliencePath, $verifierName, $vTools, $vGemini, $prompt,
+                (Join-Path $logDir "council-verify-$($agent.Name)-by-$verifierName.log"),
+                $GsdDir, $verifyOutputPath, $agent.Name
+            )
+
+            $verifyJobs += @{ Job = $job; Agent = $agent; Verifier = $verifierName }
+        }
+
+        # Wait for all verification jobs with progress monitoring
+        if ($verifyJobs.Count -gt 0) {
+            $verifyTimeout = $timeout + 120
+            Write-Host ""
+            Write-Host "  Waiting for $($verifyJobs.Count) parallel verifiers (timeout: ${verifyTimeout}s)..." -ForegroundColor DarkGray
+
+            $allVJobs = @($verifyJobs | ForEach-Object { $_.Job })
+            $vElapsed = 0
+            $vPoll = 15
+            $vSeen = @{}
+
+            while ($vElapsed -lt $verifyTimeout) {
+                $vRunning = @($allVJobs | Where-Object { $_.State -eq "Running" })
+                if ($vRunning.Count -eq 0) { break }
+
+                Start-Sleep -Seconds $vPoll
+                $vElapsed += $vPoll
+
+                # Check for completed verification output files
+                foreach ($vj in $verifyJobs) {
+                    $eName = $vj.Agent.Name
+                    $vName = $vj.Verifier
+                    $vKey = "$eName-by-$vName"
+                    if ($vSeen[$vKey]) { continue }
+                    if ($vj.Job.State -ne "Running") {
+                        if (-not $vSeen[$vKey]) {
+                            Write-Host "    [PROGRESS] ${vName} verifying ${eName}: completed [${vElapsed}s]" -ForegroundColor DarkCyan
+                            $vSeen[$vKey] = $true
+                        }
+                        continue
+                    }
+                    $vOutFile = Join-Path $healthDir "council-verify-$eName-by-$vName.json"
+                    if (Test-Path $vOutFile) {
+                        Write-Host "    [PROGRESS] ${vName} verifying ${eName}: output written [${vElapsed}s]" -ForegroundColor DarkCyan
+                        $vSeen[$vKey] = $true
+                        # Output file written = work is done; stop the job cleanly rather than waiting for process exit
+                        $vj.Job | Stop-Job -ErrorAction SilentlyContinue
+                    }
+                }
+
+                # Heartbeat every 60s
+                if (($vElapsed % 60) -lt $vPoll) {
+                    $vStates = @($verifyJobs | ForEach-Object { "$($_.Verifier)->$($_.Agent.Name)=$($_.Job.State)" })
+                    Write-Host "    [HEARTBEAT] ${vElapsed}s elapsed -- $($vStates -join ', ')" -ForegroundColor DarkGray
+                }
+            }
+
+            $vStillRunning = @($allVJobs | Where-Object { $_.State -eq "Running" })
+            if ($vStillRunning.Count -gt 0) {
+                Write-Host "    [TIMEOUT] $($vStillRunning.Count) verifier(s) still running -- stopping" -ForegroundColor DarkYellow
+                $vStillRunning | Stop-Job -ErrorAction SilentlyContinue
+            }
+
+            foreach ($vj in $verifyJobs) {
+                $extractorName = $vj.Agent.Name
+                $verifierName = $vj.Verifier
+
+                if ($vj.Job.State -eq "Completed") {
+                    $vjResult = Receive-Job -Job $vj.Job
+                    if ($vjResult.Success) {
+                        Write-Host "    [OK] ${verifierName} verified ${extractorName}: $($vjResult.Confirmed) confirmed, $($vjResult.Missed) missed, $($vjResult.Corrected) corrected, $($vjResult.Flagged) flagged" -ForegroundColor Green
+                        $verifiedAgents += $extractorName
+                    } else {
+                        Write-Host "    [WARN] ${verifierName} verify of ${extractorName}: $($vjResult.Error) -- extraction accepted as-is" -ForegroundColor DarkYellow
+                    }
+                } else {
+                    Write-Host "    [WARN] ${verifierName} verify of ${extractorName}: job $($vj.Job.State) -- extraction accepted as-is" -ForegroundColor DarkYellow
+                    # Check if output was written to disk before timeout
+                    $vOutCheck = Join-Path $healthDir "council-verify-$extractorName-by-$verifierName.json"
+                    if (Test-Path $vOutCheck) {
+                        Write-Host "    [PARTIAL] Verification output found on disk" -ForegroundColor DarkYellow
+                        $verifiedAgents += $extractorName
+                    }
+                }
+                Remove-Job -Job $vj.Job -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        Write-Host ""
+        Write-Host "  Phase 2 complete: $($verifiedAgents.Count)/$($completedAgents.Count) extractions verified" -ForegroundColor Yellow
+        if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+            $p2Cost = ""
+            if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) {
+                $p2Cost = Get-CostNotificationText -GsdDir $GsdDir -Detailed
+            }
+            $p2Msg = "Cross-verification complete"
+            if ($p2Cost) { $p2Msg += "`n$p2Cost" }
+            Send-GsdNotification -Title "Phase 2 Done: $($verifiedAgents.Count)/$($completedAgents.Count) verified" `
+                -Message $p2Msg -Priority "default" -Tags "white_check_mark"
+        }
+    } else {
+        if ($SkipVerify) {
+            Write-Host ""
+            Write-Host "  [SKIP] Phase 2 (verification) skipped by user" -ForegroundColor DarkYellow
+        }
+    }
+
+    # ================================================================
+    # PHASE 3: SYNTHESIS (Claude merges all verified outputs)
+    # ================================================================
+    Write-Host ""
+    Write-Host "  ============================================" -ForegroundColor Green
+    Write-Host "  PHASE 3: SYNTHESIZE" -ForegroundColor Green
+    Write-Host "  ============================================" -ForegroundColor Green
+
+    if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+        Send-GsdNotification -Title "Council Phase 3: SYNTHESIZE" `
+            -Message "Merging $($completedAgents.Count) agent outputs into requirements matrix" `
+            -Priority "default" -Tags "gear"
+    }
+
+    # Collect outputs for synthesis
+    $agentOutputs = @{}
+    foreach ($agentName in $completedAgents) {
+        $extractPath = Join-Path $healthDir "council-extract-$agentName.json"
+        if (Test-Path $extractPath) {
+            try {
+                $parsed = Get-Content $extractPath -Raw | ConvertFrom-Json
+                if ($parsed.requirements -and @($parsed.requirements).Count -gt 0) {
+                    $agentOutputs[$agentName] = $parsed
+                    Write-Host "    ${agentName}: $(@($parsed.requirements).Count) requirements" -ForegroundColor DarkGray
+                }
+            } catch {}
+        }
+    }
+
+    if ($agentOutputs.Count -eq 0) {
+        $result.Error = "No agent produced valid requirement output"
+        Write-Host "  [XX] $($result.Error)" -ForegroundColor Red
+        return $result
+    }
+
+    Write-Host "  [SCALES] Claude synthesizing merged requirements matrix..." -ForegroundColor Cyan
+
+    $isPartial = $agentOutputs.Count -lt $agents.Count
+    $synthTemplateName = if ($isPartial) { "requirements-synthesize-partial.md" } else { "requirements-synthesize.md" }
+    $synthTemplatePath = Join-Path $promptDir $synthTemplateName
+
+    if (-not (Test-Path $synthTemplatePath)) {
+        $synthTemplatePath = Join-Path $promptDir "requirements-synthesize.md"
+    }
+
+    $synthPrompt = if (Test-Path $synthTemplatePath) {
+        (Get-Content $synthTemplatePath -Raw)
+    } else {
+        "Read the agent extraction files below. Merge and write requirements-matrix.json to {{GSD_DIR}}\health\requirements-matrix.json"
+    }
+
+    $synthPrompt = $synthPrompt.Replace("{{GSD_DIR}}", $GsdDir)
+    $synthPrompt = $synthPrompt.Replace("{{AGENT_COUNT}}", "$($agentOutputs.Count)")
+
+    # Build agent output section (extractions + verification results)
+    $outputSection = ""
+    foreach ($agentName in $agentOutputs.Keys) {
+        $extractPath = Join-Path $healthDir "council-extract-$agentName.json"
+        if (Test-Path $extractPath) {
+            $outputSection += "`n## $($agentName.ToUpper()) Extraction`nRead: $extractPath`n"
+        }
+        # Include verification results if they exist
+        $verifyFiles = Get-ChildItem -Path $healthDir -Filter "council-verify-$agentName-by-*.json" -ErrorAction SilentlyContinue
+        foreach ($vf in $verifyFiles) {
+            $outputSection += "`n## Verification of $($agentName.ToUpper())`nRead: $($vf.FullName)`n"
+        }
+    }
+    $synthPrompt = $synthPrompt.Replace("{{AGENT_OUTPUTS}}", $outputSection)
+
+    if ($isPartial) {
+        $allAgentNames = @($agents | ForEach-Object { $_.Name })
+        $missing = @($allAgentNames | Where-Object { $_ -notin $agentOutputs.Keys })
+        $synthPrompt = $synthPrompt.Replace("{{MISSING_AGENT}}", ($missing -join ", "))
+    }
+
+    $synthLogFile = Join-Path $logDir "council-requirements-synthesis.log"
+
+    $synthResult = Invoke-WithRetry -Agent "claude" -Prompt $synthPrompt -Phase "council-requirements-synthesis" `
+        -LogFile $synthLogFile -MaxAttempts 2 -CurrentBatchSize 1 -GsdDir $GsdDir `
+        -AllowedTools "Read,Write"
+
+    # Verify matrix was written
+    $matrixPath = Join-Path $healthDir "requirements-matrix.json"
+    if (Test-Path $matrixPath) {
+        try {
+            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            if ($matrix.requirements -and @($matrix.requirements).Count -gt 0) {
+                $result.Success = $true
+                Write-Host "  [OK] Requirements matrix: $(@($matrix.requirements).Count) requirements" -ForegroundColor Green
+                Write-Host "  [OK] Health: $($matrix.meta.health_score)%" -ForegroundColor Green
+            } else {
+                Write-Host "  [WARN] Synthesis produced empty matrix -- trying local merge" -ForegroundColor DarkYellow
+                $localResult = Merge-CouncilRequirementsLocal -AgentOutputs $agentOutputs -GsdDir $GsdDir
+                $result.Success = $localResult.Success
+            }
+        } catch {
+            Write-Host "  [WARN] Matrix file invalid -- trying local merge" -ForegroundColor DarkYellow
+            $localResult = Merge-CouncilRequirementsLocal -AgentOutputs $agentOutputs -GsdDir $GsdDir
+            $result.Success = $localResult.Success
+        }
+    } else {
+        Write-Host "  [WARN] Synthesis did not write matrix -- trying local merge" -ForegroundColor DarkYellow
+        $localResult = Merge-CouncilRequirementsLocal -AgentOutputs $agentOutputs -GsdDir $GsdDir
+        $result.Success = $localResult.Success
+    }
+
+    # Final ntfy notification with cost summary
+    if (Get-Command Send-GsdNotification -ErrorAction SilentlyContinue) {
+        $finalCost = ""
+        if (Get-Command Get-CostNotificationText -ErrorAction SilentlyContinue) {
+            $finalCost = Get-CostNotificationText -GsdDir $GsdDir -Detailed
+        }
+        if ($result.Success) {
+            $reqCount = 0
+            try { $reqCount = @((Get-Content (Join-Path $healthDir "requirements-matrix.json") -Raw | ConvertFrom-Json).requirements).Count } catch {}
+            $finalMsg = "Requirements matrix: $reqCount requirements"
+            if ($finalCost) { $finalMsg += "`n$finalCost" }
+            Send-GsdNotification -Title "Council COMPLETE" `
+                -Message $finalMsg -Priority "high" -Tags "tada"
+        } else {
+            $finalMsg = "Error: $($result.Error)"
+            if ($finalCost) { $finalMsg += "`n$finalCost" }
+            Send-GsdNotification -Title "Council FAILED" `
+                -Message $finalMsg -Priority "high" -Tags "x"
+        }
+    }
+
+    return $result
+}
+
+
+function Merge-CouncilRequirementsLocal {
+    <#
+    .SYNOPSIS
+        Local PowerShell fallback: merges agent outputs using token-overlap deduplication
+        when the Claude synthesis agent fails or produces invalid output.
+    #>
+    param(
+        [hashtable]$AgentOutputs,
+        [string]$GsdDir
+    )
+
+    $result = @{ Success = $false }
+
+    $allReqs = @()
+    foreach ($agentName in $AgentOutputs.Keys) {
+        $output = $AgentOutputs[$agentName]
+        foreach ($req in @($output.requirements)) {
+            $allReqs += @{
+                Agent       = $agentName
+                Description = $req.description
+                Source      = $req.source
+                SpecDoc     = $req.spec_doc
+                SdlcPhase   = $req.sdlc_phase
+                Pattern     = $req.pattern
+                Priority    = $req.priority
+                Status      = $req.status
+                SatisfiedBy = $req.satisfied_by
+                Notes       = $req.notes
+            }
+        }
+    }
+
+    if ($allReqs.Count -eq 0) {
+        Write-Host "  [XX] No requirements to merge" -ForegroundColor Red
+        return $result
+    }
+
+    # Deduplication via Jaccard similarity
+    $groups = @()
+    $assigned = @{}
+
+    for ($i = 0; $i -lt $allReqs.Count; $i++) {
+        if ($assigned.ContainsKey($i)) { continue }
+        $group = @($allReqs[$i])
+        $assigned[$i] = $true
+
+        $descA = $allReqs[$i].Description.ToLower() -replace '[^a-z0-9\s]', ''
+        $tokensA = @($descA -split '\s+' | Where-Object { $_.Length -gt 2 })
+
+        for ($j = $i + 1; $j -lt $allReqs.Count; $j++) {
+            if ($assigned.ContainsKey($j)) { continue }
+            $descB = $allReqs[$j].Description.ToLower() -replace '[^a-z0-9\s]', ''
+            $tokensB = @($descB -split '\s+' | Where-Object { $_.Length -gt 2 })
+
+            if ($tokensA.Count -gt 0 -and $tokensB.Count -gt 0) {
+                $setA = [System.Collections.Generic.HashSet[string]]::new([string[]]$tokensA)
+                $setB = [System.Collections.Generic.HashSet[string]]::new([string[]]$tokensB)
+                $intersection = [System.Collections.Generic.HashSet[string]]::new($setA)
+                $intersection.IntersectWith($setB)
+                $union = [System.Collections.Generic.HashSet[string]]::new($setA)
+                $union.UnionWith($setB)
+                $similarity = if ($union.Count -gt 0) { $intersection.Count / $union.Count } else { 0 }
+                if ($similarity -gt 0.5) {
+                    $group += $allReqs[$j]
+                    $assigned[$j] = $true
+                }
+            }
+        }
+        $groups += ,@($group)
+    }
+
+    $mergedReqs = @()
+    $reqNum = 1
+    $priorityRank = @{ "high" = 3; "medium" = 2; "low" = 1 }
+    $statusRank   = @{ "not_started" = 3; "partial" = 2; "satisfied" = 1 }
+
+    foreach ($group in $groups) {
+        $bestDesc = ($group | Sort-Object { $_.Description.Length } -Descending | Select-Object -First 1).Description
+        $bestStatus = "satisfied"
+        foreach ($member in $group) {
+            $s = $member.Status
+            if ($s -and $statusRank.ContainsKey($s) -and $statusRank[$s] -gt $statusRank[$bestStatus]) { $bestStatus = $s }
+        }
+        $bestPriority = "low"
+        foreach ($member in $group) {
+            $p = $member.Priority
+            if ($p -and $priorityRank.ContainsKey($p) -and $priorityRank[$p] -gt $priorityRank[$bestPriority]) { $bestPriority = $p }
+        }
+        $foundBy = @($group | ForEach-Object { $_.Agent } | Select-Object -Unique)
+        $confidence = switch ($foundBy.Count) { 3 { "high" } 2 { "medium" } default { "low" } }
+
+        $id = "REQ-{0:D3}" -f $reqNum
+        $mergedReqs += [PSCustomObject]@{
+            id           = $id
+            description  = $bestDesc
+            source       = ($group[0].Source)
+            spec_doc     = ($group[0].SpecDoc)
+            sdlc_phase   = ($group[0].SdlcPhase)
+            pattern      = ($group[0].Pattern)
+            priority     = $bestPriority
+            status       = $bestStatus
+            satisfied_by = ($group | Where-Object { $_.SatisfiedBy } | Select-Object -First 1 -ExpandProperty SatisfiedBy)
+            notes        = ($group | Where-Object { $_.Notes } | Select-Object -First 1 -ExpandProperty Notes)
+            confidence   = $confidence
+            found_by     = $foundBy
+        }
+        $reqNum++
+    }
+
+    $total = $mergedReqs.Count
+    $satisfied = @($mergedReqs | Where-Object { $_.status -eq "satisfied" }).Count
+    $partial = @($mergedReqs | Where-Object { $_.status -eq "partial" }).Count
+    $notStarted = @($mergedReqs | Where-Object { $_.status -eq "not_started" }).Count
+    $healthScore = if ($total -gt 0) { [math]::Round(($satisfied / $total) * 100, 1) } else { 0 }
+
+    $matrix = [PSCustomObject]@{
+        meta = [PSCustomObject]@{
+            total_requirements  = $total; satisfied = $satisfied; partial = $partial
+            not_started = $notStarted; health_score = $healthScore; iteration = 0
+            extraction_method   = "council-local-merge"
+            agents_participated = @($AgentOutputs.Keys | Sort-Object)
+            timestamp           = (Get-Date).ToUniversalTime().ToString("o")
+        }
+        requirements = $mergedReqs
+    }
+
+    $matrixPath = Join-Path $GsdDir "health\requirements-matrix.json"
+    $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+
+    $healthPath = Join-Path $GsdDir "health\health-current.json"
+    @{ health_score = $healthScore; total_requirements = $total; satisfied = $satisfied; partial = $partial; not_started = $notStarted; iteration = 0 } | ConvertTo-Json | Set-Content $healthPath -Encoding UTF8
+
+    $high = @($mergedReqs | Where-Object { $_.confidence -eq "high" }).Count
+    $med = @($mergedReqs | Where-Object { $_.confidence -eq "medium" }).Count
+    $low = @($mergedReqs | Where-Object { $_.confidence -eq "low" }).Count
+
+    $report = @(
+        "# Council Requirements Report (Local Merge)", ""
+        "| Metric | Value |", "|--------|-------|"
+        "| Total requirements | $total |", "| High confidence | $high |"
+        "| Medium confidence | $med |", "| Low confidence | $low |"
+        "| Agents participated | $($AgentOutputs.Keys -join ', ') |"
+        "| Health score | ${healthScore}% |", ""
+    )
+    $reportPath = Join-Path $GsdDir "health\council-requirements-report.md"
+    ($report -join "`n") | Set-Content $reportPath -Encoding UTF8
+
+    Write-Host "  [OK] Local merge: $total requirements (${healthScore}% health)" -ForegroundColor Green
+    $result.Success = $true
+    return $result
+}
+
+Write-Host "  Council Requirements module loaded." -ForegroundColor DarkGray
+
+
+# ===========================================
+# PROACTIVE RATE LIMITER (patch-gsd-rate-limiter.ps1)
+# Prevents 429/quota errors by enforcing RPM limits BEFORE making API calls.
+# Uses sliding-window call tracking per agent.
+# ===========================================
+
+# In-memory call tracker: agent -> [System.Collections.ArrayList] of [datetime]
+if (-not $script:RateLimitTracker) {
+    $script:RateLimitTracker = @{}
+}
+
+# Cached registry (avoid re-reading JSON on every call)
+$script:RateLimitRegistryCache = $null
+$script:RateLimitRegistryCacheTime = [datetime]::MinValue
+
+function Get-AgentRpmLimit {
+    <#
+    .SYNOPSIS
+        Returns the effective RPM limit for an agent, factoring in safety margin.
+        Reads from model-registry.json (cached for 60s) and agent-map.json safety_factor.
+    #>
+    param([string]$AgentName)
+
+    # Refresh cache every 60 seconds
+    if (-not $script:RateLimitRegistryCache -or ((Get-Date) - $script:RateLimitRegistryCacheTime).TotalSeconds -gt 60) {
+        $regPath = Join-Path $env:USERPROFILE ".gsd-global\config\model-registry.json"
+        if (Test-Path $regPath) {
+            try {
+                $script:RateLimitRegistryCache = Get-Content $regPath -Raw | ConvertFrom-Json
+                $script:RateLimitRegistryCacheTime = Get-Date
+            } catch {
+                # Fall through to defaults
+            }
+        }
+    }
+
+    # Read RPM from registry
+    $rpm = 10  # Conservative default
+    if ($script:RateLimitRegistryCache -and $script:RateLimitRegistryCache.agents.$AgentName) {
+        $agentCfg = $script:RateLimitRegistryCache.agents.$AgentName
+        if ($agentCfg.rate_limits -and $agentCfg.rate_limits.rpm) {
+            $rpm = [int]$agentCfg.rate_limits.rpm
+        }
+    }
+
+    # Apply safety factor from agent-map.json (default 0.8 = use 80% of stated RPM)
+    $safetyFactor = 0.8
+    $amPath = Join-Path $env:USERPROFILE ".gsd-global\config\agent-map.json"
+    if (Test-Path $amPath) {
+        try {
+            $am = Get-Content $amPath -Raw | ConvertFrom-Json
+            if ($am.rate_limiter -and $am.rate_limiter.safety_factor) {
+                $safetyFactor = [double]$am.rate_limiter.safety_factor
+            }
+        } catch { }
+    }
+
+    $effectiveRpm = [math]::Max(1, [math]::Floor($rpm * $safetyFactor))
+    return $effectiveRpm
+}
+
+function Get-RateTrackerPath {
+    <# Returns path to shared rate tracker file. All processes use the same file. #>
+    $dir = Join-Path $env:USERPROFILE “.gsd-global”
+    if (-not (Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
+    return Join-Path $dir “rate-tracker.json”
+}
+
+function Read-SharedRateTracker {
+    <# Reads the shared file-based rate tracker. Returns hashtable of agent -> timestamp arrays. #>
+    $path = Get-RateTrackerPath
+    $now = Get-Date
+    $windowStart = $now.AddSeconds(-60)
+    $tracker = @{}
+
+    if (Test-Path $path) {
+        try {
+            $raw = Get-Content $path -Raw -ErrorAction Stop | ConvertFrom-Json
+            foreach ($prop in $raw.PSObject.Properties) {
+                # Parse timestamps and prune older than 60s
+                $recent = @($prop.Value | ForEach-Object {
+                    try { [DateTime]$_ } catch { $null }
+                } | Where-Object { $_ -and $_ -ge $windowStart })
+                if ($recent.Count -gt 0) {
+                    $tracker[$prop.Name] = $recent
+                }
+            }
+        } catch {
+            $tracker = @{}
+        }
+    }
+    return $tracker
+}
+
+function Write-SharedRateTracker {
+    <# Writes the rate tracker atomically. #>
+    param([hashtable]$Tracker)
+    $path = Get-RateTrackerPath
+    $obj = @{}
+    foreach ($key in $Tracker.Keys) {
+        $obj[$key] = @($Tracker[$key] | ForEach-Object { $_.ToString(“o”) })
+    }
+    try {
+        $json = $obj | ConvertTo-Json -Depth 3 -Compress
+        $tmpPath = “$path.tmp.$PID”
+        Set-Content -Path $tmpPath -Value $json -Encoding UTF8 -Force
+        Move-Item -Path $tmpPath -Destination $path -Force
+    } catch {}
+}
+
+function Wait-ForRateWindow {
+    <#
+    .SYNOPSIS
+        Proactive rate limiter using SHARED FILE-BASED tracker (works across parallel processes).
+        Checks if calling $AgentName now would exceed its RPM limit.
+        If yes, sleeps the exact number of seconds needed until a slot opens.
+        Returns the number of seconds waited (0 if no wait needed).
+    #>
+    param(
+        [string]$AgentName,
+        [string]$GsdDir = “”
+    )
+
+    $tracker = Read-SharedRateTracker
+    $now = Get-Date
+    $windowStart = $now.AddSeconds(-60)
+
+    $callLog = @()
+    if ($tracker[$AgentName]) { $callLog = @($tracker[$AgentName]) }
+
+    $effectiveRpm = Get-AgentRpmLimit -AgentName $AgentName
+    $currentCalls = $callLog.Count
+
+    if ($currentCalls -lt $effectiveRpm) {
+        return 0
+    }
+
+    # At or over limit. Find when the oldest call in the window will expire.
+    $sortedCalls = $callLog | Sort-Object
+    $oldestInWindow = $sortedCalls[0]
+    $expiresAt = $oldestInWindow.AddSeconds(60)
+    $waitSeconds = [math]::Ceiling(($expiresAt - $now).TotalSeconds)
+
+    if ($waitSeconds -le 0) {
+        return 0
+    }
+
+    # Add 1s buffer to avoid edge-case 429
+    $waitSeconds = $waitSeconds + 1
+
+    Write-Host “    [RATE-LIMIT] $($AgentName.ToUpper()): $currentCalls/$effectiveRpm calls in last 60s. Waiting ${waitSeconds}s...” -ForegroundColor Yellow
+
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        if ($GsdDir) {
+            Update-EngineStatus -GsdDir $GsdDir -State “sleeping” -Phase “rate-limit” `
+                -SleepReason “rate_limit_pacing” -SleepUntil ((Get-Date).ToUniversalTime().AddSeconds($waitSeconds))
+        }
+    }
+
+    Start-Sleep -Seconds $waitSeconds
+
+    if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+        if ($GsdDir) {
+            Update-EngineStatus -GsdDir $GsdDir -State “running”
+        }
+    }
+
+    return $waitSeconds
+}
+
+function Register-AgentCall {
+    <#
+    .SYNOPSIS
+        Records that an API call was made to $AgentName. Uses SHARED FILE-BASED tracker
+        so parallel sub-task processes all see each other's calls.
+    #>
+    param([string]$AgentName)
+
+    $tracker = Read-SharedRateTracker
+    if (-not $tracker[$AgentName]) {
+        $tracker[$AgentName] = @()
+    }
+    $tracker[$AgentName] = @($tracker[$AgentName]) + @((Get-Date))
+    Write-SharedRateTracker $tracker
+
+    # Also update in-memory for same-process sequential calls
+    if (-not $script:RateLimitTracker) { $script:RateLimitTracker = @{} }
+    if (-not $script:RateLimitTracker[$AgentName]) {
+        $script:RateLimitTracker[$AgentName] = [System.Collections.ArrayList]::new()
+    }
+    $script:RateLimitTracker[$AgentName].Add((Get-Date)) | Out-Null
+}
+
+function Get-RateLimitStatus {
+    <#
+    .SYNOPSIS
+        Returns a summary of current rate limit usage for all tracked agents.
+        Reads from shared file-based tracker for cross-process accuracy.
+    #>
+    $tracker = Read-SharedRateTracker
+    $status = @{}
+    $now = Get-Date
+
+    foreach ($agent in $tracker.Keys) {
+        $recentCalls = @($tracker[$agent])
+        $effectiveRpm = Get-AgentRpmLimit -AgentName $agent
+        $status[$agent] = @{
+            CallsInWindow = $recentCalls.Count
+            EffectiveRpm  = $effectiveRpm
+            Headroom      = $effectiveRpm - $recentCalls.Count
+            NextSlotIn    = if ($recentCalls.Count -ge $effectiveRpm -and $recentCalls.Count -gt 0) {
+                $oldest = ($recentCalls | Sort-Object)[0]
+                [math]::Max(0, [math]::Ceiling(($oldest.AddSeconds(60) - $now).TotalSeconds))
+            } else { 0 }
+        }
+    }
+    return $status
+}
+
+
+
+# ============================================================
+# Rate-Limit-Aware Chunked Code Review (v2)
+# Dynamically calculates chunk count and size based on each
+# agent's RPM from model-registry.json. Uses all 7 agents
+# across multiple waves to stay well under rate limits.
+# Appended to resilience.ps1 by patch script.
+# ============================================================
+
+function Invoke-SequentialChunkedReview {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$GsdDir,
+        [Parameter(Mandatory)][string]$GlobalDir,
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][int]$Iteration,
+        [Parameter(Mandatory)][double]$Health,
+        [int]$CurrentBatchSize = 2,
+        [string]$InterfaceContext = "",
+        [switch]$DryRun
+    )
+
+    # â”€â”€ 1. Load config from agent-map.json â”€â”€
+    $agentMapPath = Join-Path $GlobalDir "config\agent-map.json"
+    $registryPath = Join-Path $GlobalDir "config\model-registry.json"
+    $config = @{
+        safety_factor = 0.5
+        min_chunk_size = 5
+        max_chunk_size = 30
+        inter_wave_cooldown_seconds = 20
+        inter_chunk_cooldown_seconds = 10
+        min_success_ratio = 0.6
+        fallback_to_single_agent = $true
+        fallback_agent = "codex"
+        agent_pool = @("claude", "codex", "gemini", "kimi", "deepseek", "glm5", "minimax")
+    }
+
+    if (Test-Path $agentMapPath) {
+        try {
+            $agentMap = Get-Content $agentMapPath -Raw | ConvertFrom-Json
+            if ($agentMap.review_chunked) {
+                $rc = $agentMap.review_chunked
+                if ($null -ne $rc.safety_factor) { $config.safety_factor = $rc.safety_factor }
+                if ($null -ne $rc.min_chunk_size) { $config.min_chunk_size = $rc.min_chunk_size }
+                if ($null -ne $rc.max_chunk_size) { $config.max_chunk_size = $rc.max_chunk_size }
+                if ($null -ne $rc.inter_wave_cooldown_seconds) { $config.inter_wave_cooldown_seconds = $rc.inter_wave_cooldown_seconds }
+                if ($null -ne $rc.inter_chunk_cooldown_seconds) { $config.inter_chunk_cooldown_seconds = $rc.inter_chunk_cooldown_seconds }
+                if ($null -ne $rc.min_success_ratio) { $config.min_success_ratio = $rc.min_success_ratio }
+                if ($null -ne $rc.fallback_to_single_agent) { $config.fallback_to_single_agent = $rc.fallback_to_single_agent }
+                if ($rc.fallback_agent) { $config.fallback_agent = $rc.fallback_agent }
+                if ($rc.agent_pool) { $config.agent_pool = @($rc.agent_pool) }
+            }
+        } catch { Write-Host "  [CHUNK-REVIEW] Could not read agent-map.json config, using defaults" -ForegroundColor Yellow }
+    }
+
+    # â”€â”€ 2. Load model registry for rate limits â”€â”€
+    $agentRpm = @{}  # agent -> safe requests per wave
+    $agentCooldownMin = @{}  # agent -> cooldown minutes
+    $registry = $null
+
+    if (Test-Path $registryPath) {
+        try {
+            $registry = Get-Content $registryPath -Raw | ConvertFrom-Json
+        } catch { $registry = $null }
+    }
+
+    # Build per-agent capacity map from rate_limits
+    $availableAgents = @()
+    $cooldownPath = Join-Path $GsdDir "supervisor\agent-cooldowns.json"
+    $cooldowns = @{}
+    if (Test-Path $cooldownPath) {
+        try { $cooldowns = Get-Content $cooldownPath -Raw | ConvertFrom-Json } catch { $cooldowns = @{} }
+    }
+
+    foreach ($agentName in $config.agent_pool) {
+        # Skip agents on cooldown
+        $cdExpiry = $null
+        if ($cooldowns.PSObject -and $cooldowns.PSObject.Properties[$agentName]) {
+            $cdExpiry = $cooldowns.$agentName
+        } elseif ($cooldowns -is [hashtable] -and $cooldowns.ContainsKey($agentName)) {
+            $cdExpiry = $cooldowns[$agentName]
+        }
+        if ($cdExpiry) {
+            try {
+                $expiryTime = [datetime]::Parse($cdExpiry)
+                if ($expiryTime -gt (Get-Date)) {
+                    Write-Host "  [CHUNK-REVIEW] $agentName on cooldown until $cdExpiry --skipping" -ForegroundColor DarkGray
+                    continue
+                }
+            } catch { }
+        }
+
+        # Check if agent has review role
+        $agentDef = $null
+        if ($registry -and $registry.agents.PSObject.Properties[$agentName]) {
+            $agentDef = $registry.agents.$agentName
+        }
+        if ($agentDef -and $agentDef.role -and ("review" -notin @($agentDef.role))) {
+            continue
+        }
+
+        # Check enabled flag (REST agents)
+        if ($agentDef -and $null -ne $agentDef.enabled -and -not $agentDef.enabled) {
+            continue
+        }
+
+        # Get RPM from rate_limits (default 10 if not specified)
+        $rpm = 10
+        $cdMin = 30
+        if ($agentDef -and $agentDef.rate_limits) {
+            if ($agentDef.rate_limits.rpm) { $rpm = [int]$agentDef.rate_limits.rpm }
+            if ($agentDef.rate_limits.cooldown_minutes) { $cdMin = [int]$agentDef.rate_limits.cooldown_minutes }
+        }
+
+        # Safe capacity = floor(RPM * safety_factor) --this is the max reqs we send to this agent per wave
+        $safeCapacity = [math]::Floor($rpm * $config.safety_factor)
+        if ($safeCapacity -lt 1) { $safeCapacity = 1 }
+
+        $agentRpm[$agentName] = $safeCapacity
+        $agentCooldownMin[$agentName] = $cdMin
+        $availableAgents += $agentName
+    }
+
+    if ($availableAgents.Count -eq 0) {
+        Write-Host "  [CHUNK-REVIEW] No available agents (all on cooldown or disabled)" -ForegroundColor Red
+        return @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = 0 }
+    }
+
+    # â”€â”€ 3. Load requirements matrix â”€â”€
+    $matrixFile = Join-Path $GsdDir "health\requirements-matrix.json"
+    if (-not (Test-Path $matrixFile)) {
+        Write-Host "  [CHUNK-REVIEW] No requirements-matrix.json found" -ForegroundColor Red
+        return @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = 0 }
+    }
+    $matrix = Get-Content $matrixFile -Raw | ConvertFrom-Json
+    $allReqs = @($matrix.requirements)
+    if ($allReqs.Count -eq 0) {
+        Write-Host "  [CHUNK-REVIEW] Empty requirements matrix" -ForegroundColor Red
+        return @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = 0 }
+    }
+
+    # â”€â”€ 4. Calculate dynamic chunk sizes per agent â”€â”€
+    # Each agent gets at most min(safeCapacity, max_chunk_size) reqs, at least min_chunk_size
+    # Total capacity across all agents determines how many waves we need
+
+    $totalCapacity = 0
+    $agentChunkSize = @{}
+    foreach ($agent in $availableAgents) {
+        $chunkSz = $agentRpm[$agent]
+        if ($chunkSz -gt $config.max_chunk_size) { $chunkSz = $config.max_chunk_size }
+        if ($chunkSz -lt $config.min_chunk_size) { $chunkSz = $config.min_chunk_size }
+        $agentChunkSize[$agent] = $chunkSz
+        $totalCapacity += $chunkSz
+    }
+
+    $totalReqs = $allReqs.Count
+    $numWaves = [math]::Ceiling($totalReqs / $totalCapacity)
+    if ($numWaves -lt 1) { $numWaves = 1 }
+
+    # Build chunk assignments: distribute reqs across agents and waves
+    $chunks = @()
+    $reqIndex = 0
+    $chunkLabelCounter = 0
+    $chunkLabels = @("A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z")
+
+    for ($wave = 1; $wave -le $numWaves; $wave++) {
+        foreach ($agent in $availableAgents) {
+            if ($reqIndex -ge $totalReqs) { break }
+            $sz = $agentChunkSize[$agent]
+            $remaining = $totalReqs - $reqIndex
+            if ($sz -gt $remaining) { $sz = $remaining }
+            if ($sz -le 0) { continue }
+
+            $label = if ($chunkLabelCounter -lt $chunkLabels.Count) { $chunkLabels[$chunkLabelCounter] } else { "Z$chunkLabelCounter" }
+            $chunks += @{
+                Label = $label
+                Agent = $agent
+                Wave  = $wave
+                Reqs  = @($allReqs[$reqIndex..($reqIndex + $sz - 1)])
+            }
+            $reqIndex += $sz
+            $chunkLabelCounter++
+        }
+    }
+
+    $totalChunks = $chunks.Count
+    Write-Host "  [CHUNK-REVIEW] $totalReqs requirements -> $totalChunks chunks across $numWaves wave(s) using $($availableAgents.Count) agents" -ForegroundColor Cyan
+    Write-Host "  [CHUNK-REVIEW] Agent capacity (safe RPM/2): $( ($availableAgents | ForEach-Object { "$_=$($agentChunkSize[$_])" }) -join ', ' )" -ForegroundColor DarkCyan
+
+    $result = @{ Success = $false; NewHealth = $Health; ChunksCompleted = 0; ChunksTotal = $totalChunks }
+
+    # Ensure output directory exists
+    $reviewDir = Join-Path $GsdDir "code-review"
+    if (-not (Test-Path $reviewDir)) { New-Item -Path $reviewDir -ItemType Directory -Force | Out-Null }
+
+    # â”€â”€ 5. Load prompt template â”€â”€
+    $templatePath = Join-Path $GlobalDir "prompts\claude\code-review-chunked.md"
+    if (-not (Test-Path $templatePath)) {
+        Write-Host "  [CHUNK-REVIEW] Missing template: $templatePath" -ForegroundColor Red
+        return $result
+    }
+    $templateRaw = Get-Content $templatePath -Raw
+
+    # â”€â”€ 6. Execute chunks wave by wave â”€â”€
+    $completedChunks = @()
+    $currentWave = 0
+
+    foreach ($chunk in $chunks) {
+        $label = $chunk.Label
+        $agent = $chunk.Agent
+        $wave  = $chunk.Wave
+        $reqIds = ($chunk.Reqs | ForEach-Object { $_.id }) -join ", "
+        $reqCount = $chunk.Reqs.Count
+
+        if ($reqCount -eq 0) { continue }
+
+        # Wave transition cooldown
+        if ($wave -gt $currentWave) {
+            if ($currentWave -gt 0) {
+                $waveCooldown = $config.inter_wave_cooldown_seconds
+                Write-Host "  [WAVE] Wave $currentWave complete. ${waveCooldown}s cooldown before wave $wave..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds $config.inter_wave_cooldown_seconds
+            }
+            $currentWave = $wave
+            Write-Host "  [WAVE $wave/$numWaves] Starting wave with $($availableAgents.Count) agents" -ForegroundColor Cyan
+        }
+
+        Write-Host "  [CHUNK-$label] $agent reviewing $reqCount reqs (wave $wave): $($reqIds.Substring(0, [math]::Min(80, $reqIds.Length)))..." -ForegroundColor Cyan
+
+        # Build prompt from template
+        $prompt = $templateRaw
+        $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration")
+        $prompt = $prompt.Replace("{{HEALTH}}", "$Health")
+        $prompt = $prompt.Replace("{{GSD_DIR}}", $GsdDir)
+        $prompt = $prompt.Replace("{{REPO_ROOT}}", $RepoRoot)
+        $prompt = $prompt.Replace("{{CHUNK_LABEL}}", $label)
+        $prompt = $prompt.Replace("{{TOTAL_CHUNKS}}", "$totalChunks")
+        $prompt = $prompt.Replace("{{CHUNK_COUNT}}", "$reqCount")
+        $prompt = $prompt.Replace("{{CHUNK_REQUIREMENT_IDS}}", $reqIds)
+        $prompt = $prompt.Replace("{{BATCH_SIZE}}", "$CurrentBatchSize")
+        $prompt = $prompt.Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext)
+
+        # Append file map context
+        $fileTreePath = Join-Path $GsdDir "file-map-tree.md"
+        if (Test-Path $fileTreePath) {
+            $prompt += "`n`n## Repository File Map`nRead the tree file at: $fileTreePath`n"
+        }
+
+        # Append supervisor hints
+        $errorCtxPath = Join-Path $GsdDir "supervisor\error-context.md"
+        $hintPath = Join-Path $GsdDir "supervisor\prompt-hints.md"
+        if (Test-Path $errorCtxPath) { $prompt += "`n`n## Previous Iteration Errors`n" + (Get-Content $errorCtxPath -Raw) }
+        if (Test-Path $hintPath) { $prompt += "`n`n## Supervisor Instructions`n" + (Get-Content $hintPath -Raw) }
+
+        if ($DryRun) {
+            Write-Host "  [CHUNK-$label] DRY RUN: would invoke $agent" -ForegroundColor DarkGray
+            $completedChunks += $label  # Count dry run as success for testing
+            continue
+        }
+
+        # Invoke agent with MaxAttempts 1 --rotation is handled by trying the next chunk's agent
+        $logFile = Join-Path $GsdDir "logs\iter${Iteration}-1-chunk-${label}.log"
+
+        $invokeParams = @{
+            Agent            = $agent
+            Prompt           = $prompt
+            Phase            = "code-review"
+            LogFile          = $logFile
+            CurrentBatchSize = $CurrentBatchSize
+            GsdDir           = $GsdDir
+            MaxAttempts      = 1
+        }
+        if ($agent -eq "claude") {
+            $invokeParams["AllowedTools"] = "Read,Write,Bash"
+        }
+
+        if (Get-Command Update-EngineStatus -ErrorAction SilentlyContinue) {
+            Update-EngineStatus -GsdDir $GsdDir -State "running" -Phase "code-review" -Agent $agent `
+                -Iteration $Iteration -HealthScore $Health -BatchSize $CurrentBatchSize `
+                -Attempt "chunk-$label/$totalChunks (wave $wave/$numWaves)" -ErrorsThisIteration 0
+        }
+
+        $invokeResult = Invoke-WithRetry @invokeParams
+
+        # Check if chunk file was written
+        $chunkFile = Join-Path $GsdDir "code-review\chunk-${label}.json"
+        if (Test-Path $chunkFile) {
+            $completedChunks += $label
+            Write-Host "  [CHUNK-$label] Completed by $agent" -ForegroundColor Green
+        } elseif ($invokeResult -and $invokeResult.ExitCode -eq 0) {
+            $completedChunks += $label
+            Write-Host "  [CHUNK-$label] Agent completed (no chunk file, may have written health directly)" -ForegroundColor Yellow
+        } else {
+            Write-Host "  [CHUNK-$label] $agent failed --will retry in fallback pass" -ForegroundColor Yellow
+        }
+
+        # Inter-chunk cooldown within the same wave
+        if ($config.inter_chunk_cooldown_seconds -gt 0) {
+            Start-Sleep -Seconds $config.inter_chunk_cooldown_seconds
+        }
+    }
+
+    $result.ChunksCompleted = $completedChunks.Count
+    $chunkStatusColor = if ($completedChunks.Count -ge [math]::Ceiling($totalChunks * $config.min_success_ratio)) { "Green" } else { "Yellow" }
+    Write-Host "  [CHUNK-REVIEW] $($completedChunks.Count)/$totalChunks chunks completed" -ForegroundColor $chunkStatusColor
+
+    # â”€â”€ 7. Fallback pass: retry failed chunks with any available agent â”€â”€
+    $allLabels = $chunks | ForEach-Object { $_.Label }
+    $failedLabels = @($allLabels | Where-Object { $_ -notin $completedChunks })
+    if ($failedLabels.Count -gt 0 -and $completedChunks.Count -gt 0) {
+        # Pick an agent that succeeded recently (it's warm and not rate-limited)
+        $successChunk = $chunks | Where-Object { $_.Label -eq $completedChunks[-1] }
+        $fallbackAgent = if ($successChunk) { $successChunk.Agent } else { $config.fallback_agent }
+
+        Write-Host "  [FALLBACK] Retrying $($failedLabels.Count) failed chunk(s) with $fallbackAgent" -ForegroundColor Yellow
+
+        foreach ($label in $failedLabels) {
+            $chunk = $chunks | Where-Object { $_.Label -eq $label }
+            $reqIds = ($chunk.Reqs | ForEach-Object { $_.id }) -join ", "
+
+            $prompt = $templateRaw
+            $prompt = $prompt.Replace("{{ITERATION}}", "$Iteration")
+            $prompt = $prompt.Replace("{{HEALTH}}", "$Health")
+            $prompt = $prompt.Replace("{{GSD_DIR}}", $GsdDir)
+            $prompt = $prompt.Replace("{{REPO_ROOT}}", $RepoRoot)
+            $prompt = $prompt.Replace("{{CHUNK_LABEL}}", $label)
+            $prompt = $prompt.Replace("{{TOTAL_CHUNKS}}", "$totalChunks")
+            $prompt = $prompt.Replace("{{CHUNK_COUNT}}", "$($chunk.Reqs.Count)")
+            $prompt = $prompt.Replace("{{CHUNK_REQUIREMENT_IDS}}", $reqIds)
+            $prompt = $prompt.Replace("{{BATCH_SIZE}}", "$CurrentBatchSize")
+            $prompt = $prompt.Replace("{{INTERFACE_CONTEXT}}", $InterfaceContext)
+
+            $logFile = Join-Path $GsdDir "logs\iter${Iteration}-1-chunk-${label}-fallback.log"
+            $fbParams = @{
+                Agent            = $fallbackAgent
+                Prompt           = $prompt
+                Phase            = "code-review"
+                LogFile          = $logFile
+                CurrentBatchSize = $CurrentBatchSize
+                GsdDir           = $GsdDir
+                MaxAttempts      = 1
+            }
+            if ($fallbackAgent -eq "claude") { $fbParams["AllowedTools"] = "Read,Write,Bash" }
+
+            Invoke-WithRetry @fbParams | Out-Null
+
+            $chunkFile = Join-Path $GsdDir "code-review\chunk-${label}.json"
+            if (Test-Path $chunkFile) {
+                $completedChunks += $label
+                Write-Host "  [CHUNK-$label] Fallback completed" -ForegroundColor Green
+            }
+
+            Start-Sleep -Seconds $config.inter_chunk_cooldown_seconds
+        }
+        $result.ChunksCompleted = $completedChunks.Count
+    }
+
+    # â”€â”€ 8. Merge chunk results into requirements-matrix.json + health-current.json â”€â”€
+    Write-Host "  [CHUNK-MERGE] Merging $($completedChunks.Count) chunk results..." -ForegroundColor Cyan
+
+    $statusUpdates = @{}  # id -> { status, evidence }
+    $allBlockers = @()
+
+    foreach ($label in $completedChunks) {
+        $chunkFile = Join-Path $GsdDir "code-review\chunk-${label}.json"
+        if (-not (Test-Path $chunkFile)) { continue }
+
+        try {
+            $raw = Get-Content $chunkFile -Raw
+            # Strip markdown fences if agent wrapped output
+            $raw = $raw -replace '(?s)```(?:json)?\s*', ''
+            $raw = $raw -replace '(?s)\s*```', ''
+            $chunkData = $raw | ConvertFrom-Json
+
+            if ($chunkData.results) {
+                foreach ($r in $chunkData.results) {
+                    if ($r.id -and $r.status) {
+                        $statusUpdates[$r.id] = @{
+                            status   = $r.status
+                            evidence = if ($r.evidence) { $r.evidence } else { "" }
+                        }
+                    }
+                }
+            }
+            if ($chunkData.blockers) {
+                $allBlockers += @($chunkData.blockers)
+            }
+        } catch {
+            Write-Host "  [CHUNK-MERGE] Failed to parse chunk-${label}.json: $_" -ForegroundColor Red
+        }
+    }
+
+    Write-Host "  [CHUNK-MERGE] Got $($statusUpdates.Count) status updates from $($completedChunks.Count) chunks" -ForegroundColor Cyan
+
+    # Apply status updates to requirements-matrix.json
+    if ($statusUpdates.Count -gt 0) {
+        $matrix = Get-Content $matrixFile -Raw | ConvertFrom-Json
+        $changed = 0
+        $resolvedThisIter = @()
+
+        foreach ($req in $matrix.requirements) {
+            if ($statusUpdates.ContainsKey($req.id)) {
+                $update = $statusUpdates[$req.id]
+                $oldStatus = $req.status
+                $newStatus = $update.status
+
+                if ($oldStatus -ne $newStatus) {
+                    $req.status = $newStatus
+                    if ($update.evidence) { $req.satisfied_by = $update.evidence }
+                    $changed++
+                    $resolvedThisIter += "$($req.id): $oldStatus->$newStatus ($($update.evidence))"
+                }
+            }
+        }
+
+        # Write updated matrix
+        $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixFile -Encoding UTF8
+        $mergeColor = if ($changed -gt 0) { "Green" } else { "DarkGray" }
+        Write-Host "  [CHUNK-MERGE] Updated $changed requirement statuses in matrix" -ForegroundColor $mergeColor
+
+        # Recalculate health
+        $satisfied = @($matrix.requirements | Where-Object { $_.status -eq "satisfied" }).Count
+        $partial = @($matrix.requirements | Where-Object { $_.status -eq "partial" }).Count
+        $notStarted = @($matrix.requirements | Where-Object { $_.status -eq "not_started" }).Count
+        $total = $matrix.requirements.Count
+        $newHealth = if ($total -gt 0) { [math]::Round(($satisfied + 0.5 * $partial) / $total * 100) } else { 0 }
+
+        # Write health-current.json
+        $healthData = @{
+            health_score              = $newHealth
+            satisfied                 = $satisfied
+            partial                   = $partial
+            not_started               = $notStarted
+            total                     = $total
+            iteration                 = $Iteration
+            timestamp                 = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            formula                   = "(satisfied + 0.5 * partial) / total * 100"
+            calc                      = "($satisfied + $($partial * 0.5)) / $total = $([math]::Round(($satisfied + 0.5 * $partial) / $total * 100, 2))% -> $newHealth%"
+            status                    = if ($newHealth -ge 100) { "passed" } else { "in_progress" }
+            delta                     = "$($newHealth - $Health) from previous (was $Health%)"
+            resolved_this_iteration   = $resolvedThisIter
+            remaining_blockers        = $allBlockers
+            review_method             = "rate-limit-aware-chunked"
+            chunks_completed          = $completedChunks.Count
+            chunks_total              = $totalChunks
+            waves                     = $numWaves
+            agents_used               = ($availableAgents -join ", ")
+        }
+        $healthFile = Join-Path $GsdDir "health\health-current.json"
+        $healthData | ConvertTo-Json -Depth 5 | Set-Content $healthFile -Encoding UTF8
+
+        # Append to health-history.jsonl
+        $historyFile = Join-Path $GsdDir "health\health-history.jsonl"
+        ($healthData | ConvertTo-Json -Depth 5 -Compress) | Add-Content $historyFile -Encoding UTF8
+
+        $healthColor = if ($newHealth -gt $Health) { "Green" } elseif ($newHealth -eq $Health) { "Yellow" } else { "Red" }
+        Write-Host "  [CHUNK-MERGE] Health: $Health% -> $newHealth% (sat=$satisfied par=$partial ns=$notStarted)" -ForegroundColor $healthColor
+
+        $result.NewHealth = $newHealth
+    }
+
+    # â”€â”€ 9. Merge review markdown files â”€â”€
+    $mergedReview = "# Code Review - Iteration $Iteration (Rate-Limit-Aware Chunked: $totalChunks chunks, $numWaves waves)`n`n"
+    foreach ($chunk in $chunks) {
+        $reviewFile = Join-Path $GsdDir "code-review\chunk-$($chunk.Label)-review.md"
+        if (Test-Path $reviewFile) {
+            $mergedReview += "## Chunk $($chunk.Label) [$($chunk.Agent), wave $($chunk.Wave)]`n" + (Get-Content $reviewFile -Raw) + "`n`n"
+        }
+    }
+    $reviewCurrentFile = Join-Path $GsdDir "code-review\review-current.md"
+    $mergedReview | Set-Content $reviewCurrentFile -Encoding UTF8
+
+    $minRequired = [math]::Ceiling($totalChunks * $config.min_success_ratio)
+    $result.Success = ($completedChunks.Count -ge $minRequired)
+
+    $finalColor = if ($result.Success) { "Green" } else { "Red" }
+    Write-Host "  [CHUNK-REVIEW] Final: $($completedChunks.Count)/$totalChunks chunks (need $minRequired). Success=$($result.Success)" -ForegroundColor $finalColor
+    return $result
+}
 

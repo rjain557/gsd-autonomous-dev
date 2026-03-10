@@ -347,13 +347,13 @@ function Invoke-AgentFallback {
 
     try {
         if ($FallbackAgent -eq "codex") {
-            $fbOutput = $Prompt | codex exec --full-auto - 2>&1
+            $fbOutput = $Prompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "claude") {
-            $fbOutput = claude -p $Prompt --allowedTools $AllowedTools 2>&1
+            $fbOutput = claude -p $Prompt --model $script:CLAUDE_MODEL --allowed-tools $AllowedTools 2>&1
             $fbExit = $LASTEXITCODE
         } elseif ($FallbackAgent -eq "gemini") {
-            $fbOutput = $Prompt | gemini --approval-mode plan 2>&1
+            $fbOutput = $Prompt | gemini --model $script:GEMINI_MODEL --approval-mode plan 2>&1
             $fbExit = $LASTEXITCODE
         }
         if ($LogFile -and $fbOutput) {
@@ -368,7 +368,7 @@ function Invoke-AgentFallback {
 # RETRY WITH ADAPTIVE BATCH REDUCTION
 # ===========================================
 
-function Invoke-WithRetry {
+function Invoke-WithRetryCore {
     param(
         [string]$Agent,           # "claude", "codex", or "gemini"
         [string]$Prompt,
@@ -414,14 +414,14 @@ function Invoke-WithRetry {
                 if ($Agent -eq "claude") {
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = claude -p `$prompt --allowedTools $AllowedTools 2>&1
+`$output = claude -p `$prompt --model $($script:CLAUDE_MODEL) --allowed-tools $AllowedTools 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
                 } elseif ($Agent -eq "codex") {
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = `$prompt | codex exec --full-auto - 2>&1
+`$output = `$prompt | codex exec --full-auto --model $($script:CODEX_MODEL) - 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
@@ -429,7 +429,7 @@ exit `$LASTEXITCODE
                     $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) -join ' '
                     $wrapperContent = @"
 `$prompt = Get-Content '$($promptTempFile -replace "'","''")' -Raw -Encoding UTF8
-`$output = `$prompt | gemini $geminiArgs 2>&1
+`$output = `$prompt | gemini --model $($script:GEMINI_MODEL) $geminiArgs 2>&1
 `$output | Out-File -FilePath '$($outputTempFile -replace "'","''")' -Encoding UTF8
 exit `$LASTEXITCODE
 "@
@@ -507,6 +507,7 @@ exit `$LASTEXITCODE
             if ($isAuthError) {
                 $result.Error = "AUTH_ERROR: Agent authentication failed"
                 Write-Host "    [XX] Auth error - cannot retry. Check API keys." -ForegroundColor Red
+                if ($GsdDir) { Set-AgentCooldown -Agent $Agent -GsdDir $GsdDir -CooldownMinutes 480 }
                 break
             }
 
@@ -662,7 +663,7 @@ Rules:
 - If a method signature doesn't match, fix the caller to match the definition
 - After fixing, the project must compile with: dotnet build $($slnFile.FullName)
 "@
-                    $fixPrompt | codex exec --full-auto - 2>&1 |
+                    $fixPrompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1 |
                         Out-File -FilePath (Join-Path $GsdDir "logs\autofix-dotnet-iter$Iteration.log") -Encoding UTF8
 
                     # Re-verify
@@ -731,7 +732,7 @@ Rules:
 - Module not found: install the package or fix the import path
 - After fixing, npm run build must succeed
 "@
-                        $fixPrompt | codex exec --full-auto - 2>&1 |
+                        $fixPrompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1 |
                             Out-File -FilePath (Join-Path $GsdDir "logs\autofix-npm-iter$Iteration.log") -Encoding UTF8
 
                         $reNpmOutput = npm run build 2>&1
@@ -933,15 +934,23 @@ if (-not (Test-Path $BpGlobalDir)) {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 }
 
-# -- Detect Figma --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+# -- Detect design deliverables --
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"; $FigmaPath = "none"
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
-    if ($latest) { $FigmaVersion = $latest.Name; $FigmaPath = "design\figma\$FigmaVersion" }
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
+    if ($latest) { $FigmaVersion = $latest.Version; $FigmaPath = "design\$($latest.Interface)\$FigmaVersion" }
 }
 
 # -- State files --
@@ -1295,15 +1304,23 @@ foreach ($dir in $projectDirs) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 
-# -- Detect Figma --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+# -- Detect design deliverables --
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"; $FigmaPath = "none"
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
-    if ($latest) { $FigmaVersion = $latest.Name; $FigmaPath = "design\figma\$FigmaVersion" }
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
+    if ($latest) { $FigmaVersion = $latest.Version; $FigmaPath = "design\$($latest.Interface)\$FigmaVersion" }
 }
 
 # -- State files --

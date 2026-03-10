@@ -3,6 +3,19 @@
 # Provides Invoke-ApiAgent for deepseek, zhipu/glm, minimax, kimi
 # ===============================================================
 
+function Get-ApiAgentKey {
+    param([string[]]$Names)
+
+    foreach ($scope in @("Process", "User", "Machine")) {
+        foreach ($name in $Names) {
+            $value = [Environment]::GetEnvironmentVariable($name, $scope)
+            if ($value) { return $value }
+        }
+    }
+
+    return $null
+}
+
 function Invoke-ApiAgent {
     <#
     .SYNOPSIS
@@ -30,8 +43,7 @@ function Invoke-ApiAgent {
 
     switch ($Agent) {
         "deepseek" {
-            $apiKey = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
-            if (-not $apiKey) { $apiKey = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "Process") }
+            $apiKey = Get-ApiAgentKey -Names @("DEEPSEEK_API_KEY")
             if (-not $apiKey) {
                 $result.Error = "DEEPSEEK_API_KEY not set"
                 return $result
@@ -41,36 +53,33 @@ function Invoke-ApiAgent {
             $result = Invoke-ChatCompletionApi -Uri $uri -ApiKey $apiKey -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Agent $Agent
         }
         "glm5" {
-            $apiKey = [Environment]::GetEnvironmentVariable("ZHIPU_API_KEY", "User")
-            if (-not $apiKey) { $apiKey = [Environment]::GetEnvironmentVariable("ZHIPU_API_KEY", "Process") }
+            $apiKey = Get-ApiAgentKey -Names @("GLM_API_KEY", "ZHIPU_API_KEY")
             if (-not $apiKey) {
-                $result.Error = "ZHIPU_API_KEY not set"
+                $result.Error = "GLM_API_KEY not set"
                 return $result
             }
-            $uri = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-            $model = "glm-4-plus"
+            $uri = "https://api.z.ai/api/paas/v4/chat/completions"
+            $model = "glm-5"
             $result = Invoke-ChatCompletionApi -Uri $uri -ApiKey $apiKey -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Agent $Agent
         }
         "minimax" {
-            $apiKey = [Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "User")
-            if (-not $apiKey) { $apiKey = [Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "Process") }
+            $apiKey = Get-ApiAgentKey -Names @("MINIMAX_API_KEY")
             if (-not $apiKey) {
                 $result.Error = "MINIMAX_API_KEY not set"
                 return $result
             }
-            $uri = "https://api.minimax.chat/v1/text/chatcompletion_v2"
-            $model = "MiniMax-Text-01"
+            $uri = "https://api.minimax.io/v1/chat/completions"
+            $model = "MiniMax-M2.5"
             $result = Invoke-ChatCompletionApi -Uri $uri -ApiKey $apiKey -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Agent $Agent
         }
         "kimi" {
-            $apiKey = [Environment]::GetEnvironmentVariable("MOONSHOT_API_KEY", "User")
-            if (-not $apiKey) { $apiKey = [Environment]::GetEnvironmentVariable("MOONSHOT_API_KEY", "Process") }
+            $apiKey = Get-ApiAgentKey -Names @("KIMI_API_KEY", "MOONSHOT_API_KEY")
             if (-not $apiKey) {
-                $result.Error = "MOONSHOT_API_KEY not set"
+                $result.Error = "KIMI_API_KEY not set"
                 return $result
             }
             $uri = "https://api.moonshot.ai/v1/chat/completions"
-            $model = "moonshot-v1-128k"
+            $model = "kimi-k2.5"
             $result = Invoke-ChatCompletionApi -Uri $uri -ApiKey $apiKey -Model $model -Prompt $Prompt -TimeoutSec $TimeoutSec -Agent $Agent
         }
         default {
@@ -190,23 +199,19 @@ function Test-ApiAgentAvailable {
 
     switch ($Agent) {
         "deepseek" {
-            $k = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
-            if (-not $k) { $k = [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "Process") }
+            $k = Get-ApiAgentKey -Names @("DEEPSEEK_API_KEY")
             return [bool]$k
         }
         "glm5" {
-            $k = [Environment]::GetEnvironmentVariable("ZHIPU_API_KEY", "User")
-            if (-not $k) { $k = [Environment]::GetEnvironmentVariable("ZHIPU_API_KEY", "Process") }
+            $k = Get-ApiAgentKey -Names @("GLM_API_KEY", "ZHIPU_API_KEY")
             return [bool]$k
         }
         "minimax" {
-            $k = [Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "User")
-            if (-not $k) { $k = [Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "Process") }
+            $k = Get-ApiAgentKey -Names @("MINIMAX_API_KEY")
             return [bool]$k
         }
         "kimi" {
-            $k = [Environment]::GetEnvironmentVariable("MOONSHOT_API_KEY", "User")
-            if (-not $k) { $k = [Environment]::GetEnvironmentVariable("MOONSHOT_API_KEY", "Process") }
+            $k = Get-ApiAgentKey -Names @("KIMI_API_KEY", "MOONSHOT_API_KEY")
             return [bool]$k
         }
         default { return $false }

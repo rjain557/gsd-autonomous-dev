@@ -1,6 +1,6 @@
 # GSD Autonomous Development Engine - Developer Guide
 
-**Version:** 2.2.0
+**Version:** 2.3.0
 **Date:** March 2026
 **Classification:** Confidential - Internal Use Only
 
@@ -19,7 +19,8 @@
 | 1.7.0 | March 2026 | REST agent connectivity fixes: Kimi switched to international endpoint (api.moonshot.ai), GLM-5 switched to international endpoint (api.z.ai), connection_failed fast-fail with 60-min cooldown, TLS 1.2/1.3 enforcement, enabled flag check, updated model strengths/weaknesses |
 | 2.0.0 | March 2026 | 9 new scripts (30 total): Differential code review, pre-execute compile gate, per-requirement acceptance tests, contract-first API validation, visual validation (Figma screenshot diff), design token enforcement, compliance engine (per-iteration audit + DB migration + PII tracking), speed optimizations (research skip, smart batch, prompt dedup), agent intelligence (performance scoring, warm-start). Added Chapters 16-18. Total validation gates: 14. |
 | 2.1.0 | March 2026 | Runtime smoke tests (Script 32: DI validation, API endpoint checks, seed FK order). Partitioned code review (Script 33: 3-way parallel with agent rotation). LOC-cost integration (Script 34: baseline tracking, grand totals, cost-per-line in every notification). Maintenance mode (Script 35): `gsd-fix` (text/file/directory with screenshots), `gsd-update`, `--Scope`, `--Incremental`, `-BugDir`. Added Chapters 17.7-17.8, expanded Chapter 19, added Chapter 20. |
-| 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-agent parallel extraction with confidence scoring. `gsd-verify-requirements` standalone command. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
+| 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-phase parallel pipeline -- partitioned extract (each agent processes 1/3 of specs in chunks via `Start-Job`), cross-verification (different agent checks each extraction), Claude synthesis. Live progress monitoring (disk polling every 15s + heartbeat). Ntfy push notifications at every phase with token cost breakdown. `gsd-verify-requirements` standalone command with `-SkipAgent`, `-SkipVerify`, `-ChunkSize`. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
+| 2.3.0 | March 2026 | Model version pinning: `--model` flag enforced on all CLI invocations (claude-sonnet-4-6, gpt-5.4, gemini-3.0-pro). `agent_models` config block in global-config.json for zero-reinstall model upgrades. `$script:CLAUDE_MODEL` / `$script:GEMINI_MODEL` / `$script:CODEX_MODEL` script-scope constants in resilience.ps1. `--allowed-tools` kebab-case fix across all scripts. `disabled:` and `connection_failed:` error prefixes in Get-FailureDiagnosis (triggers immediate fallback). ImageMagick three-tier visual diff (SHA256 → pixel diff → file-size fallback). HSL/oklch/hwb design token detection. Incremental file map threshold (≤20 files prunes cache; >20 full rebuild). SEC-NET-05/SEC-FE-01 `[AllowAnonymous]` exclusion. Binary file skip logging in LOC tracking. `gsd-update` matrix existence guard. `Initialize-ProjectInterfaces` guard in gsd-assess. Set-Content error handling in convergence fix. Per-project supervisor pattern memory. |
 
 ---
 
@@ -115,7 +116,7 @@ The GSD Engine is a PowerShell-based orchestration framework that coordinates se
 
 ## 2.2 Agent Assignment
 
-The three-model strategy distributes work across independent quota pools. Each agent is assigned to phases that match its strengths:
+The seven-model architecture uses a core 3-model phase owner set plus 4 optional review/failover providers. Each agent is assigned to phases that match its strengths:
 
 | Agent | Role | Phases | Approx. Tokens/Iter | Why This Agent |
 |-------|------|--------|---------------------|----------------|
@@ -535,8 +536,8 @@ The master installer runs 21 scripts in dependency order. It also runs `install-
 | 8 | final-patch-1-spec-check.ps1 | Spec consistency checker |
 | 9 | final-patch-2-sql-cli.ps1 | SQL validation, CLI version checks |
 | 10 | final-patch-3-storyboard-verify.ps1 | Storyboard-aware verification prompts |
-| 11 | final-patch-4-blueprint-pipeline.ps1 | Final blueprint pipeline with all features |
-| 12 | final-patch-5-convergence-pipeline.ps1 | Final convergence loop with all features |
+| 11 | final-patch-4-blueprint-pipeline.ps1 | Sync installed blueprint pipeline from canonical repo source |
+| 12 | final-patch-5-convergence-pipeline.ps1 | Sync installed convergence pipeline from canonical repo source |
 | 13 | final-patch-6-assess-limitations.ps1 | Final assess script with known limitations |
 | 14 | final-patch-7-spec-resolve.ps1 | Spec conflict auto-resolution via Gemini |
 | 15 | patch-gsd-supervisor.ps1 | Self-healing supervisor (recovery, error context, pattern memory) |
@@ -1166,6 +1167,11 @@ Location: `%USERPROFILE%\.gsd-global\config\global-config.json`
       "min_clarity_score": 70,
       "check_cross_artifact": true
     }
+  },
+  "agent_models": {
+    "claude": "claude-sonnet-4-6",
+    "gemini": "gemini-3.0-pro",
+    "codex":  "gpt-5.4"
   }
 }
 ```
@@ -1246,6 +1252,18 @@ Controls three quality gate checks that run during pipeline execution.
 | `spec_quality.enabled` | bool | true | Enable spec quality gate |
 | `spec_quality.min_clarity_score` | int | 70 | Minimum clarity score (0-100) |
 | `spec_quality.check_cross_artifact` | bool | true | Run cross-artifact consistency check |
+
+### agent_models
+
+Pins the exact model version passed to each CLI agent via `--model`. Loaded once at pipeline startup from global-config.json; script-scope constants (`$script:CLAUDE_MODEL`, `$script:GEMINI_MODEL`, `$script:CODEX_MODEL`) propagate to every CLI call in resilience.ps1 and all pipeline scripts.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `claude` | string | "claude-sonnet-4-6" | Claude Code model ID |
+| `gemini` | string | "gemini-3.0-pro" | Gemini CLI model ID |
+| `codex` | string | "gpt-5.4" | Codex CLI model ID |
+
+To upgrade a model without reinstalling, edit this section and restart the pipeline. To use Opus for the next run: `"claude": "claude-opus-4-6"`.
 
 ## 6.2 Agent Assignment (agent-map.json)
 
@@ -1693,11 +1711,11 @@ Creates `verify-storyboard.md` prompt that traces data flows end-to-end: compone
 
 ### final-patch-4-blueprint-pipeline.ps1
 
-Complete blueprint pipeline with all features integrated: spec check, post-blueprint council, storyboard verification, supervisor override, Figma Make prompts, cost tracking, heartbeat, git commits.
+Syncs the installed blueprint pipeline from the canonical repository source file so the deployed runtime stays aligned with the maintained repo implementation.
 
 ### final-patch-5-convergence-pipeline.ps1
 
-Complete convergence loop with all features: create-phases, 5-phase cycle, parallel execution, council gates (post-research, pre-execute, convergence), supervisor override, multi-interface context, cost tracking.
+Syncs the installed convergence pipeline from the canonical repository source file so later patches extend the same runtime the repo documents and tests.
 
 ### final-patch-6-assess-limitations.ps1
 
@@ -1753,7 +1771,7 @@ Contract-first API validation: Zero-cost static scan validating controllers agai
 
 ### patch-gsd-visual-validation.ps1
 
-Visual validation: Compares generated React components against Figma exported screenshots using Playwright. Reports pixel diff percentage per component, flags >15% deviation. Falls back to component-match heuristic if Playwright unavailable. Adds `Invoke-VisualValidation` to resilience.ps1. Config: `visual_validation` in global-config.json.
+Visual validation: Compares generated React components against Figma exported screenshots using Playwright. Uses three-tier diff: (1) SHA-256 hash equality (instant pass); (2) ImageMagick pixel diff via `magick compare -metric AE -fuzz 2%` (accurate); (3) file-size ratio with warning when ImageMagick is not installed. Flags >15% deviation. Adds `Invoke-VisualValidation` to resilience.ps1. Config: `visual_validation` in global-config.json.
 
 ### patch-gsd-design-token-enforcement.ps1
 
@@ -1761,11 +1779,11 @@ Design token enforcement: Zero-cost regex scan detecting hardcoded CSS values (c
 
 ### patch-gsd-compliance-engine.ps1
 
-Compliance engine with three sub-systems: (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules scanning every iteration (SQL injection, XSS, eval, hardcoded secrets, missing [Authorize], PII in logs, HIPAA/SOC2/PCI/GDPR patterns). (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data referential integrity. (3) `Invoke-PiiFlowAnalysis` -- traces PII fields through API->controller->SP->table, checks logging/encryption/UI masking. All zero-cost static scans. Config: `compliance_engine` in global-config.json.
+Compliance engine with three sub-systems: (1) `Invoke-PerIterationCompliance` -- structured rule engine with 20+ SEC-*/COMP-* rules scanning every iteration (SQL injection, XSS, eval, hardcoded secrets, missing [Authorize], PII in logs, HIPAA/SOC2/PCI/GDPR patterns). SEC-NET-05 and SEC-FE-01 use `(?s)` multiline mode with `(?!.*\[AllowAnonymous])` negative lookahead so intentionally anonymous endpoints are not flagged. (2) `Test-DatabaseMigrationIntegrity` -- FK consistency, index coverage, seed data referential integrity. (3) `Invoke-PiiFlowAnalysis` -- traces PII fields through API->controller->SP->table, checks logging/encryption/UI masking. All zero-cost static scans. Config: `compliance_engine` in global-config.json.
 
 ### patch-gsd-speed-optimizations.ps1
 
-Five speed optimizations: (1) `Test-ShouldSkipResearch` -- skip research when health improving and no new requirements. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- git-diff-based file map updates. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} and {{CODING_CONVENTIONS}} template variables. (5) Token budget headers and inter-agent handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
+Five speed optimizations: (1) `Test-ShouldSkipResearch` -- skip research when health improving and no new requirements. (2) `Get-OptimalBatchSize` -- data-driven batch sizing from token history. (3) `Update-FileMapIncremental` -- threshold-based incremental file map: ≤20 changed files prunes deleted entries from the cached map (sub-second); >20 files triggers full rebuild via `Update-FileMap`. (4) `Resolve-PromptWithDedup` -- {{SECURITY_STANDARDS}} and {{CODING_CONVENTIONS}} template variables. (5) Token budget headers and inter-agent handoff protocols added to 4 prompt templates. Config: `speed_optimizations` in global-config.json.
 
 ### patch-gsd-agent-intelligence.ps1
 
@@ -4938,15 +4956,15 @@ gsd-converge --Scope "source:v02_spec"
 
 ## 21.1 Overview
 
-The standard Phase 0 (create-phases) uses a single Claude agent to extract requirements. Council-based verification uses ALL 3 agents (Claude, Codex, Gemini) independently, then synthesizes a merged, deduplicated, confidence-scored requirements matrix.
+The standard Phase 0 (create-phases) uses a single Claude agent to extract requirements. Council-based verification uses a 3-phase parallel pipeline: partitioned extract, cross-verify, and synthesize. Each agent processes 1/3 of the spec files, then a different agent checks their work before Claude synthesizes the final matrix.
 
-### Why 3-Agent Extraction?
+### Why Partitioned Extract + Cross-Verify?
 
-- **Claude** focuses on architecture, compliance (HIPAA/SOC2/PCI/GDPR), and cross-cutting concerns
-- **Codex** focuses on implementation completeness, code patterns, and implied requirements from existing code
-- **Gemini** focuses on spec/Figma alignment, UI requirements, and missing UX states
-- Each agent catches gaps the others miss
-- Confidence scoring identifies which requirements are well-established vs. need human review
+- **Parallel execution**: All agents run simultaneously via `Start-Job` -- 2-3x faster than sequential
+- **Partitioned workload**: Each agent reads only 1/3 of specs, chunked into batches of ~10 files -- fits within per-request token limits and avoids quota exhaustion
+- **Cross-verification**: A different agent reviews each extraction, catching missed requirements and false positives
+- **Agent specialization**: Claude focuses on architecture/compliance, Codex on implementation/patterns, Gemini on spec/Figma alignment
+- **Confidence scoring**: Requirements confirmed by both extractor AND verifier = "high", added by verifier = "medium", unverified = "low"
 
 ## 21.2 Usage
 
@@ -4956,37 +4974,51 @@ cd D:\vscode\your-project
 gsd-verify-requirements
 
 # Options
-gsd-verify-requirements -Sequential         # Run agents one at a time
-gsd-verify-requirements -DryRun             # Preview without running agents
-gsd-verify-requirements -SkipAgent gemini   # Skip unavailable agent
+gsd-verify-requirements -DryRun             # Preview file counts without running agents
+gsd-verify-requirements -SkipAgent claude   # Skip agent (e.g., quota exhausted)
+gsd-verify-requirements -SkipVerify         # Extract only, skip cross-verification phase
 gsd-verify-requirements -PreserveExisting   # Backup and merge into existing matrix
+gsd-verify-requirements -ChunkSize 5        # Smaller chunks per LLM call (default: 10)
 ```
 
 ## 21.3 How It Works
 
-| Step | Agent | Action |
-|------|-------|--------|
-| 1. Extract | Claude, Codex, Gemini (parallel) | Each independently reads specs, Figma, and code |
-| 2. Synthesize | Claude | Merges, deduplicates, assigns confidence scores |
-| 3. Fallback | PowerShell | Local token-overlap merge if synthesis fails |
+| Phase | Agents | Action | Execution |
+|-------|--------|--------|-----------|
+| 1. EXTRACT | Claude, Codex, Gemini | Each processes 1/3 of spec files in chunks of ~10 | Parallel (`Start-Job`) |
+| 2. CROSS-VERIFY | Codex→checks Claude, Gemini→checks Codex, Claude→checks Gemini | Reads extraction + same source files, adds missed, corrects statuses, flags false positives | Parallel (`Start-Job`) |
+| 3. SYNTHESIZE | Claude | Merges all verified outputs, deduplicates, assigns confidence scores | Sequential |
+| Fallback | PowerShell | Local token-overlap merge if synthesis agent fails | Sequential |
+
+### Cross-Verification Chain
+
+```
+Claude extracts  →  Codex verifies
+Codex extracts   →  Gemini verifies
+Gemini extracts  →  Claude verifies
+```
+
+Each verifier can: confirm requirements, add missed ones, correct statuses, and flag false positives.
 
 ### Confidence Scoring
 
-| Level | Agents Found | Meaning |
-|-------|-------------|---------|
-| High | 3 | All agents agree -- requirement is real |
-| Medium | 2 | Majority agree -- likely real |
-| Low | 1 | Single agent -- flagged for human review |
+| Level | Criteria | Meaning |
+|-------|----------|---------|
+| High | Confirmed by both extractor AND verifier | Requirement is real |
+| Medium | Added or corrected by verifier | Likely real, verifier caught it |
+| Low | Unverified (verifier failed/skipped) | Flagged for human review |
 
 ## 21.4 Output Files
 
 | File | Description |
 |------|-------------|
-| `.gsd/health/requirements-matrix.json` | Merged matrix with `confidence` and `found_by` fields |
+| `.gsd/health/requirements-matrix.json` | Final merged matrix with `confidence`, `found_by`, `verified_by` fields |
+| `.gsd/health/council-extract-{agent}.json` | Combined per-agent extraction (all chunks merged) |
+| `.gsd/health/council-extract-{agent}-chunk{N}.json` | Individual chunk outputs |
+| `.gsd/health/council-verify-{agent}-by-{verifier}.json` | Cross-verification results |
 | `.gsd/health/council-requirements-report.md` | Confidence breakdown and low-confidence items |
 | `.gsd/health/health-current.json` | Initial health score |
 | `.gsd/health/drift-report.md` | Not-started and partial requirements |
-| `.gsd/health/council-extract-{agent}.json` | Raw per-agent extraction outputs |
 
 ## 21.5 Schema Extensions
 
@@ -4996,7 +5028,8 @@ New fields added to each requirement (backward compatible):
 {
   "id": "REQ-001",
   "confidence": "high|medium|low",
-  "found_by": ["claude", "codex", "gemini"]
+  "found_by": ["claude", "codex", "gemini"],
+  "verified_by": "codex"
 }
 ```
 
@@ -5012,7 +5045,25 @@ New meta fields:
 }
 ```
 
-## 21.6 Convergence Pipeline Integration
+## 21.6 Progress Monitoring and Notifications
+
+The council pipeline sends **ntfy push notifications** at every phase transition and on chunk completion, with token cost breakdown:
+
+| Event | Priority | Example Message |
+|-------|----------|-----------------|
+| Phase 1 start | default | "2 agents (codex, gemini) extracting from 195 spec files in parallel" |
+| Chunk progress | low | "codex chunk 3/10 done (47 reqs so far)" |
+| Phase 1 done | default | "codex OK \| gemini OK" + cost breakdown |
+| Phase 2 start | default | "2 extractions being cross-verified in parallel" |
+| Phase 2 done | default | "Cross-verification complete" + cost |
+| Phase 3 start | default | "Merging 2 agent outputs into requirements matrix" |
+| Final result | high | "Requirements matrix: 245 requirements" + full cost |
+
+The terminal also shows live progress by polling for chunk output files on disk every 15 seconds, plus heartbeat messages every 60 seconds showing agent job states.
+
+The ntfy topic is auto-initialized to `gsd-{username}-{reponame}` or read from `global-config.json` → `notifications.ntfy_topic`.
+
+## 21.7 Convergence Pipeline Integration
 
 When `council_requirements.enabled = true` in `global-config.json`, the convergence pipeline Phase 0 automatically uses council extraction instead of single-agent. Falls back to single-agent if council fails.
 
@@ -5024,6 +5075,7 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
     "enabled": true,
     "agents": ["claude", "codex", "gemini"],
     "min_agents_for_merge": 2,
+    "chunk_size": 10,
     "timeout_seconds": 600,
     "cooldown_between_agents": 5,
     "fallback_to_single": true
@@ -5031,24 +5083,29 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
 }
 ```
 
-## 21.7 Error Handling
+## 21.8 Error Handling
 
 | Scenario | Recovery |
 |----------|----------|
-| 1 agent fails | Proceed with 2; max confidence = "medium" |
-| 2 agents fail | Use single agent output; all confidence = "low" |
+| 1 agent fails extraction | Proceed with remaining; cross-verify what completed |
+| Agent job times out | Check disk for partial output; recover if chunks were written |
+| Verifier fails | Extraction accepted as-is (unverified, confidence = "low") |
 | All agents fail | Fall back to single-agent create-phases |
-| Synthesis fails | Local PowerShell merge (token-overlap dedup) |
+| Synthesis fails | Local PowerShell merge (token-overlap Jaccard dedup) |
+| Gemini CLI error | Uses `--approval-mode yolo` (not `full`). Check `~/.gemini/settings.json` if errors persist |
 
-## 21.8 Cost Estimate
+## 21.9 Cost Estimate
 
-| Step | Agent | Est. Cost |
-|------|-------|-----------|
-| Extract | Claude | ~$0.07 |
-| Extract | Codex | ~$0.00 |
-| Extract | Gemini | ~$0.00 |
+| Phase | Agent | Est. Cost (200 spec files) |
+|-------|-------|-----------|
+| Extract | Claude (1/3 files, ~7 chunks) | ~$0.50 |
+| Extract | Codex (1/3 files, ~7 chunks) | ~$0.00 |
+| Extract | Gemini (1/3 files, ~7 chunks) | ~$0.00 |
+| Cross-Verify | 3 verifications | ~$0.30 |
 | Synthesize | Claude | ~$0.07 |
-| **Total** | | **~$0.14** |
+| **Total** | | **~$0.87** |
+
+Note: Costs scale with spec file count. Chunking into batches of 10 keeps each LLM call within token limits. Use `-SkipAgent claude` to reduce costs when Claude quota is exhausted (Codex + Gemini are free/cheap).
 
 ---
 
@@ -5237,6 +5294,6 @@ When `council_requirements.enabled = true` in `global-config.json`, the converge
 
 ---
 
-*Generated from GSD Engine v2.2.0 source documentation, scripts, and standards prompt templates.*
+*Generated from GSD Engine v2.3.0 source documentation, scripts, and standards prompt templates.*
 *Total scripts: 42 (1 master installer + 1 pre-flight + 36 installer scripts + 4 standalone utilities)*
 *Chapters: 21 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14*

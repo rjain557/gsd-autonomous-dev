@@ -1,0 +1,27 @@
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+node.exe : Error: Claude Code cannot be launched inside another Claude Code session.
+At C:\Users\rjain\AppData\Roaming\npm\claude.ps1:22 char:14
++ ...    $input | & "node$exe"  "$basedir/node_modules/@anthropic-ai/claude ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: Claude C...e Code session.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.

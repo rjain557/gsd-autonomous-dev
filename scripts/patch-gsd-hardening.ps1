@@ -76,6 +76,22 @@ $script:NETWORK_MAX_POLLS = 6          # max 60s of polling, then skip
 $script:DISK_MIN_FREE_GB = 0.5
 $script:JSON_BACKUP_SUFFIX = ".last-good"
 
+# -- Agent model versions (overridable via global-config.json -> agent_models) --
+$script:CLAUDE_MODEL = "claude-sonnet-4-6"
+$script:GEMINI_MODEL = "gemini-3.1-pro-preview"
+$script:CODEX_MODEL  = "gpt-5.4"
+try {
+    $_amCfgPath = Join-Path $env:USERPROFILE ".gsd-global\config\global-config.json"
+    if (Test-Path $_amCfgPath) {
+        $_amCfg = Get-Content $_amCfgPath -Raw | ConvertFrom-Json
+        if ($_amCfg.agent_models) {
+            if ($_amCfg.agent_models.claude) { $script:CLAUDE_MODEL = $_amCfg.agent_models.claude }
+            if ($_amCfg.agent_models.gemini) { $script:GEMINI_MODEL = $_amCfg.agent_models.gemini }
+            if ($_amCfg.agent_models.codex)  { $script:CODEX_MODEL  = $_amCfg.agent_models.codex }
+        }
+    }
+} catch { }
+
 # ===========================================
 # 1. JSON VALIDATION + ROLLBACK
 # ===========================================
@@ -197,9 +213,18 @@ function Wait-ForQuotaReset {
     )
 
     if ($QuotaType -eq "rate_limit") {
-        $waitMinutes = 2
-        Write-Host "    Rate limited on $Agent. Waiting $waitMinutes minutes..." -ForegroundColor Yellow
-        Start-Sleep -Seconds ($waitMinutes * 60)
+        # Use rate limiter's sliding window to calculate exact wait (max 65s instead of flat 2min)
+        $waitSeconds = 65  # default: 60s window + 5s buffer
+        try {
+            if (Get-Command Wait-ForRateWindow -ErrorAction SilentlyContinue) {
+                $rlWait = Wait-ForRateWindow -AgentName $Agent -GsdDir $GsdDir
+                if ($rlWait -gt 0) { $waitSeconds = 0 }  # rate limiter already slept
+            }
+        } catch { }
+        if ($waitSeconds -gt 0) {
+            Write-Host "    Rate limited on $Agent. Waiting ${waitSeconds}s (RPM window reset)..." -ForegroundColor Yellow
+            Start-Sleep -Seconds $waitSeconds
+        }
         return $true
     }
 
@@ -221,11 +246,11 @@ function Wait-ForQuotaReset {
             # Test if quota has reset - use the SAME agent that was exhausted
             try {
                 if ($Agent -eq "codex") {
-                    $testOutput = "Reply with just the word READY" | codex exec --full-auto - 2>&1
+                    $testOutput = "Reply with just the word READY" | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1
                 } elseif ($Agent -eq "gemini") {
-                    $testOutput = "Reply with just the word READY" | gemini --approval-mode plan 2>&1
+                    $testOutput = "Reply with just the word READY" | gemini --model $script:GEMINI_MODEL --approval-mode plan 2>&1
                 } else {
-                    $testOutput = claude -p "Reply with just the word READY" 2>&1
+                    $testOutput = claude -p "Reply with just the word READY" --model $script:CLAUDE_MODEL 2>&1
                 }
                 if ($testOutput -match "READY") {
                     Write-Host "    [OK] $Agent quota reset after ${currentSleep}min. Resuming..." -ForegroundColor Green
@@ -337,7 +362,7 @@ function Test-DiskSpace {
         $logDir = Join-Path $GsdDir "logs"
         if (Test-Path $logDir) {
             Get-ChildItem $logDir -File | Sort-Object LastWriteTime -Descending |
-                Select-Object -Skip 20 | Remove-Item -Force -ErrorAction SilentlyContinue
+                Select-Object -Skip 5 | Remove-Item -Force -ErrorAction SilentlyContinue
             $cleaned = $true
         }
 
@@ -379,7 +404,7 @@ function Test-AgentBoundaries {
 
     # Only check files the agent actually changed (exclude pre-existing dirty files)
     $agentChanged = $changedFiles | Where-Object { $_ -notin $BaselineDirty }
-    if (-not $agentChanged -or @($agentChanged).Count -eq 0) { return $true }
+    if (-not $agentChanged) { return $true }
 
     $violations = @()
 
@@ -691,7 +716,7 @@ function Invoke-AgentFallback {
 
     try {
         if ($FallbackAgent -eq "codex") {
-            $rawOutput = $Prompt | codex exec --full-auto --json - 2>&1
+            $rawOutput = $Prompt | codex exec --full-auto --model $script:CODEX_MODEL --json - 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "codex" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -701,7 +726,7 @@ function Invoke-AgentFallback {
                 $fbOutput = $rawOutput
             }
         } elseif ($FallbackAgent -eq "claude") {
-            $rawOutput = claude -p $Prompt --allowedTools $AllowedTools --output-format json 2>&1
+            $rawOutput = claude -p $Prompt --model $script:CLAUDE_MODEL --allowed-tools $AllowedTools --output-format json 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "claude" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -711,7 +736,7 @@ function Invoke-AgentFallback {
                 $fbOutput = $rawOutput
             }
         } elseif ($FallbackAgent -eq "gemini") {
-            $rawOutput = $Prompt | gemini --approval-mode plan --output-format json 2>&1
+            $rawOutput = $Prompt | gemini --model $script:GEMINI_MODEL --approval-mode plan --output-format json 2>&1
             $fbExit = $LASTEXITCODE
             $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
             if ($parsed -and $parsed.TextOutput) {
@@ -742,7 +767,7 @@ function Invoke-AgentFallback {
 # ===========================================
 
 # Override the original Invoke-WithRetry with quota + network + diagnosis awareness
-$script:OriginalInvokeWithRetry = ${function:Invoke-WithRetry}
+$script:OriginalInvokeWithRetry = ${function:Invoke-WithRetryCore}
 
 function Invoke-WithRetry {
     param(
@@ -791,7 +816,7 @@ function Invoke-WithRetry {
 
             if ($Agent -eq "claude") {
                 # Use --output-format json to capture token usage + cost data
-                $rawOutput = claude -p $effectivePrompt --allowedTools $AllowedTools --output-format json 2>&1
+                $rawOutput = claude -p $effectivePrompt --model $script:CLAUDE_MODEL --allowed-tools $AllowedTools --output-format json 2>&1
                 $exitCode = $LASTEXITCODE
                 $parsed = Extract-TokensFromOutput -Agent "claude" -RawOutput ($rawOutput -join "`n")
                 if ($parsed -and $parsed.TextOutput) {
@@ -802,7 +827,7 @@ function Invoke-WithRetry {
                 }
             } elseif ($Agent -eq "codex") {
                 # Pass prompt via stdin, use --json to capture token usage
-                $rawOutput = $effectivePrompt | codex exec --full-auto --json - 2>&1
+                $rawOutput = $effectivePrompt | codex exec --full-auto --model $script:CODEX_MODEL --json - 2>&1
                 $exitCode = $LASTEXITCODE
                 $parsed = Extract-TokensFromOutput -Agent "codex" -RawOutput ($rawOutput -join "`n")
                 if ($parsed -and $parsed.TextOutput) {
@@ -814,7 +839,7 @@ function Invoke-WithRetry {
             } elseif ($Agent -eq "gemini") {
                 # Gemini CLI: --approval-mode plan (read-only) or --yolo (write)
                 $geminiArgs = $GeminiMode.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-                $rawOutput = $effectivePrompt | gemini @geminiArgs --output-format json 2>&1
+                $rawOutput = $effectivePrompt | gemini --model $script:GEMINI_MODEL @geminiArgs --output-format json 2>&1
                 $exitCode = $LASTEXITCODE
                 $parsed = Extract-TokensFromOutput -Agent "gemini" -RawOutput ($rawOutput -join "`n")
                 if ($parsed -and $parsed.TextOutput) {
@@ -1027,7 +1052,10 @@ function Invoke-WithRetry {
 
                 # -- Post-check: boundary enforcement (with baseline to avoid false positives) --
                 $boundaryAgent = switch ($Agent) {
-                    "claude" { "claude" }
+                    "claude" {
+                        # When Claude rotates into execute/build phase, apply codex boundary rules
+                        if ($Phase -match "^execute$|^build$") { "codex" } else { "claude" }
+                    }
                     "codex"  { "codex" }
                     "gemini" {
                         # Map gemini mode to boundary role
@@ -1116,7 +1144,7 @@ Rules:
 - Replace any string concatenation with parameterized queries
 - Use sp_executesql for dynamic SQL if absolutely needed
 "@
-            $sqlFixPrompt | codex exec --full-auto - 2>&1 |
+            $sqlFixPrompt | codex exec --full-auto --model $script:CODEX_MODEL - 2>&1 |
                 Out-File -FilePath "$GsdDir\logs\autofix-sql-iter$Iteration.log" -Encoding UTF8
 
             git add -A; git commit -m "gsd: auto-fix SQL patterns (iter $Iteration)" --no-verify 2>$null
@@ -1151,7 +1179,7 @@ function Test-PreFlight {
     # Add network check
     Write-Host "    Checking network..." -ForegroundColor DarkGray
     try {
-        $null = claude -p "PING" --max-turns 1 2>$null; if ($LASTEXITCODE -ne 0) { throw "offline" }
+        $null = claude -p "PING" --model $script:CLAUDE_MODEL --max-turns 1 2>$null; if ($LASTEXITCODE -ne 0) { throw "offline" }
         Write-Host "    [OK] Network: online" -ForegroundColor DarkGreen
     } catch {
         Write-Host "    [!!]  Network: offline (will poll when needed)" -ForegroundColor DarkYellow

@@ -4,7 +4,7 @@ Review the generated blueprint manifest for spec completeness.
 
 ## Context
 - Iteration: {{ITERATION}} | Health: {{HEALTH}}%
-- Read: {{GSD_DIR}}\blueprint\blueprint.json, specs in docs\, design\figma\
+- Read: {{GSD_DIR}}\blueprint\blueprint.json, specs in docs\, design\{interface}\
 
 ## Review Focus
 1. Does every spec requirement have at least one blueprint item?

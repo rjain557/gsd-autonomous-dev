@@ -224,8 +224,9 @@ function Test-ApiContractCompliance {
         $routePattern = [regex]::Escape($route) -replace '\\{[^}]+\\}', '\{?\w+\}?'
         $routePattern = $routePattern -replace '^/', ''
 
-        # Check for route attribute
-        $httpAttr = "[Http${method}"
+        # Check for route attribute — convert uppercase method (GET) to PascalCase (Get) for C# attributes
+        $methodPascal = $method.Substring(0,1).ToUpper() + $method.Substring(1).ToLower()
+        $httpAttr = "[Http${methodPascal}"
         $hasRoute = $allControllerContent -match $routePattern
         $hasMethod = $allControllerContent -match [regex]::Escape($httpAttr)
 

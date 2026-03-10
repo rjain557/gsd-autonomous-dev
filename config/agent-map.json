@@ -120,5 +120,43 @@
                              "strategy":  "round-robin",
                              "fallback_to_sequential":  true,
                              "subtask_timeout_minutes":  30
-                         }
+                         },
+    "council":  {
+                    "reviewers":  [
+                                      "codex",
+                                      "gemini",
+                                      "deepseek"
+                                  ]
+                },
+    "review_chunked":  {
+                           "enabled":  true,
+                           "strategy":  "rate-limit-aware",
+                           "agent_pool":  [
+                                              "claude",
+                                              "codex",
+                                              "gemini"
+                                          ],
+                           "safety_factor":  0.5,
+                           "min_chunk_size":  5,
+                           "max_chunk_size":  30,
+                           "inter_wave_cooldown_seconds":  20,
+                           "inter_chunk_cooldown_seconds":  10,
+                           "min_success_ratio":  0.6,
+                           "fallback_to_single_agent":  true,
+                           "fallback_agent":  "codex",
+                           "notes":  "safety_factor=0.5 means use half the RPM as max reqs per agent per wave. CLI agents only (claude/codex/gemini) for quality assurance."
+                       },
+    "partial_decompose":  {
+                              "enabled":  true,
+                              "max_sub_reqs":  4,
+                              "min_sub_reqs":  2,
+                              "model":  "claude-sonnet-4-6",
+                              "notes":  "Decomposes stuck partials before each plan phase (iteration \u003e 1)"
+                          },
+    "rate_limiter":  {
+                         "enabled":  true,
+                         "safety_factor":  0.8,
+                         "log_throttles":  true,
+                         "description":  "Proactive rate limiter. safety_factor=0.8 means use 80% of stated RPM. Set enabled=false to disable."
+                     }
 }

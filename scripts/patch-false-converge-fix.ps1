@@ -37,8 +37,12 @@ if (Test-Path $loopFile) {
         Write-Host "  [OK] Removed redundant StallCount/TargetHealth from main loop section" -ForegroundColor Green
     }
 
-    Set-Content -Path $loopFile -Value $content -Encoding UTF8
-    Write-Host "  [OK] convergence-loop.ps1 updated" -ForegroundColor Green
+    try {
+        Set-Content -Path $loopFile -Value $content -Encoding UTF8
+        Write-Host "  [OK] convergence-loop.ps1 updated" -ForegroundColor Green
+    } catch {
+        Write-Host "  [XX] Failed to write convergence-loop.ps1: $_" -ForegroundColor Red
+    }
 } else {
     Write-Host "  [!!] convergence-loop.ps1 not found at $loopFile" -ForegroundColor Red
 }
@@ -66,8 +70,12 @@ if (Test-Path $profileFile) {
     }
 
     if ($changed) {
-        Set-Content -Path $profileFile -Value $content -Encoding UTF8
-        Write-Host "  [OK] gsd-profile-functions.ps1 updated" -ForegroundColor Green
+        try {
+            Set-Content -Path $profileFile -Value $content -Encoding UTF8
+            Write-Host "  [OK] gsd-profile-functions.ps1 updated" -ForegroundColor Green
+        } catch {
+            Write-Host "  [XX] Failed to write gsd-profile-functions.ps1: $_" -ForegroundColor Red
+        }
     } else {
         Write-Host "  [>>] gsd-profile-functions.ps1 already clean" -ForegroundColor DarkGray
     }

@@ -25,6 +25,6 @@
 |   +-- current-assignment.md
 |   +-- handoff-log.jsonl
 +-- specs\
-|   +-- figma-mapping.md      (auto-populated from design\figma\v##)
+|   +-- figma-mapping.md      (auto-populated from design\{interface}\v##)
 |   +-- sdlc-reference.md     (auto-populated from docs\)
 +-- logs\

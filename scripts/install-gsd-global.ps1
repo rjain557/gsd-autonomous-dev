@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     GSD Global Convergence Engine - Installer
     Installs the GSD convergence loop as a global tool for ALL projects.
@@ -44,10 +44,12 @@
 
 param(
     [string]$UserHome = $env:USERPROFILE,
-    [string]$UserName = "rjain"
+    [string]$UserName = $env:USERNAME,
+    [switch]$SkipPathUpdate
 )
 
 $ErrorActionPreference = "Stop"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 
 # -- Paths --
 $GsdGlobalDir = Join-Path $UserHome ".gsd-global"
@@ -150,10 +152,14 @@ $directories = @(
     $GsdGlobalDir,
     "$GsdGlobalDir\scripts",
     "$GsdGlobalDir\phases",
+    "$GsdGlobalDir\lib",
+    "$GsdGlobalDir\lib\modules",
     "$GsdGlobalDir\prompts",
     "$GsdGlobalDir\prompts\claude",
     "$GsdGlobalDir\prompts\codex",
+    "$GsdGlobalDir\prompts\council",
     "$GsdGlobalDir\prompts\gemini",
+    "$GsdGlobalDir\prompts\shared",
     "$GsdGlobalDir\config",
     "$GsdGlobalDir\templates",
     "$GsdGlobalDir\templates\project-gsd",
@@ -194,7 +200,7 @@ $agentMap = @{
             agent = "claude-code"
             reason = "Architecture decisions. Creates phase structure and requirement decomposition. Needs high intelligence, low output volume."
             estimated_output_tokens = "3000-6000"
-            inputs = @("docs\ (SDLC specs Phase A-E)", "design\figma\v## (latest)", "existing codebase structure")
+            inputs = @("docs\ (SDLC specs Phase A-E)", "design\{interface}\v## (latest interface deliverables)", "existing codebase structure")
             outputs = @("requirements-matrix.json (full build)", "phase dependency graph", "figma-mapping.md")
         }
         "research" = @{
@@ -251,7 +257,7 @@ $globalConfig = @{
     batch_size_min = 3
     batch_size_max = 8
     figma = @{
-        base_path = "design\figma"
+        base_path = "design"
         version_pattern = "^v(\d+)$"
         auto_detect_latest = $true
     }
@@ -271,6 +277,11 @@ $globalConfig = @{
     notifications = @{
         ntfy_topic = "auto"
         notify_on = @("iteration_complete", "converged", "stalled", "quota_exhausted", "error")
+    }
+    agent_models = @{
+        claude = "claude-sonnet-4-6"
+        gemini = "gemini-3.1-pro-preview"
+        codex  = "gpt-5.4"
     }
 } | ConvertTo-Json -Depth 4
 
@@ -692,7 +703,7 @@ Claude Code stays well under the `$`200/mo cap. Codex does the heavy lifting.
 | .gsd\research\           | READ only                                | READ + WRITE                 |
 | .gsd\agent-handoff\      | WRITE current-assignment.md              | APPEND handoff-log.jsonl     |
 | docs\                    | READ only                                | READ only                    |
-| design\figma\            | READ only                                | READ only                    |
+| design\{interface}\      | READ only                                | READ only                    |
 "@
 
 Set-Content -Path "$GsdGlobalDir\phases\README.md" -Value $phasesReadme -Encoding UTF8
@@ -734,7 +745,7 @@ $projectInitTemplate = @'
 |   +-- current-assignment.md
 |   +-- handoff-log.jsonl
 +-- specs\
-|   +-- figma-mapping.md      (auto-populated from design\figma\v##)
+|   +-- figma-mapping.md      (auto-populated from design\{interface}\v##)
 |   +-- sdlc-reference.md     (auto-populated from docs\)
 +-- logs\
 '@
@@ -787,19 +798,27 @@ if (-not (Test-Path $GlobalDir)) {
 }
 
 # -- Detect latest Figma version --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"
 $FigmaPath = "none"
 
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
 
     if ($latest) {
-        $FigmaVersion = $latest.Name
-        $FigmaPath = "design\figma\$FigmaVersion"
+        $FigmaVersion = $latest.Version
+        $FigmaPath = "design\$($latest.Interface)\$FigmaVersion"
     }
 }
 
@@ -812,7 +831,7 @@ if (-not $hasDocs) {
     Write-Host "[!!]  No docs\ directory found. SDLC spec-based requirements will be limited." -ForegroundColor Yellow
 }
 if (-not $hasFigma) {
-    Write-Host "[!!]  No design\figma\v## found. Figma-based requirements will be limited." -ForegroundColor Yellow
+    Write-Host "[!!]  No design\<interface>\v## found. Design-based requirements will be limited." -ForegroundColor Yellow
 }
 
 # -- Initialize per-project .gsd if needed --
@@ -911,6 +930,19 @@ if ($ThrottleSeconds -gt 0) { Write-Host "  Throttle:    ${ThrottleSeconds}s bet
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host ""
 
+# -- Agent model versions (read from global-config.json) --
+$claudeModel = "claude-sonnet-4-6"
+$geminiModel = "gemini-3.1-pro-preview"
+$codexModel  = "gpt-5.4"
+try {
+    $_gcfg = Get-Content "$GsdGlobalDir\config\global-config.json" -Raw | ConvertFrom-Json
+    if ($_gcfg.agent_models) {
+        if ($_gcfg.agent_models.claude) { $claudeModel = $_gcfg.agent_models.claude }
+        if ($_gcfg.agent_models.gemini) { $geminiModel = $_gcfg.agent_models.gemini }
+        if ($_gcfg.agent_models.codex)  { $codexModel  = $_gcfg.agent_models.codex }
+    }
+} catch { }
+
 # ========================================================
 # PHASE 0: Create Phases (Claude Code - one time)
 # ========================================================
@@ -924,7 +956,7 @@ if (-not $hasRequirements -and -not $SkipInit) {
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\create-phases.md" 0 0
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\phase0-create-phases.log"
     } else {
         Write-Host "   [DRY RUN] claude -p <create-phases prompt>" -ForegroundColor DarkYellow
@@ -951,7 +983,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\code-review.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-1-code-review.log"
     } else {
         Write-Host "   [DRY RUN] claude -> code-review" -ForegroundColor DarkYellow
@@ -983,7 +1015,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Log-Handoff "gemini" "research" $Iteration $Health
             $prompt = Resolve-Prompt "$GlobalDir\prompts\gemini\research.md" $Iteration $Health
             if (-not $DryRun) {
-                $prompt | gemini --approval-mode plan 2>&1 |
+                $prompt | gemini --model $geminiModel --approval-mode plan 2>&1 |
                     Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
             } else {
                 Write-Host "   [DRY RUN] gemini -> research" -ForegroundColor DarkYellow
@@ -993,7 +1025,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Log-Handoff "codex" "research" $Iteration $Health
             $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\research.md" $Iteration $Health
             if (-not $DryRun) {
-                $prompt | codex exec --full-auto - 2>&1 |
+                $prompt | codex exec --full-auto --model $codexModel - 2>&1 |
                     Tee-Object "$GsdDir\logs\iter${Iteration}-2-research.log"
             } else {
                 Write-Host "   [DRY RUN] codex -> research" -ForegroundColor DarkYellow
@@ -1016,7 +1048,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\claude\plan.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-3-plan.log"
     } else {
         Write-Host "   [DRY RUN] claude -> plan" -ForegroundColor DarkYellow
@@ -1035,7 +1067,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$GlobalDir\prompts\codex\execute.md" $Iteration $Health
 
     if (-not $DryRun) {
-        $prompt | codex exec --full-auto - 2>&1 |
+        $prompt | codex exec --full-auto --model $codexModel - 2>&1 |
             Tee-Object "$GsdDir\logs\iter${Iteration}-4-execute.log"
 
         # Git commit
@@ -1055,7 +1087,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
             Write-Host "[STOP] Stalled. Running Claude Code diagnosis..." -ForegroundColor Red
             if (-not $DryRun) {
                 claude -p "The convergence loop stalled for $StallCount iterations at ${NewHealth}%. Read .gsd\health\health-history.jsonl, drift-report.md, and requirements-matrix.json. Diagnose why. Write to .gsd\health\stall-diagnosis.md." `
-                    --allowedTools "Read,Write,Bash" 2>&1 |
+                    --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
                     Tee-Object "$GsdDir\logs\stall-diagnosis-$Iteration.log"
             }
             break
@@ -1238,10 +1270,16 @@ Write-Host "   [>>]  GSD functions registered in all PowerShell profiles" -Foreg
 
 # Add bin to PATH if not already
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-if ($currentPath -notlike "*$scriptsOnPath*") {
-    [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$scriptsOnPath", "User")
-    Write-Host "   [OK] Added $scriptsOnPath to user PATH" -ForegroundColor DarkGreen
-    Write-Host "   [!!]  Restart your terminal for PATH change to take effect" -ForegroundColor Yellow
+if ($SkipPathUpdate) {
+    Write-Host "   [>>]  Skipping user PATH update (--SkipPathUpdate)" -ForegroundColor DarkGray
+} elseif ($currentPath -notlike "*$scriptsOnPath*") {
+    try {
+        [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$scriptsOnPath", "User")
+        Write-Host "   [OK] Added $scriptsOnPath to user PATH" -ForegroundColor DarkGreen
+        Write-Host "   [!!]  Restart your terminal for PATH change to take effect" -ForegroundColor Yellow
+    } catch {
+        Write-Host "   [!!]  Could not update user PATH: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
 } else {
     Write-Host "   [>>]  bin\ already in PATH" -ForegroundColor DarkGray
 }
@@ -1405,6 +1443,53 @@ if (Test-Path $vscodeUserDir) {
 Write-Host ""
 
 # ========================================================
+# STEP 12: Sync canonical repo sources
+# ========================================================
+
+Write-Host "[SYNC] Applying canonical repo sources..." -ForegroundColor Yellow
+
+$canonicalPairs = @(
+    @{ Source = Join-Path $RepoRoot "config\agent-map.json";               Target = Join-Path $GsdGlobalDir "config\agent-map.json" },
+    @{ Source = Join-Path $RepoRoot "config\global-config.json";           Target = Join-Path $GsdGlobalDir "config\global-config.json" },
+    @{ Source = Join-Path $RepoRoot "config\model-registry.json";          Target = Join-Path $GsdGlobalDir "config\model-registry.json" },
+    @{ Source = Join-Path $RepoRoot "scripts\convergence-loop.ps1";        Target = Join-Path $GsdGlobalDir "scripts\convergence-loop.ps1" },
+    @{ Source = Join-Path $RepoRoot "scripts\token-cost-calculator.ps1";   Target = Join-Path $GsdGlobalDir "scripts\token-cost-calculator.ps1" }
+)
+
+foreach ($pair in $canonicalPairs) {
+    if (Test-Path $pair.Source) {
+        $targetDir = Split-Path -Parent $pair.Target
+        if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+        Copy-Item -Path $pair.Source -Destination $pair.Target -Force
+        Write-Host "   [OK] $(Split-Path $pair.Target -Leaf)" -ForegroundColor DarkGreen
+    }
+}
+
+$moduleSourceDir = Join-Path $RepoRoot "lib\modules"
+$moduleTargetDir = Join-Path $GsdGlobalDir "lib\modules"
+if (Test-Path $moduleSourceDir) {
+    Copy-Item -Path (Join-Path $moduleSourceDir "*") -Destination $moduleTargetDir -Recurse -Force
+    Write-Host "   [OK] modules synced" -ForegroundColor DarkGreen
+}
+
+$promptDirs = @(
+    @{ Source = Join-Path $RepoRoot "prompts\claude"; Target = Join-Path $GsdGlobalDir "prompts\claude" },
+    @{ Source = Join-Path $RepoRoot "prompts\codex";  Target = Join-Path $GsdGlobalDir "prompts\codex" },
+    @{ Source = Join-Path $RepoRoot "prompts\council"; Target = Join-Path $GsdGlobalDir "prompts\council" },
+    @{ Source = Join-Path $RepoRoot "prompts\gemini"; Target = Join-Path $GsdGlobalDir "prompts\gemini" },
+    @{ Source = Join-Path $RepoRoot "prompts\shared"; Target = Join-Path $GsdGlobalDir "prompts\shared" }
+)
+
+foreach ($dirPair in $promptDirs) {
+    if (Test-Path $dirPair.Source) {
+        Copy-Item -Path (Join-Path $dirPair.Source "*") -Destination $dirPair.Target -Recurse -Force
+        Write-Host "   [OK] $(Split-Path $dirPair.Target -Leaf) prompts synced" -ForegroundColor DarkGreen
+    }
+}
+
+Write-Host ""
+
+# ========================================================
 # DONE
 # ========================================================
 
@@ -1441,8 +1526,8 @@ Write-Host "    Ctrl+Shift+P -> 'Run Task' -> 'GSD: Convergence Loop'" -Foregrou
 Write-Host ""
 Write-Host "  EXPECTED PROJECT STRUCTURE:" -ForegroundColor Yellow
 Write-Host "    your-repo\" -ForegroundColor DarkGray
-Write-Host "    +-- design\figma\v01\     <- Figma deliverables" -ForegroundColor DarkGray
-Write-Host "    +-- design\figma\v02\     <- latest picked automatically" -ForegroundColor DarkGray
+Write-Host "    +-- design\web\v01\       <- interface deliverables" -ForegroundColor DarkGray
+Write-Host "    +-- design\mcp\v02\       <- latest picked automatically" -ForegroundColor DarkGray
 Write-Host "    +-- docs\                 <- SDLC specs (Phase A-E)" -ForegroundColor DarkGray
 Write-Host "    +-- src\                  <- your code" -ForegroundColor DarkGray
 Write-Host ""

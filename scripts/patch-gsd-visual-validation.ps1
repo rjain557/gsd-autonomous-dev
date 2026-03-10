@@ -229,23 +229,53 @@ const { chromium } = require('playwright');
                     & node $scriptPath 2>$null
 
                     if (Test-Path $capturedPath) {
-                        # Compare file sizes as rough diff metric (full pixel diff requires additional npm package)
-                        $refSize = (Get-Item $ref.FullName).Length
-                        $capSize = (Get-Item $capturedPath).Length
-                        $sizeDiff = [math]::Abs($refSize - $capSize) / [math]::Max($refSize, 1) * 100
+                        # Step 1: SHA256 hash -- if identical, no diff at all
+                        $refHash = (Get-FileHash $ref.FullName -Algorithm SHA256).Hash
+                        $capHash = (Get-FileHash $capturedPath -Algorithm SHA256).Hash
+                        $diffPct = 0.0
+                        $diffMethod = "hash"
+
+                        if ($refHash -ne $capHash) {
+                            # Step 2: Try ImageMagick pixel diff (most accurate, zero-cost if installed)
+                            $magickCmd = Get-Command "magick" -ErrorAction SilentlyContinue
+                            if (-not $magickCmd) { $magickCmd = Get-Command "compare" -ErrorAction SilentlyContinue }
+                            if ($magickCmd) {
+                                try {
+                                    $diffOut = & $magickCmd.Name compare -metric AE -fuzz "2%" $ref.FullName $capturedPath "null:" 2>&1
+                                    if ($diffOut -match '^\d+') {
+                                        $pixelsDiff = [double]($Matches[0])
+                                        # Estimate total pixels from file (approximate; AE is absolute pixel count)
+                                        $refInfo = & $magickCmd.Name identify -format "%[fx:w*h]" $ref.FullName 2>$null
+                                        $totalPixels = if ($refInfo -match '^\d+') { [double]$refInfo } else { 1000000.0 }
+                                        $diffPct = [math]::Min(100, ($pixelsDiff / [math]::Max($totalPixels, 1)) * 100)
+                                        $diffMethod = "imageMagick"
+                                    }
+                                } catch { }
+                            }
+
+                            if ($diffMethod -eq "hash") {
+                                # Step 3: Fall back to file-size ratio with explicit warning
+                                $refSize = (Get-Item $ref.FullName).Length
+                                $capSize = (Get-Item $capturedPath).Length
+                                $diffPct = [math]::Abs($refSize - $capSize) / [math]::Max($refSize, 1) * 100
+                                $diffMethod = "fileSize(approx)"
+                                Write-Host "    [WARN] ${componentName}: ImageMagick not found -- using file-size approximation" -ForegroundColor DarkYellow
+                            }
+                        }
 
                         $result.Components += @{
                             name       = $componentName
                             reference  = $ref.FullName
                             captured   = $capturedPath
                             status     = "captured"
-                            diff_pct   = [math]::Round($sizeDiff, 1)
+                            diff_pct   = [math]::Round($diffPct, 1)
+                            diff_method = $diffMethod
                         }
 
-                        if ($sizeDiff -gt $maxDiffPct) {
-                            Write-Host "    [DIFF] $componentName: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Yellow
+                        if ($diffPct -gt $maxDiffPct) {
+                            Write-Host "    [DIFF] ${componentName}: $([math]::Round($diffPct,1))% deviation ($diffMethod)" -ForegroundColor Yellow
                         } else {
-                            Write-Host "    [OK] $componentName: $([math]::Round($sizeDiff,1))% deviation" -ForegroundColor Green
+                            Write-Host "    [OK] ${componentName}: $([math]::Round($diffPct,1))% deviation ($diffMethod)" -ForegroundColor Green
                         }
                     } else {
                         $result.Components += @{
@@ -253,7 +283,7 @@ const { chromium } = require('playwright');
                             status   = "capture_failed"
                             diff_pct = -1
                         }
-                        Write-Host "    [FAIL] $componentName: screenshot capture failed" -ForegroundColor Red
+                        Write-Host "    [FAIL] ${componentName}: screenshot capture failed" -ForegroundColor Red
                     }
 
                     Remove-Item $scriptPath -ErrorAction SilentlyContinue
