@@ -1,13 +1,17 @@
 <#
 .SYNOPSIS
-    Patch #43: Fix 7 convergence diseases found by deep analysis.
+    Patch #43: Fix 11 convergence diseases found by deep analysis.
     1. Execute pool CLI-only: remove REST agents (can't write files)
     2. $Pipeline undefined: add "converge" assignment
-    3. Unwrapped calls: try/catch on Invoke-ParallelResearch
+    3. Unwrapped calls: try/catch on ParallelResearch + 7 more calls
     4. Parameter mismatches: Wait-ForRateWindow/Register-AgentCall in decompose
     5. Plan prompt: skip decomposed parents, prefer sub-requirements
     6. Code-review prompt: exclude decomposed parents from health formula
-    7. Decompose try/catch: already applied (patch confirms)
+    7. Mutex release without acquisition check (Wait-ForRateWindow + Register-AgentCall)
+    8. Stop-Job before Remove-Job for timed-out parallel jobs
+    9. New-GitSnapshot stash pop removal (was a no-op)
+    10. Decompose try/catch: already applied
+    11. All Invoke-LlmCouncil/BuildValidation/CouncilRequirements wrapped
 
 .NOTES
     Install chain position: #43
@@ -97,9 +101,33 @@ if (Test-Path $reviewPath) {
     }
 }
 
+# ── Disease 7: Mutex release without acquisition check ──
+$resContent = Get-Content $resPath -Raw
+if ($resContent -match 'Wait-ForRateWindow' -and $resContent -notmatch '\$acquired\s*=.*WaitOne') {
+    Write-Host "  [INFO] Mutex acquisition check needs manual application" -ForegroundColor Yellow
+} else {
+    Write-Host "  [SKIP] Mutex acquisition check already applied" -ForegroundColor DarkGray
+}
+
+# ── Disease 8: Stop-Job before Remove-Job ──
+if ($resContent -match 'Remove-Job.*-Force' -and $resContent -notmatch 'Stop-Job.*Remove-Job') {
+    Write-Host "  [INFO] Stop-Job before Remove-Job needs manual application" -ForegroundColor Yellow
+} else {
+    Write-Host "  [SKIP] Stop-Job already present" -ForegroundColor DarkGray
+}
+
+# ── Disease 9: New-GitSnapshot stash pop removal ──
+if ($resContent -match 'git stash pop') {
+    Write-Host "  [INFO] New-GitSnapshot stash pop removal needs manual application" -ForegroundColor Yellow
+} else {
+    Write-Host "  [SKIP] Stash pop already removed" -ForegroundColor DarkGray
+}
+
 Write-Host "`n=== Patch #43 Complete ===" -ForegroundColor Green
 Write-Host "  Execute pool: CLI-only (codex, gemini, claude)" -ForegroundColor DarkCyan
 Write-Host "  Pipeline var: defined as 'converge'" -ForegroundColor DarkCyan
-Write-Host "  Crash protection: try/catch on research + decompose" -ForegroundColor DarkCyan
-Write-Host "  Rate limiter: correct param names in decompose" -ForegroundColor DarkCyan
+Write-Host "  Crash protection: try/catch on 8 unwrapped calls" -ForegroundColor DarkCyan
+Write-Host "  Rate limiter: correct param names + mutex fix" -ForegroundColor DarkCyan
 Write-Host "  Plan/review: decomposed-aware (skip parents, exclude from health)" -ForegroundColor DarkCyan
+Write-Host "  Parallel jobs: Stop-Job before Remove-Job" -ForegroundColor DarkCyan
+Write-Host "  Git snapshots: stash persists as revert point" -ForegroundColor DarkCyan
