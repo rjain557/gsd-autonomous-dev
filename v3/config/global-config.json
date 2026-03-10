@@ -26,7 +26,7 @@
     },
 
     "interfaces": {
-        "types": ["web", "mcp", "browser", "mobile", "agent"],
+        "types": ["web", "mcp-admin", "browser", "mobile", "agent"],
         "auto_detect_latest": true,
         "version_pattern": "^v(\\d+)$",
         "base_path": "design",
@@ -67,7 +67,7 @@
             "test_cmd": "npx vitest run",
             "output_dir": "src/web/"
         },
-        "mcp": {
+        "mcp-admin": {
             "frontend_stack": "React 18 + TypeScript + Vite",
             "routing": "React Router v7",
             "state": "React Query + Zustand",

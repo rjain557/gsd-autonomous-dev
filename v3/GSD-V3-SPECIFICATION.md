@@ -1089,7 +1089,7 @@ The V3 pipeline generates code for 5 interface types simultaneously. Each interf
 | Interface | Key | Description | Frontend Stack | Design Source |
 |-----------|:---:|-------------|---------------|---------------|
 | **Web Application** | `web` | Primary SPA for end users | React 18 + TypeScript | Figma → `design/web/v{N}/_analysis/` |
-| **MCP Admin Portal** | `mcp` | Model Context Protocol admin dashboard | React 18 + TypeScript | Figma → `design/mcp/v{N}/_analysis/` |
+| **MCP Admin Portal** | `mcp-admin` | Model Context Protocol admin dashboard | React 18 + TypeScript | Figma → `design/mcp-admin/v{N}/_analysis/` |
 | **Browser Extension** | `browser` | Chrome/Firefox/Edge extension | React 18 (popup/options) + Background Service Worker | Figma → `design/browser/v{N}/_analysis/` |
 | **Mobile App** | `mobile` | iOS/Android native app | React Native or .NET MAUI | Figma → `design/mobile/v{N}/_analysis/` |
 | **Remote Agent** | `agent` | Headless autonomous agent | Node.js/Python CLI, no UI | Spec docs (no Figma) |
@@ -1119,7 +1119,7 @@ design/
 │           ├── database/01-tables.sql
 │           ├── database/02-stored-procedures.sql
 │           └── database/03-seed-data.sql
-├── mcp/
+├── mcp-admin/
 │   └── v1/
 │       ├── _analysis/                    ← Same 12-deliverable structure
 │       └── _stubs/
@@ -1286,7 +1286,7 @@ The Spec Gate phase validates consistency across ALL detected interfaces:
     {
       "check": "shared_api_contracts",
       "description": "All interfaces hitting the same API must agree on endpoint shapes",
-      "sources": ["web/06-api-contracts.md", "mcp/06-api-contracts.md", "mobile/06-api-contracts.md"]
+      "sources": ["web/06-api-contracts.md", "mcp-admin/06-api-contracts.md", "mobile/06-api-contracts.md"]
     },
     {
       "check": "shared_data_types",

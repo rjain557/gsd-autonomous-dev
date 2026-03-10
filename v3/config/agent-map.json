@@ -306,7 +306,7 @@
         "description": "Interface-specific conventions injected into Execute prompts based on target file's interface",
         "routing_rules": [
             { "file_pattern": "src/web/**", "interface": "web", "conventions": "interface_conventions.web" },
-            { "file_pattern": "src/mcp-admin/**", "interface": "mcp", "conventions": "interface_conventions.mcp" },
+            { "file_pattern": "src/mcp-admin/**", "interface": "mcp-admin", "conventions": "interface_conventions.mcp-admin" },
             { "file_pattern": "src/browser/**", "interface": "browser", "conventions": "interface_conventions.browser" },
             { "file_pattern": "src/mobile/**", "interface": "mobile", "conventions": "interface_conventions.mobile" },
             { "file_pattern": "src/agent/**", "interface": "agent", "conventions": "interface_conventions.agent" },
