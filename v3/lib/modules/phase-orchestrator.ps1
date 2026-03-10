@@ -50,6 +50,10 @@ function Start-V3Pipeline {
     $pipelineStart = Get-Date
     $GsdDir = Join-Path $RepoRoot ".gsd"
 
+    # Resolve V3 root from this module's location (lib/modules -> v3)
+    $script:V3Root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+    $script:SonnetModel = "claude-sonnet-4-6-20260310"
+
     Write-Host "`n============================================" -ForegroundColor Cyan
     Write-Host "  GSD V3 Pipeline - $Mode" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor Cyan
@@ -93,7 +97,7 @@ function Start-V3Pipeline {
     $specContext = Build-SpecContext -RepoRoot $RepoRoot -GsdDir $GsdDir -Inventory $inventory
     $blueprintContext = Build-BlueprintContext -RepoRoot $RepoRoot -GsdDir $GsdDir -Inventory $inventory
 
-    $systemPromptPath = Join-Path $PSScriptRoot "..\..\prompts\shared\system-prompt.md"
+    $systemPromptPath = Join-Path $script:V3Root "prompts/shared/system-prompt.md"
     $systemPrompt = if (Test-Path $systemPromptPath) { Get-Content $systemPromptPath -Raw -Encoding UTF8 } else { "You are GSD, an autonomous software development system." }
 
     $cacheBlocks = @(
@@ -114,7 +118,7 @@ function Start-V3Pipeline {
         Write-Host "`n--- Phase 0: Cache Warm ---" -ForegroundColor Yellow
         $warmResult = Invoke-CacheWarmup -CacheBlocks $cacheBlocks
         if ($warmResult.Usage) {
-            Add-ApiCallCost -Model $Config.patterns.backend -Usage $warmResult.Usage -Phase "cache-warm"
+            Add-ApiCallCost -Model $script:SonnetModel -Usage $warmResult.Usage -Phase "cache-warm"
         }
     }
 
@@ -183,6 +187,7 @@ function Start-V3Pipeline {
 
         # -- Execute Phase (Two-Stage: Skeleton then Fill) --
         $executeResults = @{}
+        $skeletonResults = $null
         $usesTwoStage = $modeConfig.two_stage_execute
 
         if ($usesTwoStage -and "execute-skeleton" -in $phasesActive -and "execute-skeleton" -notin $phasesSkipped) {
@@ -192,9 +197,16 @@ function Start-V3Pipeline {
         }
 
         Write-Host "`n  --- Execute: Fill ---" -ForegroundColor Yellow
-        $executeResults = Invoke-ExecutePhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
-            -Plans $planOutput.Plans -Stage "fill" -Config $Config -Inventory $inventory `
-            -SkeletonResults $skeletonResults
+        $fillParams = @{
+            GsdDir    = $GsdDir
+            RepoRoot  = $RepoRoot
+            Plans     = $planOutput.Plans
+            Stage     = "fill"
+            Config    = $Config
+            Inventory = $inventory
+        }
+        if ($skeletonResults) { $fillParams["SkeletonResults"] = $skeletonResults }
+        $executeResults = Invoke-ExecutePhase @fillParams
 
         # -- Local Validate Phase (FREE) --
         Write-Host "`n  --- Local Validate ---" -ForegroundColor Yellow
@@ -396,19 +408,19 @@ function Invoke-SpecGatePhase {
         [PSObject]$Config, [string]$Mode, [PSObject]$Inventory
     )
 
-    $promptPath = Join-Path $PSScriptRoot "..\..\prompts\sonnet\01-spec-gate.md"
+    $promptPath = Join-Path $script:V3Root "prompts/sonnet/01-spec-gate.md"
     $prompt = if (Test-Path $promptPath) { Get-Content $promptPath -Raw -Encoding UTF8 } else { "Analyze the spec documents in the cached context. Output JSON with overall_status, clarity_score, conflicts, ambiguities." }
 
     # For incremental mode, use different prompt
     if ($Mode -eq "feature_update") {
-        $incrPath = Join-Path $PSScriptRoot "..\..\prompts\sonnet\01-spec-gate-incremental.md"
+        $incrPath = Join-Path $script:V3Root "prompts/sonnet/01-spec-gate-incremental.md"
         if (Test-Path $incrPath) { $prompt = Get-Content $incrPath -Raw -Encoding UTF8 }
     }
 
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 4096 -UseCache -JsonMode -Phase "spec-gate"
 
-    if ($result.Usage) { Add-ApiCallCost -Model $AgentMap.phases."spec-gate".agent -Usage $result.Usage -Phase "spec-gate" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-gate" -IsBatch }
 
     $blocked = $false
     if ($result.Parsed) {
@@ -434,7 +446,7 @@ function Invoke-ResearchPhase {
         [array]$Requirements, [int]$Iteration, [PSObject]$Config, [PSObject]$Inventory
     )
 
-    $promptPath = Join-Path $PSScriptRoot "..\..\prompts\sonnet\02-research.md"
+    $promptPath = Join-Path $script:V3Root "prompts/sonnet/02-research.md"
     $promptTemplate = if (Test-Path $promptPath) { Get-Content $promptPath -Raw -Encoding UTF8 } else {
         "Analyze the requirements below and discover patterns, dependencies, and tech decisions. Output JSON."
     }
@@ -464,7 +476,7 @@ function Invoke-PlanPhase {
         [PSObject]$Config, [string]$Mode, [PSObject]$Inventory
     )
 
-    $promptPath = Join-Path $PSScriptRoot "..\..\prompts\sonnet\03-plan.md"
+    $promptPath = Join-Path $script:V3Root "prompts/sonnet/03-plan.md"
     $promptTemplate = if (Test-Path $promptPath) { Get-Content $promptPath -Raw -Encoding UTF8 } else {
         "Create implementation plans for each requirement. Output JSON with plans array."
     }
@@ -498,9 +510,9 @@ function Invoke-ExecutePhase {
     )
 
     $promptPath = if ($Stage -eq "skeleton") {
-        Join-Path $PSScriptRoot "..\..\prompts\codex-mini\04a-execute-skeleton.md"
+        Join-Path $script:V3Root "prompts/codex-mini/04a-execute-skeleton.md"
     } else {
-        Join-Path $PSScriptRoot "..\..\prompts\codex-mini\04b-execute-fill.md"
+        Join-Path $script:V3Root "prompts/codex-mini/04b-execute-fill.md"
     }
 
     $promptTemplate = if (Test-Path $promptPath) { Get-Content $promptPath -Raw -Encoding UTF8 } else {
@@ -508,7 +520,7 @@ function Invoke-ExecutePhase {
     }
 
     # Load interface conventions
-    $conventionsPath = Join-Path $PSScriptRoot "..\..\prompts\shared\coding-conventions.md"
+    $conventionsPath = Join-Path $script:V3Root "prompts/shared/coding-conventions.md"
     $conventions = if (Test-Path $conventionsPath) { Get-Content $conventionsPath -Raw -Encoding UTF8 } else { "" }
 
     # Build parallel items
@@ -517,8 +529,8 @@ function Invoke-ExecutePhase {
         $prompt = $promptTemplate.Replace("{{REQ_ID}}", $plan.req_id)
         $prompt = $prompt.Replace("{{PLAN}}", ($plan | ConvertTo-Json -Depth 10))
 
-        if ($SkeletonResults -and $SkeletonResults[$plan.req_id]) {
-            $prompt = $prompt.Replace("{{SKELETON}}", $SkeletonResults[$plan.req_id].Text)
+        if ($SkeletonResults -and $SkeletonResults.Results -and $SkeletonResults.Results[$plan.req_id]) {
+            $prompt = $prompt.Replace("{{SKELETON}}", $SkeletonResults.Results[$plan.req_id].Text)
         }
 
         # Inject interface-specific conventions
@@ -581,7 +593,7 @@ function Invoke-ReviewPhase {
         [array]$FailedItems, [int]$Iteration, [PSObject]$Config
     )
 
-    $promptPath = Join-Path $PSScriptRoot "..\..\prompts\sonnet\06-review.md"
+    $promptPath = Join-Path $script:V3Root "prompts/sonnet/06-review.md"
     $promptTemplate = if (Test-Path $promptPath) { Get-Content $promptPath -Raw -Encoding UTF8 } else {
         "Review the failed items below. Provide fix instructions. Output JSON."
     }
@@ -617,7 +629,7 @@ function Invoke-VerifyPhase {
         [hashtable]$BaselineSnapshot = @{}
     )
 
-    $promptPath = Join-Path $PSScriptRoot "..\..\prompts\sonnet\07-verify.md"
+    $promptPath = Join-Path $script:V3Root "prompts/sonnet/07-verify.md"
     $promptTemplate = if (Test-Path $promptPath) { Get-Content $promptPath -Raw -Encoding UTF8 } else {
         "Update requirement statuses. Calculate health score. Detect drift. Output JSON."
     }
@@ -643,7 +655,7 @@ function Invoke-VerifyPhase {
 function Invoke-SpecFixPhase {
     param([string]$GsdDir, [string]$RepoRoot, [array]$CacheBlocks, [PSObject]$Config)
 
-    $promptPath = Join-Path $PSScriptRoot "..\..\prompts\sonnet\08-spec-fix.md"
+    $promptPath = Join-Path $script:V3Root "prompts/sonnet/08-spec-fix.md"
     $prompt = if (Test-Path $promptPath) { Get-Content $promptPath -Raw -Encoding UTF8 } else {
         "Resolve spec conflicts. Output JSON with resolutions."
     }

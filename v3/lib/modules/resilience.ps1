@@ -118,7 +118,7 @@ function Build-FileInventory {
             }
         }
         # Spec/doc files
-        elseif ($rp -like "docs/*" -or $rp -like "specs/*" -or $ext -in @(".md", ".txt") -and $rp -notlike "src/*") {
+        elseif ($rp -like "docs/*" -or $rp -like "specs/*" -or ($ext -in @(".md", ".txt") -and $rp -notlike "src/*")) {
             $inventory.spec_files += $rp
         }
         # Source files
@@ -249,11 +249,12 @@ function Test-PreFlightV3 {
     # 1. Repository exists
     $checks += Test-Check "Repo exists" (Test-Path $RepoRoot) "Repository not found: $RepoRoot"
 
-    # 2. API keys present
-    $anthropicKey = Get-ApiKey -Provider "Anthropic" -ErrorAction SilentlyContinue
+    # 2. API keys present (Get-ApiKey uses throw, so wrap in try/catch)
+    $anthropicKey = $null
+    $openaiKey = $null
+    try { $anthropicKey = Get-ApiKey -Provider "Anthropic" } catch {}
+    try { $openaiKey = Get-ApiKey -Provider "OpenAI" } catch {}
     $checks += Test-Check "ANTHROPIC_API_KEY" ($null -ne $anthropicKey) "Set ANTHROPIC_API_KEY environment variable"
-
-    $openaiKey = Get-ApiKey -Provider "OpenAI" -ErrorAction SilentlyContinue
     $checks += Test-Check "OPENAI_API_KEY" ($null -ne $openaiKey) "Set OPENAI_API_KEY environment variable"
 
     # 3. API key format validation (basic)
@@ -419,7 +420,7 @@ function New-GsdLock {
         mode      = $Mode
         pid       = $PID
         timestamp = (Get-Date -Format "o")
-        hostname  = $env:COMPUTERNAME
+        hostname  = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } elseif ($env:HOSTNAME) { $env:HOSTNAME } else { hostname }
     } | ConvertTo-Json | Set-Content $lockPath -Encoding UTF8
 }
 

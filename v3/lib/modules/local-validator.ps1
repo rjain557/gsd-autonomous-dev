@@ -256,9 +256,17 @@ function Invoke-ValidatorCommand {
 
     try {
         $startTime = Get-Date
-        $process = Start-Process -FilePath "pwsh" -ArgumentList "-NoProfile", "-Command", "cd '$RepoRoot'; $Command" `
-            -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\gsd-val-out-$RequirementId.txt" `
-            -RedirectStandardError "$env:TEMP\gsd-val-err-$RequirementId.txt"
+
+        # Cross-platform temp directory
+        $tmpDir = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+        $outFile = Join-Path $tmpDir "gsd-val-out-$RequirementId.txt"
+        $errFile = Join-Path $tmpDir "gsd-val-err-$RequirementId.txt"
+
+        # Escape single quotes in RepoRoot for shell safety
+        $escapedRoot = $RepoRoot -replace "'", "''"
+        $process = Start-Process -FilePath "pwsh" -ArgumentList "-NoProfile", "-Command", "cd '$escapedRoot'; $Command" `
+            -NoNewWindow -PassThru -RedirectStandardOutput $outFile `
+            -RedirectStandardError $errFile
 
         $completed = $process.WaitForExit($TimeoutSec * 1000)
 
@@ -268,16 +276,16 @@ function Invoke-ValidatorCommand {
             return $result
         }
 
-        $stdout = Get-Content "$env:TEMP\gsd-val-out-$RequirementId.txt" -Raw -ErrorAction SilentlyContinue
-        $stderr = Get-Content "$env:TEMP\gsd-val-err-$RequirementId.txt" -Raw -ErrorAction SilentlyContinue
+        $stdout = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
 
         $result.Passed = ($process.ExitCode -eq 0)
         $result.Output = if ($stderr) { $stderr } else { $stdout }
         $result.Duration = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
 
         # Cleanup temp files
-        Remove-Item "$env:TEMP\gsd-val-out-$RequirementId.txt" -Force -ErrorAction SilentlyContinue
-        Remove-Item "$env:TEMP\gsd-val-err-$RequirementId.txt" -Force -ErrorAction SilentlyContinue
+        Remove-Item $outFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $errFile -Force -ErrorAction SilentlyContinue
     }
     catch {
         $result.Output = "Exception: $($_.Exception.Message)"
