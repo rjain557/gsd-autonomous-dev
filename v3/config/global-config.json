@@ -25,10 +25,241 @@
         "phases": ["Phase-A", "Phase-B", "Phase-C", "Phase-D", "Phase-E"]
     },
 
-    "figma": {
+    "interfaces": {
+        "types": ["web", "mcp", "browser", "mobile", "agent"],
         "auto_detect_latest": true,
         "version_pattern": "^v(\\d+)$",
-        "base_path": "design\\figma"
+        "base_path": "design",
+        "figma_make_analysis_dir": "_analysis",
+        "figma_make_stubs_dir": "_stubs",
+        "figma_make_deliverables": [
+            "01-screen-inventory.md",
+            "02-component-inventory.md",
+            "03-design-system.md",
+            "04-navigation-routing.md",
+            "05-data-types.md",
+            "06-api-contracts.md",
+            "07-hooks-state.md",
+            "08-mock-data-catalog.md",
+            "09-storyboards.md",
+            "10-screen-state-matrix.md",
+            "11-api-to-sp-map.md",
+            "12-implementation-guide.md"
+        ],
+        "interface_map_file": ".gsd/blueprint/interface-map.json",
+        "cross_interface_checks": {
+            "shared_api_contracts": true,
+            "shared_data_types": true,
+            "shared_design_tokens": true,
+            "auth_consistency": true
+        }
+    },
+
+    "interface_conventions": {
+        "web": {
+            "frontend_stack": "React 18 + TypeScript + Vite",
+            "routing": "React Router v7",
+            "state": "React Query + Zustand",
+            "styling": "Tailwind CSS with Figma design tokens",
+            "testing": "Vitest + React Testing Library",
+            "build_cmd": "vite build",
+            "type_check_cmd": "npx tsc --noEmit",
+            "test_cmd": "npx vitest run",
+            "output_dir": "src/web/"
+        },
+        "mcp": {
+            "frontend_stack": "React 18 + TypeScript + Vite",
+            "routing": "React Router v7",
+            "state": "React Query + Zustand",
+            "styling": "Tailwind CSS (admin design system)",
+            "mcp_sdk": "@anthropic-ai/mcp-sdk",
+            "features": ["server-config", "tool-management", "log-viewer", "metrics-dashboard"],
+            "testing": "Vitest + React Testing Library",
+            "build_cmd": "vite build",
+            "type_check_cmd": "npx tsc --noEmit",
+            "test_cmd": "npx vitest run",
+            "output_dir": "src/mcp-admin/"
+        },
+        "browser": {
+            "manifest_version": 3,
+            "frontend_stack": "React 18 + TypeScript (popup, options, sidepanel)",
+            "background": "Service Worker",
+            "content_scripts": "Vanilla TypeScript",
+            "storage": "chrome.storage.sync + chrome.storage.local",
+            "messaging": "chrome.runtime.sendMessage + chrome.runtime.onMessage",
+            "testing": "Vitest + JSDOM",
+            "build_cmd": "vite build",
+            "type_check_cmd": "npx tsc --noEmit",
+            "test_cmd": "npx vitest run",
+            "output_dir": "src/browser/",
+            "structure": {
+                "manifest": "manifest.json",
+                "background": "background/service-worker.ts",
+                "content": "content/content-script.ts",
+                "popup": "popup/App.tsx",
+                "options": "options/App.tsx",
+                "sidepanel": "sidepanel/App.tsx",
+                "shared": "shared/storage.ts, shared/messaging.ts"
+            }
+        },
+        "mobile": {
+            "option_a": {
+                "name": "React Native",
+                "framework": "React Native 0.76+ with Expo",
+                "navigation": "React Navigation v7",
+                "state": "React Query + Zustand",
+                "styling": "NativeWind (Tailwind for React Native)",
+                "testing": "Jest + React Native Testing Library",
+                "build_cmd": "expo prebuild --check",
+                "type_check_cmd": "npx tsc --noEmit",
+                "test_cmd": "npx jest",
+                "output_dir": "src/mobile/"
+            },
+            "option_b": {
+                "name": ".NET MAUI",
+                "framework": ".NET 8 MAUI",
+                "navigation": "Shell navigation",
+                "state": "MVVM with CommunityToolkit.Mvvm",
+                "styling": "XAML resources + design tokens",
+                "testing": "xUnit + MAUI test framework",
+                "build_cmd": "dotnet build",
+                "test_cmd": "dotnet test",
+                "output_dir": "src/mobile-maui/"
+            },
+            "platform_specific": ["offline-first-sync", "push-notifications", "biometric-auth", "deep-linking"]
+        },
+        "agent": {
+            "runtime_options": ["node22", "python312"],
+            "protocol": "MCP client",
+            "communication": ["stdio", "sse", "websocket"],
+            "auth": "API key + OAuth2 service-to-service",
+            "scheduling": ["cron", "webhook-triggered"],
+            "testing_node": "Vitest",
+            "testing_python": "pytest",
+            "build": "Docker container",
+            "output_dir": "src/agent/",
+            "has_figma": false,
+            "design_source": "spec-only"
+        },
+        "shared": {
+            "description": "Pure TypeScript shared across all frontends. No platform-specific imports.",
+            "output_dir": "src/shared/",
+            "structure": {
+                "types": "src/shared/types/",
+                "hooks": "src/shared/hooks/",
+                "utils": "src/shared/utils/",
+                "api": "src/shared/api/",
+                "constants": "src/shared/constants/"
+            },
+            "rules": [
+                "No react-native imports",
+                "No chrome.* imports",
+                "No expo-* imports",
+                "No Node.js-specific imports",
+                "Use fetch for HTTP (available in all runtimes)",
+                "Types dir is single source of truth for all TypeScript interfaces"
+            ]
+        },
+        "backend": {
+            "stack": ".NET 8 with Dapper",
+            "database": "SQL Server stored procedures only",
+            "api_style": "Contract-first, API-first",
+            "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"],
+            "output_dir": "backend/",
+            "shared_across_interfaces": true
+        }
+    },
+
+    "pipeline_modes": {
+        "greenfield": {
+            "command": "gsd-blueprint",
+            "description": "Full pipeline for building a new project from spec (pre-1.0)",
+            "max_iterations": 25,
+            "batch_size_min": 3,
+            "batch_size_max": 15,
+            "phases_active": ["cache-warm", "spec-gate", "research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify", "spec-fix"],
+            "research": "full",
+            "spec_gate": "full",
+            "speculative_execution": true,
+            "two_stage_execute": true,
+            "budget_cap_usd": 50.00
+        },
+        "bug_fix": {
+            "command": "gsd-fix",
+            "description": "Post-launch bug fix. Scoped to specific bugs. Minimal iterations.",
+            "max_iterations": 5,
+            "batch_size_min": 1,
+            "batch_size_max": 3,
+            "phases_active": ["plan", "execute-fill", "local-validate", "review", "verify"],
+            "phases_skipped": ["cache-warm", "spec-gate", "research", "execute-skeleton", "spec-fix"],
+            "research": "skip",
+            "spec_gate": "skip",
+            "speculative_execution": false,
+            "two_stage_execute": false,
+            "two_stage_execute_override": "Enable for multi-file bugs (>3 files affected)",
+            "budget_cap_usd": 5.00,
+            "scope_filter_default": "source:bug_report",
+            "requirement_prefix": "BUG",
+            "requirement_defaults": {
+                "source": "bug_report",
+                "priority": "critical",
+                "spec_version": "fix",
+                "status": "not_started"
+            },
+            "artifact_storage": ".gsd/supervisor/bug-artifacts/{bug_id}/",
+            "error_context_file": ".gsd/supervisor/error-context.md",
+            "regression_test_required": true,
+            "input_modes": {
+                "cli_description": "gsd-fix \"description\"",
+                "file": "gsd-fix -File bugs.md",
+                "directory": "gsd-fix -BugDir ./bugs/issue-name/",
+                "interface_scoped": "gsd-fix -Interface web \"description\""
+            },
+            "artifact_handling": {
+                "screenshots": [".png", ".jpg", ".gif", ".bmp", ".webp"],
+                "logs": [".log", ".txt"],
+                "log_inline_lines": 20,
+                "copy_to": ".gsd/supervisor/bug-artifacts/{bug_id}/"
+            }
+        },
+        "feature_update": {
+            "command": "gsd-update",
+            "description": "Post-launch feature additions from updated specs. Preserves existing satisfied requirements.",
+            "max_iterations": 20,
+            "batch_size_min": 3,
+            "batch_size_max": 10,
+            "phases_active": ["cache-warm", "spec-gate", "research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify", "spec-fix"],
+            "research": "full-scoped",
+            "spec_gate": "incremental",
+            "speculative_execution": true,
+            "two_stage_execute": true,
+            "budget_cap_usd": 25.00,
+            "scope_filter_default": "source:v{N}_spec",
+            "preservation_rules": {
+                "preserve_satisfied": true,
+                "add_spec_version_tag": true,
+                "detect_regression": true,
+                "halt_on_regression": true,
+                "regression_detection": "If Verify finds previously-satisfied requirement regressed to partial/not_started"
+            },
+            "incremental_spec_gate": {
+                "validate_new_sections_only": true,
+                "cross_reference_existing": true,
+                "detect_conflicts_with_existing_code": true
+            },
+            "incremental_create_phases": {
+                "read_existing_matrix": true,
+                "preserve_all_entries": true,
+                "append_new_requirements": true,
+                "tag_spec_version": true,
+                "recalculate_health": true
+            },
+            "input_modes": {
+                "all_new": "gsd-update",
+                "scoped": "gsd-update -Scope \"source:v02_spec\"",
+                "specific": "gsd-update -Scope \"id:REQ-201,REQ-202\""
+            }
+        }
     },
 
     "patterns": {
@@ -260,10 +491,17 @@
         "track_per_phase": true,
         "track_per_model": true,
         "track_per_requirement": true,
+        "track_per_interface": true,
+        "track_per_mode": true,
         "track_cache_hits": true,
         "track_batch_savings": true,
         "summary_file": ".gsd/costs/cost-summary.json",
-        "loc_baseline_file": ".gsd/costs/loc-baseline.json"
+        "loc_baseline_file": ".gsd/costs/loc-baseline.json",
+        "mode_summaries": {
+            "greenfield": ".gsd/costs/greenfield-summary.json",
+            "bug_fix": ".gsd/costs/bugfix-summary.json",
+            "feature_update": ".gsd/costs/update-summary.json"
+        }
     },
 
     "checkpoint_recovery": {

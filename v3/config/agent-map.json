@@ -194,5 +194,130 @@
         "codex_mini_per_project_estimate": "~1.4M input + ~1.6M output",
         "total_per_project_estimate": "~5.55M tokens",
         "cost_per_project_estimate": "$7.30"
+    },
+
+    "mode_overrides": {
+        "greenfield": {
+            "description": "Full pipeline. All phases active. Default configuration.",
+            "phase_overrides": {},
+            "notes": "Uses all defaults from phases section above."
+        },
+        "bug_fix": {
+            "description": "Minimal pipeline for post-launch bug fixes.",
+            "phases_disabled": ["cache-warm", "spec-gate", "research", "execute-skeleton", "spec-fix"],
+            "phase_overrides": {
+                "plan": {
+                    "estimated_input_tokens": 18000,
+                    "estimated_output_tokens": 2000,
+                    "new_input_tokens": 3000,
+                    "prompt": "sonnet/03-plan-bugfix.md",
+                    "scope_filter": "source:bug_report",
+                    "inject_error_context": true,
+                    "inject_bug_artifacts": true
+                },
+                "execute-fill": {
+                    "parallel": {
+                        "enabled": false,
+                        "max_concurrent": 3,
+                        "per_item_input_tokens": 3000,
+                        "per_item_output_tokens": 4000
+                    },
+                    "prompt": "codex-mini/04b-execute-fill-bugfix.md",
+                    "require_regression_test": true
+                },
+                "local-validate": {
+                    "validators_extra": [
+                        { "type": "regression_test", "command": "dotnet test --no-build", "description": "Full regression suite" }
+                    ]
+                },
+                "review": {
+                    "estimated_input_tokens": 20000,
+                    "estimated_output_tokens": 2000,
+                    "new_input_tokens": 5000,
+                    "prompt": "sonnet/06-review-bugfix.md",
+                    "focus": ["regression_risk", "root_cause_addressed", "side_effects"]
+                },
+                "verify": {
+                    "estimated_input_tokens": 25000,
+                    "estimated_output_tokens": 1500,
+                    "new_input_tokens": 10000,
+                    "prompt": "sonnet/07-verify.md",
+                    "check_side_effects": true
+                }
+            },
+            "iteration_phases": ["plan", "execute-fill", "local-validate", "review", "verify"],
+            "token_budget_summary": {
+                "sonnet_per_iteration": "~63K input (45K cached) + ~5.5K output",
+                "codex_mini_per_iteration": "~9K input + ~12K output",
+                "cost_per_bug_estimate": "$0.32"
+            }
+        },
+        "feature_update": {
+            "description": "Incremental pipeline for post-launch feature additions.",
+            "phases_disabled": [],
+            "phase_overrides": {
+                "spec-gate": {
+                    "mode": "incremental",
+                    "purpose": "Validate only new/changed spec sections against existing spec",
+                    "prompt": "sonnet/01-spec-gate-incremental.md",
+                    "validate_new_only": true,
+                    "cross_reference_existing": true
+                },
+                "research": {
+                    "scope_filter": "Only new requirements",
+                    "prompt": "sonnet/02-research.md"
+                },
+                "plan": {
+                    "scope_filter": "Only new requirements",
+                    "respect_existing_dependency_graph": true,
+                    "prompt": "sonnet/03-plan.md"
+                },
+                "verify": {
+                    "regression_detection": true,
+                    "halt_on_satisfied_regression": true,
+                    "prompt": "sonnet/07-verify-update.md"
+                }
+            },
+            "pre_iteration_phases": ["incremental-create-phases"],
+            "incremental_create_phases": {
+                "agent": "sonnet",
+                "mode": "batch",
+                "purpose": "Discover new requirements from updated specs, append to existing matrix",
+                "prompt": "sonnet/02b-create-phases-incremental.md",
+                "rules": [
+                    "READ existing requirements-matrix.json completely",
+                    "PRESERVE all existing entries regardless of status",
+                    "APPEND new requirements discovered in updated specs",
+                    "TAG new requirements with spec_version field",
+                    "RECALCULATE health score with new total",
+                    "WRITE drift-report.md noting what was added"
+                ]
+            },
+            "iteration_phases": ["research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify"],
+            "token_budget_summary": {
+                "sonnet_per_iteration": "~100K input (60K cached) + ~13K output",
+                "codex_mini_per_iteration": "~40K input + ~45K output",
+                "cost_per_50_reqs_estimate": "$2.30"
+            }
+        }
+    },
+
+    "interface_context_injection": {
+        "description": "Interface-specific conventions injected into Execute prompts based on target file's interface",
+        "routing_rules": [
+            { "file_pattern": "src/web/**", "interface": "web", "conventions": "interface_conventions.web" },
+            { "file_pattern": "src/mcp-admin/**", "interface": "mcp", "conventions": "interface_conventions.mcp" },
+            { "file_pattern": "src/browser/**", "interface": "browser", "conventions": "interface_conventions.browser" },
+            { "file_pattern": "src/mobile/**", "interface": "mobile", "conventions": "interface_conventions.mobile" },
+            { "file_pattern": "src/agent/**", "interface": "agent", "conventions": "interface_conventions.agent" },
+            { "file_pattern": "src/shared/**", "interface": "shared", "conventions": "interface_conventions.shared" },
+            { "file_pattern": "backend/**", "interface": "backend", "conventions": "interface_conventions.backend" },
+            { "file_pattern": "database/**", "interface": "backend", "conventions": "interface_conventions.backend" }
+        ],
+        "cross_interface_parallelism": {
+            "enabled": true,
+            "description": "When a requirement targets multiple interfaces, Execute calls for different interfaces run in parallel",
+            "shared_dependencies_first": true
+        }
     }
 }

@@ -14,12 +14,14 @@
 4. [Cost Optimization Architecture](#4-cost-optimization-architecture)
 5. [Pipeline Phases](#5-pipeline-phases)
 6. [Quality & Speed Optimizations](#6-quality--speed-optimizations)
-7. [Configuration Reference](#7-configuration-reference)
-8. [Prompt Specifications](#8-prompt-specifications)
-9. [Cost Projections](#9-cost-projections)
-10. [Runtime Architecture](#10-runtime-architecture)
-11. [Migration from V2](#11-migration-from-v2)
-12. [Acceptance Criteria](#12-acceptance-criteria)
+7. [Pipeline Modes](#7-pipeline-modes)
+8. [Multi-Interface Architecture](#8-multi-interface-architecture)
+9. [Configuration Reference](#9-configuration-reference)
+10. [Prompt Specifications](#10-prompt-specifications)
+11. [Cost Projections](#11-cost-projections)
+12. [Runtime Architecture](#12-runtime-architecture)
+13. [Migration from V2](#13-migration-from-v2)
+14. [Acceptance Criteria](#14-acceptance-criteria)
 
 ---
 
@@ -876,7 +878,593 @@ Before the first real iteration, fire a throwaway Sonnet call to populate the ca
 
 ---
 
-## 7. Configuration Reference
+## 7. Pipeline Modes
+
+The V3 pipeline operates in three modes. All modes use the same 2-model architecture, prompt caching, and batch API — but with different phase configurations, batch sizes, and iteration limits.
+
+### Mode 1: Greenfield (`gsd-blueprint`)
+
+**When:** Building a new project from spec (pre-1.0). Full pipeline, all phases active.
+
+| Parameter | Value |
+|-----------|:-----:|
+| Max iterations | 25 |
+| Batch size | 15 |
+| Phases active | All 8 (cache-warm through spec-fix) |
+| Research | Full (every iteration) |
+| Spec Gate | Required (blocks on clarity < 70) |
+| Speculative execution | Enabled |
+| Budget cap | $50.00 |
+
+This is the default mode described in Sections 2-6. All optimizations apply.
+
+### Mode 2: Bug Fix (`gsd-fix`)
+
+**When:** Post-launch. Fixing specific bugs reported via CLI, file, or bug directory.
+
+```
+gsd-fix "Login fails when email contains + character"
+gsd-fix -File bugs.md
+gsd-fix -BugDir ./bugs/login-issue/
+```
+
+| Parameter | Value |
+|-----------|:-----:|
+| Max iterations | 5 |
+| Batch size | 3 |
+| Phases active | Plan → Execute → Local Validate → Review → Verify |
+| Research | **Skipped** (bug context is self-contained) |
+| Spec Gate | **Skipped** (spec already validated at 1.0) |
+| Speculative execution | **Disabled** (too few iterations to benefit) |
+| Two-stage execute | **Optional** (disabled for small fixes, enabled for multi-file bugs) |
+| Budget cap | $5.00 |
+| Scope filter | `source:bug_report` or `id:BUG-001,BUG-002` |
+
+#### Bug Fix Data Flow
+
+```
+Bug Report (CLI / file / directory)
+    │
+    ├── Parse bug → create BUG-xxx entry in requirements-matrix.json
+    │   status: "not_started", priority: "critical", source: "bug_report"
+    │
+    ├── Copy artifacts → .gsd/supervisor/bug-artifacts/BUG-xxx/
+    │   Screenshots, logs, repro files
+    │
+    ├── Write error-context.md → .gsd/supervisor/error-context.md
+    │   Bug description + inlined log snippets (first 20 lines)
+    │
+    └── Run scoped convergence loop:
+        │
+        ├── Plan (Sonnet BATCH, cached)
+        │   Input: bug context + error-context.md + relevant source files
+        │   Scope filter: only BUG-xxx requirements
+        │
+        ├── Execute (Codex Mini, real-time)
+        │   Fix only the files identified in plan
+        │
+        ├── Local Validate (FREE)
+        │   Must pass: existing tests + new regression test
+        │
+        ├── Review (Sonnet BATCH, cached)
+        │   Diff-based: only the fix diff + test output
+        │   Focus: regression risk, does fix address root cause
+        │
+        └── Verify (Sonnet real-time, cached)
+            Update BUG-xxx status, check for side effects
+```
+
+#### Bug Fix Cost Estimate
+
+| Phase | Iterations | Cost |
+|-------|:----------:|:----:|
+| Plan | 3 | $0.12 |
+| Execute | 3 | $0.035 |
+| Local Validate | 3 | $0.00 |
+| Review | ~2 (skip if local passes) | $0.12 |
+| Verify | 3 | $0.040 |
+| **Total per bug** | | **~$0.32** |
+
+For a typical month with 20 bugs: **~$6.40/month**.
+
+#### Bug Fix Requirements Matrix Entry
+
+```json
+{
+    "req_id": "BUG-001",
+    "source": "bug_report",
+    "sdlc_phase": "Phase-D-Implementation",
+    "description": "Login fails when email contains + character",
+    "status": "not_started",
+    "depends_on": [],
+    "priority": "critical",
+    "spec_version": "fix",
+    "interface": "web",
+    "bug_artifacts": {
+        "screenshots": [".gsd/supervisor/bug-artifacts/BUG-001/error-screenshot.png"],
+        "logs": [".gsd/supervisor/bug-artifacts/BUG-001/server.log"],
+        "repro_steps": "1. Enter email with + char\n2. Click login\n3. 500 error"
+    },
+    "regression_test_required": true
+}
+```
+
+### Mode 3: Feature Update (`gsd-update`)
+
+**When:** Post-launch. Adding new features from updated specs (v02, v03, etc.) without touching satisfied requirements.
+
+```
+gsd-update
+gsd-update -Scope "source:v02_spec"
+gsd-update -Scope "id:REQ-201,REQ-202,REQ-203"
+```
+
+| Parameter | Value |
+|-----------|:-----:|
+| Max iterations | 20 |
+| Batch size | 10 |
+| Phases active | All 8 (same as greenfield, but incremental) |
+| Research | Full (new features need pattern discovery) |
+| Spec Gate | **Incremental** (validate only new/changed spec sections) |
+| Speculative execution | Enabled |
+| Two-stage execute | Enabled |
+| Budget cap | $25.00 |
+| Scope filter | `source:v02_spec` or specific requirement IDs |
+
+#### Feature Update Data Flow
+
+```
+Updated Specs (v02 docs, new Figma designs, etc.)
+    │
+    ├── Incremental Spec Gate (Sonnet BATCH, cached)
+    │   Only validate NEW spec sections against existing spec
+    │   Detect conflicts between new features and existing code
+    │   Do NOT re-validate already-satisfied requirements
+    │
+    ├── Incremental Create-Phases (Sonnet BATCH, cached)
+    │   READ existing requirements-matrix.json
+    │   PRESERVE all existing entries (status unchanged)
+    │   APPEND new requirements with spec_version: "v02"
+    │   Recalculate health score with new total
+    │
+    └── Run scoped convergence loop (same as greenfield, but filtered):
+        │
+        ├── Research → only new requirements
+        ├── Plan → only new requirements (respect existing dep graph)
+        ├── Execute → only new requirement files
+        ├── Local Validate → new files + regression suite
+        ├── Review → only new/changed code
+        └── Verify → full health check (new + existing)
+                     Regression detection: flag if existing satisfied
+                     requirements regressed to partial/not_started
+```
+
+#### Feature Update Preservation Rules
+
+1. **NEVER modify** files owned by satisfied requirements unless the plan explicitly identifies a shared dependency.
+2. **ALWAYS run full regression** (all existing tests) during Local Validate, not just new requirement tests.
+3. **TAG** new requirements with `spec_version: "v02"` for traceability.
+4. **DETECT regression**: If Verify finds a previously-satisfied requirement regressed, halt and flag for human review.
+5. **Cache prefix update**: New spec content is appended to cache block 2. Cache rewrite triggered.
+
+#### Feature Update Cost Estimate (50 new requirements, ~25K new LOC)
+
+| Phase | Iterations | Cost |
+|-------|:----------:|:----:|
+| Incremental Spec Gate | 1 | $0.08 |
+| Incremental Create-Phases | 1 | $0.05 |
+| Research | 7 | $0.43 |
+| Plan | 7 | $0.28 |
+| Execute (skeleton + fill) | 7 | $0.95 |
+| Local Validate | 7 | $0.00 |
+| Review | ~3 | $0.18 |
+| Verify | 7 | $0.33 |
+| **Total per feature update** | | **~$2.30** |
+
+### Mode Comparison
+
+| Dimension | Greenfield | Bug Fix | Feature Update |
+|-----------|:----------:|:-------:|:--------------:|
+| Command | `gsd-blueprint` | `gsd-fix` | `gsd-update` |
+| Max iterations | 25 | 5 | 20 |
+| Batch size | 15 | 3 | 10 |
+| Research | Full | Skip | Full (scoped) |
+| Spec Gate | Full | Skip | Incremental |
+| Scope filter | None (all) | `source:bug_report` | `source:v02_spec` |
+| Preserve existing | N/A | Yes | Yes |
+| Regression test | N/A | Required | Required |
+| Two-stage execute | Yes | Optional | Yes |
+| Speculative execution | Yes | No | Yes |
+| Budget cap | $50 | $5 | $25 |
+| Typical cost | $7.30/100K LOC | $0.32/bug | $2.30/50 reqs |
+
+---
+
+## 8. Multi-Interface Architecture
+
+### Supported Interface Types
+
+The V3 pipeline generates code for 5 interface types simultaneously. Each interface has its own design artifacts, conventions, and generation patterns.
+
+| Interface | Key | Description | Frontend Stack | Design Source |
+|-----------|:---:|-------------|---------------|---------------|
+| **Web Application** | `web` | Primary SPA for end users | React 18 + TypeScript | Figma → `design/web/v{N}/_analysis/` |
+| **MCP Admin Portal** | `mcp` | Model Context Protocol admin dashboard | React 18 + TypeScript | Figma → `design/mcp/v{N}/_analysis/` |
+| **Browser Extension** | `browser` | Chrome/Firefox/Edge extension | React 18 (popup/options) + Background Service Worker | Figma → `design/browser/v{N}/_analysis/` |
+| **Mobile App** | `mobile` | iOS/Android native app | React Native or .NET MAUI | Figma → `design/mobile/v{N}/_analysis/` |
+| **Remote Agent** | `agent` | Headless autonomous agent | Node.js/Python CLI, no UI | Spec docs (no Figma) |
+
+### Design Folder Structure
+
+```
+design/
+├── web/
+│   └── v1/
+│       ├── _analysis/                    ← Figma Make deliverables
+│       │   ├── 01-screen-inventory.md
+│       │   ├── 02-component-inventory.md
+│       │   ├── 03-design-system.md
+│       │   ├── 04-navigation-routing.md
+│       │   ├── 05-data-types.md
+│       │   ├── 06-api-contracts.md
+│       │   ├── 07-hooks-state.md
+│       │   ├── 08-mock-data-catalog.md
+│       │   ├── 09-storyboards.md
+│       │   ├── 10-screen-state-matrix.md
+│       │   ├── 11-api-to-sp-map.md
+│       │   └── 12-implementation-guide.md
+│       └── _stubs/                       ← Code stubs
+│           ├── backend/Controllers/*.cs
+│           ├── backend/Models/*.cs
+│           ├── database/01-tables.sql
+│           ├── database/02-stored-procedures.sql
+│           └── database/03-seed-data.sql
+├── mcp/
+│   └── v1/
+│       ├── _analysis/                    ← Same 12-deliverable structure
+│       └── _stubs/
+├── browser/
+│   └── v1/
+│       ├── _analysis/
+│       └── _stubs/
+├── mobile/
+│   └── v1/
+│       ├── _analysis/
+│       └── _stubs/
+└── agent/
+    └── v1/
+        └── spec/                         ← No Figma, spec-only
+            ├── agent-capabilities.md
+            ├── agent-protocols.md
+            └── agent-api-contracts.md
+```
+
+### Interface Detection
+
+The orchestrator auto-detects interfaces at pipeline start using `Find-ProjectInterfaces()`:
+
+```powershell
+# Auto-detection scans design/ for interface folders matching types in config
+# Returns: Interfaces array with metadata per interface
+
+$interfaces = Find-ProjectInterfaces
+# Result:
+# [
+#   { Key: "web",     Version: "v1", HasAnalysis: true,  AnalysisFileCount: 12 },
+#   { Key: "mcp",     Version: "v1", HasAnalysis: true,  AnalysisFileCount: 12 },
+#   { Key: "browser", Version: "v1", HasAnalysis: true,  AnalysisFileCount: 8 },
+#   { Key: "mobile",  Version: "v1", HasAnalysis: false, AnalysisFileCount: 0 },
+#   { Key: "agent",   Version: "v1", HasAnalysis: false, AnalysisFileCount: 0 }
+# ]
+```
+
+**Interface map saved to:** `.gsd/blueprint/interface-map.json`
+
+### Interface-Specific Conventions
+
+Each interface type has distinct code generation patterns injected into Execute prompts:
+
+#### Web Application (`web`)
+
+```
+Frontend: React 18 + TypeScript + Vite
+Routing: React Router v7
+State: React Query for server state, Zustand for client state
+Styling: Tailwind CSS with design tokens from Figma 03-design-system.md
+Testing: Vitest + React Testing Library
+Build: Vite → dist/
+Output dir: src/web/
+```
+
+#### MCP Admin Portal (`mcp`)
+
+```
+Frontend: React 18 + TypeScript + Vite
+Routing: React Router v7
+State: React Query + Zustand
+Styling: Tailwind CSS (admin-specific design system)
+MCP SDK: @anthropic-ai/mcp-sdk for server/tool management
+Features: Server configuration, tool management, log viewer, metrics dashboard
+Testing: Vitest + React Testing Library
+Build: Vite → dist/
+Output dir: src/mcp-admin/
+Unique patterns:
+  - MCP server connection management (SSE/stdio)
+  - Tool registry CRUD
+  - Real-time log streaming
+  - Server health monitoring
+```
+
+#### Browser Extension (`browser`)
+
+```
+Framework: React 18 + TypeScript (popup, options, side panel)
+Background: Service Worker (Manifest V3)
+Content Scripts: Vanilla TypeScript (injected into pages)
+Storage: chrome.storage.sync / chrome.storage.local
+Messaging: chrome.runtime.sendMessage / chrome.runtime.onMessage
+Permissions: Minimal required, declared in manifest.json
+Testing: Vitest + JSDOM (no real browser APIs in tests)
+Build: Vite + CRXJS or custom Vite plugin → dist/
+Output structure:
+  src/browser/
+    ├── manifest.json
+    ├── background/service-worker.ts
+    ├── content/content-script.ts
+    ├── popup/App.tsx
+    ├── options/App.tsx
+    ├── sidepanel/App.tsx (optional)
+    └── shared/storage.ts, messaging.ts
+Unique patterns:
+  - Manifest V3 permissions model
+  - Content script ↔ background messaging
+  - chrome.storage wrapper with type safety
+  - Cross-origin request handling via background
+  - Extension-specific CSP constraints
+```
+
+#### Mobile App (`mobile`)
+
+```
+Option A — React Native:
+  Framework: React Native 0.76+ with Expo
+  Navigation: React Navigation v7
+  State: React Query + Zustand (shared patterns with web)
+  Styling: NativeWind (Tailwind for React Native)
+  Testing: Jest + React Native Testing Library
+  Build: Expo EAS Build
+  Output dir: src/mobile/
+
+Option B — .NET MAUI:
+  Framework: .NET 8 MAUI
+  Navigation: Shell navigation
+  State: MVVM with CommunityToolkit.Mvvm
+  Styling: XAML resources + design tokens
+  Testing: xUnit + MAUI test framework
+  Build: dotnet publish
+  Output dir: src/mobile-maui/
+
+Unique patterns:
+  - Platform-specific code (iOS/Android)
+  - Offline-first data sync
+  - Push notification registration
+  - Biometric authentication
+  - Deep linking / universal links
+  - App store compliance (privacy labels, permissions)
+```
+
+#### Remote Agent (`agent`)
+
+```
+Runtime: Node.js 22+ or Python 3.12+
+Protocol: MCP client (connects to MCP servers)
+Communication: stdio / SSE / WebSocket
+Auth: API key + OAuth2 for service-to-service
+Scheduling: Cron or event-driven (webhook triggers)
+Testing: Vitest (Node) or pytest (Python)
+Build: Docker container
+Output dir: src/agent/
+Unique patterns:
+  - No UI — headless CLI or daemon
+  - MCP tool invocation and result handling
+  - Autonomous task loop with human-in-the-loop checkpoints
+  - Structured logging (JSON)
+  - Rate limiting and backoff
+  - State persistence between runs
+  - Health check endpoint (HTTP /health)
+```
+
+### Interface-Aware Pipeline Behavior
+
+#### Spec Gate: Cross-Interface Consistency
+
+The Spec Gate phase validates consistency across ALL detected interfaces:
+
+```json
+{
+  "cross_interface_checks": [
+    {
+      "check": "shared_api_contracts",
+      "description": "All interfaces hitting the same API must agree on endpoint shapes",
+      "sources": ["web/06-api-contracts.md", "mcp/06-api-contracts.md", "mobile/06-api-contracts.md"]
+    },
+    {
+      "check": "shared_data_types",
+      "description": "TypeScript interfaces must match across web, MCP, browser, mobile",
+      "sources": ["*/05-data-types.md"]
+    },
+    {
+      "check": "shared_design_tokens",
+      "description": "Core design tokens (colors, spacing) should be consistent across web + MCP",
+      "sources": ["*/03-design-system.md"]
+    },
+    {
+      "check": "auth_consistency",
+      "description": "Auth flows must be compatible across all interfaces",
+      "sources": ["*/06-api-contracts.md", "agent/agent-api-contracts.md"]
+    }
+  ]
+}
+```
+
+#### Requirements: Interface Tagging
+
+Every requirement is tagged with its target interface(s):
+
+```json
+{
+  "req_id": "REQ-042",
+  "name": "Patient search",
+  "interfaces": ["web", "mobile"],
+  "interface_specific": {
+    "web": { "screen": "PatientSearch.tsx", "route": "/patients/search" },
+    "mobile": { "screen": "PatientSearchScreen.tsx", "route": "PatientSearch" }
+  }
+}
+```
+
+Requirements can target multiple interfaces (shared features) or a single interface (platform-specific).
+
+#### Plan: Interface-Specific File Routing
+
+The Plan phase generates files routed to the correct output directories:
+
+```json
+{
+  "req_id": "REQ-042",
+  "files_to_create": [
+    { "path": "src/web/pages/PatientSearch.tsx", "interface": "web" },
+    { "path": "src/mobile/screens/PatientSearchScreen.tsx", "interface": "mobile" },
+    { "path": "src/shared/hooks/usePatientSearch.ts", "interface": "shared" },
+    { "path": "src/shared/types/patient.ts", "interface": "shared" },
+    { "path": "backend/Controllers/PatientController.cs", "interface": "backend" },
+    { "path": "database/stored-procedures/usp_Patient_Search.sql", "interface": "backend" }
+  ]
+}
+```
+
+#### Execute: Interface-Specific Conventions Injection
+
+Each Codex Mini call receives the conventions for its target interface:
+
+```
+For web file → inject web conventions (React 18 + Tailwind + design tokens)
+For mobile file → inject mobile conventions (React Native + NativeWind)
+For browser file → inject browser conventions (Manifest V3 + chrome APIs)
+For MCP file → inject MCP conventions (MCP SDK + admin patterns)
+For agent file → inject agent conventions (headless + MCP client)
+For shared file → inject shared conventions (pure TypeScript, no platform APIs)
+For backend file → inject backend conventions (.NET 8 + Dapper)
+```
+
+This keeps each Codex Mini call focused on one set of conventions, improving code quality.
+
+#### Execute: Cross-Interface Parallelism
+
+When a requirement targets multiple interfaces, the Execute calls for different interfaces run in parallel:
+
+```
+REQ-042 (web + mobile):
+  ├── Codex Mini: web/PatientSearch.tsx          ┐
+  ├── Codex Mini: mobile/PatientSearchScreen.tsx  ├── All parallel
+  ├── Codex Mini: shared/usePatientSearch.ts      │
+  └── Codex Mini: backend/PatientController.cs    ┘
+```
+
+Shared files (hooks, types) are generated first if they're dependencies, otherwise all files fire concurrently.
+
+#### Local Validate: Per-Interface Tooling
+
+| Interface | Build Check | Type Check | Lint | Test |
+|-----------|------------|------------|------|------|
+| Web | `vite build` | `tsc --noEmit` | `eslint` | `vitest` |
+| MCP | `vite build` | `tsc --noEmit` | `eslint` | `vitest` |
+| Browser | `vite build` (CRXJS) | `tsc --noEmit` | `eslint` | `vitest` |
+| Mobile (RN) | `expo prebuild --check` | `tsc --noEmit` | `eslint` | `jest` |
+| Mobile (MAUI) | `dotnet build` | N/A (compiled) | N/A | `dotnet test` |
+| Agent (Node) | `tsc` | `tsc --noEmit` | `eslint` | `vitest` |
+| Agent (Python) | N/A | `mypy` | `ruff` | `pytest` |
+| Backend | `dotnet build --no-restore` | N/A (compiled) | N/A | `dotnet test` |
+| Database | `sqlcmd -i {file} -b` | N/A | N/A | N/A |
+
+### Shared Code Strategy
+
+Maximize code reuse across interfaces:
+
+```
+src/
+├── shared/                          ← Used by ALL frontends
+│   ├── types/                       ← TypeScript interfaces (from Figma 05-data-types.md)
+│   ├── hooks/                       ← Data fetching hooks (React Query)
+│   ├── utils/                       ← Pure functions, formatters, validators
+│   ├── api/                         ← API client (fetch wrapper, typed endpoints)
+│   └── constants/                   ← Shared constants, enums
+├── web/                             ← Web-only components and pages
+├── mcp-admin/                       ← MCP admin-only components
+├── browser/                         ← Extension-specific code
+├── mobile/                          ← Mobile-specific screens and navigation
+├── agent/                           ← Agent-specific logic
+└── backend/                         ← .NET 8 API (shared across all interfaces)
+```
+
+**Rules for shared code:**
+1. `shared/` must contain NO platform-specific imports (no `react-native`, no `chrome.*`, no `expo-*`).
+2. `shared/types/` is the single source of truth for all TypeScript interfaces.
+3. `shared/hooks/` uses React Query — compatible with React 18 (web, MCP, browser popup) and React Native.
+4. `shared/api/` uses `fetch` — available in all runtimes.
+
+### Interface-Specific Cost Impact
+
+Adding interfaces increases requirements but shares the cached prefix and backend code:
+
+| Interfaces | Est. Requirements | Est. LOC | Greenfield Cost | Notes |
+|:---:|:---:|:---:|:---:|------|
+| Web only | 200 | 100K | $7.30 | Baseline |
+| Web + MCP | 280 | 140K | $10.00 | MCP shares 60% of backend |
+| Web + MCP + Browser | 340 | 165K | $12.00 | Browser is lightweight |
+| Web + MCP + Browser + Mobile | 450 | 220K | $15.80 | Mobile adds platform-specific code |
+| All 5 (+ Agent) | 500 | 250K | $17.50 | Agent is headless, few UI requirements |
+
+Cost scales sub-linearly because:
+- Backend API is shared across all interfaces (generated once).
+- `shared/` types, hooks, and utils are generated once.
+- Cached prefix is the same for all interfaces (one cache write).
+- Additional interfaces mostly add frontend-specific requirements.
+
+### Bug Fix and Feature Update with Multiple Interfaces
+
+#### Bug Fix: Interface-Scoped
+
+Bugs are tagged with their interface. The fix pipeline only touches that interface's code:
+
+```
+gsd-fix -Interface web "Login button unresponsive on Safari"
+gsd-fix -Interface browser "Extension popup doesn't open on Firefox"
+gsd-fix -Interface mobile "Crash on Android 14 when rotating screen"
+```
+
+The scope filter becomes: `source:bug_report AND interface:web`
+
+Local validation runs only the affected interface's test suite, plus shared regression tests.
+
+#### Feature Update: Cross-Interface
+
+New features may span multiple interfaces:
+
+```
+gsd-update -Scope "source:v02_spec"
+# v02 spec adds "patient messaging" feature for web + mobile + agent
+```
+
+The incremental create-phases phase:
+1. Reads existing matrix (preserves all satisfied requirements).
+2. Discovers new requirements from v02 specs.
+3. Tags new requirements with their target interfaces.
+4. Plans shared code first, then interface-specific code.
+
+---
+
+## 9. Configuration Reference
 
 ### v3/config/global-config.json
 
@@ -909,7 +1497,7 @@ See `v3/config/agent-map.json` for the complete configuration file.
 
 ---
 
-## 8. Prompt Specifications
+## 10. Prompt Specifications
 
 ### Shared Prompts (Injected into All Sonnet Calls via Cache)
 
@@ -932,7 +1520,7 @@ See `v3/config/agent-map.json` for the complete configuration file.
 
 ---
 
-## 9. Cost Projections
+## 11. Cost Projections
 
 ### Reference Project: 200 Requirements, ~100,000 LOC
 
@@ -984,7 +1572,7 @@ Cost per LOC decreases with scale because the cache write cost and spec gate are
 
 ---
 
-## 10. Runtime Architecture
+## 12. Runtime Architecture
 
 ### API Client Configuration
 
@@ -1082,7 +1670,7 @@ New V3 events:
 
 ---
 
-## 11. Migration from V2
+## 13. Migration from V2
 
 ### What's Removed
 
@@ -1138,7 +1726,7 @@ New V3 events:
 
 ---
 
-## 12. Acceptance Criteria
+## 14. Acceptance Criteria
 
 ### Functional Requirements
 
@@ -1175,6 +1763,37 @@ New V3 events:
 - [ ] Rework rate < 12% (down from V2's ~15%)
 - [ ] All generated code passes local validation (lint + typecheck) after rework
 - [ ] No regression in quality gate pass rates vs V2
+
+### Pipeline Mode Requirements
+
+- [ ] `gsd-fix` completes a single bug fix in ≤5 iterations, ≤$1.00
+- [ ] `gsd-fix` creates BUG-xxx entries with proper metadata (source, interface, artifacts)
+- [ ] `gsd-fix` skips Research and Spec Gate phases
+- [ ] `gsd-fix` scope filter restricts plan/execute to bug-report requirements only
+- [ ] `gsd-fix` requires regression test generation for every fix
+- [ ] `gsd-update` preserves all previously-satisfied requirements (zero regression)
+- [ ] `gsd-update` runs incremental Spec Gate (validates only new/changed sections)
+- [ ] `gsd-update` tags new requirements with spec_version field
+- [ ] `gsd-update` detects and halts on regression of satisfied requirements
+- [ ] `gsd-update` correctly scopes to `source:v02_spec` or specific requirement IDs
+- [ ] All three modes (greenfield, fix, update) share the same cached prefix
+- [ ] Mode switching does not require reconfiguration — mode is selected by command
+
+### Multi-Interface Requirements
+
+- [ ] Interface auto-detection discovers all 5 types (web, mcp, browser, mobile, agent)
+- [ ] Interface map written to `.gsd/blueprint/interface-map.json` at pipeline start
+- [ ] Spec Gate validates cross-interface consistency (shared API contracts, data types, auth)
+- [ ] Requirements tagged with target interface(s)
+- [ ] Plan generates files routed to correct output directories per interface
+- [ ] Execute injects interface-specific conventions per Codex Mini call
+- [ ] Cross-interface files for same requirement execute in parallel
+- [ ] Local Validate runs correct toolchain per interface (vite/expo/dotnet/tsc/mypy)
+- [ ] Shared code (`src/shared/`) contains no platform-specific imports
+- [ ] `gsd-fix -Interface X` scopes to that interface only
+- [ ] Cost scales sub-linearly with additional interfaces (shared backend amortized)
+- [ ] All 12 Figma Make deliverables supported per interface that has `_analysis/`
+- [ ] Agent interface works without Figma (spec-only)
 
 ---
 
