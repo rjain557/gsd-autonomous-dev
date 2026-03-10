@@ -99,6 +99,37 @@ if ($clContent -match [regex]::Escape($oldGate)) {
     Write-Host "  [WARN] Could not find decompose gate pattern in convergence-loop.ps1" -ForegroundColor Yellow
 }
 
+# ── STEP 2.5: Move decompose BEFORE research (so wave research targets sub-reqs) ──
+$clContent = Get-Content $convergenceLoopPath -Raw
+
+# Remove old decompose call (before plan)
+$oldDecomposeBlock = @'
+    # Auto-decompose stuck/large partials before planning (any iteration, not just >1)
+    if (-not $DryRun -and (Get-Command Invoke-PartialDecompose -ErrorAction SilentlyContinue)) {
+        Invoke-PartialDecompose -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration
+    }
+'@
+$clContent = $clContent.Replace($oldDecomposeBlock, '')
+
+# Insert decompose BEFORE research phase
+$researchMarker = '# 2. RESEARCH'
+$decomposeBeforeResearch = @'
+    # 1.5 DECOMPOSE: split large/stuck partials BEFORE research so wave research targets sub-reqs
+    if (-not $DryRun -and (Get-Command Invoke-PartialDecompose -ErrorAction SilentlyContinue)) {
+        Invoke-PartialDecompose -GsdDir $GsdDir -GlobalDir $GlobalDir -Iteration $Iteration
+    }
+
+'@
+if ($clContent -match '1\.5 DECOMPOSE') {
+    Write-Host "  [SKIP] Decompose already moved before research" -ForegroundColor DarkGray
+} elseif ($clContent -match [regex]::Escape($researchMarker)) {
+    $clContent = $clContent.Replace("    $researchMarker", "    $($decomposeBeforeResearch)    $researchMarker")
+    $clContent | Set-Content $convergenceLoopPath -Encoding UTF8
+    Write-Host "  [OK] Moved decompose before research in convergence-loop.ps1" -ForegroundColor Green
+} else {
+    Write-Host "  [WARN] Could not find research phase marker in convergence-loop.ps1" -ForegroundColor Yellow
+}
+
 # ── STEP 3: Append Invoke-PartialDecompose to resilience.ps1 (if missing) ──
 $resContent = Get-Content $resiliencePath -Raw
 
