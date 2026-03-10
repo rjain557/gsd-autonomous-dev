@@ -87,7 +87,7 @@ function Initialize-CostTracker {
 
     # Load existing cost state if resuming from checkpoint
     if ($GsdDir) {
-        $costFile = Join-Path $GsdDir "costs\cost-summary.json"
+        $costFile = Join-Path $GsdDir "costs/cost-summary.json"
         if (Test-Path $costFile) {
             try {
                 $existing = Get-Content $costFile -Raw | ConvertFrom-Json

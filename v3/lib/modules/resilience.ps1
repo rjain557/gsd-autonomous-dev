@@ -56,12 +56,6 @@ function Build-FileInventory {
         all_files      = @()
     }
 
-    # Build exclude filter
-    $excludeSet = [System.Collections.Generic.HashSet[string]]::new()
-    foreach ($pattern in $ExcludePatterns) {
-        $excludeSet.Add($pattern.ToLower()) | Out-Null
-    }
-
     # Recursively scan
     $allFiles = Get-ChildItem -Path $RepoRoot -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
         $relativePath = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
@@ -244,7 +238,6 @@ function Test-PreFlightV3 {
     )
 
     $checks = @()
-    $allPassed = $true
 
     # 1. Repository exists
     $checks += Test-Check "Repo exists" (Test-Path $RepoRoot) "Repository not found: $RepoRoot"

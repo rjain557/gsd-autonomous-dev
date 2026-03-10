@@ -137,6 +137,7 @@ function Start-V3Pipeline {
 
     # -- Iteration Loop --
     $prevHealth = 0
+    $currentHealth = 0
     $converged = $false
 
     for ($iter = $StartIteration; $iter -le $maxIterations; $iter++) {
@@ -319,7 +320,7 @@ function Start-V3Pipeline {
         Success     = $converged
         Mode        = $Mode
         Iterations  = $iter
-        HealthScore = $prevHealth
+        HealthScore = $currentHealth
         TotalCost   = $script:CostState.TotalUsd
         Duration    = $elapsed
     }
@@ -459,7 +460,7 @@ function Invoke-ResearchPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 6000 -UseCache -JsonMode -Phase "research"
 
-    if ($result.Usage) { Add-ApiCallCost -Model "claude-sonnet-4-6-20260310" -Usage $result.Usage -Phase "research" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "research" -IsBatch }
 
     if ($result.Text) {
         $researchDir = Join-Path $GsdDir "research"
@@ -492,7 +493,7 @@ function Invoke-PlanPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 8000 -UseCache -JsonMode -Phase "plan"
 
-    if ($result.Usage) { Add-ApiCallCost -Model "claude-sonnet-4-6-20260310" -Usage $result.Usage -Phase "plan" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "plan" -IsBatch }
 
     if ($result.Text) {
         $plansDir = Join-Path $GsdDir "plans"
@@ -612,7 +613,7 @@ function Invoke-ReviewPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 4000 -UseCache -JsonMode -Phase "review"
 
-    if ($result.Usage) { Add-ApiCallCost -Model "claude-sonnet-4-6-20260310" -Usage $result.Usage -Phase "review" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "review" -IsBatch }
 
     if ($result.Text) {
         $reviewsDir = Join-Path $GsdDir "iterations/reviews"
@@ -645,7 +646,7 @@ function Invoke-VerifyPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 3000 -UseCache -JsonMode -Phase "verify"
 
-    if ($result.Usage) { Add-ApiCallCost -Model "claude-sonnet-4-6-20260310" -Usage $result.Usage -Phase "verify" }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "verify" }
 
     # Update health
     $health = Update-HealthScore -GsdDir $GsdDir
@@ -663,7 +664,7 @@ function Invoke-SpecFixPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 4000 -UseCache -JsonMode -Phase "spec-fix"
 
-    if ($result.Usage) { Add-ApiCallCost -Model "claude-sonnet-4-6-20260310" -Usage $result.Usage -Phase "spec-fix" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-fix" -IsBatch }
 
     # Invalidate cache after spec fix
     if ($result.Parsed -and $result.Parsed.cache_invalidation) {
@@ -692,20 +693,20 @@ function Write-GeneratedFiles {
 
     # Parse file markers from Codex output: --- FILE: path/to/file.ts ---
     $filePattern = '(?m)^---\s*FILE:\s*(.+?)\s*---\s*$'
-    $matches = [regex]::Matches($Output, $filePattern)
+    $fileMatches = [regex]::Matches($Output, $filePattern)
 
-    if ($matches.Count -eq 0) {
+    if ($fileMatches.Count -eq 0) {
         # Single file output — save as raw
         $logPath = Join-Path $GsdDir "iterations/execution-log/$ReqId.txt"
         Set-Content $logPath -Value $Output -Encoding UTF8
         return
     }
 
-    for ($i = 0; $i -lt $matches.Count; $i++) {
-        $filePath = $matches[$i].Groups[1].Value.Trim()
-        $startIdx = $matches[$i].Index + $matches[$i].Length
+    for ($i = 0; $i -lt $fileMatches.Count; $i++) {
+        $filePath = $fileMatches[$i].Groups[1].Value.Trim()
+        $startIdx = $fileMatches[$i].Index + $fileMatches[$i].Length
 
-        $endIdx = if ($i + 1 -lt $matches.Count) { $matches[$i + 1].Index } else { $Output.Length }
+        $endIdx = if ($i + 1 -lt $fileMatches.Count) { $fileMatches[$i + 1].Index } else { $Output.Length }
         $content = $Output.Substring($startIdx, $endIdx - $startIdx).Trim()
 
         # Strip code fences if present
