@@ -97,6 +97,16 @@ foreach ($mapping in $fileMappings) {
     }
 }
 
+# Copy shared module from v1.5 (api-agents.ps1 - REST agent infrastructure)
+$v1ApiAgents = Join-Path $gsdGlobalDir "lib\modules\api-agents.ps1"
+$v2ApiAgentsDst = Join-Path $v2TargetDir "lib\modules\api-agents.ps1"
+if (Test-Path $v1ApiAgents) {
+    Copy-Item -Path $v1ApiAgents -Destination $v2ApiAgentsDst -Force
+    Write-Host "    [OK] lib/modules/api-agents.ps1 (from v1.5)" -ForegroundColor DarkGreen
+} else {
+    Write-Host "    [!!] api-agents.ps1 not in v1.5 - REST agents will be unavailable" -ForegroundColor DarkYellow
+}
+
 # Copy step scripts
 $stepFiles = Get-ChildItem -Path (Join-Path $v2SourceDir "scripts\steps") -Filter "*.ps1" -ErrorAction SilentlyContinue
 foreach ($stepFile in $stepFiles) {
@@ -122,18 +132,18 @@ foreach ($sharedFile in $sharedPromptFiles) {
 $binDir = Join-Path $gsdGlobalDir "bin"
 if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
 
-$wrapperContent = @"
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.gsd-global\v2\scripts\supervisor-wrapper.ps1" -RepoRoot "%CD%" %*
-"@
-Set-Content -Path (Join-Path $binDir "gsd-v2.cmd") -Value $wrapperContent -Encoding ASCII
+$wrapperLines = @(
+    '@echo off'
+    'powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.gsd-global\v2\scripts\supervisor-wrapper.ps1" -RepoRoot "%CD%" %*'
+)
+Set-Content -Path (Join-Path $binDir "gsd-v2.cmd") -Value $wrapperLines -Encoding ASCII
 
 # Pipeline-only wrapper (no supervisor)
-$directContent = @"
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.gsd-global\v2\scripts\pipeline.ps1" -RepoRoot "%CD%" %*
-"@
-Set-Content -Path (Join-Path $binDir "gsd-v2-direct.cmd") -Value $directContent -Encoding ASCII
+$directLines = @(
+    '@echo off'
+    'powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.gsd-global\v2\scripts\pipeline.ps1" -RepoRoot "%CD%" %*'
+)
+Set-Content -Path (Join-Path $binDir "gsd-v2-direct.cmd") -Value $directLines -Encoding ASCII
 
 Write-Host "    [OK] bin/gsd-v2.cmd (with supervisor)" -ForegroundColor DarkGreen
 Write-Host "    [OK] bin/gsd-v2-direct.cmd (without supervisor)" -ForegroundColor DarkGreen
@@ -151,8 +161,8 @@ Write-Host "    gsd-v2           Run pipeline with supervisor (recommended)" -Fo
 Write-Host "    gsd-v2-direct    Run pipeline without supervisor" -ForegroundColor White
 Write-Host ""
 Write-Host "  Usage:" -ForegroundColor DarkGray
-Write-Host "    cd C:\repos\my-project" -ForegroundColor White
+Write-Host '    cd C:\repos\my-project' -ForegroundColor White
 Write-Host "    gsd-v2" -ForegroundColor White
 Write-Host ""
-Write-Host "  v1.5 commands (gsd-converge, gsd-blueprint) still work." -ForegroundColor DarkGray
+Write-Host "  v1.5 commands (gsd-converge / gsd-blueprint) still work." -ForegroundColor DarkGray
 Write-Host ""

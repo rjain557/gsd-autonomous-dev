@@ -27,7 +27,16 @@ $GsdDir = Join-Path $RepoRoot ".gsd"
 
 # Load modules for supervisor
 $modulesDir = Join-Path $v2Dir "lib\modules"
-. (Join-Path $modulesDir "api-agents.ps1")
+$v1ModulesDir = Join-Path $gsdGlobalDir "lib\modules"
+
+# api-agents.ps1 is shared from v1.5 (REST agent infrastructure)
+$apiAgentsPath = Join-Path $modulesDir "api-agents.ps1"
+if (-not (Test-Path $apiAgentsPath)) {
+    $apiAgentsPath = Join-Path $v1ModulesDir "api-agents.ps1"
+}
+if (Test-Path $apiAgentsPath) { . $apiAgentsPath }
+else { Write-Host "  [WARN] api-agents.ps1 not found - REST agents unavailable" -ForegroundColor Yellow }
+
 . (Join-Path $modulesDir "agent-router.ps1")
 . (Join-Path $modulesDir "notifications.ps1")
 
@@ -63,7 +72,7 @@ while ($attempt -lt $SupervisorAttempts -and -not $recovered) {
             break
         }
 
-        # Pipeline failed — diagnose
+        # Pipeline failed - diagnose
         Write-Host "`n  Pipeline failed at step: $($result.FailedStep)" -ForegroundColor Yellow
         Write-Host "  Error: $($result.Error)" -ForegroundColor Yellow
 
