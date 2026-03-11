@@ -93,7 +93,7 @@ $existingBugs = @()
 $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
 if (Test-Path $matrixPath) {
     $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
-    $existingBugs = $matrix.requirements | Where-Object { $_.req_id -like "BUG-*" }
+    $existingBugs = @($matrix.requirements | Where-Object { $_.req_id -like "BUG-*" })
 }
 $bugNum = $existingBugs.Count + 1
 $bugId = "BUG-$($bugNum.ToString('000'))"
