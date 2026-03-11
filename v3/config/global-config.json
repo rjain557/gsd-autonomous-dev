@@ -227,7 +227,7 @@
             "description": "Post-launch feature additions from updated specs. Preserves existing satisfied requirements.",
             "max_iterations": 20,
             "batch_size_min": 3,
-            "batch_size_max": 10,
+            "batch_size_max": 5,
             "phases_active": ["cache-warm", "spec-gate", "research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify", "spec-fix"],
             "research": "full-scoped",
             "spec_gate": "incremental",

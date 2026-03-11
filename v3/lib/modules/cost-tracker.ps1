@@ -14,7 +14,7 @@
 # ============================================================
 
 $script:Pricing = @{
-    "claude-sonnet-4-6-20260310" = @{
+    "claude-sonnet-4-6" = @{
         input          = 3.00
         output         = 15.00
         cache_write    = 3.75
@@ -23,7 +23,7 @@ $script:Pricing = @{
         batch_output   = 7.50
         batch_cache_read = 0.15
     }
-    "claude-opus-4-6-20260310" = @{
+    "claude-opus-4-6" = @{
         input          = 5.00
         output         = 25.00
         cache_write    = 6.25
@@ -39,6 +39,19 @@ $script:Pricing = @{
     "gpt-5.1-codex" = @{
         input  = 1.75
         output = 14.00
+    }
+    # Fallback models (OpenAI-compatible) — prices verified 2026-03-10
+    "deepseek-chat" = @{
+        input  = 0.28
+        output = 0.28
+    }
+    "moonshot-v1-8k" = @{
+        input  = 0.20
+        output = 2.00
+    }
+    "MiniMax-Text-01" = @{
+        input  = 0.20
+        output = 1.10
     }
 }
 
@@ -133,6 +146,7 @@ function Add-ApiCallCost {
     )
 
     if (-not $Usage) { return }
+    if (-not $Model) { return }  # Skip cost tracking for failed calls with no model info
 
     $pricing = $script:Pricing[$Model]
     if (-not $pricing) {

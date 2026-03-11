@@ -6,7 +6,7 @@
         "sonnet": {
             "type": "api",
             "provider": "anthropic",
-            "model_id": "claude-sonnet-4-6-20260310",
+            "model_id": "claude-sonnet-4-6",
             "display_name": "Claude Sonnet 4.6",
             "role": ["spec-gate", "research", "plan", "review", "verify", "spec-fix"],
             "api_config": {
@@ -93,8 +93,8 @@
                 "api_key_env": "OPENAI_API_KEY",
                 "base_url": "https://api.openai.com/v1",
                 "timeout_seconds": 120,
-                "max_retries": 3,
-                "retry_backoff_seconds": [2, 4, 8]
+                "max_retries": 1,
+                "retry_backoff_seconds": [3]
             },
             "pricing": {
                 "input_per_m": 0.25,
@@ -126,7 +126,7 @@
         "opus": {
             "type": "api",
             "provider": "anthropic",
-            "model_id": "claude-opus-4-6-20260310",
+            "model_id": "claude-opus-4-6",
             "display_name": "Claude Opus 4.6",
             "role": ["plan-escalation", "review-escalation", "stall-analysis"],
             "trigger": "Item fails Verify 3+ times OR stall detected",
@@ -151,11 +151,72 @@
             "notes": "Per-item override for complex multi-file refactoring."
         }
     },
+    "fallback_agents": {
+        "deepseek": {
+            "type": "api",
+            "provider": "openai-compatible",
+            "model_id": "deepseek-chat",
+            "display_name": "DeepSeek Chat",
+            "role": ["execute-fallback"],
+            "api_config": {
+                "api_key_env": "DEEPSEEK_API_KEY",
+                "base_url": "https://api.deepseek.com/v1",
+                "endpoint": "/chat/completions",
+                "timeout_seconds": 300,
+                "max_retries": 3,
+                "retry_backoff_seconds": [2, 5, 10]
+            },
+            "pricing": {
+                "input_per_m": 0.28,
+                "output_per_m": 0.28
+            },
+            "status": "working"
+        },
+        "kimi": {
+            "type": "api",
+            "provider": "openai-compatible",
+            "model_id": "moonshot-v1-8k",
+            "display_name": "Kimi (Moonshot)",
+            "role": ["execute-fallback"],
+            "api_config": {
+                "api_key_env": "KIMI_API_KEY",
+                "base_url": "https://api.moonshot.ai/v1",
+                "endpoint": "/chat/completions",
+                "timeout_seconds": 300,
+                "max_retries": 2,
+                "retry_backoff_seconds": [3, 8]
+            },
+            "pricing": {
+                "input_per_m": 0.20,
+                "output_per_m": 2.00
+            },
+            "status": "working",
+            "notes": "Use api.moonshot.ai (NOT api.moonshot.cn which times out)"
+        },
+        "minimax": {
+            "type": "api",
+            "provider": "openai-compatible",
+            "model_id": "MiniMax-Text-01",
+            "display_name": "MiniMax Text 01",
+            "role": ["execute-fallback"],
+            "api_config": {
+                "api_key_env": "MINIMAX_API_KEY",
+                "base_url": "https://api.minimax.io/v1",
+                "endpoint": "/chat/completions",
+                "timeout_seconds": 300,
+                "max_retries": 2,
+                "retry_backoff_seconds": [3, 8]
+            },
+            "pricing": {
+                "input_per_m": 0.20,
+                "output_per_m": 1.10
+            },
+            "status": "working",
+            "notes": "Use api.minimax.io (NOT api.minimax.chat which times out). Model is MiniMax-Text-01 (NOT abab6.5s-chat)"
+        }
+    },
     "removed_agents": {
         "gemini": "Replaced by Sonnet (batched). Research + spec-fix consolidated.",
-        "kimi": "Removed. Coordination overhead > per-token savings at our scale.",
-        "deepseek": "Removed. 70% SWE-bench vs Sonnet's 79.6%. Rework cost > savings.",
-        "glm5": "Removed. See kimi rationale.",
-        "minimax": "Removed. See kimi rationale."
+        "glm5": "Unreachable from corporate network (China endpoint times out without VPN)"
     }
 }

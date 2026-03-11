@@ -21,10 +21,10 @@ $script:ApiConfig = @{
     Anthropic = @{
         BaseUrl    = "https://api.anthropic.com"
         ApiVersion = "2023-06-01"
-        Model      = "claude-sonnet-4-6-20260310"
+        Model      = "claude-sonnet-4-6"
         MaxRetries = 3
         RetryBackoff = @(2, 4, 8)
-        TimeoutSec = 120
+        TimeoutSec = 300
         BatchEndpoint = "/v1/messages/batches"
         BatchPollIntervalSec = 30
         BatchMaxWaitMin = 60
@@ -32,13 +32,44 @@ $script:ApiConfig = @{
     OpenAI = @{
         BaseUrl    = "https://api.openai.com/v1"
         Model      = "gpt-5.1-codex-mini"
+        MaxRetries = 1
+        RetryBackoff = @(3)
+        TimeoutSec = 300
+        MaxConcurrent = 2
+        InterCallDelaySec = 3  # Delay between sequential calls to avoid rate limits
+    }
+    # Fallback model: DeepSeek (OpenAI-compatible, used when primary hits sustained 429)
+    DeepSeek = @{
+        BaseUrl    = "https://api.deepseek.com/v1"
+        Model      = "deepseek-chat"
+        ApiKeyEnv  = "DEEPSEEK_API_KEY"
         MaxRetries = 3
-        RetryBackoff = @(2, 4, 8)
-        TimeoutSec = 120
-        MaxConcurrent = 15
+        RetryBackoff = @(2, 5, 10)
+        TimeoutSec = 300
+        InterCallDelaySec = 1
+        MaxOutputTokens = 8192  # DeepSeek limit: max_tokens must be in [1, 8192]
+    }
+    # Additional fallback models (OpenAI-compatible chat/completions)
+    Kimi = @{
+        BaseUrl    = "https://api.moonshot.ai/v1"
+        Model      = "moonshot-v1-8k"
+        ApiKeyEnv  = "KIMI_API_KEY"
+        MaxRetries = 2
+        RetryBackoff = @(3, 8)
+        TimeoutSec = 300
+        InterCallDelaySec = 1
+    }
+    MiniMax = @{
+        BaseUrl    = "https://api.minimax.io/v1"
+        Model      = "MiniMax-Text-01"
+        ApiKeyEnv  = "MINIMAX_API_KEY"
+        MaxRetries = 2
+        RetryBackoff = @(3, 8)
+        TimeoutSec = 300
+        InterCallDelaySec = 1
     }
     # Escape hatch models
-    OpusModel  = "claude-opus-4-6-20260310"
+    OpusModel  = "claude-opus-4-6"
     CodexFull  = "gpt-5.1-codex"
 }
 
@@ -157,6 +188,26 @@ function Invoke-SonnetApi {
     }
 
     $bodyJson = $body | ConvertTo-Json -Depth 20 -Compress
+
+    # Pre-flight: estimate input tokens and warn/truncate if approaching context window
+    # Rule of thumb: 1 token ≈ 4 chars for English text
+    $estimatedInputTokens = [math]::Round($bodyJson.Length / 4)
+    $contextWindow = 200000
+    $safeLimit = $contextWindow - $MaxTokens - 5000  # Reserve space for output + overhead
+    if ($estimatedInputTokens -gt $safeLimit) {
+        Write-Host "    [WARN] ${Phase}: Estimated input ~$($estimatedInputTokens)t approaching context limit ($safeLimit). Risk of token_limit error." -ForegroundColor Red
+        if ($estimatedInputTokens -gt $contextWindow) {
+            Write-Host "    [ERROR] ${Phase}: Input ($estimatedInputTokens tokens est.) EXCEEDS context window ($contextWindow). Aborting call." -ForegroundColor Red
+            return @{
+                Success = $false
+                Error   = "input_too_large"
+                Message = "${Phase}: Estimated input tokens ($estimatedInputTokens) exceed context window ($contextWindow). Reduce input payload."
+                Phase   = $Phase
+                Usage   = @{ input_tokens = 0; output_tokens = 0 }
+            }
+        }
+    }
+
     $url = "$($script:ApiConfig.Anthropic.BaseUrl)/v1/messages"
 
     # Retry loop
@@ -186,23 +237,49 @@ function Invoke-SonnetApi {
                 cache_read_tokens     = if ($response.usage.cache_read_input_tokens) { $response.usage.cache_read_input_tokens } else { 0 }
             }
 
+            # Check stop_reason — if "max_tokens", output was truncated (likely broken JSON)
+            $stopReason = $response.stop_reason
+            if ($stopReason -eq "max_tokens") {
+                Write-Host "    [WARN] ${Phase}: Output truncated (max_tokens). Increase MaxTokens or reduce input." -ForegroundColor Yellow
+            }
+
             # Parse JSON if requested
             $parsed = $null
             if ($JsonMode -and $outputText) {
                 try {
-                    # Try to extract JSON from the response (handle markdown code blocks)
-                    $jsonText = $outputText
-                    if ($jsonText -match '```json\s*\n([\s\S]*?)\n```') {
-                        $jsonText = $Matches[1]
-                    }
-                    elseif ($jsonText -match '```\s*\n([\s\S]*?)\n```') {
-                        $jsonText = $Matches[1]
+                    $jsonText = $outputText.Trim()
+                    # Strip markdown code fences if present
+                    if ($jsonText.StartsWith('```')) {
+                        $firstNl = $jsonText.IndexOf("`n")
+                        if ($firstNl -gt 0) {
+                            $jsonText = $jsonText.Substring($firstNl + 1)
+                        }
+                        # Remove trailing fence
+                        $lastFence = $jsonText.LastIndexOf('```')
+                        if ($lastFence -gt 0) {
+                            $jsonText = $jsonText.Substring(0, $lastFence)
+                        }
+                        $jsonText = $jsonText.Trim()
                     }
                     $parsed = $jsonText | ConvertFrom-Json
                 }
                 catch {
-                    Write-Host "    [WARN] JSON parse failed for $Phase, using raw text" -ForegroundColor DarkYellow
-                    $parsed = $null
+                    Write-Host "    [ERROR] JSON parse failed for ${Phase}: $($_.Exception.Message)" -ForegroundColor Red
+                    if ($stopReason -eq "max_tokens") {
+                        Write-Host "    [ERROR] This is likely because output was truncated (stop_reason=max_tokens)" -ForegroundColor Red
+                    }
+                    # Return failure instead of silently passing null downstream
+                    return @{
+                        Success    = $false
+                        Error      = "json_parse_failed"
+                        Message    = "JSON parse failed for ${Phase}: $($_.Exception.Message)"
+                        Text       = $outputText
+                        Parsed     = $null
+                        Usage      = $usage
+                        Model      = $modelId
+                        Phase      = $Phase
+                        StopReason = $stopReason
+                    }
                 }
             }
 
@@ -213,7 +290,7 @@ function Invoke-SonnetApi {
                 Usage      = $usage
                 Model      = $modelId
                 Phase      = $Phase
-                StopReason = $response.stop_reason
+                StopReason = $stopReason
             }
         }
         catch {
@@ -252,7 +329,8 @@ function Invoke-SonnetApi {
                     if ($retryAfter) { $backoff = [int]$retryAfter }
                 }
 
-                Write-Host "    [RETRY] Sonnet API error ($statusCode), attempt $attempt/$maxRetries, waiting ${backoff}s..." -ForegroundColor DarkYellow
+                $errDetail = if ($statusCode) { "HTTP $statusCode" } else { $_.Exception.Message.Substring(0, [Math]::Min(100, $_.Exception.Message.Length)) }
+                Write-Host "    [RETRY] Sonnet API error ($errDetail), attempt $attempt/$maxRetries, waiting ${backoff}s..." -ForegroundColor DarkYellow
                 Start-Sleep -Seconds $backoff
                 continue
             }
@@ -357,7 +435,7 @@ function Wait-SonnetBatch {
                 }
             }
 
-            Write-Host "    [BATCH] $Phase: $($response.processing_status) ($([math]::Round($elapsed/60,1))m elapsed)" -ForegroundColor DarkGray
+            Write-Host "    [BATCH] ${Phase}: $($response.processing_status) ($([math]::Round($elapsed/60,1))m elapsed)" -ForegroundColor DarkGray
         }
         catch {
             Write-Host "    [WARN] Batch poll error: $($_.Exception.Message)" -ForegroundColor DarkYellow
@@ -415,7 +493,24 @@ function Get-SonnetBatchResults {
             }
         }
 
-        return @{ Success = $true; Results = $results }
+        # Validate per-request success rates
+        $totalResults = $results.Count
+        $failedResults = @($results.Values | Where-Object { -not $_.Success }).Count
+        $failPct = if ($totalResults -gt 0) { [math]::Round(($failedResults / $totalResults) * 100, 1) } else { 0 }
+
+        if ($failedResults -gt 0) {
+            Write-Host "    [BATCH] Results: $($totalResults - $failedResults)/$totalResults succeeded ($failPct% failed)" -ForegroundColor $(
+                if ($failPct -gt 10) { "Red" } else { "Yellow" }
+            )
+        }
+
+        return @{
+            Success       = ($failPct -le 50)  # Fail batch if >50% of requests failed
+            Results       = $results
+            TotalResults  = $totalResults
+            FailedCount   = $failedResults
+            FailPercent   = $failPct
+        }
     }
     catch {
         return @{ Success = $false; Error = "batch_results_failed"; Message = $_.Exception.Message }
@@ -429,9 +524,10 @@ function Get-SonnetBatchResults {
 function Invoke-CodexMiniApi {
     <#
     .SYNOPSIS
-        Call GPT-5.1 Codex Mini via OpenAI Chat Completions API.
+        Call GPT-5.1 Codex Mini via OpenAI Responses API (/v1/responses).
+        Note: Codex models only support the Responses API, NOT Chat Completions.
     .PARAMETER SystemPrompt
-        System prompt with coding conventions.
+        System prompt with coding conventions (sent as 'instructions').
     .PARAMETER UserMessage
         User message with plan + context.
     .PARAMETER MaxTokens
@@ -452,24 +548,33 @@ function Invoke-CodexMiniApi {
     $apiKey = Get-ApiKey -Provider "OpenAI"
     $modelId = if ($Model) { $Model } else { $script:ApiConfig.OpenAI.Model }
 
-    $messages = @()
-    if ($SystemPrompt) {
-        $messages += @{ role = "system"; content = $SystemPrompt }
+    # Build Responses API body
+    $bodyObj = @{
+        model             = $modelId
+        input             = @(
+            @{ role = "user"; content = $UserMessage }
+        )
+        max_output_tokens = $MaxTokens
     }
-    $messages += @{ role = "user"; content = $UserMessage }
 
-    $body = @{
-        model      = $modelId
-        messages   = $messages
-        max_tokens = $MaxTokens
-    } | ConvertTo-Json -Depth 10 -Compress
+    # System prompt goes in 'instructions' field for Responses API
+    if ($SystemPrompt) {
+        $bodyObj["instructions"] = $SystemPrompt
+    }
+
+    $body = $bodyObj | ConvertTo-Json -Depth 10 -Compress
 
     $headers = @{
         "Authorization" = "Bearer $apiKey"
         "Content-Type"  = "application/json"
     }
 
-    $url = "$($script:ApiConfig.OpenAI.BaseUrl)/chat/completions"
+    # Responses API endpoint (NOT chat/completions)
+    $url = "$($script:ApiConfig.OpenAI.BaseUrl)/responses"
+
+    # Inter-call delay to avoid rate limits
+    $interCallDelay = if ($script:ApiConfig.OpenAI.InterCallDelaySec) { $script:ApiConfig.OpenAI.InterCallDelaySec } else { 0 }
+    if ($interCallDelay -gt 0) { Start-Sleep -Seconds $interCallDelay }
 
     # Retry loop
     $attempt = 0
@@ -482,20 +587,40 @@ function Invoke-CodexMiniApi {
                 -Body $body -TimeoutSec $script:ApiConfig.OpenAI.TimeoutSec `
                 -ContentType "application/json"
 
-            $outputText = $response.choices[0].message.content
+            # Extract text from Responses API output structure
+            # output[] contains reasoning blocks and message blocks
+            $outputText = ""
+            foreach ($outputItem in $response.output) {
+                if ($outputItem.type -eq "message" -and $outputItem.content) {
+                    foreach ($contentItem in $outputItem.content) {
+                        if ($contentItem.type -eq "output_text") {
+                            $outputText += $contentItem.text
+                        }
+                    }
+                }
+            }
 
             $usage = @{
-                input_tokens  = $response.usage.prompt_tokens
-                output_tokens = $response.usage.completion_tokens
+                input_tokens  = $response.usage.input_tokens
+                output_tokens = $response.usage.output_tokens
+            }
+
+            # Determine finish reason from response status
+            $finishReason = if ($response.status -eq "completed") { "stop" }
+                elseif ($response.status -eq "incomplete" -and $response.incomplete_details) { "max_tokens" }
+                else { $response.status }
+
+            if ($finishReason -eq "max_tokens") {
+                Write-Host "    [WARN] ${Phase}: Codex Mini output truncated (max_output_tokens)" -ForegroundColor Yellow
             }
 
             return @{
-                Success    = $true
-                Text       = $outputText
-                Usage      = $usage
-                Model      = $modelId
-                Phase      = $Phase
-                FinishReason = $response.choices[0].finish_reason
+                Success      = $true
+                Text         = $outputText
+                Usage        = $usage
+                Model        = $modelId
+                Phase        = $Phase
+                FinishReason = $finishReason
             }
         }
         catch {
@@ -504,28 +629,165 @@ function Invoke-CodexMiniApi {
                 $statusCode = [int]$_.Exception.Response.StatusCode
             }
 
-            if ($statusCode -eq 400 -or $statusCode -eq 401) {
+            # Non-retryable errors: 400, 401, 403, 404
+            if ($statusCode -in @(400, 401, 403, 404)) {
+                $errType = switch ($statusCode) {
+                    401 { "auth_failed" }
+                    403 { "forbidden" }
+                    404 { "model_not_found" }
+                    default { "bad_request" }
+                }
+                # Try to read error body for details
+                $errMsg = $_.Exception.Message
+                try {
+                    if ($_.Exception.Response) {
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        $reader = [System.IO.StreamReader]::new($stream)
+                        $errBody = $reader.ReadToEnd()
+                        if ($errBody) { $errMsg = $errBody }
+                    }
+                } catch {}
                 return @{
                     Success = $false
-                    Error   = if ($statusCode -eq 401) { "auth_failed" } else { "bad_request" }
-                    Message = $_.Exception.Message
+                    Error   = $errType
+                    Message = "Codex API ($statusCode): $errMsg"
                     Phase   = $Phase
+                    Model   = $modelId
                     Usage   = @{ input_tokens = 0; output_tokens = 0 }
                 }
             }
 
+            # Capture error body for diagnosis (especially 429 rate limit details)
+            $errBody = ""
+            # Method 1: ErrorDetails.Message (PowerShell 7 preserves API error body here)
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                $errBody = $_.ErrorDetails.Message
+            }
+            # Method 2: GetResponseStream (fallback)
+            if (-not $errBody) {
+                try {
+                    if ($_.Exception.Response) {
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        $reader = [System.IO.StreamReader]::new($stream)
+                        $errBody = $reader.ReadToEnd()
+                    }
+                } catch {}
+            }
+
             if ($attempt -le $maxRetries) {
                 $backoff = $script:ApiConfig.OpenAI.RetryBackoff[$attempt - 1]
-                Write-Host "    [RETRY] Codex Mini API error ($statusCode), attempt $attempt/$maxRetries, waiting ${backoff}s..." -ForegroundColor DarkYellow
+
+                # Respect retry-after header from OpenAI (429 responses)
+                if ($statusCode -eq 429 -and $_.Exception.Response.Headers) {
+                    $retryAfter = $_.Exception.Response.Headers["retry-after"]
+                    if ($retryAfter) { $backoff = [math]::Max([int]$retryAfter, $backoff) }
+                }
+
+                $errDetail = if ($errBody) { $errBody.Substring(0, [Math]::Min(200, $errBody.Length)) } else { $_.Exception.Message.Substring(0, [Math]::Min(100, $_.Exception.Message.Length)) }
+                Write-Host "    [RETRY] Codex API error ($statusCode), attempt $attempt/$maxRetries, waiting ${backoff}s..." -ForegroundColor DarkYellow
+                Write-Host "    [DETAIL] $errDetail" -ForegroundColor DarkGray
                 Start-Sleep -Seconds $backoff
                 continue
+            }
+
+            # --- FALLBACK CHAIN: Codex Mini -> DeepSeek -> Kimi -> MiniMax ---
+            $fallbackModels = @("DeepSeek", "Kimi", "MiniMax")
+            foreach ($fbName in $fallbackModels) {
+                $fbConfig = $script:ApiConfig[$fbName]
+                if (-not $fbConfig) { continue }
+                $fbKey = [System.Environment]::GetEnvironmentVariable($fbConfig.ApiKeyEnv, "User")
+                if (-not $fbKey) { $fbKey = [System.Environment]::GetEnvironmentVariable($fbConfig.ApiKeyEnv, "Process") }
+                if (-not $fbKey) { continue }
+                Write-Host "    [FALLBACK] Codex Mini failed ($statusCode). Trying $fbName..." -ForegroundColor Cyan
+                $fallbackResult = Invoke-OpenAICompatFallback -Config $fbConfig -ApiKey $fbKey -SystemPrompt $SystemPrompt -UserMessage $UserMessage -MaxTokens $MaxTokens -Phase $Phase -ModelName $fbName
+                if ($fallbackResult.Success) { return $fallbackResult }
+                Write-Host "    [FALLBACK] $fbName failed: $($fallbackResult.Message)" -ForegroundColor Red
             }
 
             return @{
                 Success = $false
                 Error   = "api_error"
-                Message = "Codex Mini API failed after $maxRetries retries: $($_.Exception.Message)"
+                Message = "Codex API failed after $maxRetries retries: $($_.Exception.Message)"
                 Phase   = $Phase
+                Model   = $modelId
+                Usage   = @{ input_tokens = 0; output_tokens = 0 }
+            }
+        }
+    }
+}
+
+function Invoke-OpenAICompatFallback {
+    <#
+    .SYNOPSIS
+        Generic OpenAI-compatible chat/completions fallback for any model (DeepSeek, Kimi, MiniMax).
+    #>
+    param(
+        [hashtable]$Config,
+        [string]$ApiKey,
+        [string]$SystemPrompt,
+        [string]$UserMessage,
+        [int]$MaxTokens = 16384,
+        [string]$Phase = "execute",
+        [string]$ModelName = "fallback"
+    )
+
+    $modelId = $Config.Model
+    $url = "$($Config.BaseUrl)/chat/completions"
+    $headers = @{ "Authorization" = "Bearer $ApiKey"; "Content-Type" = "application/json" }
+
+    $messages = @()
+    if ($SystemPrompt) { $messages += @{ role = "system"; content = $SystemPrompt } }
+    $messages += @{ role = "user"; content = $UserMessage }
+
+    # Respect per-model max output token limits
+    $effectiveMaxTokens = $MaxTokens
+    if ($Config.MaxOutputTokens -and $MaxTokens -gt $Config.MaxOutputTokens) {
+        $effectiveMaxTokens = $Config.MaxOutputTokens
+    }
+
+    $body = @{
+        model      = $modelId
+        messages   = $messages
+        max_tokens = $effectiveMaxTokens
+    } | ConvertTo-Json -Depth 10 -Compress
+
+    $maxRetries = $Config.MaxRetries
+    for ($attempt = 1; $attempt -le ($maxRetries + 1); $attempt++) {
+        try {
+            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers `
+                -Body $body -TimeoutSec $Config.TimeoutSec -ContentType "application/json"
+
+            $outputText = $response.choices[0].message.content
+            $usage = @{
+                input_tokens  = $response.usage.prompt_tokens
+                output_tokens = $response.usage.completion_tokens
+            }
+
+            Write-Host "    [FALLBACK] $ModelName success ($($usage.output_tokens) tokens)" -ForegroundColor Green
+
+            return @{
+                Success    = $true
+                Text       = $outputText
+                Parsed     = $null
+                Usage      = $usage
+                Model      = $modelId
+                Phase      = "$Phase-$($ModelName.ToLower())-fallback"
+                StopReason = $response.choices[0].finish_reason
+            }
+        }
+        catch {
+            if ($attempt -le $maxRetries) {
+                $backoff = $Config.RetryBackoff[$attempt - 1]
+                Write-Host "    [FALLBACK] $ModelName error, attempt $attempt/$maxRetries, waiting ${backoff}s..." -ForegroundColor DarkYellow
+                Start-Sleep -Seconds $backoff
+                continue
+            }
+            return @{
+                Success = $false
+                Error   = "api_error"
+                Message = "$ModelName failed after $maxRetries retries: $($_.Exception.Message)"
+                Phase   = "$Phase-$($ModelName.ToLower())-fallback"
+                Model   = $modelId
                 Usage   = @{ input_tokens = 0; output_tokens = 0 }
             }
         }
@@ -547,30 +809,34 @@ function Invoke-CodexMiniParallel {
     #>
     param(
         [array]$Items,
-        [int]$MaxConcurrent = 15,
+        [int]$MaxConcurrent = 2,
         [int]$MaxTokens = 16384,
         [string]$Phase = "execute"
     )
 
     $results = @{}
     $totalUsage = @{ input_tokens = 0; output_tokens = 0 }
+    $consecutive429 = 0
+    $circuitBroken = $false
 
     # Process in batches of MaxConcurrent
     for ($i = 0; $i -lt $Items.Count; $i += $MaxConcurrent) {
-        $batch = $Items[$i..([math]::Min($i + $MaxConcurrent - 1, $Items.Count - 1))]
+        if ($circuitBroken) { break }
 
-        $jobs = @()
-        foreach ($item in $batch) {
-            $jobs += @{
-                Id     = $item.Id
-                Result = $null
-            }
-        }
+        $batch = $Items[$i..([math]::Min($i + $MaxConcurrent - 1, $Items.Count - 1))]
 
         # Execute sequentially within batch (PowerShell 5.1 compatible)
         # For true parallelism, use runspaces or ForEach-Object -Parallel (PS 7+)
         foreach ($idx in 0..($batch.Count - 1)) {
             $item = $batch[$idx]
+
+            # Circuit breaker: if 3+ consecutive 429s, wait 60s then retry one more; if still 429, abort all remaining
+            if ($consecutive429 -ge 3) {
+                Write-Host "    [RATE-LIMIT] $consecutive429 consecutive 429 errors. Waiting 60s before retry..." -ForegroundColor Red
+                Start-Sleep -Seconds 60
+                $consecutive429 = 0  # Reset counter, give it one more shot
+            }
+
             $result = Invoke-CodexMiniApi `
                 -SystemPrompt $item.SystemPrompt `
                 -UserMessage $item.UserMessage `
@@ -580,21 +846,42 @@ function Invoke-CodexMiniParallel {
 
             $results[$item.Id] = $result
 
+            if ($result.Success) {
+                $consecutive429 = 0  # Reset on success
+            }
+            elseif ($result.Error -eq "api_error" -and $result.Message -match "429") {
+                $consecutive429++
+                if ($consecutive429 -ge 6) {
+                    Write-Host "    [CIRCUIT-BREAK] 6 consecutive 429 errors. Aborting remaining $($Items.Count - $results.Count) items." -ForegroundColor Red
+                    $circuitBroken = $true
+                    break
+                }
+            }
+            elseif ($result.Error -eq "model_not_found") {
+                Write-Host "    [ABORT] Model not found. Aborting all remaining items." -ForegroundColor Red
+                $circuitBroken = $true
+                break
+            }
+            else {
+                $consecutive429 = 0  # Non-429 error resets the counter
+            }
+
             if ($result.Usage) {
                 $totalUsage.input_tokens += $result.Usage.input_tokens
                 $totalUsage.output_tokens += $result.Usage.output_tokens
             }
 
             $status = if ($result.Success) { "OK" } else { "FAIL" }
-            Write-Host "    [$status] $($item.Id) ($($result.Usage.output_tokens) tokens)" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+            $tokenCount = if ($result.Usage) { $result.Usage.output_tokens } else { 0 }
+            Write-Host "    [$status] $($item.Id) ($tokenCount tokens)" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
         }
     }
 
     return @{
         Results    = $results
         TotalUsage = $totalUsage
-        Completed  = ($results.Values | Where-Object { $_.Success }).Count
-        Failed     = ($results.Values | Where-Object { -not $_.Success }).Count
+        Completed  = @($results.Values | Where-Object { $_.Success }).Count
+        Failed     = @($results.Values | Where-Object { -not $_.Success }).Count
         Total      = $Items.Count
     }
 }
@@ -690,7 +977,8 @@ function Test-CacheValid {
     if (-not $script:CacheState.LastWriteTime) { return $false }
 
     $elapsed = (Get-Date) - $script:CacheState.LastWriteTime
-    return ($elapsed.TotalMinutes -lt 5)
+    # Cache TTL: 4 hours (pipeline runs can take hours; 5-min TTL caused constant rewrites)
+    return ($elapsed.TotalMinutes -lt 240)
 }
 
 function Reset-CacheBlock {

@@ -23,9 +23,17 @@ $v3Dir = Split-Path $PSScriptRoot -Parent
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $GsdDir = Join-Path $RepoRoot ".gsd"
 
+# Always clear stale lock file on startup
+$lockFile = Join-Path $GsdDir ".gsd-lock.json"
+if (Test-Path $lockFile) {
+    Remove-Item $lockFile -Force
+    Write-Host "  [LOCK] Cleared stale lock file" -ForegroundColor Yellow
+}
+
 Write-Host "`n============================================" -ForegroundColor Cyan
 Write-Host "  GSD V3 - Feature Update" -ForegroundColor Cyan
-Write-Host "  Scope: $(if ($Scope) { $Scope } else { 'all new' })" -ForegroundColor DarkGray
+$scopeLabel = if ($Scope) { $Scope } else { "all new" }
+Write-Host "  Scope: $scopeLabel" -ForegroundColor DarkGray
 Write-Host "============================================" -ForegroundColor Cyan
 
 # Load modules
@@ -52,7 +60,8 @@ if (-not (Test-Path $matrixPath)) {
 $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
 $currentTotal = $matrix.requirements.Count
 $currentSatisfied = ($matrix.requirements | Where-Object { $_.status -eq "satisfied" }).Count
-Write-Host "  Current: $currentSatisfied/$currentTotal satisfied ($($matrix.health_score)%)" -ForegroundColor DarkGray
+$healthPct = if ($currentTotal -gt 0) { [math]::Round(($currentSatisfied / $currentTotal) * 100) } else { 0 }
+Write-Host "  Current: $currentSatisfied/$currentTotal satisfied (${healthPct}%)" -ForegroundColor DarkGray
 
 # Run feature update pipeline
 $result = Start-V3Pipeline `

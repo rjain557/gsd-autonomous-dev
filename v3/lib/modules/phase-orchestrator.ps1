@@ -52,7 +52,7 @@ function Start-V3Pipeline {
 
     # Resolve V3 root from this module's location (lib/modules -> v3)
     $script:V3Root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
-    $script:SonnetModel = "claude-sonnet-4-6-20260310"
+    $script:SonnetModel = "claude-sonnet-4-6"
 
     Write-Host "`n============================================" -ForegroundColor Cyan
     Write-Host "  GSD V3 Pipeline - $Mode" -ForegroundColor Cyan
@@ -77,6 +77,10 @@ function Start-V3Pipeline {
     # -- Initialize modules --
     Initialize-CostTracker -Mode $Mode -BudgetCap $budgetCap -GsdDir $GsdDir
     Initialize-Notifications -Topic $NtfyTopic -RepoRoot $RepoRoot
+
+    # -- Start background monitors (heartbeat + command listener) --
+    Start-HeartbeatMonitor -IntervalMinutes 10 -GsdDir $GsdDir
+    Start-CommandListener -GsdDir $GsdDir
 
     # -- Pre-flight --
     Write-Host "`n--- Pre-flight ---" -ForegroundColor Yellow
@@ -145,9 +149,11 @@ function Start-V3Pipeline {
         Write-Host "  ITERATION $iter / $maxIterations" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Cyan
 
-        # Budget check
-        if (-not (Test-BudgetAvailable)) {
-            Write-Host "  [BUDGET] Budget exhausted. Halting." -ForegroundColor Red
+        # Budget check — estimate cost of upcoming iteration before starting
+        # Estimated per-iteration cost: ~$0.15 Sonnet (research+plan+review+verify) + ~$0.05/req Codex execute
+        $estimatedIterCost = 0.15 + ($batchSizeMax * 0.05)
+        if (-not (Test-BudgetAvailable -EstimatedCost $estimatedIterCost)) {
+            Write-Host "  [BUDGET] Budget exhausted (estimated next iteration: `$$([math]::Round($estimatedIterCost,2))). Halting." -ForegroundColor Red
             Send-GsdNotification -Title "GSD Budget Exceeded" -Message "Budget cap `$$budgetCap reached at iteration $iter" -Tags "warning"
             break
         }
@@ -169,6 +175,10 @@ function Start-V3Pipeline {
         # -- Research Phase --
         $researchOutput = $null
         if ("research" -in $phasesActive -and "research" -notin $phasesSkipped) {
+            if (-not (Test-BudgetAvailable -EstimatedCost 0.10)) {
+                Write-Host "  [BUDGET] Insufficient budget for Research phase. Halting." -ForegroundColor Red
+                break
+            }
             Write-Host "`n  --- Research ---" -ForegroundColor Yellow
             $researchOutput = Invoke-ResearchPhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
                 -CacheBlocks $cacheBlocks -Requirements $batchReqs -Iteration $iter `
@@ -176,6 +186,10 @@ function Start-V3Pipeline {
         }
 
         # -- Plan Phase --
+        if (-not (Test-BudgetAvailable -EstimatedCost 0.10)) {
+            Write-Host "  [BUDGET] Insufficient budget for Plan phase. Halting." -ForegroundColor Red
+            break
+        }
         Write-Host "`n  --- Plan ---" -ForegroundColor Yellow
         $planOutput = Invoke-PlanPhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
             -CacheBlocks $cacheBlocks -Requirements $batchReqs -Iteration $iter `
@@ -187,6 +201,12 @@ function Start-V3Pipeline {
         }
 
         # -- Execute Phase (Two-Stage: Skeleton then Fill) --
+        # Execute is the most expensive phase: estimate $0.05/req for Codex Mini
+        $execEstimate = $batchReqs.Count * 0.05
+        if (-not (Test-BudgetAvailable -EstimatedCost $execEstimate)) {
+            Write-Host "  [BUDGET] Insufficient budget for Execute phase (~`$$([math]::Round($execEstimate,2)) for $($batchReqs.Count) reqs). Halting." -ForegroundColor Red
+            break
+        }
         $executeResults = @{}
         $skeletonResults = $null
         $usesTwoStage = $modeConfig.two_stage_execute
@@ -195,6 +215,14 @@ function Start-V3Pipeline {
             Write-Host "`n  --- Execute: Skeleton ---" -ForegroundColor Yellow
             $skeletonResults = Invoke-ExecutePhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
                 -Plans $planOutput.Plans -Stage "skeleton" -Config $Config -Inventory $inventory
+
+            # If ALL skeleton calls failed (e.g. rate limited), skip fill phase entirely
+            if ($skeletonResults -and $skeletonResults.Completed -eq 0 -and $skeletonResults.Failed -gt 0) {
+                Write-Host "  [SKIP] All skeleton calls failed ($($skeletonResults.Failed) failures). Skipping fill phase." -ForegroundColor Red
+                $executeResults = $skeletonResults
+                # Skip fill — go to local validate
+                continue
+            }
         }
 
         Write-Host "`n  --- Execute: Fill ---" -ForegroundColor Yellow
@@ -300,6 +328,7 @@ function Start-V3Pipeline {
     }
 
     # -- Cleanup --
+    Stop-BackgroundMonitors
     Remove-GsdLock -GsdDir $GsdDir
     Save-CostSummary -GsdDir $GsdDir
 
@@ -357,11 +386,35 @@ function Build-SpecContext {
         }
     }
 
-    # Include requirements matrix if it exists
+    # Include requirements matrix SUMMARY (not full content — matrix can be 200K+ tokens)
     $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
     if (Test-Path $matrixPath) {
-        $matrixContent = Get-Content $matrixPath -Raw -Encoding UTF8
-        $context += "## Requirements Matrix`n`n``````json`n$matrixContent`n```````n`n"
+        try {
+            $matrixObj = Get-Content $matrixPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $mReqs = if ($matrixObj.requirements) { $matrixObj.requirements } else { @() }
+            $mTotal = $mReqs.Count
+            $mSatisfied = @($mReqs | Where-Object { $_.status -eq "satisfied" }).Count
+            $mPartial = @($mReqs | Where-Object { $_.status -eq "partial" }).Count
+            $mNotStarted = @($mReqs | Where-Object { $_.status -eq "not_started" }).Count
+            $mHealth = if ($mTotal -gt 0) { [math]::Round(($mSatisfied + $mPartial * 0.5) / $mTotal * 100, 1) } else { 0 }
+
+            $context += "## Requirements Matrix Summary`n`n"
+            $context += "Total: $mTotal | Satisfied: $mSatisfied | Partial: $mPartial | Not Started: $mNotStarted | Health: $mHealth%`n`n"
+
+            # Only include non-satisfied requirements (the ones that need work)
+            $activeReqs = @($mReqs | Where-Object { $_.status -in @("not_started", "partial") } | Select-Object -First 30)
+            if ($activeReqs.Count -gt 0) {
+                $context += "### Active Requirements (not_started + partial, first 30)`n`n"
+                foreach ($r in $activeReqs) {
+                    $rid = if ($r.req_id) { $r.req_id } else { $r.id }
+                    $context += "- $rid [$($r.status)]: $($r.description)`n"
+                }
+                $context += "`n"
+            }
+        }
+        catch {
+            $context += "## Requirements Matrix`n`n(Failed to parse matrix: $($_.Exception.Message))`n`n"
+        }
     }
 
     return $context
@@ -396,7 +449,7 @@ function Build-BlueprintContext {
     $treePath = Join-Path $GsdDir "file-map-tree.md"
     if (Test-Path $treePath) {
         $tree = Get-Content $treePath -Raw -Encoding UTF8
-        if ($tree.Length -gt 5000) { $tree = $tree.Substring(0, 5000) + "`n... (truncated)" }
+        if ($tree.Length -gt 3000) { $tree = $tree.Substring(0, 3000) + "`n... (truncated, $($tree.Length) chars total)" }
         $context += "`n## File Tree`n`n$tree"
     }
 
@@ -452,10 +505,14 @@ function Invoke-ResearchPhase {
         "Analyze the requirements below and discover patterns, dependencies, and tech decisions. Output JSON."
     }
 
-    $reqSummary = ($Requirements | ForEach-Object { "- $($_.req_id): $($_.description)" }) -join "`n"
+    $reqSummary = ($Requirements | ForEach-Object { $rid = if ($_.req_id) { $_.req_id } else { $_.id }; "- ${rid}: $($_.description)" }) -join "`n"
     $prompt = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
     $prompt = $prompt.Replace("{{REQUIREMENTS}}", $reqSummary)
-    $prompt = $prompt.Replace("{{FILE_INVENTORY}}", ($Inventory.all_files | Select-Object -First 200) -join "`n")
+
+    # File inventory: use source_files (not all_files) and cap at 150 to control token budget
+    $inventoryList = if ($Inventory.source_files) { $Inventory.source_files | Select-Object -First 150 } else { $Inventory.all_files | Select-Object -First 150 }
+    $inventoryText = ($inventoryList -join "`n") + "`n`n(Total files: $($Inventory.total_files), showing first 150 source files)"
+    $prompt = $prompt.Replace("{{FILE_INVENTORY}}", $inventoryText)
 
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 6000 -UseCache -JsonMode -Phase "research"
@@ -482,18 +539,50 @@ function Invoke-PlanPhase {
         "Create implementation plans for each requirement. Output JSON with plans array."
     }
 
-    $reqSummary = ($Requirements | ForEach-Object { "- $($_.req_id): $($_.description) [interface: $($_.interface)]" }) -join "`n"
-    $researchSummary = if ($Research) { $Research | ConvertTo-Json -Depth 5 -Compress } else { "(no research)" }
+    $reqSummary = ($Requirements | ForEach-Object { $rid = if ($_.req_id) { $_.req_id } else { $_.id }; "- ${rid}: $($_.description) [interface: $($_.interface)]" }) -join "`n"
+
+    # Cap research output to prevent token bloat (can grow unbounded across iterations)
+    $researchSummary = "(no research)"
+    if ($Research) {
+        $researchJson = $Research | ConvertTo-Json -Depth 5 -Compress
+        if ($researchJson.Length -gt 8000) {
+            $researchSummary = $researchJson.Substring(0, 8000) + "... (truncated, $($researchJson.Length) chars)"
+            Write-Host "    [PLAN] Research truncated: $($researchJson.Length) -> 8000 chars" -ForegroundColor DarkYellow
+        } else {
+            $researchSummary = $researchJson
+        }
+    }
 
     $prompt = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
     $prompt = $prompt.Replace("{{REQUIREMENTS}}", $reqSummary)
     $prompt = $prompt.Replace("{{RESEARCH}}", $researchSummary)
     $prompt = $prompt.Replace("{{FILE_INVENTORY}}", ($Inventory.source_files | Select-Object -First 100) -join "`n")
 
+    # Plan output scales with batch size: ~2K tokens per requirement
+    $planMaxTokens = [math]::Min(4096 + ($Requirements.Count * 4000), 65536)
+    Write-Host "    [PLAN] MaxTokens: $planMaxTokens for $($Requirements.Count) requirements" -ForegroundColor DarkGray
+
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
-        -MaxTokens 8000 -UseCache -JsonMode -Phase "plan"
+        -MaxTokens $planMaxTokens -UseCache -JsonMode -Phase "plan"
 
     if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "plan" }
+
+    # If plan was truncated (max_tokens), retry with half the requirements
+    if (-not $result.Success -and $result.StopReason -eq "max_tokens" -and $Requirements.Count -gt 3) {
+        $halfCount = [math]::Floor($Requirements.Count / 2)
+        Write-Host "    [PLAN] Truncated with $($Requirements.Count) reqs. Retrying with first $halfCount..." -ForegroundColor Yellow
+
+        $halfReqs = $Requirements | Select-Object -First $halfCount
+        $reqSummary2 = ($halfReqs | ForEach-Object { $rid = if ($_.req_id) { $_.req_id } else { $_.id }; "- ${rid}: $($_.description) [interface: $($_.interface)]" }) -join "`n"
+        $prompt2 = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
+        $prompt2 = $prompt2.Replace("{{REQUIREMENTS}}", $reqSummary2)
+        $prompt2 = $prompt2.Replace("{{RESEARCH}}", $researchSummary)
+        $prompt2 = $prompt2.Replace("{{FILE_INVENTORY}}", ($Inventory.source_files | Select-Object -First 100) -join "`n")
+
+        $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt2 `
+            -MaxTokens $planMaxTokens -UseCache -JsonMode -Phase "plan-retry"
+        if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "plan-retry" }
+    }
 
     if ($result.Text) {
         $plansDir = Join-Path $GsdDir "plans"
@@ -547,7 +636,7 @@ function Invoke-ExecutePhase {
         }
     }
 
-    $results = Invoke-CodexMiniParallel -Items $items -MaxConcurrent 15 -Phase "execute-$Stage"
+    $results = Invoke-CodexMiniParallel -Items $items -MaxConcurrent 2 -Phase "execute-$Stage"
 
     # Write generated files to disk
     foreach ($reqId in $results.Results.Keys) {
@@ -604,7 +693,7 @@ function Invoke-ReviewPhase {
     # Get git diff for context
     $gitDiff = ""
     try { $gitDiff = git -C $RepoRoot diff 2>&1 | Out-String } catch {}
-    if ($gitDiff.Length -gt 12000) { $gitDiff = $gitDiff.Substring(0, 12000) + "`n... (truncated)" }
+    if ($gitDiff.Length -gt 8000) { $gitDiff = $gitDiff.Substring(0, 8000) + "`n... (truncated, $($gitDiff.Length) chars total)" }
 
     $prompt = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
     $prompt = $prompt.Replace("{{ERROR_CONTEXT}}", $errorContext)
@@ -635,9 +724,33 @@ function Invoke-VerifyPhase {
         "Update requirement statuses. Calculate health score. Detect drift. Output JSON."
     }
 
-    # Read current health and matrix
+    # Read current health and matrix — TRUNCATED to prevent token explosion
+    # Full matrix can be 200K+ tokens; Verify only needs active (non-satisfied) requirements
     $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
-    $matrixContent = if (Test-Path $matrixPath) { Get-Content $matrixPath -Raw -Encoding UTF8 } else { "{}" }
+    $matrixContent = "{}"
+    if (Test-Path $matrixPath) {
+        try {
+            $fullMatrix = Get-Content $matrixPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $allReqs = if ($fullMatrix.requirements) { $fullMatrix.requirements } else { @() }
+
+            # Build a slim matrix with: summary stats + only active requirements
+            $activeReqs = @($allReqs | Where-Object { $_.status -in @("not_started", "partial") })
+            $slimMatrix = @{
+                _summary = @{
+                    total       = $allReqs.Count
+                    satisfied   = @($allReqs | Where-Object { $_.status -eq "satisfied" }).Count
+                    partial     = @($allReqs | Where-Object { $_.status -eq "partial" }).Count
+                    not_started = @($allReqs | Where-Object { $_.status -eq "not_started" }).Count
+                }
+                requirements = $activeReqs
+            }
+            $matrixContent = $slimMatrix | ConvertTo-Json -Depth 10 -Compress
+            Write-Host "    [VERIFY] Slim matrix: $($activeReqs.Count) active reqs (of $($allReqs.Count) total)" -ForegroundColor DarkGray
+        }
+        catch {
+            Write-Host "    [WARN] Could not parse matrix for verify: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
 
     $prompt = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
     $prompt = $prompt.Replace("{{REQUIREMENTS_MATRIX}}", $matrixContent)
