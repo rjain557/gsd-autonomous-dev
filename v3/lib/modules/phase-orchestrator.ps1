@@ -421,7 +421,7 @@ function Invoke-SpecGatePhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 4096 -UseCache -JsonMode -Phase "spec-gate"
 
-    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-gate" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-gate" }
 
     $blocked = $false
     if ($result.Parsed) {
@@ -460,7 +460,7 @@ function Invoke-ResearchPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 6000 -UseCache -JsonMode -Phase "research"
 
-    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "research" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "research" }
 
     if ($result.Text) {
         $researchDir = Join-Path $GsdDir "research"
@@ -493,7 +493,7 @@ function Invoke-PlanPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 8000 -UseCache -JsonMode -Phase "plan"
 
-    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "plan" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "plan" }
 
     if ($result.Text) {
         $plansDir = Join-Path $GsdDir "plans"
@@ -556,7 +556,7 @@ function Invoke-ExecutePhase {
             Write-GeneratedFiles -RepoRoot $RepoRoot -GsdDir $GsdDir -ReqId $reqId -Output $r.Text
         }
         if ($r.Usage) {
-            Add-ApiCallCost -Model "gpt-5.1-codex-mini" -Usage $r.Usage -Phase "execute-$Stage" -RequirementId $reqId
+            Add-ApiCallCost -Model $r.Model -Usage $r.Usage -Phase "execute-$Stage" -RequirementId $reqId
         }
     }
 
@@ -613,7 +613,7 @@ function Invoke-ReviewPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 4000 -UseCache -JsonMode -Phase "review"
 
-    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "review" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "review" }
 
     if ($result.Text) {
         $reviewsDir = Join-Path $GsdDir "iterations/reviews"
@@ -664,7 +664,7 @@ function Invoke-SpecFixPhase {
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
         -MaxTokens 4000 -UseCache -JsonMode -Phase "spec-fix"
 
-    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-fix" -IsBatch }
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-fix" }
 
     # Invalidate cache after spec fix
     if ($result.Parsed -and $result.Parsed.cache_invalidation) {
