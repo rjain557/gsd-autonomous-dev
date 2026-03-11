@@ -259,7 +259,9 @@ function Start-V3Pipeline {
         Write-Host "`n  --- Verify ---" -ForegroundColor Yellow
         $verifyResult = Invoke-VerifyPhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
             -CacheBlocks $cacheBlocks -Iteration $iter -Config $Config `
-            -Mode $Mode -BaselineSnapshot $baselineSnapshot
+            -Mode $Mode -BaselineSnapshot $baselineSnapshot `
+            -ExecuteResults $executeResults -ValidateResults $validateResults `
+            -ReviewResults $reviewResults
 
         $currentHealth = $verifyResult.HealthScore
         $healthDelta = $currentHealth - $prevHealth
@@ -514,8 +516,12 @@ function Invoke-ResearchPhase {
     $inventoryText = ($inventoryList -join "`n") + "`n`n(Total files: $($Inventory.total_files), showing first 150 source files)"
     $prompt = $prompt.Replace("{{FILE_INVENTORY}}", $inventoryText)
 
+    # Scale research tokens with requirement count (1500 per req, min 6000, max 16000)
+    $researchMaxTokens = [math]::Max(6000, [math]::Min(16000, $Requirements.Count * 1500))
+    Write-Host "    [RESEARCH] MaxTokens: $researchMaxTokens for $($Requirements.Count) requirements" -ForegroundColor DarkGray
+
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
-        -MaxTokens 6000 -UseCache -JsonMode -Phase "research"
+        -MaxTokens $researchMaxTokens -UseCache -JsonMode -Phase "research"
 
     if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "research" }
 
@@ -545,9 +551,10 @@ function Invoke-PlanPhase {
     $researchSummary = "(no research)"
     if ($Research) {
         $researchJson = $Research | ConvertTo-Json -Depth 5 -Compress
-        if ($researchJson.Length -gt 8000) {
-            $researchSummary = $researchJson.Substring(0, 8000) + "... (truncated, $($researchJson.Length) chars)"
-            Write-Host "    [PLAN] Research truncated: $($researchJson.Length) -> 8000 chars" -ForegroundColor DarkYellow
+        $researchMaxChars = 16000  # Allow plan to see most of the research (was 8000, caused incomplete plans)
+        if ($researchJson.Length -gt $researchMaxChars) {
+            $researchSummary = $researchJson.Substring(0, $researchMaxChars) + "... (truncated, $($researchJson.Length) chars)"
+            Write-Host "    [PLAN] Research truncated: $($researchJson.Length) -> $researchMaxChars chars" -ForegroundColor DarkYellow
         } else {
             $researchSummary = $researchJson
         }
@@ -699,8 +706,12 @@ function Invoke-ReviewPhase {
     $prompt = $prompt.Replace("{{ERROR_CONTEXT}}", $errorContext)
     $prompt = $prompt.Replace("{{GIT_DIFF}}", $gitDiff)
 
+    # Scale review tokens: 800 per failed item, min 4000, max 12000
+    $reviewMaxTokens = [math]::Max(4000, [math]::Min(12000, $FailedItems.Count * 800))
+    Write-Host "    [REVIEW] MaxTokens: $reviewMaxTokens for $($FailedItems.Count) failed items" -ForegroundColor DarkGray
+
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
-        -MaxTokens 4000 -UseCache -JsonMode -Phase "review"
+        -MaxTokens $reviewMaxTokens -UseCache -JsonMode -Phase "review"
 
     if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "review" }
 
@@ -716,7 +727,10 @@ function Invoke-VerifyPhase {
     param(
         [string]$GsdDir, [string]$RepoRoot, [array]$CacheBlocks,
         [int]$Iteration, [PSObject]$Config, [string]$Mode,
-        [hashtable]$BaselineSnapshot = @{}
+        [hashtable]$BaselineSnapshot = @{},
+        [PSObject]$ExecuteResults = $null,
+        [PSObject]$ValidateResults = $null,
+        [PSObject]$ReviewResults = $null
     )
 
     $promptPath = Join-Path $script:V3Root "prompts/sonnet/07-verify.md"
@@ -735,6 +749,19 @@ function Invoke-VerifyPhase {
 
             # Build a slim matrix with: summary stats + only active requirements
             $activeReqs = @($allReqs | Where-Object { $_.status -in @("not_started", "partial") })
+
+            # Cap active reqs to prevent token explosion (verify prompt + 100 reqs ≈ 8K input tokens)
+            $maxVerifyReqs = 100
+            $verifyReqs = $activeReqs
+            if ($activeReqs.Count -gt $maxVerifyReqs) {
+                # Prioritize partial (closest to done) over not_started
+                $partialReqs = @($activeReqs | Where-Object { $_.status -eq "partial" }) | Select-Object -First $maxVerifyReqs
+                $remaining = $maxVerifyReqs - $partialReqs.Count
+                $notStartedReqs = @($activeReqs | Where-Object { $_.status -eq "not_started" }) | Select-Object -First $remaining
+                $verifyReqs = @($partialReqs) + @($notStartedReqs)
+                Write-Host "    [VERIFY] Capped to $($verifyReqs.Count) of $($activeReqs.Count) active reqs (prioritizing partial)" -ForegroundColor DarkYellow
+            }
+
             $slimMatrix = @{
                 _summary = @{
                     total       = $allReqs.Count
@@ -742,10 +769,10 @@ function Invoke-VerifyPhase {
                     partial     = @($allReqs | Where-Object { $_.status -eq "partial" }).Count
                     not_started = @($allReqs | Where-Object { $_.status -eq "not_started" }).Count
                 }
-                requirements = $activeReqs
+                requirements = $verifyReqs
             }
             $matrixContent = $slimMatrix | ConvertTo-Json -Depth 10 -Compress
-            Write-Host "    [VERIFY] Slim matrix: $($activeReqs.Count) active reqs (of $($allReqs.Count) total)" -ForegroundColor DarkGray
+            Write-Host "    [VERIFY] Slim matrix: $($verifyReqs.Count) verify reqs (of $($allReqs.Count) total, $($activeReqs.Count) active)" -ForegroundColor DarkGray
         }
         catch {
             Write-Host "    [WARN] Could not parse matrix for verify: $($_.Exception.Message)" -ForegroundColor DarkYellow
@@ -756,10 +783,59 @@ function Invoke-VerifyPhase {
     $prompt = $prompt.Replace("{{REQUIREMENTS_MATRIX}}", $matrixContent)
     $prompt = $prompt.Replace("{{MODE}}", $Mode)
 
+    # Build evidence block from prior phases (execute, local-validate, review)
+    $evidenceBlock = Build-VerifyEvidence -ExecuteResults $ExecuteResults `
+        -ValidateResults $ValidateResults -ReviewResults $ReviewResults -RepoRoot $RepoRoot
+    if ($evidenceBlock) {
+        # Insert evidence after the requirements matrix in the prompt
+        $prompt = $prompt + "`n`n$evidenceBlock"
+        Write-Host "    [VERIFY] Injected evidence block ($($evidenceBlock.Length) chars)" -ForegroundColor DarkGray
+    }
+
+    # Scale verify tokens: 80 per req, min 4000, max 12000
+    $verifyReqCount = if ($verifyReqs) { $verifyReqs.Count } else { 50 }
+    $verifyMaxTokens = [math]::Max(4000, [math]::Min(12000, $verifyReqCount * 80))
+    Write-Host "    [VERIFY] MaxTokens: $verifyMaxTokens" -ForegroundColor DarkGray
+
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
-        -MaxTokens 3000 -UseCache -JsonMode -Phase "verify"
+        -MaxTokens $verifyMaxTokens -UseCache -JsonMode -Phase "verify"
 
     if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "verify" }
+
+    # Apply verify results to requirements matrix (THIS WAS MISSING — root cause of health stall)
+    if ($result.Parsed -and $result.Parsed.requirements_status) {
+        try {
+            $matrixRaw = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $statusMap = @{}
+            foreach ($rs in $result.Parsed.requirements_status) {
+                if ($rs.req_id -and $rs.status) {
+                    $statusMap[$rs.req_id] = $rs.status
+                }
+            }
+            $updated = 0
+            foreach ($req in $matrixRaw.requirements) {
+                if ($statusMap.ContainsKey($req.id)) {
+                    $oldStatus = $req.status
+                    $newStatus = $statusMap[$req.id]
+                    if ($oldStatus -ne $newStatus) {
+                        $req.status = $newStatus
+                        $updated++
+                    }
+                }
+            }
+            if ($updated -gt 0) {
+                $matrixRaw | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                Write-Host "    [VERIFY] Updated $updated requirement statuses in matrix" -ForegroundColor Green
+            } else {
+                Write-Host "    [VERIFY] No status changes from verify" -ForegroundColor DarkGray
+            }
+        }
+        catch {
+            Write-Host "    [WARN] Failed to apply verify results to matrix: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    } else {
+        Write-Host "    [WARN] Verify returned no requirements_status — matrix not updated" -ForegroundColor DarkYellow
+    }
 
     # Update health
     $health = Update-HealthScore -GsdDir $GsdDir
@@ -789,6 +865,172 @@ function Invoke-SpecFixPhase {
 # HELPERS
 # ============================================================
 
+function Build-VerifyEvidence {
+    <#
+    .SYNOPSIS
+        Build a concise evidence block from execute, validate, and review results
+        so the verify phase can make informed status decisions.
+    .DESCRIPTION
+        Without this evidence, the verify phase has no knowledge of what happened
+        during the current iteration and returns stale statuses.
+        Capped at ~2000 tokens (~6000 chars) to stay within budget.
+    #>
+    param(
+        [PSObject]$ExecuteResults,
+        [PSObject]$ValidateResults,
+        [PSObject]$ReviewResults,
+        [string]$RepoRoot
+    )
+
+    $evidence = @()
+    $maxChars = 6000  # ~2000 tokens
+
+    # --- Execute Results ---
+    if ($ExecuteResults -and $ExecuteResults.Results) {
+        $evidence += "## Execute Phase Evidence"
+        $evidence += "Completed: $($ExecuteResults.Completed) | Failed: $($ExecuteResults.Failed) | Total: $($ExecuteResults.Total)"
+        $evidence += ""
+
+        $filesCreated = @()
+        $filesModified = @()
+        $execFailures = @()
+
+        foreach ($reqId in $ExecuteResults.Results.Keys) {
+            $r = $ExecuteResults.Results[$reqId]
+            if ($r.Success -and $r.Text) {
+                # Extract file paths from the output (--- FILE: path --- markers)
+                $fileMatches = [regex]::Matches($r.Text, '(?m)^---\s*FILE:\s*(.+?)\s*---\s*$')
+                foreach ($fm in $fileMatches) {
+                    $fPath = $fm.Groups[1].Value.Trim()
+                    $fullPath = Join-Path $RepoRoot $fPath
+                    if (Test-Path $fullPath) {
+                        $filesCreated += "$reqId : $fPath"
+                    }
+                }
+                if ($fileMatches.Count -eq 0) {
+                    $filesModified += "$reqId : (raw output, no file markers)"
+                }
+            }
+            elseif (-not $r.Success) {
+                $execFailures += "$reqId : execute failed"
+            }
+        }
+
+        if ($filesCreated.Count -gt 0) {
+            $evidence += "### Files Written"
+            # Cap at 40 entries
+            $cap = [math]::Min($filesCreated.Count, 40)
+            $evidence += ($filesCreated | Select-Object -First $cap | ForEach-Object { "- $_" })
+            if ($filesCreated.Count -gt $cap) {
+                $evidence += "- ... and $($filesCreated.Count - $cap) more"
+            }
+        }
+
+        if ($execFailures.Count -gt 0) {
+            $evidence += ""
+            $evidence += "### Execute Failures"
+            $evidence += ($execFailures | Select-Object -First 20 | ForEach-Object { "- $_" })
+        }
+        $evidence += ""
+    }
+
+    # --- Local Validation Results ---
+    if ($ValidateResults) {
+        $evidence += "## Local Validation Evidence"
+        $evidence += "Passed: $($ValidateResults.TotalPassed) | Failed: $($ValidateResults.TotalFailed)"
+        $evidence += ""
+
+        # Passed items (just list req_ids)
+        $passedIds = @()
+        if ($ValidateResults.PassItems) {
+            $passedIds += $ValidateResults.PassItems | ForEach-Object { $_.ReqId }
+        }
+        if ($ValidateResults.SkipReviewItems) {
+            $passedIds += $ValidateResults.SkipReviewItems | ForEach-Object { $_.ReqId }
+        }
+        if ($passedIds.Count -gt 0) {
+            $evidence += "### Passed (local validation)"
+            $evidence += ($passedIds | Select-Object -First 50 | ForEach-Object { "- $_ : PASS" })
+            $evidence += ""
+        }
+
+        # Failed items with reasons
+        if ($ValidateResults.FailItems -and $ValidateResults.FailItems.Count -gt 0) {
+            $evidence += "### Failed (local validation)"
+            foreach ($failItem in ($ValidateResults.FailItems | Select-Object -First 20)) {
+                $reasons = @()
+                if ($failItem.Result -and $failItem.Result.Failures) {
+                    $reasons = $failItem.Result.Failures | ForEach-Object {
+                        $msg = "[$($_.type)] $($_.message)"
+                        # Truncate individual failure output
+                        if ($_.output -and $_.output.Length -gt 200) {
+                            $msg += " (output: $($_.output.Substring(0, 200))...)"
+                        } elseif ($_.output) {
+                            $msg += " (output: $($_.output))"
+                        }
+                        $msg
+                    }
+                }
+                $reasonText = if ($reasons.Count -gt 0) { $reasons -join "; " } else { "unknown failure" }
+                $evidence += "- $($failItem.ReqId) : FAIL - $reasonText"
+            }
+            $evidence += ""
+        }
+    }
+
+    # --- Review Results ---
+    if ($ReviewResults) {
+        $evidence += "## Review Phase Evidence"
+
+        # ReviewResults is parsed JSON from Sonnet — structure varies but typically has reviews array
+        if ($ReviewResults.reviews) {
+            foreach ($review in ($ReviewResults.reviews | Select-Object -First 20)) {
+                $rid = if ($review.req_id) { $review.req_id } else { "unknown" }
+                $status = if ($review.status) { $review.status } else { "reviewed" }
+                $issues = if ($review.issues) {
+                    ($review.issues | Select-Object -First 3 | ForEach-Object {
+                        if ($_ -is [string]) { $_ } else { $_.message }
+                    }) -join "; "
+                } elseif ($review.summary) {
+                    $review.summary
+                } else { "" }
+
+                $line = "- ${rid}: $status"
+                if ($issues) { $line += " - $issues" }
+                $evidence += $line
+            }
+        }
+        elseif ($ReviewResults.findings) {
+            foreach ($finding in ($ReviewResults.findings | Select-Object -First 20)) {
+                $rid = if ($finding.req_id) { $finding.req_id } else { "unknown" }
+                $severity = if ($finding.severity) { $finding.severity } else { "info" }
+                $msg = if ($finding.message) { $finding.message } else { $finding.description }
+                $evidence += "- ${rid}: [$severity] $msg"
+            }
+        }
+        else {
+            # Fallback: dump a compact JSON summary
+            $reviewJson = $ReviewResults | ConvertTo-Json -Depth 3 -Compress
+            if ($reviewJson.Length -gt 1500) {
+                $reviewJson = $reviewJson.Substring(0, 1500) + "..."
+            }
+            $evidence += $reviewJson
+        }
+        $evidence += ""
+    }
+
+    # Join and cap total size
+    if ($evidence.Count -eq 0) { return $null }
+
+    $evidenceText = "# Iteration Evidence (from prior phases)`n`n" + ($evidence -join "`n")
+
+    if ($evidenceText.Length -gt $maxChars) {
+        $evidenceText = $evidenceText.Substring(0, $maxChars) + "`n... (evidence truncated at $maxChars chars)"
+    }
+
+    return $evidenceText
+}
+
 function Get-InterfaceConventions {
     param([string]$Interface, [PSObject]$Config)
 
@@ -815,8 +1057,24 @@ function Write-GeneratedFiles {
         return
     }
 
+    # Path remapping: plan/Codex uses "backend/" but real project is "src/Server/Technijian.Api/"
+    # This mapping ensures generated code lands in the actual build path
+    $pathMappings = @(
+        @{ From = "^backend/";  To = "src/Server/Technijian.Api/" }
+    )
+
     for ($i = 0; $i -lt $fileMatches.Count; $i++) {
         $filePath = $fileMatches[$i].Groups[1].Value.Trim()
+
+        # Apply path remapping
+        foreach ($mapping in $pathMappings) {
+            if ($filePath -match $mapping.From) {
+                $originalPath = $filePath
+                $filePath = $filePath -replace $mapping.From, $mapping.To
+                Write-Host "      [REMAP] $originalPath -> $filePath" -ForegroundColor DarkCyan
+                break
+            }
+        }
         $startIdx = $fileMatches[$i].Index + $fileMatches[$i].Length
 
         $endIdx = if ($i + 1 -lt $fileMatches.Count) { $fileMatches[$i + 1].Index } else { $Output.Length }
@@ -825,9 +1083,29 @@ function Write-GeneratedFiles {
         # Strip code fences if present
         if ($content -match '^```\w*\n([\s\S]*?)\n```$') { $content = $Matches[1] }
 
+        # Namespace remapping for backend C# files: "namespace backend.X" -> "namespace Technijian.Api.X"
+        if ($filePath -like "src/Server/Technijian.Api/*.cs") {
+            $content = $content -replace 'namespace\s+backend\.', 'namespace Technijian.Api.'
+            $content = $content -replace 'namespace\s+backend\b', 'namespace Technijian.Api'
+            $content = $content -replace 'using\s+backend\.', 'using Technijian.Api.'
+        }
+
         $fullPath = Join-Path $RepoRoot $filePath
         $dir = Split-Path $fullPath -Parent
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+        # Guard: don't overwrite real implementations with FILL stubs
+        if ((Test-Path $fullPath)) {
+            $existingContent = Get-Content $fullPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            $newHasFill = $content -match '//\s*FILL'
+            $existingHasFill = $existingContent -match '//\s*FILL'
+            $existingSize = if ($existingContent) { $existingContent.Length } else { 0 }
+
+            if ($newHasFill -and -not $existingHasFill -and $existingSize -gt 200) {
+                Write-Host "      [SKIP] $filePath — existing file has real implementation, new content has FILL stubs" -ForegroundColor DarkYellow
+                continue
+            }
+        }
 
         Set-Content $fullPath -Value $content -Encoding UTF8
         Write-Host "      [WRITE] $filePath" -ForegroundColor DarkGray
