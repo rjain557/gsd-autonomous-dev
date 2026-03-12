@@ -265,6 +265,58 @@ function Start-V3Pipeline {
             }
         }
 
+        # -- Pre-Plan: Force-decompose any previously truncated requirements --
+        $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+        $needsDecomp = @($batchReqs | Where-Object { $_.needs_decomposition -eq $true })
+        if ($needsDecomp.Count -gt 0) {
+            Write-Host "  [PRE-DECOMPOSE] $($needsDecomp.Count) reqs flagged for decomposition (previously truncated)" -ForegroundColor Yellow
+            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $reqsList = [System.Collections.ArrayList]@($matrix.requirements)
+            $totalAdded = 0
+            foreach ($tReq in $needsDecomp) {
+                $tId = if ($tReq.id) { $tReq.id } else { $tReq.req_id }
+                # Create 2 sub-reqs: backend + frontend (simple split since we don't have plan details yet)
+                foreach ($layer in @("backend", "frontend")) {
+                    $subId = "$tId-$layer"
+                    $existing = $reqsList | Where-Object { ($_.id -eq $subId) -or ($_.req_id -eq $subId) }
+                    if (-not $existing) {
+                        $newReq = [PSCustomObject]@{
+                            id = $subId; description = "$($tReq.description) [$layer layer]"
+                            interface = $layer; priority = if ($tReq.priority) { $tReq.priority } else { "medium" }
+                            status = "not_started"; source = "truncation-decomposed"; parent_id = $tId; category = "implementation"
+                        }
+                        $reqsList.Add($newReq) | Out-Null
+                        $totalAdded++
+                        Write-Host "    [SUB] $subId — $layer" -ForegroundColor DarkCyan
+                    }
+                }
+                # Mark parent as decomposed
+                $parentReq = $reqsList | Where-Object { ($_.id -eq $tId) -or ($_.req_id -eq $tId) }
+                if ($parentReq) {
+                    $parentReq.status = "satisfied"
+                    $parentReq | Add-Member -NotePropertyName "decomposed" -NotePropertyValue $true -Force
+                }
+            }
+            if ($totalAdded -gt 0) {
+                $matrix.requirements = $reqsList.ToArray()
+                $matrix.total = $reqsList.Count
+                $matrix.summary.satisfied = @($reqsList | Where-Object { $_.status -eq "satisfied" }).Count
+                $matrix.summary.not_started = @($reqsList | Where-Object { $_.status -eq "not_started" }).Count
+                $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                Write-Host "  [PRE-DECOMPOSE] Added $totalAdded sub-reqs, removed $($needsDecomp.Count) truncated parents from batch" -ForegroundColor Cyan
+            }
+            # Remove decomposed parents from batch
+            $decompIds = @($needsDecomp | ForEach-Object { if ($_.id) { $_.id } else { $_.req_id } })
+            $batchReqs = @($batchReqs | Where-Object {
+                $rid = if ($_.id) { $_.id } else { $_.req_id }
+                $rid -notin $decompIds
+            })
+            if ($batchReqs.Count -eq 0) {
+                Write-Host "  [PRE-DECOMPOSE] All batch reqs decomposed. Next iteration picks up sub-reqs." -ForegroundColor Cyan
+                continue
+            }
+        }
+
         # -- Plan Phase --
         if (-not (Test-BudgetAvailable -EstimatedCost 0.10)) {
             Write-Host "  [BUDGET] Insufficient budget for Plan phase. Halting." -ForegroundColor Red
@@ -365,6 +417,10 @@ function Start-V3Pipeline {
                     if ($f.estimated_tokens) { $estTokens += $f.estimated_tokens }
                 }
             }
+            # Fallback: if no token estimate available, use file count heuristic (3K tokens per file)
+            if ($estTokens -eq 0 -and $fileCount -gt 0) {
+                $estTokens = $fileCount * 3000
+            }
             $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
 
             if ($fileCount -ge 3 -or $estTokens -gt 8000) {
@@ -432,7 +488,7 @@ function Start-V3Pipeline {
                 if ($parentReq) {
                     $parentReq.status = "satisfied"
                     $parentReq | Add-Member -NotePropertyName "decomposed" -NotePropertyValue $true -Force
-                    $parentReq | Add-Member -NotePropertyName "notes" -NotePropertyValue "Auto-decomposed into $($subIdx-1) sub-requirements (>5 files or >10K tokens)" -Force
+                    $parentReq | Add-Member -NotePropertyName "notes" -NotePropertyValue "Auto-decomposed into $($subIdx-1) sub-requirements (>=3 files or >8K tokens)" -Force
                 }
             }
 
@@ -490,6 +546,32 @@ function Start-V3Pipeline {
         }
         if ($skeletonResults) { $fillParams["SkeletonResults"] = $skeletonResults }
         $executeResults = Invoke-ExecutePhase @fillParams
+
+        # -- Post-Fill Truncation Detection: mark truncated reqs for re-decomposition --
+        if ($executeResults -and $executeResults.Results) {
+            $truncatedReqs = @()
+            foreach ($reqId in $executeResults.Results.Keys) {
+                $r = $executeResults.Results[$reqId]
+                if ($r.StopReason -eq "max_tokens" -or ($r.Usage -and $r.Usage.output_tokens -ge 16000)) {
+                    $truncatedReqs += $reqId
+                }
+            }
+            if ($truncatedReqs.Count -gt 0) {
+                Write-Host "  [TRUNCATION] $($truncatedReqs.Count) reqs hit token limit: $($truncatedReqs -join ', ')" -ForegroundColor Red
+                Write-Host "  [TRUNCATION] These will be auto-decomposed in the next iteration" -ForegroundColor Yellow
+                $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+                $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+                foreach ($tReqId in $truncatedReqs) {
+                    $req = $matrix.requirements | Where-Object { ($_.id -eq $tReqId) -or ($_.req_id -eq $tReqId) }
+                    if ($req -and -not $req.decomposed) {
+                        $req.status = "not_started"
+                        $req | Add-Member -NotePropertyName "needs_decomposition" -NotePropertyValue $true -Force
+                        $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated at 16K tokens — force decompose next iteration" -Force
+                    }
+                }
+                $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+            }
+        }
 
         # -- LLM Pre-Validate Review+Fix (Sonnet fixes code BEFORE local build) --
         Write-Host "`n  --- LLM Pre-Validate Fix ---" -ForegroundColor Cyan
@@ -945,6 +1027,32 @@ function Invoke-ExecutePhase {
     # Load interface conventions
     $conventionsPath = Join-Path $script:V3Root "prompts/shared/coding-conventions.md"
     $conventions = if (Test-Path $conventionsPath) { Get-Content $conventionsPath -Raw -Encoding UTF8 } else { "" }
+
+    # Pre-filter: Remove existing real-implementation files from plans to avoid FILL stub waste
+    if ($Stage -eq "skeleton" -or $Stage -eq "fill") {
+        foreach ($plan in $Plans) {
+            if ($plan.files_to_create) {
+                $filtered = @()
+                foreach ($f in @($plan.files_to_create)) {
+                    $fPath = $f.path
+                    # Remap backend/ paths to actual src/Server/ paths
+                    if ($fPath -match '^backend/') {
+                        $fPath = $fPath -replace '^backend/', 'src/Server/Technijian.Api/'
+                    }
+                    $fullPath = Join-Path $RepoRoot $fPath
+                    if ((Test-Path $fullPath) -and (Get-Item $fullPath).Length -gt 200) {
+                        $existing = Get-Content $fullPath -Raw -ErrorAction SilentlyContinue
+                        if ($existing -and $existing -notmatch '//\s*FILL') {
+                            Write-Host "    [PRE-FILTER] Skipping $fPath — existing real implementation" -ForegroundColor DarkGray
+                            continue
+                        }
+                    }
+                    $filtered += $f
+                }
+                $plan.files_to_create = $filtered
+            }
+        }
+    }
 
     # Build parallel items
     $items = @()
