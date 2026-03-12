@@ -491,18 +491,28 @@ function Start-V3Pipeline {
         if ($skeletonResults) { $fillParams["SkeletonResults"] = $skeletonResults }
         $executeResults = Invoke-ExecutePhase @fillParams
 
-        # -- Local Validate Phase (FREE) + Auto-Fix Loop --
+        # -- LLM Pre-Validate Review+Fix (Sonnet fixes code BEFORE local build) --
+        Write-Host "`n  --- LLM Pre-Validate Fix ---" -ForegroundColor Cyan
+        $fixerScript = Join-Path $script:V3Root "scripts/gsd-validation-fixer.ps1"
+        if (Test-Path $fixerScript) {
+            $allReqIds = @($planOutput.Plans | ForEach-Object { if ($_.req_id) { $_.req_id } else { $_.id } })
+            try {
+                & $fixerScript -RepoRoot $RepoRoot -RequirementIds $allReqIds -MaxAttempts 3 -PreValidate
+            } catch {
+                Write-Host "    [WARN] Pre-validate fixer error: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+
+        # -- Local Validate Phase (confirmation check after LLM fix) --
         Write-Host "`n  --- Local Validate ---" -ForegroundColor Yellow
         $validateResults = Invoke-LocalValidatePhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
             -ExecuteResults $executeResults -Plans $planOutput.Plans
 
-        # If validation failed, run the fixer script in a loop until it passes
+        # If validation still failed, run targeted fixer on specific failures
         $failCount = if ($validateResults -and $validateResults.FailItems) { @($validateResults.FailItems).Count } else { 0 }
         if ($failCount -gt 0) {
-            Write-Host "`n  --- Validation Fixer (auto-fix loop) ---" -ForegroundColor Cyan
-            Write-Host "    $failCount items failed validation, attempting auto-fix..." -ForegroundColor DarkCyan
+            Write-Host "`n  --- Validation Fixer (targeted fix for $failCount remaining failures) ---" -ForegroundColor Cyan
             $failedReqIds = @($validateResults.FailItems | ForEach-Object { $_.ReqId })
-            $fixerScript = Join-Path $script:V3Root "scripts/gsd-validation-fixer.ps1"
             if (Test-Path $fixerScript) {
                 try {
                     & $fixerScript -RepoRoot $RepoRoot -RequirementIds $failedReqIds -MaxAttempts 5
@@ -515,8 +525,6 @@ function Start-V3Pipeline {
                     -ExecuteResults $executeResults -Plans $planOutput.Plans
                 $failCount = if ($validateResults -and $validateResults.FailItems) { @($validateResults.FailItems).Count } else { 0 }
                 Write-Host "    Post-fix: $failCount items still failing" -ForegroundColor $(if ($failCount -eq 0) { "Green" } else { "Yellow" })
-            } else {
-                Write-Host "    [WARN] Fixer script not found at $fixerScript" -ForegroundColor DarkYellow
             }
         }
 

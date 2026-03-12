@@ -15,7 +15,8 @@
 param(
     [Parameter(Mandatory)][string]$RepoRoot,
     [Parameter(Mandatory)][string[]]$RequirementIds,
-    [int]$MaxAttempts = 10
+    [int]$MaxAttempts = 10,
+    [switch]$PreValidate
 )
 
 $ErrorActionPreference = "Continue"
@@ -567,8 +568,141 @@ function Update-RequirementStatus {
 }
 
 # ============================================================
+# PRE-VALIDATE MODE: LLM reviews+fixes code BEFORE local build
+# ============================================================
+
+function Invoke-PreValidateFix {
+    Write-Host "`n  === PRE-VALIDATE LLM FIX ===" -ForegroundColor Cyan
+    Write-Host "  Requirements: $($RequirementIds -join ', ')" -ForegroundColor DarkGray
+
+    if (-not $script:HasLlmFixer) {
+        Write-Host "    [SKIP] LLM fixer not available" -ForegroundColor DarkYellow
+        return @{ Success = $false; Fixed = 0 }
+    }
+
+    $fixCount = 0
+    $gsdDir = Join-Path $RepoRoot ".gsd"
+
+    # Phase 1: Quick namespace fixes (FREE — no API calls)
+    $csFiles = @()
+    foreach ($reqId in $RequirementIds) {
+        $genDir = Join-Path $gsdDir "generated/$reqId"
+        if (Test-Path $genDir) {
+            $csFiles += @(Get-ChildItem $genDir -Recurse -Filter "*.cs" -ErrorAction SilentlyContinue)
+        }
+        # Also check recently written files in src/Server
+        $apiDir = Join-Path $RepoRoot "src/Server/Technijian.Api"
+        if (Test-Path $apiDir) {
+            $recentCs = @(Get-ChildItem $apiDir -Recurse -Filter "*.cs" -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) })
+            $csFiles += $recentCs
+        }
+    }
+    $csFiles = @($csFiles | Select-Object -Unique)
+
+    # Apply namespace fixes to all recently generated .cs files
+    foreach ($file in $csFiles) {
+        $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $content) { continue }
+        $original = $content
+        foreach ($pattern in $script:NamespaceFixMap.Keys) {
+            $content = $content -replace $pattern, $script:NamespaceFixMap[$pattern]
+        }
+        if ($content -ne $original) {
+            Set-Content $file.FullName -Value $content -Encoding UTF8
+            $fixCount++
+            Write-Host "    [NS-FIX] $($file.Name)" -ForegroundColor DarkCyan
+        }
+    }
+
+    # Phase 2: LLM review+fix for each requirement's generated files
+    $apiDir = Join-Path $RepoRoot "src/Server/Technijian.Api"
+    $projectContext = ""
+    if (Test-Path $apiDir) {
+        # Get existing namespace patterns from a known-good file
+        $sampleFile = Get-ChildItem $apiDir -Recurse -Filter "*.cs" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 500 -and $_.Length -lt 5000 } | Select-Object -First 1
+        if ($sampleFile) {
+            $projectContext = Get-Content $sampleFile.FullName -Raw -ErrorAction SilentlyContinue
+        }
+    }
+
+    $recentFiles = @(Get-ChildItem $RepoRoot -Recurse -Include "*.cs","*.ts","*.tsx" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) -and $_.Length -gt 100 })
+
+    if ($recentFiles.Count -eq 0) {
+        Write-Host "    [SKIP] No recently generated files to review" -ForegroundColor DarkGray
+        return @{ Success = $true; Fixed = $fixCount }
+    }
+
+    Write-Host "    [LLM] Reviewing $($recentFiles.Count) recently generated files..." -ForegroundColor Cyan
+    $batchSize = 5
+    for ($i = 0; $i -lt $recentFiles.Count; $i += $batchSize) {
+        $batch = $recentFiles[$i..([math]::Min($i + $batchSize - 1, $recentFiles.Count - 1))]
+        $fileContents = ""
+        foreach ($f in $batch) {
+            $relPath = $f.FullName.Replace($RepoRoot, "").TrimStart("\", "/")
+            $fc = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+            if ($fc) { $fileContents += "`n=== FILE: $relPath ===`n$fc`n" }
+        }
+
+        $reviewPrompt = @"
+Review these recently generated files for a .NET 8 + React 18 project.
+Project uses: namespace Technijian.Api.*, Dapper, SQL Server stored procedures, TCAI.Data for DB access.
+DO NOT use Entity Framework. Repositories inherit from BaseRepository and use TCAI.Data.DapperHelper.
+
+Fix these common issues:
+- Wrong namespaces (should be Technijian.Api.*)
+- Missing using statements
+- References to non-existent types or methods
+- FILL/TODO stubs that should be implemented
+- TypeScript import path errors
+
+For each file that needs fixes, output ONLY:
+=== FIX: <relative-path> ===
+<complete fixed file content>
+=== END ===
+
+If a file is correct, skip it entirely. Output NOTHING for correct files.
+
+Project sample for reference:
+$projectContext
+
+Files to review:
+$fileContents
+"@
+        try {
+            $result = Invoke-SonnetApi -UserMessage $reviewPrompt -MaxTokens 12000 -Phase "pre-validate-fix"
+            if ($result -and $result -match "=== FIX:") {
+                $fixes = [regex]::Matches($result, '=== FIX:\s*(.+?)\s*===\s*\n([\s\S]*?)(?:=== END ===)')
+                foreach ($fix in $fixes) {
+                    $fixPath = $fix.Groups[1].Value.Trim()
+                    $fixContent = $fix.Groups[2].Value.Trim()
+                    $fullPath = Join-Path $RepoRoot $fixPath
+                    if ((Test-Path $fullPath) -and $fixContent.Length -gt 50) {
+                        Set-Content $fullPath -Value $fixContent -Encoding UTF8
+                        $fixCount++
+                        Write-Host "    [LLM-FIX] $fixPath" -ForegroundColor Green
+                    }
+                }
+            }
+        } catch {
+            Write-Host "    [WARN] LLM review batch error: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+
+    Write-Host "    [DONE] Pre-validate fixed $fixCount files" -ForegroundColor $(if ($fixCount -gt 0) { "Green" } else { "DarkGray" })
+    return @{ Success = $true; Fixed = $fixCount }
+}
+
+# ============================================================
 # ENTRY POINT
 # ============================================================
 
-$result = Invoke-ValidationFixLoop
-exit $(if ($result.Success) { 0 } else { 1 })
+if ($PreValidate) {
+    $result = Invoke-PreValidateFix
+    exit $(if ($result.Success) { 0 } else { 1 })
+} else {
+    $result = Invoke-ValidationFixLoop
+    exit $(if ($result.Success) { 0 } else { 1 })
+}
