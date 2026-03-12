@@ -234,7 +234,7 @@ function Start-V3Pipeline {
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
 
                 Write-Host "  [RESEARCH-DECOMPOSE] Split $($parentsDecomposed.Count) large reqs into $totalAdded sub-reqs" -ForegroundColor Cyan
-                foreach ($pid in $parentsDecomposed) { Write-Host "    Parent: $pid" -ForegroundColor DarkCyan }
+                foreach ($parentId in $parentsDecomposed) { Write-Host "    Parent: $parentId" -ForegroundColor DarkCyan }
 
                 # Remove decomposed parents from this batch — sub-reqs picked up next iteration
                 $batchReqs = @($batchReqs | Where-Object {
