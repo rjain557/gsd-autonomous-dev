@@ -672,9 +672,10 @@ Files to review:
 $fileContents
 "@
         try {
-            $result = Invoke-SonnetApi -UserMessage $reviewPrompt -MaxTokens 12000 -Phase "pre-validate-fix"
-            if ($result -and $result -match "=== FIX:") {
-                $fixes = [regex]::Matches($result, '=== FIX:\s*(.+?)\s*===\s*\n([\s\S]*?)(?:=== END ===)')
+            $apiResult = Invoke-SonnetApi -UserMessage $reviewPrompt -MaxTokens 12000 -Phase "pre-validate-fix"
+            $result = if ($apiResult -and $apiResult.Text) { $apiResult.Text } else { "" }
+            if ($result -match "=== FIX:") {
+                $fixes = [regex]::Matches($result, '=== FIX:\s*(.+?)\s*===\s*\r?\n([\s\S]*?)(?:=== END ===)')
                 foreach ($fix in $fixes) {
                     $fixPath = $fix.Groups[1].Value.Trim()
                     $fixContent = $fix.Groups[2].Value.Trim()

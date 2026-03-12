@@ -367,7 +367,7 @@ function Start-V3Pipeline {
             }
             $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
 
-            if ($fileCount -ge 5 -or $estTokens -gt 10000) {
+            if ($fileCount -ge 3 -or $estTokens -gt 8000) {
                 Write-Host "  [ENFORCE-DECOMPOSE] $rid has $fileCount files, ~$estTokens tokens — too large for single Codex call" -ForegroundColor Yellow
                 $plansToDecompose += $plan
             } else {
