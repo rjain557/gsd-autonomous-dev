@@ -236,16 +236,16 @@ function Start-V3Pipeline {
                 Write-Host "  [RESEARCH-DECOMPOSE] Split $($parentsDecomposed.Count) large reqs into $totalAdded sub-reqs" -ForegroundColor Cyan
                 foreach ($parentId in $parentsDecomposed) { Write-Host "    Parent: $parentId" -ForegroundColor DarkCyan }
 
-                # Remove decomposed parents from this batch — sub-reqs picked up next iteration
+                # Replace decomposed parents with their sub-reqs in current batch
                 $batchReqs = @($batchReqs | Where-Object {
                     $rid = if ($_.id) { $_.id } else { $_.req_id }
                     $rid -notin $parentsDecomposed
                 })
 
-                if ($batchReqs.Count -eq 0) {
-                    Write-Host "  [RESEARCH-DECOMPOSE] All reqs decomposed. Next iteration processes sub-reqs." -ForegroundColor Cyan
-                    continue
-                }
+                # Add sub-reqs to current batch so they go through Plan+Execute THIS iteration
+                $newSubReqs = @($reqs | Where-Object { $_.source -eq "research-decomposed" -and $_.status -eq "not_started" -and $_.parent_id -in $parentsDecomposed })
+                $batchReqs = @($batchReqs) + @($newSubReqs)
+                Write-Host "  [RESEARCH-DECOMPOSE] Batch now has $($batchReqs.Count) reqs (replaced parents with sub-reqs for same-iteration processing)" -ForegroundColor Cyan
             }
         }
 
