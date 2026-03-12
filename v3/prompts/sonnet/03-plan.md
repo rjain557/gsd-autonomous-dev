@@ -18,7 +18,25 @@ You are the PLANNER. Create detailed, actionable implementation plans for each r
 
 ## Instructions
 
-1. For each requirement, create a step-by-step implementation plan.
+### Step 0: Decompose Large Requirements
+
+Before planning, evaluate each requirement for size. A requirement is TOO LARGE if it:
+- Spans 3+ layers (frontend + backend + database)
+- Requires 5+ files to implement
+- Covers multiple independent concerns (e.g., "5 layers of isolation" or "4 compliance frameworks")
+- Would need >8000 output tokens from the code generator
+
+**If a requirement is too large, DECOMPOSE it** into atomic sub-requirements that each:
+- Touch 1-2 layers max
+- Need 1-3 files
+- Can be independently validated
+- Use the parent ID as prefix (e.g., CL-028 → CL-028-1, CL-028-2, CL-028-3)
+
+Add decomposed items to the `decomposed` array in the output. The orchestrator will inject them into the matrix and remove the parent. Do NOT create plans for decomposed parents — only for the atomic children.
+
+### Step 1-7: Plan Atomic Requirements
+
+1. For each requirement (including newly decomposed sub-requirements), create a step-by-step implementation plan.
 2. List ALL files to create and modify with their target paths.
 3. Route files to correct interface directories (src/web/, src/mcp-admin/, src/browser/, src/mobile/, src/agent/, src/shared/, backend/, database/).
 4. Assign a confidence score (0.0-1.0) based on complexity and risk.
@@ -77,6 +95,20 @@ Items with confidence >= 0.9 AND local validation PASS will skip LLM review enti
           "type": "file_exists | pattern_match | build_check | dotnet_test | npm_test",
           "target": "",
           "expected": ""
+        }
+      ]
+    }
+  ],
+  "decomposed": [
+    {
+      "parent_id": "REQ-xxx",
+      "sub_requirements": [
+        {
+          "id": "REQ-xxx-1",
+          "description": "Atomic sub-requirement description",
+          "interface": "backend",
+          "priority": "high",
+          "status": "not_started"
         }
       ]
     }

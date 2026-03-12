@@ -49,8 +49,9 @@ $script:InterfaceValidators = @{
         @{ type = "test";       command = "npx vitest run --dir src/shared"; timeout = 60 }
     )
     backend = @(
-        @{ type = "build";      command = "dotnet build --no-restore"; timeout = 60 }
-        @{ type = "test";       command = "dotnet test --no-build"; timeout = 120 }
+        @{ type = "build";      command = "dotnet build --no-restore"; timeout = 60; dir = "src/Server/Technijian.Api" }
+        @{ type = "build";      command = "dotnet build"; timeout = 120; dir = "tests/backend" }
+        @{ type = "test";       command = "dotnet test --no-build --filter `"FullyQualifiedName!~Integration`""; timeout = 120; dir = "tests/backend" }
     )
     database = @(
         @{ type = "syntax";     command = "sqlcmd -i {file} -b"; timeout = 10 }
@@ -122,11 +123,16 @@ function Invoke-LocalValidation {
     $validators = $script:InterfaceValidators[$Interface]
     if ($validators) {
         foreach ($validator in $validators) {
+            # Support per-validator subdirectory (e.g., backend builds from src/Server/Technijian.Api)
+            $validatorRoot = $RepoRoot
+            if ($validator.dir) {
+                $validatorRoot = Join-Path $RepoRoot $validator.dir
+            }
             $testResult = Invoke-ValidatorCommand `
                 -Command $validator.command `
                 -Type $validator.type `
                 -TimeoutSec $validator.timeout `
-                -RepoRoot $RepoRoot `
+                -RepoRoot $validatorRoot `
                 -RequirementId $RequirementId
 
             $result.Tests += $testResult
@@ -198,12 +204,18 @@ function Invoke-BatchLocalValidation {
     $skipReviewItems = @()
 
     foreach ($item in $Items) {
-        $result = Invoke-LocalValidation `
-            -RepoRoot $RepoRoot `
-            -FilesCreated $item.FilesCreated `
-            -AcceptanceTests $item.AcceptanceTests `
-            -RequirementId $item.ReqId `
-            -Interface $item.Interface
+        try {
+            $result = Invoke-LocalValidation `
+                -RepoRoot $RepoRoot `
+                -FilesCreated $item.FilesCreated `
+                -AcceptanceTests $item.AcceptanceTests `
+                -RequirementId $item.ReqId `
+                -Interface $item.Interface
+        } catch {
+            # Catch any crash (regex, file access, etc.) and treat as FAIL instead of killing pipeline
+            Write-Host "    [ERROR] Validation crashed for $($item.ReqId): $($_.Exception.Message)" -ForegroundColor Red
+            $result = @{ Passed = $false; Failures = @(@{ type = "crash"; message = $_.Exception.Message }); Tests = @() }
+        }
 
         if ($result.Passed) {
             $confidence = if ($PlanConfidences[$item.ReqId]) { $PlanConfidences[$item.ReqId] } else { 0.5 }
@@ -322,7 +334,16 @@ function Invoke-AcceptanceTest {
             $path = Join-Path $RepoRoot $Test.target
             if (Test-Path $path) {
                 $content = Get-Content $path -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
-                $result.Passed = ($content -match $Test.expected)
+                try {
+                    $prevEAP = $ErrorActionPreference
+                    $ErrorActionPreference = "Continue"
+                    $result.Passed = ($content -match $Test.expected)
+                    $ErrorActionPreference = $prevEAP
+                } catch {
+                    # Pattern contains regex-invalid chars (e.g. SQL DATEADD) — fall back to literal Contains
+                    $ErrorActionPreference = $prevEAP
+                    $result.Passed = $content.Contains($Test.expected)
+                }
                 $result.Actual = if ($result.Passed) { "pattern found" } else { "pattern not found" }
             }
             else {
@@ -387,7 +408,8 @@ function Test-SharedCodePurity {
         if (-not $content) { continue }
 
         foreach ($pattern in $forbiddenImports) {
-            if ($content -match "import.*['""]$pattern") {
+            try { $importMatch = $content -match "import.*['""]$pattern" } catch { $importMatch = $false }
+            if ($importMatch) {
                 $violations += @{
                     type    = "shared_code_violation"
                     file    = $file

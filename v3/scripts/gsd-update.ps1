@@ -19,7 +19,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Auto-log to file while keeping console output (timestamped per run)
 $v3Dir = Split-Path $PSScriptRoot -Parent
+$logDir = Join-Path $v3Dir "../logs"
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+$timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
+$transcriptFile = Join-Path $logDir "v3-pipeline-$timestamp.log"
+# Also maintain a symlink-like "latest" log for easy tailing
+$latestLog = Join-Path $v3Dir "../v3-pipeline-live.log"
+try { Stop-Transcript -EA SilentlyContinue } catch {}
+Start-Transcript -Path $transcriptFile | Out-Null
+# Write the current log path to latest pointer
+Set-Content $latestLog -Value "# Latest log: $transcriptFile`n# Started: $(Get-Date)" -Encoding UTF8
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $GsdDir = Join-Path $RepoRoot ".gsd"
 
@@ -63,21 +74,30 @@ $currentSatisfied = ($matrix.requirements | Where-Object { $_.status -eq "satisf
 $healthPct = if ($currentTotal -gt 0) { [math]::Round(($currentSatisfied / $currentTotal) * 100) } else { 0 }
 Write-Host "  Current: $currentSatisfied/$currentTotal satisfied (${healthPct}%)" -ForegroundColor DarkGray
 
-# Run feature update pipeline
-$result = Start-V3Pipeline `
-    -RepoRoot $RepoRoot `
-    -Mode "feature_update" `
-    -Config $Config `
-    -AgentMap $AgentMap `
-    -Scope $Scope `
-    -NtfyTopic $NtfyTopic `
-    -StartIteration $StartIteration
+# Run feature update pipeline with crash protection
+try {
+    $result = Start-V3Pipeline `
+        -RepoRoot $RepoRoot `
+        -Mode "feature_update" `
+        -Config $Config `
+        -AgentMap $AgentMap `
+        -Scope $Scope `
+        -NtfyTopic $NtfyTopic `
+        -StartIteration $StartIteration
 
-if ($result.Success) {
-    Write-Host "`n  Feature update complete! Cost: `$$([math]::Round($result.TotalCost, 2))" -ForegroundColor Green
-    exit 0
+    if ($result.Success) {
+        Write-Host "`n  Feature update complete! Cost: `$$([math]::Round($result.TotalCost, 2))" -ForegroundColor Green
+    }
+    else {
+        Write-Host "`n  Feature update stopped: $($result.Error)" -ForegroundColor Yellow
+    }
 }
-else {
-    Write-Host "`n  Feature update stopped: $($result.Error)" -ForegroundColor Yellow
-    exit 1
+catch {
+    Write-Host "`n  [FATAL] Pipeline crashed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  Stack: $($_.ScriptStackTrace)" -ForegroundColor DarkRed
+    $errFile = Join-Path $GsdDir "logs/fatal-crash.log"
+    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') FATAL: $($_.Exception.Message)`n$($_.ScriptStackTrace)" | Add-Content $errFile
+}
+finally {
+    try { Stop-Transcript -EA SilentlyContinue } catch {}
 }

@@ -24,7 +24,7 @@ $script:ApiConfig = @{
         Model      = "claude-sonnet-4-6"
         MaxRetries = 3
         RetryBackoff = @(2, 4, 8)
-        TimeoutSec = 300
+        TimeoutSec = 300  # Sonnet needs 300s for large plan/research phases (44K+ tokens)
         BatchEndpoint = "/v1/messages/batches"
         BatchPollIntervalSec = 30
         BatchMaxWaitMin = 60
@@ -34,7 +34,7 @@ $script:ApiConfig = @{
         Model      = "gpt-5.1-codex-mini"
         MaxRetries = 1
         RetryBackoff = @(3)
-        TimeoutSec = 300
+        TimeoutSec = 240  # Codex needs 240s for large fill phases (16K+ token output, 180s still times out)
         MaxConcurrent = 2
         InterCallDelaySec = 3  # Delay between sequential calls to avoid rate limits
     }
@@ -45,7 +45,7 @@ $script:ApiConfig = @{
         ApiKeyEnv  = "DEEPSEEK_API_KEY"
         MaxRetries = 3
         RetryBackoff = @(2, 5, 10)
-        TimeoutSec = 300
+        TimeoutSec = 120
         InterCallDelaySec = 1
         MaxOutputTokens = 8192  # DeepSeek limit: max_tokens must be in [1, 8192]
     }
@@ -56,7 +56,7 @@ $script:ApiConfig = @{
         ApiKeyEnv  = "KIMI_API_KEY"
         MaxRetries = 2
         RetryBackoff = @(3, 8)
-        TimeoutSec = 300
+        TimeoutSec = 120
         InterCallDelaySec = 1
     }
     MiniMax = @{
@@ -65,7 +65,7 @@ $script:ApiConfig = @{
         ApiKeyEnv  = "MINIMAX_API_KEY"
         MaxRetries = 2
         RetryBackoff = @(3, 8)
-        TimeoutSec = 300
+        TimeoutSec = 120
         InterCallDelaySec = 1
     }
     # Escape hatch models
@@ -217,9 +217,22 @@ function Invoke-SonnetApi {
     while ($attempt -le $maxRetries) {
         $attempt++
         try {
-            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers `
-                -Body $bodyJson -TimeoutSec $script:ApiConfig.Anthropic.TimeoutSec `
-                -ContentType "application/json"
+            # Hard timeout via polling loop — Wait-Job -Timeout is unreliable on Windows
+            $hardTimeout = if ($script:ApiConfig.Anthropic.TimeoutSec) { $script:ApiConfig.Anthropic.TimeoutSec } else { 120 }
+            $job = Start-Job -ScriptBlock {
+                param($u, $h, $b, $t)
+                Invoke-RestMethod -Uri $u -Method Post -Headers $h -Body $b -TimeoutSec $t -ContentType "application/json"
+            } -ArgumentList $url, $headers, $bodyJson, $hardTimeout
+            $deadline = (Get-Date).AddSeconds($hardTimeout + 30)
+            while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if ($job.State -eq 'Running') {
+                # Kill child processes then the job
+                try { Get-CimInstance Win32_Process -Filter "ParentProcessId=$PID" -EA SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } } catch {}
+                $job | Stop-Job -PassThru | Remove-Job -Force
+                throw [System.TimeoutException]::new("Anthropic API call exceeded hard timeout of $($hardTimeout + 30)s")
+            }
+            $response = $job | Receive-Job
+            $job | Remove-Job -Force
 
             # Extract text content
             $outputText = ""
@@ -583,9 +596,21 @@ function Invoke-CodexMiniApi {
     while ($attempt -le $maxRetries) {
         $attempt++
         try {
-            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers `
-                -Body $body -TimeoutSec $script:ApiConfig.OpenAI.TimeoutSec `
-                -ContentType "application/json"
+            # Hard timeout via polling loop — Wait-Job -Timeout is unreliable on Windows
+            $hardTimeout = if ($script:ApiConfig.OpenAI.TimeoutSec) { $script:ApiConfig.OpenAI.TimeoutSec } else { 120 }
+            $job = Start-Job -ScriptBlock {
+                param($u, $h, $b, $t)
+                Invoke-RestMethod -Uri $u -Method Post -Headers $h -Body $b -TimeoutSec $t -ContentType "application/json"
+            } -ArgumentList $url, $headers, $body, $hardTimeout
+            $deadline = (Get-Date).AddSeconds($hardTimeout + 30)
+            while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if ($job.State -eq 'Running') {
+                try { Get-CimInstance Win32_Process -Filter "ParentProcessId=$PID" -EA SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } } catch {}
+                $job | Stop-Job -PassThru | Remove-Job -Force
+                throw [System.TimeoutException]::new("Codex Mini API call exceeded hard timeout of $($hardTimeout + 30)s")
+            }
+            $response = $job | Receive-Job
+            $job | Remove-Job -Force
 
             # Extract text from Responses API output structure
             # output[] contains reasoning blocks and message blocks
@@ -754,8 +779,21 @@ function Invoke-OpenAICompatFallback {
     $maxRetries = $Config.MaxRetries
     for ($attempt = 1; $attempt -le ($maxRetries + 1); $attempt++) {
         try {
-            $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers `
-                -Body $body -TimeoutSec $Config.TimeoutSec -ContentType "application/json"
+            # Hard timeout via background job
+            $hardTimeout = if ($Config.TimeoutSec) { $Config.TimeoutSec } else { 120 }
+            $job = Start-Job -ScriptBlock {
+                param($u, $h, $b, $t)
+                Invoke-RestMethod -Uri $u -Method Post -Headers $h -Body $b -TimeoutSec $t -ContentType "application/json"
+            } -ArgumentList $url, $headers, $body, $hardTimeout
+            $deadline = (Get-Date).AddSeconds($hardTimeout + 30)
+            while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if ($job.State -eq 'Running') {
+                try { Get-CimInstance Win32_Process -Filter "ParentProcessId=$PID" -EA SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } } catch {}
+                $job | Stop-Job -PassThru | Remove-Job -Force
+                throw [System.TimeoutException]::new("$ModelName API call exceeded hard timeout of $($hardTimeout + 30)s")
+            }
+            $response = $job | Receive-Job
+            $job | Remove-Job -Force
 
             $outputText = $response.choices[0].message.content
             $usage = @{

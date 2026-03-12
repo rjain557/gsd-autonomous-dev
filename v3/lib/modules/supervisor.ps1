@@ -253,27 +253,46 @@ function Get-ScopedRequirements {
     $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
     $reqs = $matrix.requirements
 
-    if (-not $Scope) { return $reqs | Where-Object { $_.status -in @("not_started", "partial") } }
-
-    $filters = $Scope -split '\s+AND\s+'
-    $filtered = $reqs
-    foreach ($filter in $filters) {
-        # Case-insensitive matching to prevent silent 0-match convergence
-        if ($filter -match "^source:(.+)$") { $filtered = $filtered | Where-Object { $_.source -ieq $Matches[1] } }
-        elseif ($filter -match "^id:(.+)$") { $ids = $Matches[1] -split ','; $filtered = $filtered | Where-Object { ($_.req_id -in $ids) -or ($_.id -in $ids) } }
-        elseif ($filter -match "^interface:(.+)$") { $filtered = $filtered | Where-Object { $_.interface -ieq $Matches[1] } }
-        elseif ($filter -match "^spec_version:(.+)$") { $filtered = $filtered | Where-Object { $_.spec_version -ieq $Matches[1] } }
+    $active = if (-not $Scope) {
+        @($reqs | Where-Object { $_.status -in @("not_started", "partial") })
+    } else {
+        $filtered = $reqs
+        $filters = $Scope -split '\s+AND\s+'
+        foreach ($filter in $filters) {
+            # Case-insensitive matching to prevent silent 0-match convergence
+            if ($filter -match "^source:(.+)$") { $filtered = $filtered | Where-Object { $_.source -ieq $Matches[1] } }
+            elseif ($filter -match "^id:(.+)$") { $ids = $Matches[1] -split ','; $filtered = $filtered | Where-Object { ($_.req_id -in $ids) -or ($_.id -in $ids) } }
+            elseif ($filter -match "^interface:(.+)$") { $filtered = $filtered | Where-Object { $_.interface -ieq $Matches[1] } }
+            elseif ($filter -match "^spec_version:(.+)$") { $filtered = $filtered | Where-Object { $_.spec_version -ieq $Matches[1] } }
+        }
+        @($filtered | Where-Object { $_.status -in @("not_started", "partial") })
     }
 
-    $result = @($filtered | Where-Object { $_.status -in @("not_started", "partial") })
-
     # Warn if scope filter matched 0 requirements — likely a bug, not convergence
-    if ($Scope -and $result.Count -eq 0 -and $reqs.Count -gt 0) {
+    if ($Scope -and $active.Count -eq 0 -and $reqs.Count -gt 0) {
         Write-Host "  [WARN] Scope filter '$Scope' matched 0 active requirements out of $($reqs.Count) total." -ForegroundColor Yellow
         Write-Host "         Check if filter values match matrix field values (case-insensitive)." -ForegroundColor Yellow
     }
 
-    return $result
+    # Smart prioritization: not_started first, then partial; deprioritize items with high fail_count
+    # Load fail tracker if it exists
+    $failTrackerPath = Join-Path $GsdDir "requirements/fail-tracker.json"
+    $failTracker = @{}
+    if (Test-Path $failTrackerPath) {
+        try {
+            $ftData = Get-Content $failTrackerPath -Raw | ConvertFrom-Json
+            foreach ($prop in $ftData.PSObject.Properties) { $failTracker[$prop.Name] = $prop.Value }
+        } catch {}
+    }
+
+    # Sort: not_started before partial, then by fail_count ascending (fewer failures first)
+    $sorted = @($active | Sort-Object @(
+        @{ Expression = { if ($_.status -eq "not_started") { 0 } else { 1 } }; Ascending = $true },
+        @{ Expression = { $rid = if ($_.id) { $_.id } else { $_.req_id }; if ($failTracker[$rid]) { $failTracker[$rid] } else { 0 } }; Ascending = $true },
+        @{ Expression = { if ($_.priority -eq "high") { 0 } elseif ($_.priority -eq "medium") { 1 } else { 2 } }; Ascending = $true }
+    ))
+
+    return $sorted
 }
 
 # ============================================================

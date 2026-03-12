@@ -225,15 +225,15 @@
         "feature_update": {
             "command": "gsd-update",
             "description": "Post-launch feature additions from updated specs. Preserves existing satisfied requirements.",
-            "max_iterations": 20,
+            "max_iterations": 50,
             "batch_size_min": 3,
-            "batch_size_max": 5,
+            "batch_size_max": 10,
             "phases_active": ["cache-warm", "spec-gate", "research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify", "spec-fix"],
             "research": "full-scoped",
             "spec_gate": "incremental",
             "speculative_execution": true,
             "two_stage_execute": true,
-            "budget_cap_usd": 25.00,
+            "budget_cap_usd": 100.00,
             "scope_filter_default": "source:v{N}_spec",
             "preservation_rules": {
                 "preserve_satisfied": true,

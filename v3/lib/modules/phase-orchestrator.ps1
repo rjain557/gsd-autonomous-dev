@@ -149,6 +149,8 @@ function Start-V3Pipeline {
         Write-Host "  ITERATION $iter / $maxIterations" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Cyan
 
+        try {  # Crash protection: one bad iteration should not kill the pipeline
+
         # Budget check — estimate cost of upcoming iteration before starting
         # Estimated per-iteration cost: ~$0.15 Sonnet (research+plan+review+verify) + ~$0.05/req Codex execute
         $estimatedIterCost = 0.15 + ($batchSizeMax * 0.05)
@@ -200,6 +202,75 @@ function Start-V3Pipeline {
             continue
         }
 
+        # -- Handle Decomposed Requirements --
+        if ($planOutput.decomposed -and $planOutput.decomposed.Count -gt 0) {
+            $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $reqs = [System.Collections.ArrayList]@($matrix.requirements)
+            $totalAdded = 0
+            $parentsDecomposed = @()
+
+            foreach ($decomp in $planOutput.decomposed) {
+                $parentId = $decomp.parent_id
+                $parentsDecomposed += $parentId
+
+                # Mark parent as decomposed (not executed directly)
+                $parentReq = $reqs | Where-Object { ($_.id -eq $parentId) -or ($_.req_id -eq $parentId) }
+                if ($parentReq) {
+                    $parentReq.status = "satisfied"
+                    $parentReq | Add-Member -NotePropertyName "decomposed" -NotePropertyValue $true -Force
+                    $parentReq | Add-Member -NotePropertyName "notes" -NotePropertyValue "Decomposed into $($decomp.sub_requirements.Count) sub-requirements" -Force
+                }
+
+                # Add sub-requirements to matrix
+                foreach ($sub in $decomp.sub_requirements) {
+                    # Skip if already exists
+                    $existing = $reqs | Where-Object { ($_.id -eq $sub.id) -or ($_.req_id -eq $sub.id) }
+                    if ($existing) { continue }
+
+                    $newReq = [PSCustomObject]@{
+                        id = $sub.id
+                        description = $sub.description
+                        interface = $sub.interface
+                        priority = if ($sub.priority) { $sub.priority } else { "medium" }
+                        status = "not_started"
+                        source = "decomposed"
+                        parent_id = $parentId
+                        category = if ($sub.category) { $sub.category } else { "implementation" }
+                    }
+                    $reqs.Add($newReq) | Out-Null
+                    $totalAdded++
+                }
+            }
+
+            if ($totalAdded -gt 0) {
+                # Update matrix
+                $matrix.requirements = $reqs.ToArray()
+                $matrix.total = $reqs.Count
+                $satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
+                $partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
+                $matrix.summary.satisfied = $satisfied
+                $matrix.summary.partial = $partial
+                $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+
+                Write-Host "  [DECOMPOSE] Split $($parentsDecomposed.Count) large requirements into $totalAdded sub-requirements" -ForegroundColor Cyan
+                Write-Host "  [DECOMPOSE] Parents: $($parentsDecomposed -join ', ')" -ForegroundColor DarkCyan
+
+                # Remove plans for decomposed parents — they'll be picked up as sub-reqs next iteration
+                $planOutput.plans = @($planOutput.plans | Where-Object {
+                    $rid = if ($_.req_id) { $_.req_id } else { $_.id }
+                    $rid -notin $parentsDecomposed
+                })
+
+                # If all plans were decomposed, skip to next iteration to pick up sub-reqs
+                if ($planOutput.plans.Count -eq 0) {
+                    Write-Host "  [DECOMPOSE] All requirements decomposed. Next iteration will process sub-requirements." -ForegroundColor Cyan
+                    continue
+                }
+            }
+        }
+
         # -- Execute Phase (Two-Stage: Skeleton then Fill) --
         # Execute is the most expensive phase: estimate $0.05/req for Codex Mini
         $execEstimate = $batchReqs.Count * 0.05
@@ -237,12 +308,67 @@ function Start-V3Pipeline {
         if ($skeletonResults) { $fillParams["SkeletonResults"] = $skeletonResults }
         $executeResults = Invoke-ExecutePhase @fillParams
 
-        # -- Local Validate Phase (FREE) --
+        # -- Local Validate Phase (FREE) + Auto-Fix Loop --
         Write-Host "`n  --- Local Validate ---" -ForegroundColor Yellow
         $validateResults = Invoke-LocalValidatePhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
             -ExecuteResults $executeResults -Plans $planOutput.Plans
 
-        # -- Review Phase (only for failed items) --
+        # If validation failed, run the fixer script in a loop until it passes
+        $failCount = if ($validateResults -and $validateResults.FailItems) { @($validateResults.FailItems).Count } else { 0 }
+        if ($failCount -gt 0) {
+            Write-Host "`n  --- Validation Fixer (auto-fix loop) ---" -ForegroundColor Cyan
+            Write-Host "    $failCount items failed validation, attempting auto-fix..." -ForegroundColor DarkCyan
+            $failedReqIds = @($validateResults.FailItems | ForEach-Object { $_.ReqId })
+            $fixerScript = Join-Path $script:V3Root "scripts/gsd-validation-fixer.ps1"
+            if (Test-Path $fixerScript) {
+                try {
+                    & $fixerScript -RepoRoot $RepoRoot -RequirementIds $failedReqIds -MaxAttempts 5
+                } catch {
+                    Write-Host "    [WARN] Validation fixer error: $($_.Exception.Message)" -ForegroundColor DarkYellow
+                }
+                # Re-validate after fixes
+                Write-Host "`n  --- Re-Validate (post-fix) ---" -ForegroundColor Yellow
+                $validateResults = Invoke-LocalValidatePhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
+                    -ExecuteResults $executeResults -Plans $planOutput.Plans
+                $failCount = if ($validateResults -and $validateResults.FailItems) { @($validateResults.FailItems).Count } else { 0 }
+                Write-Host "    Post-fix: $failCount items still failing" -ForegroundColor $(if ($failCount -eq 0) { "Green" } else { "Yellow" })
+            } else {
+                Write-Host "    [WARN] Fixer script not found at $fixerScript" -ForegroundColor DarkYellow
+            }
+        }
+
+        # -- Update Fail Tracker (deprioritize repeatedly failing requirements) --
+        if ($validateResults -and $validateResults.FailItems) {
+            $failTrackerPath = Join-Path $GsdDir "requirements/fail-tracker.json"
+            $failTracker = @{}
+            if (Test-Path $failTrackerPath) {
+                try {
+                    $ftData = Get-Content $failTrackerPath -Raw | ConvertFrom-Json
+                    foreach ($prop in $ftData.PSObject.Properties) { $failTracker[$prop.Name] = [int]$prop.Value }
+                } catch {}
+            }
+            foreach ($failItem in $validateResults.FailItems) {
+                $rid = $failItem.ReqId
+                if (-not $failTracker.ContainsKey($rid)) { $failTracker[$rid] = 0 }
+                $failTracker[$rid]++
+            }
+            # Also decrement (reward) items that passed — they should stay prioritized
+            if ($validateResults.PassItems) {
+                foreach ($passItem in $validateResults.PassItems) {
+                    $rid = $passItem.ReqId
+                    if ($failTracker.ContainsKey($rid) -and $failTracker[$rid] -gt 0) {
+                        $failTracker[$rid] = [math]::Max(0, $failTracker[$rid] - 1)
+                    }
+                }
+            }
+            $failTracker | ConvertTo-Json -Depth 3 | Set-Content $failTrackerPath -Encoding UTF8
+            $highFailReqs = @($failTracker.GetEnumerator() | Where-Object { $_.Value -ge 3 })
+            if ($highFailReqs.Count -gt 0) {
+                Write-Host "  [DEPRIORITIZE] $($highFailReqs.Count) reqs failed 3+ times — moved to back of queue" -ForegroundColor DarkYellow
+            }
+        }
+
+        # -- Review Phase (only for failed items after fix attempts) --
         if ("review" -in $phasesActive -and "review" -notin $phasesSkipped) {
             if ($validateResults.FailItems.Count -gt 0) {
                 Write-Host "`n  --- Review ---" -ForegroundColor Yellow
@@ -327,6 +453,15 @@ function Start-V3Pipeline {
 
         Save-Checkpoint -GsdDir $GsdDir -Iteration $iter -Phase "iteration-complete" `
             -Health $currentHealth -BatchSize $batchSizeMax -Mode $Mode
+
+        } catch {
+            Write-Host "`n  [CRASH] Iteration $iter crashed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  Stack: $($_.ScriptStackTrace)" -ForegroundColor DarkRed
+            Send-GsdNotification -Title "GSD Iteration $iter CRASHED" `
+                -Message "Error: $($_.Exception.Message)" -Tags "warning" -Priority "high"
+            try { Save-Checkpoint -GsdDir $GsdDir -Iteration $iter -Phase "crashed" -Health $currentHealth -BatchSize $batchSizeMax -Mode $Mode } catch {}
+            continue
+        }
     }
 
     # -- Cleanup --
@@ -706,8 +841,8 @@ function Invoke-ReviewPhase {
     $prompt = $prompt.Replace("{{ERROR_CONTEXT}}", $errorContext)
     $prompt = $prompt.Replace("{{GIT_DIFF}}", $gitDiff)
 
-    # Scale review tokens: 800 per failed item, min 4000, max 12000
-    $reviewMaxTokens = [math]::Max(4000, [math]::Min(12000, $FailedItems.Count * 800))
+    # Scale review tokens: 1200 per failed item, min 4000, max 24000
+    $reviewMaxTokens = [math]::Max(4000, [math]::Min(24000, $FailedItems.Count * 1200))
     Write-Host "    [REVIEW] MaxTokens: $reviewMaxTokens for $($FailedItems.Count) failed items" -ForegroundColor DarkGray
 
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
@@ -792,9 +927,9 @@ function Invoke-VerifyPhase {
         Write-Host "    [VERIFY] Injected evidence block ($($evidenceBlock.Length) chars)" -ForegroundColor DarkGray
     }
 
-    # Scale verify tokens: 80 per req, min 4000, max 12000
+    # Scale verify tokens: 120 per req, min 4000, max 24000
     $verifyReqCount = if ($verifyReqs) { $verifyReqs.Count } else { 50 }
-    $verifyMaxTokens = [math]::Max(4000, [math]::Min(12000, $verifyReqCount * 80))
+    $verifyMaxTokens = [math]::Max(4000, [math]::Min(24000, $verifyReqCount * 120))
     Write-Host "    [VERIFY] MaxTokens: $verifyMaxTokens" -ForegroundColor DarkGray
 
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
@@ -834,7 +969,7 @@ function Invoke-VerifyPhase {
             Write-Host "    [WARN] Failed to apply verify results to matrix: $($_.Exception.Message)" -ForegroundColor DarkYellow
         }
     } else {
-        Write-Host "    [WARN] Verify returned no requirements_status — matrix not updated" -ForegroundColor DarkYellow
+        Write-Host "    [WARN] Verify returned no requirements_status -- matrix not updated" -ForegroundColor DarkYellow
     }
 
     # Update health
@@ -987,28 +1122,27 @@ function Build-VerifyEvidence {
             foreach ($review in ($ReviewResults.reviews | Select-Object -First 20)) {
                 $rid = if ($review.req_id) { $review.req_id } else { "unknown" }
                 $status = if ($review.status) { $review.status } else { "reviewed" }
-                $issues = if ($review.issues) {
-                    ($review.issues | Select-Object -First 3 | ForEach-Object {
+                $issues = ""
+                if ($review.issues) {
+                    $issues = ($review.issues | Select-Object -First 3 | ForEach-Object {
                         if ($_ -is [string]) { $_ } else { $_.message }
                     }) -join "; "
                 } elseif ($review.summary) {
-                    $review.summary
-                } else { "" }
+                    $issues = $review.summary
+                }
 
                 $line = "- ${rid}: $status"
                 if ($issues) { $line += " - $issues" }
                 $evidence += $line
             }
-        }
-        elseif ($ReviewResults.findings) {
+        } elseif ($ReviewResults.findings) {
             foreach ($finding in ($ReviewResults.findings | Select-Object -First 20)) {
                 $rid = if ($finding.req_id) { $finding.req_id } else { "unknown" }
                 $severity = if ($finding.severity) { $finding.severity } else { "info" }
                 $msg = if ($finding.message) { $finding.message } else { $finding.description }
                 $evidence += "- ${rid}: [$severity] $msg"
             }
-        }
-        else {
+        } else {
             # Fallback: dump a compact JSON summary
             $reviewJson = $ReviewResults | ConvertTo-Json -Depth 3 -Compress
             if ($reviewJson.Length -gt 1500) {
@@ -1083,27 +1217,173 @@ function Write-GeneratedFiles {
         # Strip code fences if present
         if ($content -match '^```\w*\n([\s\S]*?)\n```$') { $content = $Matches[1] }
 
-        # Namespace remapping for backend C# files: "namespace backend.X" -> "namespace Technijian.Api.X"
+        # ============================================================
+        # SMART WRITE GUARD — 3-layer defense against disease
+        # ============================================================
+
+        # Layer 0: Namespace remapping for backend C# files
         if ($filePath -like "src/Server/Technijian.Api/*.cs") {
             $content = $content -replace 'namespace\s+backend\.', 'namespace Technijian.Api.'
             $content = $content -replace 'namespace\s+backend\b', 'namespace Technijian.Api'
             $content = $content -replace 'using\s+backend\.', 'using Technijian.Api.'
         }
 
+        # Layer 1: Auto-fix known namespace diseases (runs on ALL .cs files before writing)
+        if ($filePath -like "*.cs") {
+            # Disease: LLM generates wrong namespace for IDbConnectionFactory
+            #   "using Technijian.Api.Data;" when IDbConnectionFactory is in TCAI.Data
+            #   "Data.IDbConnectionFactory" qualified refs from wrong namespace
+            $content = $content -replace 'using\s+Technijian\.Api\.Tenants\s*;', 'using Technijian.Api.MultiTenancy;'
+            $content = $content -replace 'using\s+Technijian\.Api\.Gdpr\s*;', 'using Technijian.Api.Compliance;'
+
+            # Disease: LLM references IDbConnectionFactory without TCAI.Data using
+            #   Only fix if file actually references IDbConnectionFactory AND doesn't already have TCAI.Data
+            if ($content -match 'IDbConnectionFactory' -and $content -notmatch 'using\s+TCAI\.Data\s*;' -and $content -notmatch 'namespace\s+TCAI\.Data') {
+                # Add using TCAI.Data after the last using statement
+                if ($content -match '(?m)(^using\s+[^;]+;\s*\n)(?!using)') {
+                    $content = $content -replace '(?m)(^using\s+[^;]+;\s*\n)(?!using)', "`$1using TCAI.Data;`n"
+                    Write-Host "      [AUTO-FIX] Added 'using TCAI.Data' to $filePath" -ForegroundColor Yellow
+                }
+                # Fix qualified "Data.IDbConnectionFactory" refs to unqualified (since we added using)
+                $content = $content -replace '(?<!\w)Data\.IDbConnectionFactory', 'IDbConnectionFactory'
+            }
+
+            # Disease: Controllers inheriting TcaiControllerBase without the using
+            if ($content -match ':\s*TcaiControllerBase' -and $content -notmatch 'using\s+Technijian\.Api\.Controllers\s*;' -and $content -notmatch 'namespace\s+Technijian\.Api\.Controllers') {
+                if ($content -match '(?m)(^using\s+[^;]+;\s*\n)(?!using)') {
+                    $content = $content -replace '(?m)(^using\s+[^;]+;\s*\n)(?!using)', "`$1using Technijian.Api.Controllers;`n"
+                    Write-Host "      [AUTO-FIX] Added 'using Technijian.Api.Controllers' to $filePath" -ForegroundColor Yellow
+                }
+            }
+
+            # Disease: LLM uses System.Data.SqlClient instead of Microsoft.Data.SqlClient
+            if ($content -match 'System\.Data\.SqlClient') {
+                $content = $content -replace 'using\s+System\.Data\.SqlClient\s*;', 'using Microsoft.Data.SqlClient;'
+                $content = $content -replace 'System\.Data\.SqlClient\.', 'Microsoft.Data.SqlClient.'
+                Write-Host "      [AUTO-FIX] Replaced System.Data.SqlClient with Microsoft.Data.SqlClient in $filePath" -ForegroundColor Yellow
+            }
+
+            # Disease: LLM uses TcaiPlatform.GDPR instead of Technijian.Api.GDPR
+            $content = $content -replace 'using\s+TcaiPlatform\.GDPR(\.Models)?\s*;', 'using Technijian.Api.GDPR;'
+
+            # Disease: LLM uses DataLevel instead of DataClassification
+            $content = $content -replace '\bDataLevel\b', 'DataClassification'
+
+            # Disease: LLM uses namespace TCAI.Controllers instead of Technijian.Api.Controllers
+            $content = $content -replace 'namespace\s+TCAI\.Controllers\s*;', 'namespace Technijian.Api.Controllers;'
+        }
+
         $fullPath = Join-Path $RepoRoot $filePath
         $dir = Split-Path $fullPath -Parent
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
-        # Guard: don't overwrite real implementations with FILL stubs
+        # Layer 1b: Block duplicate/disease files that conflict with existing architecture
+        $blockedFiles = @(
+            "src/Server/Technijian.Api/Infrastructure/ISqlConnectionFactory.cs",
+            "src/Server/Technijian.Api/Infrastructure/SqlConnectionFactory.cs",
+            "src/Server/Technijian.Api/GDPR/ConsentRecord.cs",
+            "src/Server/Technijian.Api/GDPR/ErasureRequestResult.cs",
+            "src/Server/Technijian.Api/GDPR/GdprExportResult.cs",
+            "src/Server/Technijian.Api/Program.cs",
+            "src/Server/Technijian.Api/GDPR/IGdprService.cs",
+            "src/Server/Technijian.Api/GDPR/GdprService.cs",
+            "tests/backend/unit/GdprServiceTests.cs",
+            "tests/backend/unit/KeyVaultServiceTests.cs",
+            "src/Server/Technijian.Api/Data/SqlDbConnectionFactory.cs",
+            "src/Server/Technijian.Api/Data/DapperExtensions.cs",
+            "src/Server/Technijian.Api/Data/DbConnectionFactory.cs",
+            "src/Server/Technijian.Api/Security/IKeyVaultService.cs",
+            "src/Server/Technijian.Api/Security/KeyVaultService.cs",
+            "src/Server/Technijian.Api/Retention/IRetentionService.cs",
+            "src/Server/Technijian.Api/MultiTenancy/ITenantCacheService.cs",
+            "src/Server/Technijian.Api/MultiTenancy/TenantCacheService.cs",
+            "src/Server/Technijian.Api/Data/SqlConnectionFactory.cs",
+            "src/Server/Technijian.Api/Services/ITenantCacheService.cs",
+            "src/Server/Technijian.Api/Services/TenantCacheService.cs",
+            "src/Server/Technijian.Api/Services/RetentionService.cs",
+            "src/Server/Technijian.Api/Compliance/ComplianceControlService.cs",
+            "src/Server/Technijian.Api/Compliance/IComplianceControlService.cs",
+            "src/Server/Technijian.Api/Security/HipaaGuardAttribute.cs",
+            "src/Server/Technijian.Api/Services/ISoftDeleteService.cs",
+            "src/Server/Technijian.Api/Services/SoftDeleteService.cs",
+            "src/Server/Technijian.Api/Compliance/ComplianceService.cs",
+            "src/Server/Technijian.Api/Security/HipaaControlsService.cs",
+            "src/Server/Technijian.Api/Services/DataRetentionService.cs",
+            "src/Server/Technijian.Api/Services/SoftDeleteOrchestrationService.cs",
+            "src/Server/Technijian.Api/Security/KeyVaultSecretNames.cs",
+            "src/Server/Technijian.Api/Security/KeyVaultHealthCheck.cs",
+            "src/Server/Technijian.Api/Compliance/CcpaService.cs",
+            "src/Server/Technijian.Api/Compliance/HipaaService.cs",
+            "src/Server/Technijian.Api/Health/SqlHealthCheck.cs",
+            "src/web/package.json",
+            "src/web/src/lib/zodSchemas.ts",
+            "src/Server/Technijian.Api/Repositories/RepositoryBase.cs",
+            "src/Server/Technijian.Api/Repositories/IRepositoryBase.cs",
+            "src/shared/api/client.ts",
+            "src/web/main.tsx",
+            "src/Server/Technijian.Api/Compliance/CcpaControlsService.cs",
+            "src/Server/Technijian.Api/Compliance/GdprControlsService.cs",
+            "src/Server/Technijian.Api/Compliance/Models/ComplianceEvent.cs",
+            "src/Server/Technijian.Api/Services/RetentionPolicyService.cs",
+            "src/Server/Technijian.Api/Services/RetentionPolicyHostedService.cs",
+            "src/Server/Technijian.Api/BackgroundJobs/RetentionEnforcementJob.cs",
+            "src/Server/Technijian.Api/Infrastructure/VectorStoreTenantHelper.cs",
+            "src/Server/Technijian.Api/Infrastructure/TenantContextAccessor.cs",
+            "src/Server/Technijian.Api/Infrastructure/CacheKeyHelper.cs",
+            "src/Server/Technijian.Api/Infrastructure/FileStorageTenantHelper.cs",
+            "src/Server/Technijian.Api/Compliance/HipaaControlsService.cs",
+            "src/Server/Technijian.Api/Storage/BlobStorageService.cs",
+            "src/Server/Technijian.Api/Storage/IBlobStorageService.cs",
+            "src/Server/Technijian.Api/backend.csproj",
+            "src/Server/Technijian.Api/Data/DapperOptions.cs",
+            "src/Server/Technijian.Api/Data/SqlExceptionMapper.cs"
+        )
+        if ($filePath -in $blockedFiles) {
+            Write-Host "      [BLOCKED] $filePath -- conflicts with existing architecture (TCAI.Data pattern)" -ForegroundColor Red
+            continue
+        }
+
+        # Layer 2: Protected interfaces — NEVER overwrite (contract stability)
+        $protectedInterfaces = @(
+            "src/Server/Technijian.Api/Data/IDbConnectionFactory.cs",
+            "src/Server/Technijian.Api/Security/IKeyVaultService.cs",
+            "src/Server/Technijian.Api/Controllers/TcaiControllerBase.cs",
+            "src/Server/Technijian.Api/Compliance/IComplianceService.cs",
+            "src/Server/Technijian.Api/GDPR/IGdprService.cs",
+            "src/Server/Technijian.Api/Program.cs",
+            "src/Server/Technijian.Api/Retention/IRetentionService.cs",
+            "src/Server/Technijian.Api/SoftDelete/ISoftDeleteService.cs",
+            "src/Server/Technijian.Api/Compliance/ComplianceControlsRegistry.cs",
+            "src/Server/Technijian.Api/Compliance/ComplianceOptions.cs"
+        )
+        if ($filePath -in $protectedInterfaces -and (Test-Path $fullPath)) {
+            Write-Host "      [PROTECTED] $filePath -- tracked interface/base class, skipping overwrite" -ForegroundColor Cyan
+            continue
+        }
+
+        # Layer 3: Smart implementation guard — only write if compatible with existing interfaces
         if ((Test-Path $fullPath)) {
             $existingContent = Get-Content $fullPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
             $newHasFill = $content -match '//\s*FILL'
             $existingHasFill = $existingContent -match '//\s*FILL'
             $existingSize = if ($existingContent) { $existingContent.Length } else { 0 }
 
+            # Guard 3a: Don't overwrite real implementations with FILL stubs
             if ($newHasFill -and -not $existingHasFill -and $existingSize -gt 200) {
-                Write-Host "      [SKIP] $filePath — existing file has real implementation, new content has FILL stubs" -ForegroundColor DarkYellow
+                Write-Host "      [SKIP] $filePath -- existing file has real implementation, new content has FILL stubs" -ForegroundColor DarkYellow
                 continue
+            }
+
+            # Guard 3b: Block writes that shrink real files by >50% (likely truncated/incomplete output)
+            if (-not $newHasFill -and -not $existingHasFill -and $existingSize -gt 500) {
+                $shrinkRatio = if ($existingSize -gt 0) { $content.Length / $existingSize } else { 1 }
+                if ($shrinkRatio -lt 0.5) {
+                    Write-Host "      [BLOCKED] $filePath -- new content is $([math]::Round((1-$shrinkRatio)*100))% smaller ($existingSize -> $($content.Length) chars), likely truncated" -ForegroundColor Red
+                    continue
+                }
+                if ($existingSize -gt $content.Length) {
+                    Write-Host "      [WARN] $filePath -- overwriting larger existing file ($existingSize -> $($content.Length) chars)" -ForegroundColor DarkYellow
+                }
             }
         }
 
