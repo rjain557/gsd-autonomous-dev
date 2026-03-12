@@ -19,6 +19,7 @@ You are the RESEARCHER. Analyze the requirements below and discover implementati
 3. Identify shared components, hooks, types that can be reused.
 4. Flag any technical decisions that need to be made.
 5. Note risk factors (complex integrations, unclear requirements, etc.).
+6. **Estimate implementation size** for each requirement: count files needed and layers touched (frontend, backend, database, docs/scripts). Mark any requirement that needs 5+ files or spans 3+ layers as `"needs_decomposition": true`.
 
 ## Output Schema
 
@@ -33,7 +34,28 @@ You are the RESEARCHER. Analyze the requirements below and discover implementati
       "dependencies_discovered": [""],
       "tech_decisions": [""],
       "risk_factors": [""],
-      "interface": "web | mcp-admin | browser | mobile | agent | shared | backend"
+      "interface": "web | mcp-admin | browser | mobile | agent | shared | backend",
+      "size_estimate": {
+        "files_needed": 0,
+        "layers": ["backend", "frontend", "database"],
+        "estimated_output_tokens": 0,
+        "needs_decomposition": false
+      }
+    }
+  ],
+  "decompose": [
+    {
+      "parent_id": "REQ-xxx",
+      "reason": "Spans 3 layers with 8 files needed",
+      "sub_requirements": [
+        {
+          "id": "REQ-xxx-1",
+          "description": "Atomic sub-requirement focusing on one layer",
+          "interface": "backend",
+          "priority": "high",
+          "files": ["file1.cs", "file2.cs"]
+        }
+      ]
     }
   ],
   "shared_patterns": {

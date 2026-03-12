@@ -187,6 +187,84 @@ function Start-V3Pipeline {
                 -Config $Config -Inventory $inventory
         }
 
+        # -- Pre-Plan Decomposition (from Research output) --
+        if ($researchOutput -and $researchOutput.decompose -and $researchOutput.decompose.Count -gt 0) {
+            $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $reqs = [System.Collections.ArrayList]@($matrix.requirements)
+            $totalAdded = 0
+            $parentsDecomposed = @()
+
+            foreach ($decomp in $researchOutput.decompose) {
+                $parentId = $decomp.parent_id
+                if (-not $decomp.sub_requirements -or $decomp.sub_requirements.Count -eq 0) { continue }
+                $parentsDecomposed += $parentId
+
+                $parentReq = $reqs | Where-Object { ($_.id -eq $parentId) -or ($_.req_id -eq $parentId) }
+                if ($parentReq) {
+                    $parentReq.status = "satisfied"
+                    $parentReq | Add-Member -NotePropertyName "decomposed" -NotePropertyValue $true -Force
+                    $parentReq | Add-Member -NotePropertyName "notes" -NotePropertyValue "Research-decomposed into $($decomp.sub_requirements.Count) sub-reqs: $($decomp.reason)" -Force
+                }
+
+                foreach ($sub in $decomp.sub_requirements) {
+                    $existing = $reqs | Where-Object { ($_.id -eq $sub.id) -or ($_.req_id -eq $sub.id) }
+                    if ($existing) { continue }
+                    $newReq = [PSCustomObject]@{
+                        id = $sub.id
+                        description = $sub.description
+                        interface = if ($sub.interface) { $sub.interface } else { "backend" }
+                        priority = if ($sub.priority) { $sub.priority } else { "medium" }
+                        status = "not_started"
+                        source = "research-decomposed"
+                        parent_id = $parentId
+                        category = "implementation"
+                    }
+                    $reqs.Add($newReq) | Out-Null
+                    $totalAdded++
+                }
+            }
+
+            if ($totalAdded -gt 0) {
+                $matrix.requirements = $reqs.ToArray()
+                $matrix.total = $reqs.Count
+                $matrix.summary.satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
+                $matrix.summary.partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
+                $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+
+                Write-Host "  [RESEARCH-DECOMPOSE] Split $($parentsDecomposed.Count) large reqs into $totalAdded sub-reqs" -ForegroundColor Cyan
+                foreach ($pid in $parentsDecomposed) { Write-Host "    Parent: $pid" -ForegroundColor DarkCyan }
+
+                # Remove decomposed parents from this batch — sub-reqs picked up next iteration
+                $batchReqs = @($batchReqs | Where-Object {
+                    $rid = if ($_.id) { $_.id } else { $_.req_id }
+                    $rid -notin $parentsDecomposed
+                })
+
+                if ($batchReqs.Count -eq 0) {
+                    Write-Host "  [RESEARCH-DECOMPOSE] All reqs decomposed. Next iteration processes sub-reqs." -ForegroundColor Cyan
+                    continue
+                }
+            }
+        }
+
+        # Also check research size_estimate for requirements Sonnet didn't explicitly decompose
+        if ($researchOutput -and $researchOutput.findings) {
+            $needsSplit = @()
+            foreach ($finding in $researchOutput.findings) {
+                if ($finding.size_estimate -and $finding.size_estimate.needs_decomposition -eq $true) {
+                    $rid = $finding.req_id
+                    # Only flag if not already decomposed above
+                    $alreadyDone = if ($researchOutput.decompose) { $researchOutput.decompose | Where-Object { $_.parent_id -eq $rid } } else { $null }
+                    if (-not $alreadyDone) {
+                        $needsSplit += $rid
+                        Write-Host "  [WARN] $rid flagged needs_decomposition but Research didn't split it — ENFORCE-DECOMPOSE will catch it post-Plan" -ForegroundColor DarkYellow
+                    }
+                }
+            }
+        }
+
         # -- Plan Phase --
         if (-not (Test-BudgetAvailable -EstimatedCost 0.10)) {
             Write-Host "  [BUDGET] Insufficient budget for Plan phase. Halting." -ForegroundColor Red
