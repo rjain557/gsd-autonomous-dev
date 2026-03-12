@@ -271,6 +271,111 @@ function Start-V3Pipeline {
             }
         }
 
+        # -- Enforce Decomposition (post-plan check) --
+        # If Sonnet didn't decompose but plan has requirements with too many files, force decomposition
+        $plansToDecompose = @()
+        $plansToKeep = @()
+        foreach ($plan in $planOutput.plans) {
+            $fileCount = 0
+            if ($plan.files_to_create) { $fileCount += @($plan.files_to_create).Count }
+            if ($plan.files_to_modify) { $fileCount += @($plan.files_to_modify).Count }
+            $estTokens = 0
+            if ($plan.batch_summary -and $plan.batch_summary.estimated_total_output_tokens) {
+                $estTokens = $plan.batch_summary.estimated_total_output_tokens
+            } elseif ($plan.files_to_create) {
+                foreach ($f in $plan.files_to_create) {
+                    if ($f.estimated_tokens) { $estTokens += $f.estimated_tokens }
+                }
+            }
+            $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
+
+            if ($fileCount -ge 5 -or $estTokens -gt 10000) {
+                Write-Host "  [ENFORCE-DECOMPOSE] $rid has $fileCount files, ~$estTokens tokens — too large for single Codex call" -ForegroundColor Yellow
+                $plansToDecompose += $plan
+            } else {
+                $plansToKeep += $plan
+            }
+        }
+
+        if ($plansToDecompose.Count -gt 0) {
+            $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $reqs = [System.Collections.ArrayList]@($matrix.requirements)
+            $totalAdded = 0
+
+            foreach ($plan in $plansToDecompose) {
+                $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
+                # Auto-split: group files by layer (backend, frontend, database, docs/scripts)
+                $groups = @{ backend = @(); frontend = @(); database = @(); other = @() }
+                $allFiles = @()
+                if ($plan.files_to_create) { $allFiles += @($plan.files_to_create) }
+                if ($plan.files_to_modify) {
+                    foreach ($fm in @($plan.files_to_modify)) {
+                        $allFiles += [PSCustomObject]@{ path = $fm.path; description = $fm.changes; type = "modify" }
+                    }
+                }
+                foreach ($f in $allFiles) {
+                    $p = if ($f.path) { $f.path } else { "" }
+                    if ($p -match "src/web/|src/mcp-admin/|\.tsx?$|\.css$") { $groups.frontend += $f }
+                    elseif ($p -match "backend/|src/Server/|\.cs$|\.csproj$") { $groups.backend += $f }
+                    elseif ($p -match "database/|\.sql$") { $groups.database += $f }
+                    else { $groups.other += $f }
+                }
+
+                $subIdx = 1
+                $parentReq = $reqs | Where-Object { ($_.id -eq $rid) -or ($_.req_id -eq $rid) }
+                $parentDesc = if ($parentReq) { $parentReq.description } else { $rid }
+
+                foreach ($layer in @("backend", "frontend", "database", "other")) {
+                    if ($groups[$layer].Count -eq 0) { continue }
+                    $subId = "$rid-$subIdx"
+                    $existing = $reqs | Where-Object { ($_.id -eq $subId) -or ($_.req_id -eq $subId) }
+                    if (-not $existing) {
+                        $fileList = ($groups[$layer] | ForEach-Object { $_.path }) -join ", "
+                        $newReq = [PSCustomObject]@{
+                            id = $subId
+                            description = "$parentDesc [$layer layer: $($groups[$layer].Count) files]"
+                            interface = $layer
+                            priority = if ($parentReq -and $parentReq.priority) { $parentReq.priority } else { "medium" }
+                            status = "not_started"
+                            source = "auto-decomposed"
+                            parent_id = $rid
+                            category = "implementation"
+                            files = $fileList
+                        }
+                        $reqs.Add($newReq) | Out-Null
+                        $totalAdded++
+                        Write-Host "    [SUB] $subId — $layer ($($groups[$layer].Count) files)" -ForegroundColor DarkCyan
+                    }
+                    $subIdx++
+                }
+
+                # Mark parent as decomposed
+                if ($parentReq) {
+                    $parentReq.status = "satisfied"
+                    $parentReq | Add-Member -NotePropertyName "decomposed" -NotePropertyValue $true -Force
+                    $parentReq | Add-Member -NotePropertyName "notes" -NotePropertyValue "Auto-decomposed into $($subIdx-1) sub-requirements (>5 files or >10K tokens)" -Force
+                }
+            }
+
+            if ($totalAdded -gt 0) {
+                $matrix.requirements = $reqs.ToArray()
+                $matrix.total = $reqs.Count
+                $matrix.summary.satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
+                $matrix.summary.partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
+                $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                Write-Host "  [ENFORCE-DECOMPOSE] Auto-split $($plansToDecompose.Count) reqs into $totalAdded sub-reqs" -ForegroundColor Cyan
+            }
+
+            # Only keep plans for non-decomposed requirements
+            $planOutput.plans = $plansToKeep
+            if ($planOutput.plans.Count -eq 0) {
+                Write-Host "  [ENFORCE-DECOMPOSE] All reqs decomposed. Next iteration picks up sub-reqs." -ForegroundColor Cyan
+                continue
+            }
+        }
+
         # -- Execute Phase (Two-Stage: Skeleton then Fill) --
         # Execute is the most expensive phase: estimate $0.05/req for Codex Mini
         $execEstimate = $batchReqs.Count * 0.05
