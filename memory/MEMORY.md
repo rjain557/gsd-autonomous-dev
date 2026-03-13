@@ -1,0 +1,74 @@
+# GSD Autonomous Dev - Project Memory
+
+## Project Overview
+- **V3 (current)**: 2-model API-only pipeline (Sonnet 4.6 + Codex Mini), ~85% cheaper, ~10x faster
+- **V2 (legacy)**: 7-agent CLI+REST system (44 install scripts). Still in `scripts/` directory
+- Three modes: Blueprint (greenfield), Bug Fix, Feature Update
+- Backend: .NET 8 + Dapper + SQL Server stored procs | Frontend: React 18 | Compliance: HIPAA, SOC 2, PCI, GDPR
+
+## Key Directories
+- Engine install: `%USERPROFILE%\.gsd-global\`
+- Per-project state: `.gsd\` in each repo
+- Scripts: `scripts/` (46 scripts: 1 master installer + 1 pre-flight + 36 in install chain + standalone)
+- Supervisor state: `.gsd\supervisor\` per-project, `%USERPROFILE%\.gsd-global\supervisor\` cross-project
+- Docs: `docs/` (5 markdown files + GENERATE-DEV-GUIDE-PROMPT.md + generate-docx.py)
+- Pricing cache: `%USERPROFILE%\.gsd-global\pricing-cache.json`
+- Intelligence: `%USERPROFILE%\.gsd-global\intelligence\` (agent scores, pattern cache)
+
+## Documentation Structure (5 files)
+1. **GSD-Architecture.md** - Engine overview, data flow, agents, resilience, notifications
+2. **GSD-Script-Reference.md** - All commands + install scripts + key functions
+3. **GSD-Troubleshooting.md** - Installation, runtime, health, JSON, boundaries
+4. **GSD-Installation-Guide.md** - Prerequisites, quick start, first project setup
+5. **GSD-Configuration.md** - global-config.json, pricing-cache.json, per-project configs
+
+## Iteration Flow (2026-03-10)
+```
+req-assess -> focused code-review -> decompose -> wave-research -> plan -> execute -> loop
+```
+At 100% convergence: Full code review + spec/Figma verification + quality gate -> developer-handoff.md
+
+## Commit Style
+- Descriptive first line, bullet-point details below
+- Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+## User Preferences
+- User creates Word developer guides from the markdown docs
+- Docs should be comprehensive enough for standalone Word doc export
+- User charges clients 5-10x markup on calculated token costs (7x default)
+- **Window management**: ALWAYS kill the old process BEFORE starting a new one. Never leave orphaned PowerShell windows
+- **Visible PowerShell**: ALWAYS start pipeline in a visible PowerShell window (WindowStyle Normal, -NoExit) so user can see output. NEVER use -WindowStyle Hidden or redirect stdout/stderr to files.
+- **PROACTIVE NOT REACTIVE**: Always anticipate problems and fix them BEFORE they cause failures. Don't wait for user to report issues. Detect diseases, fix code, restart processes, and report what was done. This is a CORE requirement — user has repeated this multiple times.
+- **Proactive monitoring**: 2-min health checks, immediate disease diagnosis, pattern recognition
+- **Never close session**: Do NOT end/close the session unless explicitly asked. Crons die when session ends.
+- **All 7 models for execute**: deepseek, codex, kimi, minimax, glm5, claude, gemini -- ALWAYS
+- **Code review**: Only claude, codex, gemini (quality assurance)
+- **Memory updates**: Maintain short-term (active-tasks.md) and long-term (MEMORY.md, patterns.md) memory every session
+- **Direct fixes**: Fix easy/small requirements directly via Claude Code when cheaper than pipeline
+
+## Active Project: ChatAI (tech-web-chatai.v8)
+- Repo: `D:\vscode\tech-web-chatai.v8\tech-web-chatai.v8`
+- V3 running in feature_update mode (2026-03-10)
+- 1160 requirements: 607 satisfied, 337 partial, 216 not_started (52% health)
+
+## Session Recovery Note
+- VS Code updates will kill Claude Code terminal sessions
+- Always read MEMORY.md + active-tasks.md + session-state.md on restart
+
+## Topic Files (detailed reference)
+- [v3-pipeline.md](v3-pipeline.md) - V3 architecture, model IDs, phases, bugs fixed
+- [v2-systems.md](v2-systems.md) - Supervisor, council, parallel execute, resilience, quality gates, multi-model, rate limiter, maintenance mode
+- [install-chain.md](install-chain.md) - All 44 install chain scripts in order
+- [bug-fixes.md](bug-fixes.md) - Bug fix history (v2.0, v2.3.x, convergence-loop, rate limiter, execute, wave research)
+- [patterns.md](patterns.md) - Cross-session pattern analysis, recurring diseases, agent reliability
+- [active-tasks.md](active-tasks.md) - Current running tasks and monitoring checklist
+- [session-state.md](session-state.md) - Crash recovery state, active PIDs, cron IDs
+- [model-api-reference.md](model-api-reference.md) - ALL model endpoints, formats, auth, pitfalls (ALWAYS READ before API calls)
+- [cross-session.md](cross-session.md) - Shared message board for coordinating between multiple Claude sessions
+- [feedback_proactive_monitoring.md](feedback_proactive_monitoring.md) - CRITICAL: Stop passive monitoring, actively fix root causes every tick
+- [feedback_autonomous_behavior.md](feedback_autonomous_behavior.md) - CRITICAL: Be truly autonomous — detect, diagnose, fix, restart without user telling you
+- [feedback_notification_format.md](feedback_notification_format.md) - WhatsApp gets full message first, ntfy gets short summary only
+- [feedback_mark_reqs_complete.md](feedback_mark_reqs_complete.md) - ALWAYS mark fixed reqs as satisfied + update health score immediately
+- [feedback_close_windows.md](feedback_close_windows.md) - When killing a pipeline, ALSO close its PowerShell window
+- [feedback_partial_promotion.md](feedback_partial_promotion.md) - Every cron tick: promote partial reqs to satisfied when referenced files exist
+- [telegram-bridge.md](telegram-bridge.md) - Telegram bridge setup, config, bot token, startup commands, known issues
