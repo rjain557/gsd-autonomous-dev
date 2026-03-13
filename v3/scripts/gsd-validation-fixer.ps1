@@ -144,7 +144,7 @@ function Invoke-ValidationFixLoop {
             }
         }
 
-        # ===== STEP 4: Unit Tests (best effort — don't block on runtime failures) =====
+        # ===== STEP 4: Unit Tests (best effort -- don't block on runtime failures) =====
         if (Test-Path $testDir) {
             Write-Host "    [TEST] Running unit tests..." -ForegroundColor DarkGray
             $testRunOutput = & pwsh -NoProfile -Command "cd '$testDir'; dotnet test --no-build --filter 'FullyQualifiedName!~Integration' 2>&1" | Out-String
@@ -282,7 +282,7 @@ function Repair-BuildErrors {
     $fixCount = 0
     $lines = $BuildOutput -split "`n"
 
-    # Protected files — NEVER delete these regardless of errors
+    # Protected files -- NEVER delete these regardless of errors
     $protectedFiles = @('Program.cs', 'Startup.cs', '.csproj', 'GlobalUsings.cs', 'appsettings.json')
 
     # Phase 1: Collect all error files and their error details
@@ -302,7 +302,7 @@ function Repair-BuildErrors {
         }
     }
 
-    # Phase 2: Quick pattern fixes (FREE — namespace mappings, missing usings)
+    # Phase 2: Quick pattern fixes (FREE -- namespace mappings, missing usings)
     foreach ($errorFile in @($errorFileMap.Keys)) {
         if (-not (Test-Path $errorFile)) { continue }
         $content = Get-Content $errorFile -Raw -Encoding UTF8
@@ -583,7 +583,7 @@ function Invoke-PreValidateFix {
     $fixCount = 0
     $gsdDir = Join-Path $RepoRoot ".gsd"
 
-    # Phase 1: Quick namespace fixes (FREE — no API calls)
+    # Phase 1: Quick namespace fixes (FREE -- no API calls)
     $csFiles = @()
     foreach ($reqId in $RequirementIds) {
         $genDir = Join-Path $gsdDir "generated/$reqId"
@@ -628,7 +628,8 @@ function Invoke-PreValidateFix {
     }
 
     $recentFiles = @(Get-ChildItem $RepoRoot -Recurse -Include "*.cs","*.ts","*.tsx" -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) -and $_.Length -gt 100 })
+        Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' -and $_.FullName -notmatch '[\\/]\.git[\\/]' -and $_.FullName -notmatch '[\\/]bin[\\/]' -and $_.FullName -notmatch '[\\/]obj[\\/]' -and $_.LastWriteTime -gt (Get-Date).AddMinutes(-3) -and $_.Length -gt 100 } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 20)
 
     if ($recentFiles.Count -eq 0) {
         Write-Host "    [SKIP] No recently generated files to review" -ForegroundColor DarkGray

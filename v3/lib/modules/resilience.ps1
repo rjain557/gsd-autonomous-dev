@@ -19,7 +19,7 @@ function Build-FileInventory {
     <#
     .SYNOPSIS
         Scan the repo to discover ALL project files, organized by type and interface.
-        This is the FIRST thing the pipeline does — everything else depends on this.
+        This is the FIRST thing the pipeline does -- everything else depends on this.
     .PARAMETER RepoRoot
         Repository root path.
     .PARAMETER GsdDir

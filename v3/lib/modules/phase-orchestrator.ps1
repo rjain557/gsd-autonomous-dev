@@ -5,7 +5,7 @@
     The main convergence loop. Routes phases to the correct model (Sonnet or Codex Mini),
     manages iteration flow, speculative execution, and convergence detection.
     Fixes V2 issues:
-    - V2 used CLI tools (claude, codex) via process spawning — fragile, no structured output
+    - V2 used CLI tools (claude, codex) via process spawning -- fragile, no structured output
     - V2 had separate convergence-loop.ps1 and pipeline.ps1 with duplicated logic
     - V2 did not enforce JSON output, causing parse failures
     - V2 had no local validation phase (went straight from execute to review)
@@ -89,7 +89,7 @@ function Start-V3Pipeline {
         return @{ Success = $false; Error = "preflight_failed" }
     }
 
-    # -- File inventory (FIRST THING — everything depends on this) --
+    # -- File inventory (FIRST THING -- everything depends on this) --
     Write-Host "`n--- File Inventory ---" -ForegroundColor Yellow
     $inventory = Build-FileInventory -RepoRoot $RepoRoot -GsdDir $GsdDir
 
@@ -98,8 +98,12 @@ function Start-V3Pipeline {
 
     # -- Build spec context for cache prefix --
     Write-Host "`n--- Building Cache Prefix ---" -ForegroundColor Yellow
+    Write-Host "  [DEBUG] Building spec context..." -ForegroundColor Magenta
     $specContext = Build-SpecContext -RepoRoot $RepoRoot -GsdDir $GsdDir -Inventory $inventory
+    Write-Host "  [DEBUG] Spec context: $($specContext.Length) chars" -ForegroundColor Magenta
+    Write-Host "  [DEBUG] Building blueprint context..." -ForegroundColor Magenta
     $blueprintContext = Build-BlueprintContext -RepoRoot $RepoRoot -GsdDir $GsdDir -Inventory $inventory
+    Write-Host "  [DEBUG] Blueprint context: $($blueprintContext.Length) chars" -ForegroundColor Magenta
 
     $systemPromptPath = Join-Path $script:V3Root "prompts/shared/system-prompt.md"
     $systemPrompt = if (Test-Path $systemPromptPath) { Get-Content $systemPromptPath -Raw -Encoding UTF8 } else { "You are GSD, an autonomous software development system." }
@@ -151,7 +155,7 @@ function Start-V3Pipeline {
 
         try {  # Crash protection: one bad iteration should not kill the pipeline
 
-        # Budget check — estimate cost of upcoming iteration before starting
+        # Budget check -- estimate cost of upcoming iteration before starting
         # Estimated per-iteration cost: ~$0.15 Sonnet (research+plan+review+verify) + ~$0.05/req Codex execute
         $estimatedIterCost = 0.15 + ($batchSizeMax * 0.05)
         if (-not (Test-BudgetAvailable -EstimatedCost $estimatedIterCost)) {
@@ -259,7 +263,7 @@ function Start-V3Pipeline {
                     $alreadyDone = if ($researchOutput.decompose) { $researchOutput.decompose | Where-Object { $_.parent_id -eq $rid } } else { $null }
                     if (-not $alreadyDone) {
                         $needsSplit += $rid
-                        Write-Host "  [WARN] $rid flagged needs_decomposition but Research didn't split it — ENFORCE-DECOMPOSE will catch it post-Plan" -ForegroundColor DarkYellow
+                        Write-Host "  [WARN] $rid flagged needs_decomposition but Research didn't split it -- ENFORCE-DECOMPOSE will catch it post-Plan" -ForegroundColor DarkYellow
                     }
                 }
             }
@@ -287,7 +291,7 @@ function Start-V3Pipeline {
                         }
                         $reqsList.Add($newReq) | Out-Null
                         $totalAdded++
-                        Write-Host "    [SUB] $subId — $layer" -ForegroundColor DarkCyan
+                        Write-Host "    [SUB] $subId -- $layer" -ForegroundColor DarkCyan
                     }
                 }
                 # Mark parent as decomposed
@@ -387,7 +391,7 @@ function Start-V3Pipeline {
                 Write-Host "  [DECOMPOSE] Split $($parentsDecomposed.Count) large requirements into $totalAdded sub-requirements" -ForegroundColor Cyan
                 Write-Host "  [DECOMPOSE] Parents: $($parentsDecomposed -join ', ')" -ForegroundColor DarkCyan
 
-                # Remove plans for decomposed parents — they'll be picked up as sub-reqs next iteration
+                # Remove plans for decomposed parents -- they'll be picked up as sub-reqs next iteration
                 $planOutput.plans = @($planOutput.plans | Where-Object {
                     $rid = if ($_.req_id) { $_.req_id } else { $_.id }
                     $rid -notin $parentsDecomposed
@@ -424,7 +428,7 @@ function Start-V3Pipeline {
             $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
 
             if ($fileCount -ge 3 -or $estTokens -gt 8000) {
-                Write-Host "  [ENFORCE-DECOMPOSE] $rid has $fileCount files, ~$estTokens tokens — too large for single Codex call" -ForegroundColor Yellow
+                Write-Host "  [ENFORCE-DECOMPOSE] $rid has $fileCount files, ~$estTokens tokens -- too large for single Codex call" -ForegroundColor Yellow
                 $plansToDecompose += $plan
             } else {
                 $plansToKeep += $plan
@@ -479,7 +483,7 @@ function Start-V3Pipeline {
                         }
                         $reqs.Add($newReq) | Out-Null
                         $totalAdded++
-                        Write-Host "    [SUB] $subId — $layer ($($groups[$layer].Count) files)" -ForegroundColor DarkCyan
+                        Write-Host "    [SUB] $subId -- $layer ($($groups[$layer].Count) files)" -ForegroundColor DarkCyan
                     }
                     $subIdx++
                 }
@@ -530,7 +534,7 @@ function Start-V3Pipeline {
             if ($skeletonResults -and $skeletonResults.Completed -eq 0 -and $skeletonResults.Failed -gt 0) {
                 Write-Host "  [SKIP] All skeleton calls failed ($($skeletonResults.Failed) failures). Skipping fill phase." -ForegroundColor Red
                 $executeResults = $skeletonResults
-                # Skip fill — go to local validate
+                # Skip fill -- go to local validate
                 continue
             }
         }
@@ -566,7 +570,7 @@ function Start-V3Pipeline {
                     if ($req -and -not $req.decomposed) {
                         $req.status = "not_started"
                         $req | Add-Member -NotePropertyName "needs_decomposition" -NotePropertyValue $true -Force
-                        $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated at 16K tokens — force decompose next iteration" -Force
+                        $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated at 16K tokens -- force decompose next iteration" -Force
                     }
                 }
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
@@ -597,7 +601,7 @@ function Start-V3Pipeline {
             $failedReqIds = @($validateResults.FailItems | ForEach-Object { $_.ReqId })
             if (Test-Path $fixerScript) {
                 try {
-                    & $fixerScript -RepoRoot $RepoRoot -RequirementIds $failedReqIds -MaxAttempts 5
+                    & $fixerScript -RepoRoot $RepoRoot -RequirementIds $failedReqIds -MaxAttempts 15
                 } catch {
                     Write-Host "    [WARN] Validation fixer error: $($_.Exception.Message)" -ForegroundColor DarkYellow
                 }
@@ -625,7 +629,7 @@ function Start-V3Pipeline {
                 if (-not $failTracker.ContainsKey($rid)) { $failTracker[$rid] = 0 }
                 $failTracker[$rid]++
             }
-            # Also decrement (reward) items that passed — they should stay prioritized
+            # Also decrement (reward) items that passed -- they should stay prioritized
             if ($validateResults.PassItems) {
                 foreach ($passItem in $validateResults.PassItems) {
                     $rid = $passItem.ReqId
@@ -637,7 +641,7 @@ function Start-V3Pipeline {
             $failTracker | ConvertTo-Json -Depth 3 | Set-Content $failTrackerPath -Encoding UTF8
             $highFailReqs = @($failTracker.GetEnumerator() | Where-Object { $_.Value -ge 3 })
             if ($highFailReqs.Count -gt 0) {
-                Write-Host "  [DEPRIORITIZE] $($highFailReqs.Count) reqs failed 3+ times — moved to back of queue" -ForegroundColor DarkYellow
+                Write-Host "  [DEPRIORITIZE] $($highFailReqs.Count) reqs failed 3+ times -- moved to back of queue" -ForegroundColor DarkYellow
             }
         }
 
@@ -796,7 +800,7 @@ function Build-SpecContext {
         }
     }
 
-    # Include requirements matrix SUMMARY (not full content — matrix can be 200K+ tokens)
+    # Include requirements matrix SUMMARY (not full content -- matrix can be 200K+ tokens)
     $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
     if (Test-Path $matrixPath) {
         try {
@@ -958,7 +962,7 @@ function Invoke-PlanPhase {
     # Cap research output to prevent token bloat (can grow unbounded across iterations)
     $researchSummary = "(no research)"
     if ($Research) {
-        $researchJson = $Research | ConvertTo-Json -Depth 5 -Compress
+        $researchJson = ConvertTo-CleanJson -InputObject $Research -Depth 5 -Compress
         $researchMaxChars = 16000  # Allow plan to see most of the research (was 8000, caused incomplete plans)
         if ($researchJson.Length -gt $researchMaxChars) {
             $researchSummary = $researchJson.Substring(0, $researchMaxChars) + "... (truncated, $($researchJson.Length) chars)"
@@ -1043,7 +1047,7 @@ function Invoke-ExecutePhase {
                     if ((Test-Path $fullPath) -and (Get-Item $fullPath).Length -gt 200) {
                         $existing = Get-Content $fullPath -Raw -ErrorAction SilentlyContinue
                         if ($existing -and $existing -notmatch '//\s*FILL') {
-                            Write-Host "    [PRE-FILTER] Skipping $fPath — existing real implementation" -ForegroundColor DarkGray
+                            Write-Host "    [PRE-FILTER] Skipping $fPath -- existing real implementation" -ForegroundColor DarkGray
                             continue
                         }
                     }
@@ -1058,7 +1062,7 @@ function Invoke-ExecutePhase {
     $items = @()
     foreach ($plan in $Plans) {
         $prompt = $promptTemplate.Replace("{{REQ_ID}}", $plan.req_id)
-        $prompt = $prompt.Replace("{{PLAN}}", ($plan | ConvertTo-Json -Depth 10))
+        $prompt = $prompt.Replace("{{PLAN}}", (ConvertTo-CleanJson -InputObject $plan -Depth 5))
 
         if ($SkeletonResults -and $SkeletonResults.Results -and $SkeletonResults.Results[$plan.req_id]) {
             $prompt = $prompt.Replace("{{SKELETON}}", $SkeletonResults.Results[$plan.req_id].Text)
@@ -1172,7 +1176,7 @@ function Invoke-VerifyPhase {
         "Update requirement statuses. Calculate health score. Detect drift. Output JSON."
     }
 
-    # Read current health and matrix — TRUNCATED to prevent token explosion
+    # Read current health and matrix -- TRUNCATED to prevent token explosion
     # Full matrix can be 200K+ tokens; Verify only needs active (non-satisfied) requirements
     $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
     $matrixContent = "{}"
@@ -1205,7 +1209,7 @@ function Invoke-VerifyPhase {
                 }
                 requirements = $verifyReqs
             }
-            $matrixContent = $slimMatrix | ConvertTo-Json -Depth 10 -Compress
+            $matrixContent = ConvertTo-CleanJson -InputObject $slimMatrix -Depth 5 -Compress
             Write-Host "    [VERIFY] Slim matrix: $($verifyReqs.Count) verify reqs (of $($allReqs.Count) total, $($activeReqs.Count) active)" -ForegroundColor DarkGray
         }
         catch {
@@ -1236,7 +1240,7 @@ function Invoke-VerifyPhase {
 
     if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "verify" }
 
-    # Apply verify results to requirements matrix (THIS WAS MISSING — root cause of health stall)
+    # Apply verify results to requirements matrix (THIS WAS MISSING -- root cause of health stall)
     if ($result.Parsed -and $result.Parsed.requirements_status) {
         try {
             $matrixRaw = Get-Content $matrixPath -Raw | ConvertFrom-Json
@@ -1416,7 +1420,7 @@ function Build-VerifyEvidence {
     if ($ReviewResults) {
         $evidence += "## Review Phase Evidence"
 
-        # ReviewResults is parsed JSON from Sonnet — structure varies but typically has reviews array
+        # ReviewResults is parsed JSON from Sonnet -- structure varies but typically has reviews array
         if ($ReviewResults.reviews) {
             foreach ($review in ($ReviewResults.reviews | Select-Object -First 20)) {
                 $rid = if ($review.req_id) { $review.req_id } else { "unknown" }
@@ -1443,7 +1447,7 @@ function Build-VerifyEvidence {
             }
         } else {
             # Fallback: dump a compact JSON summary
-            $reviewJson = $ReviewResults | ConvertTo-Json -Depth 3 -Compress
+            $reviewJson = ConvertTo-CleanJson -InputObject $ReviewResults -Depth 5 -Compress
             if ($reviewJson.Length -gt 1500) {
                 $reviewJson = $reviewJson.Substring(0, 1500) + "..."
             }
@@ -1484,7 +1488,7 @@ function Write-GeneratedFiles {
     $fileMatches = [regex]::Matches($Output, $filePattern)
 
     if ($fileMatches.Count -eq 0) {
-        # Single file output — save as raw
+        # Single file output -- save as raw
         $logPath = Join-Path $GsdDir "iterations/execution-log/$ReqId.txt"
         Set-Content $logPath -Value $Output -Encoding UTF8
         return
@@ -1517,7 +1521,7 @@ function Write-GeneratedFiles {
         if ($content -match '^```\w*\n([\s\S]*?)\n```$') { $content = $Matches[1] }
 
         # ============================================================
-        # SMART WRITE GUARD — 3-layer defense against disease
+        # SMART WRITE GUARD -- 3-layer defense against disease
         # ============================================================
 
         # Layer 0: Namespace remapping for backend C# files
@@ -1642,7 +1646,7 @@ function Write-GeneratedFiles {
             continue
         }
 
-        # Layer 2: Protected interfaces — NEVER overwrite (contract stability)
+        # Layer 2: Protected interfaces -- NEVER overwrite (contract stability)
         $protectedInterfaces = @(
             "src/Server/Technijian.Api/Data/IDbConnectionFactory.cs",
             "src/Server/Technijian.Api/Security/IKeyVaultService.cs",
@@ -1653,14 +1657,17 @@ function Write-GeneratedFiles {
             "src/Server/Technijian.Api/Retention/IRetentionService.cs",
             "src/Server/Technijian.Api/SoftDelete/ISoftDeleteService.cs",
             "src/Server/Technijian.Api/Compliance/ComplianceControlsRegistry.cs",
-            "src/Server/Technijian.Api/Compliance/ComplianceOptions.cs"
+            "src/Server/Technijian.Api/Compliance/ComplianceOptions.cs",
+            "src/Server/Technijian.Api/Auth/JwtTokenService.cs",
+            "src/Server/Technijian.Api/Auth/TokenBlacklistService.cs",
+            "vitest.config.ts"
         )
         if ($filePath -in $protectedInterfaces -and (Test-Path $fullPath)) {
             Write-Host "      [PROTECTED] $filePath -- tracked interface/base class, skipping overwrite" -ForegroundColor Cyan
             continue
         }
 
-        # Layer 3: Smart implementation guard — only write if compatible with existing interfaces
+        # Layer 3: Smart implementation guard -- only write if compatible with existing interfaces
         if ((Test-Path $fullPath)) {
             $existingContent = Get-Content $fullPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
             $newHasFill = $content -match '//\s*FILL'
@@ -1673,10 +1680,10 @@ function Write-GeneratedFiles {
                 continue
             }
 
-            # Guard 3b: Block writes that shrink real files by >50% (likely truncated/incomplete output)
+            # Guard 3b: Block writes that shrink real files by >35% (likely truncated/incomplete output)
             if (-not $newHasFill -and -not $existingHasFill -and $existingSize -gt 500) {
                 $shrinkRatio = if ($existingSize -gt 0) { $content.Length / $existingSize } else { 1 }
-                if ($shrinkRatio -lt 0.5) {
+                if ($shrinkRatio -lt 0.65) {
                     Write-Host "      [BLOCKED] $filePath -- new content is $([math]::Round((1-$shrinkRatio)*100))% smaller ($existingSize -> $($content.Length) chars), likely truncated" -ForegroundColor Red
                     continue
                 }

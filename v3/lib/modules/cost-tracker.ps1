@@ -40,7 +40,7 @@ $script:Pricing = @{
         input  = 1.75
         output = 14.00
     }
-    # Fallback models (OpenAI-compatible) — prices verified 2026-03-10
+    # Fallback models (OpenAI-compatible) -- prices verified 2026-03-10
     "deepseek-chat" = @{
         input  = 0.28
         output = 0.28

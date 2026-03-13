@@ -4,7 +4,7 @@
 .DESCRIPTION
     Manages pipeline health state, detects stalls, tracks requirement satisfaction.
     Fixes V2 issues:
-    - V2 calculated health as iterations_completed/total (wrong — should be requirements satisfied)
+    - V2 calculated health as iterations_completed/total (wrong -- should be requirements satisfied)
     - V2 had no per-requirement tracking
     - V2 stall detection was too simple
     - V2 had no regression detection for post-launch modes
@@ -268,7 +268,7 @@ function Get-ScopedRequirements {
         @($filtered | Where-Object { $_.status -in @("not_started", "partial") })
     }
 
-    # Warn if scope filter matched 0 requirements — likely a bug, not convergence
+    # Warn if scope filter matched 0 requirements -- likely a bug, not convergence
     if ($Scope -and $active.Count -eq 0 -and $reqs.Count -gt 0) {
         Write-Host "  [WARN] Scope filter '$Scope' matched 0 active requirements out of $($reqs.Count) total." -ForegroundColor Yellow
         Write-Host "         Check if filter values match matrix field values (case-insensitive)." -ForegroundColor Yellow
@@ -523,7 +523,7 @@ function Start-CommandListener {
                                 Invoke-RestMethod -Uri "https://ntfy.sh/$Topic" -Method Post -Body $body -Headers $headers -TimeoutSec 10 -ErrorAction SilentlyContinue | Out-Null
                             }
 
-                            # WHATSAPP command — restart bridge
+                            # WHATSAPP command -- restart bridge
                             if ($text -eq "whatsapp") {
                                 $bridgeDir = Join-Path $env:USERPROFILE ".gsd-global\whatsapp-bridge"
                                 $bridgeMjs = Join-Path $bridgeDir "bridge.mjs"

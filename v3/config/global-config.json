@@ -233,7 +233,7 @@
             "spec_gate": "incremental",
             "speculative_execution": true,
             "two_stage_execute": true,
-            "budget_cap_usd": 100.00,
+            "budget_cap_usd": 200.00,
             "scope_filter_default": "source:v{N}_spec",
             "preservation_rules": {
                 "preserve_satisfied": true,

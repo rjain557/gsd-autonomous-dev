@@ -14,6 +14,47 @@
 #>
 
 # ============================================================
+# PS5.1 JSON FIX: ConvertTo-Json corrupts PSObject-wrapped strings to {"value":"..."}.
+# This helper unwraps all strings in a hashtable/array tree before serialization.
+# ============================================================
+function ConvertTo-CleanJson {
+    param([object]$InputObject, [int]$Depth = 5, [switch]$Compress)
+    # Recursively unwrap PSObject strings
+    function Unwrap($obj) {
+        if ($null -eq $obj) { return $null }
+        if ($obj -is [string]) { return [string]"$obj" }
+        if ($obj -is [int] -or $obj -is [long] -or $obj -is [double] -or $obj -is [bool] -or $obj -is [decimal]) { return $obj }
+        if ($obj -is [array] -or $obj -is [System.Collections.IList]) {
+            $arr = @()
+            foreach ($item in $obj) { $arr += ,(Unwrap $item) }
+            return ,$arr
+        }
+        if ($obj -is [hashtable] -or $obj -is [System.Collections.IDictionary]) {
+            $clean = @{}
+            foreach ($key in $obj.Keys) { $clean[$key] = Unwrap $obj[$key] }
+            return $clean
+        }
+        # PSCustomObject
+        if ($obj -is [psobject]) {
+            $clean = @{}
+            foreach ($prop in $obj.PSObject.Properties) {
+                if ($prop.Name -notin @('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider','PSIsContainer','Mode','BaseName')) {
+                    $clean[$prop.Name] = Unwrap $prop.Value
+                }
+            }
+            return $clean
+        }
+        return "$obj"
+    }
+    $cleaned = Unwrap $InputObject
+    if ($Compress) {
+        return $cleaned | ConvertTo-Json -Depth $Depth -Compress
+    } else {
+        return $cleaned | ConvertTo-Json -Depth $Depth
+    }
+}
+
+# ============================================================
 # CONFIGURATION
 # ============================================================
 
@@ -187,7 +228,11 @@ function Invoke-SonnetApi {
         $headers["anthropic-beta"] = "prompt-caching-2024-07-31"
     }
 
-    $bodyJson = $body | ConvertTo-Json -Depth 20 -Compress
+    Write-Host "    [DEBUG] ${Phase}: Starting JSON serialization..." -ForegroundColor Magenta
+    $jsonStart = Get-Date
+    $bodyJson = ConvertTo-CleanJson -InputObject $body -Depth 5 -Compress
+    $jsonElapsed = ((Get-Date) - $jsonStart).TotalSeconds
+    Write-Host "    [DEBUG] ${Phase}: JSON done in $($jsonElapsed.ToString('F1'))s, body size: $($bodyJson.Length) chars" -ForegroundColor Magenta
 
     # Pre-flight: estimate input tokens and warn/truncate if approaching context window
     # Rule of thumb: 1 token ≈ 4 chars for English text
@@ -217,11 +262,25 @@ function Invoke-SonnetApi {
     while ($attempt -le $maxRetries) {
         $attempt++
         try {
-            # Hard timeout via polling loop — Wait-Job -Timeout is unreliable on Windows
+            # Hard timeout via polling loop -- Wait-Job -Timeout is unreliable on Windows
             $hardTimeout = if ($script:ApiConfig.Anthropic.TimeoutSec) { $script:ApiConfig.Anthropic.TimeoutSec } else { 120 }
+            Write-Host "    [DEBUG] ${Phase}: Attempt $attempt/$($maxRetries+1) - Starting API job (timeout: ${hardTimeout}s)..." -ForegroundColor Magenta
             $job = Start-Job -ScriptBlock {
                 param($u, $h, $b, $t)
-                Invoke-RestMethod -Uri $u -Method Post -Headers $h -Body $b -TimeoutSec $t -ContentType "application/json"
+                try {
+                    Invoke-RestMethod -Uri $u -Method Post -Headers $h -Body ([System.Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec $t -ContentType "application/json; charset=utf-8"
+                } catch {
+                    # Capture response body for better error reporting
+                    $errBody = ""
+                    try {
+                        if ($_.Exception.Response) {
+                            $reader = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+                            $errBody = $reader.ReadToEnd()
+                            $reader.Close()
+                        }
+                    } catch {}
+                    throw "$($_.Exception.Message) |BODY| $errBody"
+                }
             } -ArgumentList $url, $headers, $bodyJson, $hardTimeout
             $deadline = (Get-Date).AddSeconds($hardTimeout + 30)
             while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
@@ -231,8 +290,10 @@ function Invoke-SonnetApi {
                 $job | Stop-Job -PassThru | Remove-Job -Force
                 throw [System.TimeoutException]::new("Anthropic API call exceeded hard timeout of $($hardTimeout + 30)s")
             }
+            Write-Host "    [DEBUG] ${Phase}: Job completed (state: $($job.State)). Receiving output..." -ForegroundColor Magenta
             $response = $job | Receive-Job
             $job | Remove-Job -Force
+            Write-Host "    [DEBUG] ${Phase}: API response received." -ForegroundColor Magenta
 
             # Extract text content
             $outputText = ""
@@ -250,7 +311,7 @@ function Invoke-SonnetApi {
                 cache_read_tokens     = if ($response.usage.cache_read_input_tokens) { $response.usage.cache_read_input_tokens } else { 0 }
             }
 
-            # Check stop_reason — if "max_tokens", output was truncated (likely broken JSON)
+            # Check stop_reason -- if "max_tokens", output was truncated (likely broken JSON)
             $stopReason = $response.stop_reason
             if ($stopReason -eq "max_tokens") {
                 Write-Host "    [WARN] ${Phase}: Output truncated (max_tokens). Increase MaxTokens or reduce input." -ForegroundColor Yellow
@@ -380,9 +441,9 @@ function Submit-SonnetBatch {
     $apiKey = Get-ApiKey -Provider "Anthropic"
     $url = "$($script:ApiConfig.Anthropic.BaseUrl)$($script:ApiConfig.Anthropic.BatchEndpoint)"
 
-    $body = @{
+    $body = ConvertTo-CleanJson -InputObject @{
         requests = $Requests
-    } | ConvertTo-Json -Depth 20 -Compress
+    } -Depth 5 -Compress
 
     $headers = @{
         "x-api-key"         = $apiKey
@@ -393,7 +454,7 @@ function Submit-SonnetBatch {
 
     try {
         $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers `
-            -Body $body -TimeoutSec 30 -ContentType "application/json"
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 30 -ContentType "application/json; charset=utf-8"
 
         return @{
             Success = $true
@@ -572,10 +633,10 @@ function Invoke-CodexMiniApi {
 
     # System prompt goes in 'instructions' field for Responses API
     if ($SystemPrompt) {
-        $bodyObj["instructions"] = $SystemPrompt
+        $bodyObj["instructions"] = "$SystemPrompt"
     }
 
-    $body = $bodyObj | ConvertTo-Json -Depth 10 -Compress
+    $body = ConvertTo-CleanJson -InputObject $bodyObj -Depth 5 -Compress
 
     $headers = @{
         "Authorization" = "Bearer $apiKey"
@@ -596,7 +657,7 @@ function Invoke-CodexMiniApi {
     while ($attempt -le $maxRetries) {
         $attempt++
         try {
-            # Hard timeout via polling loop — Wait-Job -Timeout is unreliable on Windows
+            # Hard timeout via polling loop -- Wait-Job -Timeout is unreliable on Windows
             $hardTimeout = if ($script:ApiConfig.OpenAI.TimeoutSec) { $script:ApiConfig.OpenAI.TimeoutSec } else { 120 }
             $job = Start-Job -ScriptBlock {
                 param($u, $h, $b, $t)
@@ -761,8 +822,8 @@ function Invoke-OpenAICompatFallback {
     $headers = @{ "Authorization" = "Bearer $ApiKey"; "Content-Type" = "application/json" }
 
     $messages = @()
-    if ($SystemPrompt) { $messages += @{ role = "system"; content = $SystemPrompt } }
-    $messages += @{ role = "user"; content = $UserMessage }
+    if ($SystemPrompt) { $messages += @{ role = "system"; content = "$SystemPrompt" } }
+    $messages += @{ role = "user"; content = "$UserMessage" }
 
     # Respect per-model max output token limits
     $effectiveMaxTokens = $MaxTokens
@@ -770,11 +831,11 @@ function Invoke-OpenAICompatFallback {
         $effectiveMaxTokens = $Config.MaxOutputTokens
     }
 
-    $body = @{
+    $body = ConvertTo-CleanJson -InputObject @{
         model      = $modelId
         messages   = $messages
         max_tokens = $effectiveMaxTokens
-    } | ConvertTo-Json -Depth 10 -Compress
+    } -Depth 5 -Compress
 
     $maxRetries = $Config.MaxRetries
     for ($attempt = 1; $attempt -le ($maxRetries + 1); $attempt++) {
