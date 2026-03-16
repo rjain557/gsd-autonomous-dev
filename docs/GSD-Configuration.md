@@ -1254,3 +1254,218 @@ Installed by `install-gsd-keybindings.ps1` (Ctrl+Shift+G chord prefix):
 | Ctrl+Shift+G, C | Run convergence loop |
 | Ctrl+Shift+G, B | Run blueprint pipeline |
 | Ctrl+Shift+G, S | Show status dashboard |
+
+## V3 Configuration Reference
+
+The following sections document configuration options specific to the V3 pipeline, found in `v3/config/global-config.json`.
+
+### execute_model_pool
+
+Controls the multi-model code generation pool used during the execute phases.
+
+```json
+{
+  "execute_model_pool": {
+    "enabled": true,
+    "strategy": "round-robin-weighted",
+    "models": [
+      { "name": "codex-mini", "provider": "openai", "weight": 3 },
+      { "name": "deepseek", "provider": "deepseek", "weight": 2 },
+      { "name": "kimi", "provider": "kimi", "weight": 1 },
+      { "name": "minimax", "provider": "minimax", "weight": 1 },
+      { "name": "claude-sonnet", "provider": "anthropic", "weight": 1 },
+      { "name": "gemini-flash", "provider": "google", "weight": 1 },
+      { "name": "glm5", "provider": "glm", "weight": 1 }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable multi-model execute pool. When false, only Codex Mini is used. |
+| strategy | string | "round-robin-weighted" | Model selection strategy. Currently only "round-robin-weighted" is supported. |
+| models | array | (see above) | List of models in the pool. Each entry has a name, provider, and weight. |
+| models[].name | string | -- | Display name for the model, used in logs and cost tracking |
+| models[].provider | string | -- | Provider identifier, used to select the correct API client |
+| models[].weight | integer | 1 | Selection weight. Higher weight means the model is selected more often. A weight of 3 means 3x more likely than weight 1. |
+
+**Notes**:
+- Models without a configured API key (environment variable) are automatically excluded at runtime
+- When a model hits a rate limit, it is temporarily removed from the rotation until the limit resets
+- Add new models by appending entries to the `models` array with the appropriate provider
+
+### anti_plateau
+
+Controls the graduated escalation system that breaks through health score plateaus.
+
+```json
+{
+  "anti_plateau": {
+    "enabled": true,
+    "warn_at_zero_delta": 3,
+    "escalate_at_zero_delta": 4,
+    "skip_at_zero_delta": 5,
+    "max_zero_delta": 5,
+    "deferred_recheck_every": 10
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable anti-plateau protection |
+| warn_at_zero_delta | integer | 3 | Number of consecutive zero-delta iterations before logging a warning and flagging stuck requirements |
+| escalate_at_zero_delta | integer | 4 | Number of consecutive zero-delta iterations before recommending Opus escalation |
+| skip_at_zero_delta | integer | 5 | Number of consecutive zero-delta iterations before deferring stuck requirements |
+| max_zero_delta | integer | 5 | Hard maximum; pipeline halts if zero-delta exceeds this without resolution |
+| deferred_recheck_every | integer | 10 | Re-evaluate deferred requirements every N iterations to check if dependencies resolved |
+
+### spec_alignment
+
+Controls the specification alignment guard that prevents code generation against stale specs.
+
+```json
+{
+  "spec_alignment": {
+    "enabled": true,
+    "block_on_critical_drift_pct": 20,
+    "warn_on_moderate_drift_pct": 5,
+    "check_every_n_iterations": 10
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable spec alignment checking |
+| block_on_critical_drift_pct | integer | 20 | Percentage drift that blocks the pipeline. Must fix specs before continuing. |
+| warn_on_moderate_drift_pct | integer | 5 | Percentage drift that triggers a warning but allows the pipeline to continue |
+| check_every_n_iterations | integer | 10 | How often to re-check alignment during long runs (in addition to pre-pipeline check) |
+
+### decomposition_budget
+
+Controls how large requirements are split into smaller sub-requirements.
+
+```json
+{
+  "decomposition_budget": {
+    "max_new_subreqs_per_iteration": 20,
+    "max_depth": 4,
+    "defer_excess": true
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| max_new_subreqs_per_iteration | integer | 20 | Maximum number of new sub-requirements that can be created in a single iteration. Prevents runaway decomposition. |
+| max_depth | integer | 4 | Maximum nesting depth for decomposed requirements. A depth-4 sub-requirement cannot be further decomposed. |
+| defer_excess | boolean | true | When true, excess sub-requirements beyond the per-iteration limit are deferred to the next iteration rather than dropped. |
+
+### phase_model_overrides
+
+Override the default model assignment for specific phases. By default, all reasoning phases use Claude Sonnet. This setting allows you to assign different models to specific phases.
+
+```json
+{
+  "phase_model_overrides": {
+    "research": "sonnet",
+    "verify": "sonnet",
+    "review": "sonnet",
+    "spec-align": "sonnet"
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| research | string | "sonnet" | Model for the research phase. Options: "sonnet", "gemini" |
+| verify | string | "sonnet" | Model for the verify phase. Options: "sonnet", "gemini" |
+| review | string | "sonnet" | Model for the review phase. Options: "sonnet" |
+| spec-align | string | "sonnet" | Model for the spec alignment check. Options: "sonnet" |
+
+**Notes**:
+- The plan and execute phases cannot be overridden (plan always uses Sonnet, execute always uses the execute pool)
+- Setting a phase to "gemini" requires a valid GEMINI_API_KEY
+- The "sonnet" option always resolves to the model specified in the Anthropic API client (currently claude-sonnet-4-6)
+
+### multi_pipeline
+
+Controls multi-frontend parallel pipeline execution.
+
+```json
+{
+  "multi_pipeline": {
+    "enabled": false,
+    "strategy": "per-interface",
+    "max_parallel": 3,
+    "shared_phases": ["cache-warm", "spec-gate", "spec-align"]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | false | Enable multi-pipeline mode. When false, all interfaces are processed in a single pipeline. |
+| strategy | string | "per-interface" | Pipeline splitting strategy. Currently only "per-interface" is supported. |
+| max_parallel | integer | 3 | Maximum number of frontend pipelines running simultaneously. Higher values increase API pressure but reduce wall-clock time. |
+| shared_phases | string[] | ["cache-warm", "spec-gate", "spec-align"] | Phases that run once and benefit all pipelines. These are not repeated per-interface. |
+
+**Notes**:
+- Multi-pipeline mode requires that the repository has multiple detected interfaces (web, mcp-admin, browser, mobile, etc.)
+- Sequential layers (database, backend, shared) always run before parallel frontend pipelines
+- Each frontend pipeline gets a proportional share of the total budget based on requirement count
+- See the [GSD Multi-Frontend Pipeline Guide](GSD-Multi-Frontend.md) for detailed documentation
+
+### cost_alerts
+
+Controls per-requirement cost alerting thresholds.
+
+```json
+{
+  "cost_alerts": {
+    "per_requirement_warn_usd": 2.00,
+    "per_requirement_escalate_usd": 5.00,
+    "per_requirement_hard_cap_usd": 10.00,
+    "action_at_hard_cap": "defer"
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| per_requirement_warn_usd | float | 2.00 | Cost threshold (in USD) that triggers a warning for a single requirement |
+| per_requirement_escalate_usd | float | 5.00 | Cost threshold that triggers an escalation alert |
+| per_requirement_hard_cap_usd | float | 10.00 | Maximum cost allowed for a single requirement before automatic action |
+| action_at_hard_cap | string | "defer" | Action when a requirement hits the hard cap. Options: "defer" (mark as deferred), "skip" (skip entirely) |
+
+**Notes**:
+- These thresholds apply to the cumulative cost of a single requirement across all iterations
+- Cost is tracked per-requirement in `.gsd/costs/cost-summary.json`
+- A requirement that costs $10+ is typically a sign that it needs decomposition into smaller sub-requirements
+
+### git_commits
+
+Controls automatic git commit behavior during pipeline execution.
+
+```json
+{
+  "git_commits": {
+    "per_iteration": true,
+    "include_health_in_message": true,
+    "timeout_seconds": 60
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| per_iteration | boolean | true | Commit all changes after each iteration completes |
+| include_health_in_message | boolean | true | Include the current health percentage in the commit message |
+| timeout_seconds | integer | 60 | Maximum time (in seconds) allowed for git operations. If exceeded, the commit is skipped and the pipeline continues. |
+
+**Notes**:
+- Git commits are always local; the pipeline does not push to remote unless configured separately
+- Commit messages include the iteration number, health score, and number of requirements processed
+- If a git commit fails (e.g., due to lock contention), the pipeline logs a warning and continues without committing

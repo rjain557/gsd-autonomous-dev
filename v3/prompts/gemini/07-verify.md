@@ -13,11 +13,11 @@ You are the VERIFIER. Update requirement statuses, calculate health, detect drif
 
 1. For each requirement in the matrix above, determine its current status based on the evidence provided below.
 2. **CRITICAL: Be AGGRESSIVE about promoting statuses.** The evidence block below shows what happened THIS iteration:
-   - If files were written for a requirement → promote to at least "partial"
-   - If files were written AND local validation passed → promote to "satisfied"
-   - If files were written AND validation had only warnings (non-blocking) → promote to "satisfied"
+   - If files were written for a requirement -> promote to at least "partial"
+   - If files were written AND local validation passed -> promote to "satisfied"
+   - If files were written AND validation had only warnings (non-blocking) -> promote to "satisfied"
    - Only keep "not_started" if NO files were generated for the requirement
-3. Update statuses: not_started → partial → satisfied
+3. Update statuses: not_started -> partial -> satisfied
 4. **You MUST include a status entry for EVERY requirement that had files written or validation results this iteration.** Do not skip any.
 5. Calculate health score: (satisfied * 1.0 + partial * 0.5) / total * 100
 6. Detect drift (files modified outside the plan, broken dependencies).
@@ -29,11 +29,14 @@ You are the VERIFIER. Update requirement statuses, calculate health, detect drif
 
 - **greenfield**: Standard verification.
 - **bug_fix**: Check that fix addresses root cause, not just symptoms. Verify regression test exists.
-- **feature_update**: Check for regression — if any previously-satisfied requirement is no longer satisfied, flag it. But DO NOT demote satisfied reqs unless you have clear evidence of regression.
+- **feature_update**: Check for regression -- if any previously-satisfied requirement is no longer satisfied, flag it. But DO NOT demote satisfied reqs unless you have clear evidence of regression.
 
-## Output Schema
+## Output Format
 
-```json
+IMPORTANT: Return your response as valid JSON only. No markdown fences. No commentary before or after the JSON. Do not wrap the output in ```json blocks.
+
+Your entire response must be a single JSON object matching this schema exactly:
+
 {
   "iteration": 0,
   "health_score": 0,
@@ -62,6 +65,5 @@ You are the VERIFIER. Update requirement statuses, calculate health, detect drif
     "iterations_remaining_estimate": 0
   }
 }
-```
 
-Respond with ONLY the JSON object.
+Return your response as valid JSON only. No markdown fences.

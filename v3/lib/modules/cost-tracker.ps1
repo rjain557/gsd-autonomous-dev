@@ -53,6 +53,16 @@ $script:Pricing = @{
         input  = 0.20
         output = 1.10
     }
+    # Gemini (Google)
+    "gemini-2.5-flash" = @{
+        input  = 0.15
+        output = 0.60
+    }
+    # GLM5 (Zhipu)
+    "glm-4-flash" = @{
+        input  = 0.10
+        output = 0.10
+    }
 }
 
 # ============================================================

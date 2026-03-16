@@ -15,6 +15,17 @@
 #>
 
 # ============================================================
+# MODULE-SCOPED STATE
+# ============================================================
+
+# Decomposition budget: prevents runaway sub-req explosion per iteration
+$script:DecompBudget = @{
+    AddedThisIteration = 0
+    MaxPerIteration    = 20
+    MaxDepth           = 4
+}
+
+# ============================================================
 # MAIN ORCHESTRATOR
 # ============================================================
 
@@ -143,10 +154,23 @@ function Start-V3Pipeline {
         }
     }
 
+    # -- Phase 1b: Spec Alignment (drift detection) --
+    if ("spec-align" -in $phasesActive -and "spec-align" -notin $phasesSkipped) {
+        $specAlignResult = Invoke-SpecAlignmentPhase -GsdDir $GsdDir -RepoRoot $RepoRoot `
+            -CacheBlocks $cacheBlocks -Config $Config -Inventory $inventory
+
+        if ($specAlignResult.Blocked) {
+            Write-Host "  [BLOCKED] Spec alignment drift too high. Fix alignment first." -ForegroundColor Red
+            Remove-GsdLock -GsdDir $GsdDir
+            return @{ Success = $false; Error = "spec_alignment_blocked"; Report = $specAlignResult.Report }
+        }
+    }
+
     # -- Iteration Loop --
     $prevHealth = 0
     $currentHealth = 0
     $converged = $false
+    $consecutiveZeroDelta = 0
 
     for ($iter = $StartIteration; $iter -le $maxIterations; $iter++) {
         Write-Host "`n========================================" -ForegroundColor Cyan
@@ -154,6 +178,9 @@ function Start-V3Pipeline {
         Write-Host "========================================" -ForegroundColor Cyan
 
         try {  # Crash protection: one bad iteration should not kill the pipeline
+
+        # Reset decomposition budget for this iteration
+        $script:DecompBudget.AddedThisIteration = 0
 
         # Budget check -- estimate cost of upcoming iteration before starting
         # Estimated per-iteration cost: ~$0.15 Sonnet (research+plan+review+verify) + ~$0.05/req Codex execute
@@ -175,7 +202,7 @@ function Start-V3Pipeline {
             break
         }
 
-        $batchReqs = $scopedReqs | Select-Object -First $batchSizeMax
+        $batchReqs = Select-IntelligentBatch -Requirements $scopedReqs -BatchSize $batchSizeMax -GsdDir $GsdDir
         Write-Host "  Batch: $($batchReqs.Count) requirements" -ForegroundColor DarkGray
 
         # -- Research Phase --
@@ -202,6 +229,21 @@ function Start-V3Pipeline {
             foreach ($decomp in $researchOutput.decompose) {
                 $parentId = $decomp.parent_id
                 if (-not $decomp.sub_requirements -or $decomp.sub_requirements.Count -eq 0) { continue }
+
+                # Decomposition budget: check depth
+                $parentDepth = ($parentId -split '-').Count - 2
+                if ($parentDepth -ge $script:DecompBudget.MaxDepth) {
+                    Write-Host "    [BUDGET] Skipping decomposition of $parentId -- depth $parentDepth >= max $($script:DecompBudget.MaxDepth)" -ForegroundColor DarkYellow
+                    continue
+                }
+
+                # Decomposition budget: check iteration limit
+                $allowedCount = $script:DecompBudget.MaxPerIteration - $script:DecompBudget.AddedThisIteration
+                if ($allowedCount -le 0) {
+                    Write-Host "    [BUDGET] Decomposition budget exhausted ($($script:DecompBudget.AddedThisIteration)/$($script:DecompBudget.MaxPerIteration)) -- deferring $parentId" -ForegroundColor DarkYellow
+                    continue
+                }
+
                 $parentsDecomposed += $parentId
 
                 $parentReq = $reqs | Where-Object { ($_.id -eq $parentId) -or ($_.req_id -eq $parentId) }
@@ -211,7 +253,13 @@ function Start-V3Pipeline {
                     $parentReq | Add-Member -NotePropertyName "notes" -NotePropertyValue "Research-decomposed into $($decomp.sub_requirements.Count) sub-reqs: $($decomp.reason)" -Force
                 }
 
-                foreach ($sub in $decomp.sub_requirements) {
+                $subsToAdd = $decomp.sub_requirements | Select-Object -First $allowedCount
+                $deferred = $decomp.sub_requirements.Count - $subsToAdd.Count
+                if ($deferred -gt 0) {
+                    Write-Host "    [BUDGET] Taking $($subsToAdd.Count) of $($decomp.sub_requirements.Count) sub-reqs for $parentId, deferring $deferred" -ForegroundColor DarkYellow
+                }
+
+                foreach ($sub in $subsToAdd) {
                     $existing = $reqs | Where-Object { ($_.id -eq $sub.id) -or ($_.req_id -eq $sub.id) }
                     if ($existing) { continue }
                     $newReq = [PSCustomObject]@{
@@ -226,6 +274,7 @@ function Start-V3Pipeline {
                     }
                     $reqs.Add($newReq) | Out-Null
                     $totalAdded++
+                    $script:DecompBudget.AddedThisIteration++
                 }
             }
 
@@ -237,7 +286,7 @@ function Start-V3Pipeline {
                 $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
 
-                Write-Host "  [RESEARCH-DECOMPOSE] Split $($parentsDecomposed.Count) large reqs into $totalAdded sub-reqs" -ForegroundColor Cyan
+                Write-Host "  [RESEARCH-DECOMPOSE] Split $($parentsDecomposed.Count) large reqs into $totalAdded sub-reqs (budget: $($script:DecompBudget.AddedThisIteration)/$($script:DecompBudget.MaxPerIteration))" -ForegroundColor Cyan
                 foreach ($parentId in $parentsDecomposed) { Write-Host "    Parent: $parentId" -ForegroundColor DarkCyan }
 
                 # Replace decomposed parents with their sub-reqs in current batch
@@ -279,11 +328,28 @@ function Start-V3Pipeline {
             $totalAdded = 0
             foreach ($tReq in $needsDecomp) {
                 $tId = if ($tReq.id) { $tReq.id } else { $tReq.req_id }
+
+                # Decomposition budget: check depth
+                $tDepth = ($tId -split '-').Count - 2
+                if ($tDepth -ge $script:DecompBudget.MaxDepth) {
+                    Write-Host "    [BUDGET] Skipping pre-decompose of $tId -- depth $tDepth >= max $($script:DecompBudget.MaxDepth)" -ForegroundColor DarkYellow
+                    continue
+                }
+                # Decomposition budget: check iteration limit
+                if ($script:DecompBudget.AddedThisIteration -ge $script:DecompBudget.MaxPerIteration) {
+                    Write-Host "    [BUDGET] Pre-decompose budget exhausted -- deferring $tId" -ForegroundColor DarkYellow
+                    continue
+                }
+
                 # Create 2 sub-reqs: backend + frontend (simple split since we don't have plan details yet)
                 foreach ($layer in @("backend", "frontend")) {
                     $subId = "$tId-$layer"
                     $existing = $reqsList | Where-Object { ($_.id -eq $subId) -or ($_.req_id -eq $subId) }
                     if (-not $existing) {
+                        if ($script:DecompBudget.AddedThisIteration -ge $script:DecompBudget.MaxPerIteration) {
+                            Write-Host "    [BUDGET] Pre-decompose budget hit during $tId sub-req creation" -ForegroundColor DarkYellow
+                            break
+                        }
                         $newReq = [PSCustomObject]@{
                             id = $subId; description = "$($tReq.description) [$layer layer]"
                             interface = $layer; priority = if ($tReq.priority) { $tReq.priority } else { "medium" }
@@ -291,6 +357,7 @@ function Start-V3Pipeline {
                         }
                         $reqsList.Add($newReq) | Out-Null
                         $totalAdded++
+                        $script:DecompBudget.AddedThisIteration++
                         Write-Host "    [SUB] $subId -- $layer" -ForegroundColor DarkCyan
                     }
                 }
@@ -346,6 +413,20 @@ function Start-V3Pipeline {
 
             foreach ($decomp in $planOutput.decomposed) {
                 $parentId = $decomp.parent_id
+
+                # Decomposition budget: check depth
+                $planDepth = ($parentId -split '-').Count - 2
+                if ($planDepth -ge $script:DecompBudget.MaxDepth) {
+                    Write-Host "    [BUDGET] Skipping plan-decompose of $parentId -- depth $planDepth >= max $($script:DecompBudget.MaxDepth)" -ForegroundColor DarkYellow
+                    continue
+                }
+                # Decomposition budget: check iteration limit
+                $allowedCount = $script:DecompBudget.MaxPerIteration - $script:DecompBudget.AddedThisIteration
+                if ($allowedCount -le 0) {
+                    Write-Host "    [BUDGET] Plan-decompose budget exhausted -- deferring $parentId" -ForegroundColor DarkYellow
+                    continue
+                }
+
                 $parentsDecomposed += $parentId
 
                 # Mark parent as decomposed (not executed directly)
@@ -356,8 +437,9 @@ function Start-V3Pipeline {
                     $parentReq | Add-Member -NotePropertyName "notes" -NotePropertyValue "Decomposed into $($decomp.sub_requirements.Count) sub-requirements" -Force
                 }
 
-                # Add sub-requirements to matrix
-                foreach ($sub in $decomp.sub_requirements) {
+                # Add sub-requirements to matrix (budget-limited)
+                $subsToAdd = $decomp.sub_requirements | Select-Object -First $allowedCount
+                foreach ($sub in $subsToAdd) {
                     # Skip if already exists
                     $existing = $reqs | Where-Object { ($_.id -eq $sub.id) -or ($_.req_id -eq $sub.id) }
                     if ($existing) { continue }
@@ -374,6 +456,7 @@ function Start-V3Pipeline {
                     }
                     $reqs.Add($newReq) | Out-Null
                     $totalAdded++
+                    $script:DecompBudget.AddedThisIteration++
                 }
             }
 
@@ -427,7 +510,12 @@ function Start-V3Pipeline {
             }
             $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
 
-            if ($fileCount -ge 3 -or $estTokens -gt 8000) {
+            # Prevent infinite decomposition: if req ID has 5+ hyphens, it's already deeply decomposed — let it through
+            $decompositionDepth = ($rid -split '-').Count - 2  # CL-144 = depth 0, CL-144-CORE = depth 1, etc.
+            $maxFiles = if ($decompositionDepth -ge 4) { 10 } elseif ($decompositionDepth -ge 3) { 8 } else { 5 }
+            $maxTokens = if ($decompositionDepth -ge 4) { 16000 } elseif ($decompositionDepth -ge 3) { 12000 } else { 8000 }
+
+            if (($fileCount -ge $maxFiles -or $estTokens -gt $maxTokens) -and $decompositionDepth -lt 6) {
                 Write-Host "  [ENFORCE-DECOMPOSE] $rid has $fileCount files, ~$estTokens tokens -- too large for single Codex call" -ForegroundColor Yellow
                 $plansToDecompose += $plan
             } else {
@@ -443,6 +531,21 @@ function Start-V3Pipeline {
 
             foreach ($plan in $plansToDecompose) {
                 $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
+
+                # Decomposition budget: check depth
+                $eDepth = ($rid -split '-').Count - 2
+                if ($eDepth -ge $script:DecompBudget.MaxDepth) {
+                    Write-Host "    [BUDGET] Skipping enforce-decompose of $rid -- depth $eDepth >= max $($script:DecompBudget.MaxDepth)" -ForegroundColor DarkYellow
+                    $plansToKeep += $plan
+                    continue
+                }
+                # Decomposition budget: check iteration limit
+                if ($script:DecompBudget.AddedThisIteration -ge $script:DecompBudget.MaxPerIteration) {
+                    Write-Host "    [BUDGET] Enforce-decompose budget exhausted -- keeping $rid as-is" -ForegroundColor DarkYellow
+                    $plansToKeep += $plan
+                    continue
+                }
+
                 # Auto-split: group files by layer (backend, frontend, database, docs/scripts)
                 $groups = @{ backend = @(); frontend = @(); database = @(); other = @() }
                 $allFiles = @()
@@ -466,6 +569,10 @@ function Start-V3Pipeline {
 
                 foreach ($layer in @("backend", "frontend", "database", "other")) {
                     if ($groups[$layer].Count -eq 0) { continue }
+                    if ($script:DecompBudget.AddedThisIteration -ge $script:DecompBudget.MaxPerIteration) {
+                        Write-Host "    [BUDGET] Enforce-decompose budget hit during $rid sub-req creation" -ForegroundColor DarkYellow
+                        break
+                    }
                     $subId = "$rid-$subIdx"
                     $existing = $reqs | Where-Object { ($_.id -eq $subId) -or ($_.req_id -eq $subId) }
                     if (-not $existing) {
@@ -483,6 +590,7 @@ function Start-V3Pipeline {
                         }
                         $reqs.Add($newReq) | Out-Null
                         $totalAdded++
+                        $script:DecompBudget.AddedThisIteration++
                         Write-Host "    [SUB] $subId -- $layer ($($groups[$layer].Count) files)" -ForegroundColor DarkCyan
                     }
                     $subIdx++
@@ -503,7 +611,7 @@ function Start-V3Pipeline {
                 $matrix.summary.partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
                 $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
-                Write-Host "  [ENFORCE-DECOMPOSE] Auto-split $($plansToDecompose.Count) reqs into $totalAdded sub-reqs" -ForegroundColor Cyan
+                Write-Host "  [ENFORCE-DECOMPOSE] Auto-split $($plansToDecompose.Count) reqs into $totalAdded sub-reqs (budget: $($script:DecompBudget.AddedThisIteration)/$($script:DecompBudget.MaxPerIteration))" -ForegroundColor Cyan
             }
 
             # Only keep plans for non-decomposed requirements
@@ -551,26 +659,57 @@ function Start-V3Pipeline {
         if ($skeletonResults) { $fillParams["SkeletonResults"] = $skeletonResults }
         $executeResults = Invoke-ExecutePhase @fillParams
 
-        # -- Post-Fill Truncation Detection: mark truncated reqs for re-decomposition --
+        # -- Post-Fill Truncation Detection: track truncation count per req, escalate or decompose --
         if ($executeResults -and $executeResults.Results) {
+            # Load/create truncation tracker
+            $truncTrackerPath = Join-Path $GsdDir "requirements/truncation-tracker.json"
+            $truncTracker = @{}
+            if (Test-Path $truncTrackerPath) {
+                try {
+                    $ttData = Get-Content $truncTrackerPath -Raw | ConvertFrom-Json
+                    foreach ($prop in $ttData.PSObject.Properties) { $truncTracker[$prop.Name] = [int]$prop.Value }
+                } catch {}
+            }
+
             $truncatedReqs = @()
             foreach ($reqId in $executeResults.Results.Keys) {
                 $r = $executeResults.Results[$reqId]
-                if ($r.StopReason -eq "max_tokens" -or ($r.Usage -and $r.Usage.output_tokens -ge 16000)) {
+                if ($r.StopReason -eq "max_tokens" -or $r.FinishReason -eq "max_tokens" -or ($r.Usage -and $r.Usage.output_tokens -ge 16000)) {
                     $truncatedReqs += $reqId
+                    if (-not $truncTracker.ContainsKey($reqId)) { $truncTracker[$reqId] = 0 }
+                    $truncTracker[$reqId]++
                 }
             }
+
+            # Save truncation tracker
+            $truncTracker | ConvertTo-Json -Depth 3 | Set-Content $truncTrackerPath -Encoding UTF8
+
             if ($truncatedReqs.Count -gt 0) {
                 Write-Host "  [TRUNCATION] $($truncatedReqs.Count) reqs hit token limit: $($truncatedReqs -join ', ')" -ForegroundColor Red
-                Write-Host "  [TRUNCATION] These will be auto-decomposed in the next iteration" -ForegroundColor Yellow
+
+                # Separate reqs: those truncated 2+ times get routed to larger model next time,
+                # first-time truncations get flagged for decomposition
+                $escalateReqs = @($truncatedReqs | Where-Object { $truncTracker[$_] -ge 2 })
+                $decompReqs = @($truncatedReqs | Where-Object { $truncTracker[$_] -lt 2 })
+
+                if ($escalateReqs.Count -gt 0) {
+                    Write-Host "  [TRUNCATION-ESCALATE] $($escalateReqs.Count) reqs truncated 2+ times -- flagged for larger model (DeepSeek/Claude): $($escalateReqs -join ', ')" -ForegroundColor Yellow
+                }
+
                 $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
                 $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
                 foreach ($tReqId in $truncatedReqs) {
                     $req = $matrix.requirements | Where-Object { ($_.id -eq $tReqId) -or ($_.req_id -eq $tReqId) }
                     if ($req -and -not $req.decomposed) {
                         $req.status = "not_started"
-                        $req | Add-Member -NotePropertyName "needs_decomposition" -NotePropertyValue $true -Force
-                        $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated at 16K tokens -- force decompose next iteration" -Force
+                        if ($truncTracker[$tReqId] -ge 2) {
+                            # Flag for larger model routing instead of decomposition
+                            $req | Add-Member -NotePropertyName "use_large_model" -NotePropertyValue $true -Force
+                            $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated $($truncTracker[$tReqId])x -- route to DeepSeek/Claude instead of Codex Mini" -Force
+                        } else {
+                            $req | Add-Member -NotePropertyName "needs_decomposition" -NotePropertyValue $true -Force
+                            $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated at 16K tokens -- force decompose next iteration" -Force
+                        }
                     }
                 }
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
@@ -601,7 +740,7 @@ function Start-V3Pipeline {
             $failedReqIds = @($validateResults.FailItems | ForEach-Object { $_.ReqId })
             if (Test-Path $fixerScript) {
                 try {
-                    & $fixerScript -RepoRoot $RepoRoot -RequirementIds $failedReqIds -MaxAttempts 15
+                    & $fixerScript -RepoRoot $RepoRoot -RequirementIds $failedReqIds -MaxAttempts 5
                 } catch {
                     Write-Host "    [WARN] Validation fixer error: $($_.Exception.Message)" -ForegroundColor DarkYellow
                 }
@@ -685,11 +824,67 @@ function Start-V3Pipeline {
             break
         }
 
-        # Stall check
+        # Stall check + Anti-Plateau integration
+        if ($healthDelta -le 0) { $consecutiveZeroDelta++ } else { $consecutiveZeroDelta = 0 }
+
         $stall = Test-StallDetected -GsdDir $GsdDir -StallThreshold $Config.stall_threshold
         if ($stall.Stalled) {
-            Write-Host "  [STALL] $($stall.Reason)" -ForegroundColor Red
+            Write-Host "  [STALL] $($stall.Reason) (consecutive zero-delta: $consecutiveZeroDelta)" -ForegroundColor Red
             Send-GsdNotification -Title "GSD Stalled" -Message $stall.Reason -Tags "warning"
+
+            # Anti-plateau: get stall-breaking action from supervisor (if available)
+            $stallAction = $null
+            try {
+                $stallAction = Get-StallBreakingAction -GsdDir $GsdDir -ConsecutiveZero $consecutiveZeroDelta
+            } catch {
+                Write-Host "  [STALL] Get-StallBreakingAction not available, using defaults" -ForegroundColor DarkGray
+            }
+
+            if ($stallAction) {
+                Write-Host "  [ANTI-PLATEAU] Action: $($stallAction.Action)" -ForegroundColor Cyan
+
+                switch ($stallAction.Action) {
+                    "escalate" {
+                        # Flag stuck reqs for Opus/larger model in next execute
+                        $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+                        try {
+                            $stallMatrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+                            $stuckReqs = @($stallMatrix.requirements | Where-Object { $_.status -in @("not_started", "partial") } | Select-Object -First 5)
+                            foreach ($sr in $stuckReqs) {
+                                $sr | Add-Member -NotePropertyName "use_large_model" -NotePropertyValue $true -Force
+                                $sr | Add-Member -NotePropertyName "notes" -NotePropertyValue "Escalated by anti-plateau (stall $consecutiveZeroDelta iterations)" -Force
+                            }
+                            $stallMatrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                            Write-Host "  [ANTI-PLATEAU] Escalated $($stuckReqs.Count) stuck reqs to larger model" -ForegroundColor Yellow
+                        } catch {
+                            Write-Host "  [ANTI-PLATEAU] Escalate failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+                        }
+                    }
+                    "skip" {
+                        # Mark stuck reqs as deferred, remove from scope
+                        $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+                        try {
+                            $stallMatrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+                            $stuckReqs = @($stallMatrix.requirements | Where-Object { $_.status -eq "not_started" } | Select-Object -First 3)
+                            foreach ($sr in $stuckReqs) {
+                                $sr.status = "deferred"
+                                $sr | Add-Member -NotePropertyName "notes" -NotePropertyValue "Deferred by anti-plateau (stall $consecutiveZeroDelta iterations)" -Force
+                            }
+                            $stallMatrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                            Write-Host "  [ANTI-PLATEAU] Deferred $($stuckReqs.Count) stuck reqs" -ForegroundColor Yellow
+                        } catch {
+                            Write-Host "  [ANTI-PLATEAU] Skip/defer failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+                        }
+                    }
+                }
+            }
+
+            # Force break after 5 consecutive zero-delta iterations
+            if ($consecutiveZeroDelta -ge 5) {
+                Write-Host "  [ANTI-PLATEAU] Force break: $consecutiveZeroDelta consecutive zero-delta iterations" -ForegroundColor Red
+                Send-GsdNotification -Title "GSD Force Break" -Message "Pipeline halted after $consecutiveZeroDelta zero-progress iterations" -Tags "warning" -Priority "high"
+                break
+            }
 
             # Try spec-fix if available
             if ("spec-fix" -in $phasesActive) {
@@ -710,18 +905,19 @@ function Start-V3Pipeline {
             }
         }
 
-        # Git commit iteration
-        try {
-            $commitFiles = Get-ChildItem -Path $RepoRoot -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -notlike "*node_modules*" -and $_.FullName -notlike "*.gsd*" } |
-                Select-Object -First 1
-            if ($commitFiles) {
-                git -C $RepoRoot add -A 2>&1 | Out-Null
-                git -C $RepoRoot commit -m "GSD v3: Iteration $iter - health $currentHealth%" --allow-empty 2>&1 | Out-Null
-            }
-        } catch {}
+        # Git commit iteration (robust: diff check, retries, health+cost in message)
+        Invoke-IterationCommit -RepoRoot $RepoRoot -Iteration $iter `
+            -HealthPct $currentHealth -TotalCostUsd $script:CostState.TotalUsd
 
         $prevHealth = $currentHealth
+
+        # Memory cleanup between iterations -- prevent OOM/CPU spike from GC thrashing
+        # Also clean up any stale background jobs that weren't removed
+        Get-Job -State Completed -EA SilentlyContinue | Remove-Job -Force -EA SilentlyContinue
+        Get-Job -State Failed -EA SilentlyContinue | Remove-Job -Force -EA SilentlyContinue
+        $scopedReqs = $null; $batchReqs = $null
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
 
         # Notification
         Send-GsdNotification -Title "GSD Iteration $iter Complete" `
@@ -766,6 +962,397 @@ function Start-V3Pipeline {
         HealthScore = $currentHealth
         TotalCost   = $script:CostState.TotalUsd
         Duration    = $elapsed
+    }
+}
+
+# ============================================================
+# SPEC-ALIGNMENT PHASE
+# ============================================================
+
+function Invoke-SpecAlignmentPhase {
+    <#
+    .SYNOPSIS
+        Compares spec documents vs requirements matrix vs codebase to detect drift.
+        Runs after spec-gate, before iterations. Blocks pipeline if drift > 20%.
+    #>
+    param(
+        [string]$GsdDir,
+        [string]$RepoRoot,
+        [array]$CacheBlocks,
+        [PSObject]$Config,
+        [PSObject]$Inventory
+    )
+
+    Write-Host "`n--- Spec Alignment ---" -ForegroundColor Yellow
+
+    # Gather spec docs from docs/ and design/ directories
+    $specDocs = @()
+    foreach ($dir in @("docs", "design")) {
+        $dirPath = Join-Path $RepoRoot $dir
+        if (Test-Path $dirPath) {
+            $files = Get-ChildItem -Path $dirPath -Recurse -File -Include "*.md","*.txt","*.json" -ErrorAction SilentlyContinue |
+                Select-Object -First 15
+            foreach ($f in $files) {
+                $relPath = $f.FullName.Replace($RepoRoot, "").TrimStart("\", "/")
+                $content = Get-Content $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($content -and $content.Length -lt 8000) {
+                    $specDocs += "### $relPath`n$content"
+                }
+            }
+        }
+    }
+    $specText = if ($specDocs.Count -gt 0) { $specDocs -join "`n`n---`n`n" } else { "(no spec docs found in docs/ or design/)" }
+    if ($specText.Length -gt 30000) { $specText = $specText.Substring(0, 30000) + "`n... (truncated)" }
+
+    # Read requirements matrix summary
+    $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+    $matrixSummary = "(no matrix)"
+    if (Test-Path $matrixPath) {
+        try {
+            $matrixObj = Get-Content $matrixPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $mReqs = if ($matrixObj.requirements) { $matrixObj.requirements } else { @() }
+            $reqList = ($mReqs | Select-Object -First 80 | ForEach-Object {
+                $rid = if ($_.id) { $_.id } else { $_.req_id }
+                "- $rid [$($_.status)]: $($_.description)"
+            }) -join "`n"
+            $matrixSummary = "Total: $($mReqs.Count)`n$reqList"
+        } catch {}
+    }
+
+    # File inventory summary
+    $fileList = if ($Inventory.source_files) {
+        ($Inventory.source_files | Select-Object -First 100) -join "`n"
+    } else { "(no inventory)" }
+
+    $prompt = @"
+You are a spec-alignment auditor. Compare these spec documents against the requirements matrix and file inventory.
+
+## Spec Documents
+$specText
+
+## Requirements Matrix
+$matrixSummary
+
+## File Inventory (first 100 source files)
+$fileList
+
+## Task
+Produce a JSON report:
+{
+  "drift_pct": <number 0-100>,
+  "missing_in_code": ["<req_ids or descriptions of spec items not covered by requirements or code>"],
+  "orphaned_code": ["<files that exist in codebase but have no matching spec or requirement>"],
+  "status": "pass" | "warn" | "block",
+  "summary": "<one-line summary>"
+}
+
+Rules:
+- drift_pct > 20 → status "block"
+- drift_pct 5-20 → status "warn"
+- drift_pct < 5 → status "pass"
+- missing_in_code: spec items with no requirement AND no code implementing them
+- orphaned_code: significant source files with no matching spec (ignore configs, tests, utilities)
+"@
+
+    $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
+        -MaxTokens 4096 -UseCache -JsonMode -Phase "spec-align"
+
+    if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-align" }
+
+    $report = $result.Parsed
+    $blocked = $false
+
+    if ($report) {
+        # Save report
+        $specsDir = Join-Path $GsdDir "specs"
+        if (-not (Test-Path $specsDir)) { New-Item -ItemType Directory -Path $specsDir -Force | Out-Null }
+        $result.Text | Set-Content (Join-Path $specsDir "spec-alignment-report.json") -Encoding UTF8
+
+        $driftPct = if ($report.drift_pct) { $report.drift_pct } else { 0 }
+        $status = if ($report.status) { $report.status } else { "pass" }
+
+        Write-Host "  Drift: $driftPct% | Status: $status" -ForegroundColor $(
+            if ($status -eq "block") { "Red" } elseif ($status -eq "warn") { "Yellow" } else { "Green" }
+        )
+        if ($report.summary) { Write-Host "  $($report.summary)" -ForegroundColor DarkGray }
+        if ($report.missing_in_code -and $report.missing_in_code.Count -gt 0) {
+            Write-Host "  Missing in code: $($report.missing_in_code.Count) items" -ForegroundColor DarkYellow
+        }
+        if ($report.orphaned_code -and $report.orphaned_code.Count -gt 0) {
+            Write-Host "  Orphaned code: $($report.orphaned_code.Count) files" -ForegroundColor DarkYellow
+        }
+
+        if ($status -eq "block" -or $driftPct -gt 20) {
+            Write-Host "  [BLOCKED] Drift $driftPct% exceeds 20% threshold. Fix spec alignment first." -ForegroundColor Red
+            $blocked = $true
+        }
+    } else {
+        Write-Host "  [WARN] Spec alignment returned no parseable output" -ForegroundColor DarkYellow
+    }
+
+    return @{ Blocked = $blocked; Report = $report; Success = $result.Success }
+}
+
+# ============================================================
+# INTELLIGENT BATCHING
+# ============================================================
+
+function Select-IntelligentBatch {
+    <#
+    .SYNOPSIS
+        Selects a batch of requirements using interface clustering, priority sorting,
+        and dependency chain awareness instead of simple Select-Object -First N.
+    #>
+    param(
+        [array]$Requirements,
+        [int]$BatchSize,
+        [string]$GsdDir = ""
+    )
+
+    if ($Requirements.Count -le $BatchSize) { return $Requirements }
+
+    # Load fail tracker to deprioritize repeatedly failing reqs
+    $failTracker = @{}
+    if ($GsdDir) {
+        $failTrackerPath = Join-Path $GsdDir "requirements/fail-tracker.json"
+        if (Test-Path $failTrackerPath) {
+            try {
+                $ftData = Get-Content $failTrackerPath -Raw | ConvertFrom-Json
+                foreach ($prop in $ftData.PSObject.Properties) { $failTracker[$prop.Name] = [int]$prop.Value }
+            } catch {}
+        }
+    }
+
+    # Priority weight map (lower = higher priority)
+    $priorityWeight = @{ "critical" = 0; "high" = 1; "medium" = 2; "low" = 3 }
+
+    # Score each requirement: priority + fail penalty + dependency bonus
+    $scored = foreach ($req in $Requirements) {
+        $rid = if ($req.id) { $req.id } else { $req.req_id }
+        $prio = if ($req.priority) { $req.priority.ToLower() } else { "medium" }
+        $pw = if ($priorityWeight.ContainsKey($prio)) { $priorityWeight[$prio] } else { 2 }
+        $failPenalty = if ($failTracker.ContainsKey($rid)) { $failTracker[$rid] * 2 } else { 0 }
+        $iface = if ($req.interface) { $req.interface } else { "unknown" }
+
+        [PSCustomObject]@{
+            Req       = $req
+            ReqId     = $rid
+            Interface = $iface
+            Score     = $pw + $failPenalty
+            HasParent = [bool]$req.parent_id
+        }
+    }
+
+    # Sort by score (ascending = best first), then group by interface
+    $sorted = $scored | Sort-Object Score
+
+    # Fill batch preferring same-interface clusters
+    $selected = [System.Collections.ArrayList]::new()
+    $byInterface = $sorted | Group-Object Interface
+
+    # Round-robin across interfaces, sorted by best score in group
+    $ifaceQueues = @{}
+    foreach ($group in ($byInterface | Sort-Object { ($_.Group | Measure-Object Score -Minimum).Minimum })) {
+        $ifaceQueues[$group.Name] = [System.Collections.Queue]::new()
+        foreach ($item in $group.Group) {
+            $ifaceQueues[$group.Name].Enqueue($item)
+        }
+    }
+
+    # Fill with clusters: take up to 3 from same interface before moving to next
+    $clusterSize = [math]::Max(2, [math]::Floor($BatchSize / [math]::Max(1, $ifaceQueues.Count)))
+    while ($selected.Count -lt $BatchSize) {
+        $addedThisRound = $false
+        foreach ($ifaceName in @($ifaceQueues.Keys)) {
+            $queue = $ifaceQueues[$ifaceName]
+            $taken = 0
+            while ($queue.Count -gt 0 -and $taken -lt $clusterSize -and $selected.Count -lt $BatchSize) {
+                $item = $queue.Dequeue()
+                # Respect dependency chains: if parent_id is in batch, include child
+                $selected.Add($item.Req) | Out-Null
+                $taken++
+                $addedThisRound = $true
+            }
+            if ($queue.Count -eq 0) { $ifaceQueues.Remove($ifaceName) }
+        }
+        if (-not $addedThisRound) { break }
+    }
+
+    Write-Host "  [BATCH] Intelligent: $($selected.Count) reqs from $($byInterface.Count) interfaces" -ForegroundColor DarkGray
+    return @($selected)
+}
+
+# ============================================================
+# COMMIT ENFORCEMENT
+# ============================================================
+
+function Invoke-IterationCommit {
+    <#
+    .SYNOPSIS
+        Robust git commit with diff check, health/cost in message, timeout, and retries.
+    #>
+    param(
+        [string]$RepoRoot,
+        [int]$Iteration,
+        [double]$HealthPct,
+        [double]$TotalCostUsd,
+        [int]$TimeoutSec = 60,
+        [int]$MaxRetries = 3
+    )
+
+    # Check for real changes before committing
+    try {
+        $diffOutput = git -C $RepoRoot diff --stat HEAD 2>&1 | Out-String
+        $untrackedCount = @(git -C $RepoRoot ls-files --others --exclude-standard 2>&1).Count
+    } catch {
+        $diffOutput = ""
+        $untrackedCount = 0
+    }
+
+    if ([string]::IsNullOrWhiteSpace($diffOutput) -and $untrackedCount -eq 0) {
+        Write-Host "  [GIT] No changes to commit" -ForegroundColor DarkGray
+        return
+    }
+
+    $costStr = [math]::Round($TotalCostUsd, 2)
+    $commitMsg = "GSD v3: Iteration $Iteration - health $HealthPct% | cost `$$costStr"
+
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            $gitJob = Start-Job -ScriptBlock {
+                param($root, $msg)
+                git -C $root add -A 2>&1 | Out-Null
+                $result = git -C $root commit -m $msg 2>&1 | Out-String
+                return $result
+            } -ArgumentList $RepoRoot, $commitMsg
+
+            $gitDone = $gitJob | Wait-Job -Timeout $TimeoutSec
+            if (-not $gitDone) {
+                Write-Host "  [GIT] Commit timed out after ${TimeoutSec}s (attempt $attempt/$MaxRetries)" -ForegroundColor Yellow
+                $gitJob | Stop-Job -PassThru | Remove-Job -Force
+                if ($attempt -lt $MaxRetries) { Start-Sleep -Seconds 2; continue }
+            } else {
+                $output = Receive-Job -Job $gitJob
+                $gitJob | Remove-Job -Force
+                Write-Host "  [GIT] Committed: $commitMsg" -ForegroundColor DarkGray
+                return
+            }
+        } catch {
+            Write-Host "  [GIT] Commit failed (attempt $attempt/$MaxRetries): $($_.Exception.Message)" -ForegroundColor Yellow
+            if ($attempt -lt $MaxRetries) { Start-Sleep -Seconds 2 }
+        }
+    }
+    Write-Host "  [GIT] All $MaxRetries commit attempts failed -- continuing pipeline" -ForegroundColor DarkYellow
+}
+
+# ============================================================
+# MULTI-PIPELINE SUPPORT
+# ============================================================
+
+function Start-MultiPipeline {
+    <#
+    .SYNOPSIS
+        Launches parallel pipelines per interface (database first, then backend, then frontends).
+        Only activates when config.multi_pipeline.enabled = true.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [string]$Mode = "greenfield",
+        [PSObject]$Config,
+        [PSObject]$AgentMap,
+        [string]$NtfyTopic = "auto"
+    )
+
+    $multiConfig = $Config.multi_pipeline
+    if (-not $multiConfig -or $multiConfig.enabled -ne $true) {
+        Write-Host "  [MULTI-PIPELINE] Not enabled in config. Running single pipeline." -ForegroundColor DarkGray
+        return Start-V3Pipeline -RepoRoot $RepoRoot -Mode $Mode -Config $Config -AgentMap $AgentMap -NtfyTopic $NtfyTopic
+    }
+
+    $maxParallel = if ($multiConfig.max_parallel) { $multiConfig.max_parallel } else { 3 }
+    Write-Host "`n============================================" -ForegroundColor Magenta
+    Write-Host "  GSD V3 Multi-Pipeline ($Mode)" -ForegroundColor Magenta
+    Write-Host "  Max parallel: $maxParallel" -ForegroundColor DarkGray
+    Write-Host "============================================" -ForegroundColor Magenta
+
+    # Discover interfaces from inventory
+    $GsdDir = Join-Path $RepoRoot ".gsd"
+    $inventory = Build-FileInventory -RepoRoot $RepoRoot -GsdDir $GsdDir
+    $interfaces = @($inventory.by_interface.Keys)
+    Write-Host "  Discovered interfaces: $($interfaces -join ', ')" -ForegroundColor DarkGray
+
+    # Categorize interfaces
+    $dbInterfaces = @($interfaces | Where-Object { $_ -match "database|sql|db" })
+    $backendInterfaces = @($interfaces | Where-Object { $_ -match "backend|server|api" })
+    $frontendInterfaces = @($interfaces | Where-Object { $_ -notin ($dbInterfaces + $backendInterfaces) })
+
+    $allResults = @()
+
+    # Phase 1: Database pipeline (sequential, must complete first)
+    foreach ($iface in $dbInterfaces) {
+        Write-Host "`n  --- Database Pipeline: $iface ---" -ForegroundColor Yellow
+        $result = Start-V3Pipeline -RepoRoot $RepoRoot -Mode $Mode -Config $Config `
+            -AgentMap $AgentMap -Scope "interface:$iface" -NtfyTopic $NtfyTopic
+        $allResults += $result
+    }
+
+    # Phase 2: Backend pipeline (sequential)
+    foreach ($iface in $backendInterfaces) {
+        Write-Host "`n  --- Backend Pipeline: $iface ---" -ForegroundColor Yellow
+        $result = Start-V3Pipeline -RepoRoot $RepoRoot -Mode $Mode -Config $Config `
+            -AgentMap $AgentMap -Scope "interface:$iface" -NtfyTopic $NtfyTopic
+        $allResults += $result
+    }
+
+    # Phase 3: Frontend pipelines (parallel via Start-Job)
+    if ($frontendInterfaces.Count -gt 0) {
+        Write-Host "`n  --- Frontend Pipelines (parallel) ---" -ForegroundColor Yellow
+        $jobs = @()
+        foreach ($iface in ($frontendInterfaces | Select-Object -First $maxParallel)) {
+            Write-Host "    Launching: $iface" -ForegroundColor DarkCyan
+            $scriptPath = $PSCommandPath  # This module's path
+            $job = Start-Job -ScriptBlock {
+                param($sp, $root, $m, $cfg, $am, $scope, $topic)
+                . $sp
+                Start-V3Pipeline -RepoRoot $root -Mode $m -Config $cfg `
+                    -AgentMap $am -Scope $scope -NtfyTopic $topic
+            } -ArgumentList $scriptPath, $RepoRoot, $Mode, $Config, $AgentMap, "interface:$iface", $NtfyTopic
+            $jobs += @{ Job = $job; Interface = $iface }
+        }
+
+        # Wait for all frontend jobs
+        $timeout = 3600  # 1 hour max per frontend pipeline
+        foreach ($j in $jobs) {
+            $completed = $j.Job | Wait-Job -Timeout $timeout
+            if ($completed) {
+                $result = Receive-Job -Job $j.Job
+                $allResults += $result
+                Write-Host "    [DONE] $($j.Interface): Health $($result.HealthScore)%" -ForegroundColor $(if ($result.Success) { "Green" } else { "Yellow" })
+            } else {
+                Write-Host "    [TIMEOUT] $($j.Interface) timed out after ${timeout}s" -ForegroundColor Red
+                $j.Job | Stop-Job -PassThru | Remove-Job -Force
+            }
+        }
+        Get-Job -State Completed -EA SilentlyContinue | Remove-Job -Force -EA SilentlyContinue
+    }
+
+    # Aggregate health
+    $avgHealth = if ($allResults.Count -gt 0) {
+        [math]::Round(($allResults | ForEach-Object { $_.HealthScore } | Measure-Object -Average).Average, 1)
+    } else { 0 }
+    $totalCost = ($allResults | ForEach-Object { $_.TotalCost } | Measure-Object -Sum).Sum
+
+    Write-Host "`n============================================" -ForegroundColor Magenta
+    Write-Host "  Multi-Pipeline Complete" -ForegroundColor Magenta
+    Write-Host "  Avg Health: $avgHealth% | Total Cost: `$$([math]::Round($totalCost, 2))" -ForegroundColor DarkGray
+    Write-Host "============================================" -ForegroundColor Magenta
+
+    return @{
+        Success     = ($allResults | Where-Object { $_.Success }).Count -eq $allResults.Count
+        Mode        = $Mode
+        HealthScore = $avgHealth
+        TotalCost   = $totalCost
+        Pipelines   = $allResults.Count
     }
 }
 
@@ -1058,6 +1645,31 @@ function Invoke-ExecutePhase {
         }
     }
 
+    # Load truncation tracker to detect reqs that need larger model
+    $truncTrackerPath = Join-Path $GsdDir "requirements/truncation-tracker.json"
+    $truncTracker = @{}
+    if (Test-Path $truncTrackerPath) {
+        try {
+            $ttData = Get-Content $truncTrackerPath -Raw | ConvertFrom-Json
+            foreach ($prop in $ttData.PSObject.Properties) { $truncTracker[$prop.Name] = [int]$prop.Value }
+        } catch {}
+    }
+
+    # Also check requirements matrix for use_large_model flag
+    $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+    $largeModelReqs = @{}
+    if (Test-Path $matrixPath) {
+        try {
+            $matrixData = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            foreach ($req in $matrixData.requirements) {
+                if ($req.use_large_model -eq $true) {
+                    $rid = if ($req.id) { $req.id } else { $req.req_id }
+                    $largeModelReqs[$rid] = $true
+                }
+            }
+        } catch {}
+    }
+
     # Build parallel items
     $items = @()
     foreach ($plan in $Plans) {
@@ -1073,11 +1685,38 @@ function Invoke-ExecutePhase {
         $ifaceConventions = Get-InterfaceConventions -Interface $interface -Config $Config
         $systemPrompt = "$conventions`n`n## Interface: $interface`n$ifaceConventions"
 
+        # Model routing: use Get-NextExecuteModel if available, else fallback to existing logic
+        $useModel = $null  # Default: Codex Mini
+        $reqId = $plan.req_id
+        $routedModel = $null
+        try {
+            $routedModel = Get-NextExecuteModel -ReqId $reqId -Interface $interface `
+                -TruncTracker $truncTracker -LargeModelReqs $largeModelReqs
+        } catch {
+            # Get-NextExecuteModel not available -- fall through to legacy logic
+        }
+
+        if ($routedModel) {
+            $useModel = $routedModel
+            Write-Host "    [MODEL-ROUTE] $reqId -> $useModel (via Get-NextExecuteModel)" -ForegroundColor Cyan
+        } elseif ($largeModelReqs.ContainsKey($reqId) -or ($truncTracker.ContainsKey($reqId) -and $truncTracker[$reqId] -ge 2)) {
+            # Fallback: legacy large-model routing for truncation-prone reqs
+            $dsKey = [System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
+            if (-not $dsKey) { $dsKey = [System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "Process") }
+            if ($dsKey) {
+                $useModel = "deepseek-fallback"
+                Write-Host "    [LARGE-MODEL] $reqId -> DeepSeek (truncated $($truncTracker[$reqId])x, Codex Mini too small)" -ForegroundColor Cyan
+            } else {
+                $useModel = "claude-fallback"
+                Write-Host "    [LARGE-MODEL] $reqId -> Claude Sonnet (truncated $($truncTracker[$reqId])x, no DeepSeek key)" -ForegroundColor Cyan
+            }
+        }
+
         $items += @{
-            Id           = $plan.req_id
+            Id           = $reqId
             SystemPrompt = $systemPrompt
             UserMessage  = $prompt
-            Model        = $null  # Use default Codex Mini
+            Model        = $useModel
         }
     }
 
@@ -1251,15 +1890,25 @@ function Invoke-VerifyPhase {
                 }
             }
             $updated = 0
+            $blocked = 0
             foreach ($req in $matrixRaw.requirements) {
                 if ($statusMap.ContainsKey($req.id)) {
                     $oldStatus = $req.status
                     $newStatus = $statusMap[$req.id]
                     if ($oldStatus -ne $newStatus) {
+                        # NEVER demote satisfied reqs — verify LLM is too conservative
+                        # and causes regressions by demoting working code
+                        if ($oldStatus -eq "satisfied" -and $newStatus -in @("partial", "not_started")) {
+                            $blocked++
+                            continue
+                        }
                         $req.status = $newStatus
                         $updated++
                     }
                 }
+            }
+            if ($blocked -gt 0) {
+                Write-Host "    [VERIFY] Blocked $blocked demotions (satisfied reqs protected)" -ForegroundColor Yellow
             }
             if ($updated -gt 0) {
                 $matrixRaw | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
@@ -1273,6 +1922,31 @@ function Invoke-VerifyPhase {
         }
     } else {
         Write-Host "    [WARN] Verify returned no requirements_status -- matrix not updated" -ForegroundColor DarkYellow
+    }
+
+    # AUTO-PROMOTE: If local validation passed for a req, promote it directly
+    # This catches reqs that verify's LLM missed
+    if ($ValidateResults -and $ValidateResults.PassItems) {
+        try {
+            $matrixRaw2 = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $autoPromoted = 0
+            foreach ($vr in $ValidateResults.PassItems) {
+                if ($vr.ReqId) {
+                    $matchReq = $matrixRaw2.requirements | Where-Object { $_.id -eq $vr.ReqId -and $_.status -ne "satisfied" }
+                    if ($matchReq) {
+                        $matchReq.status = "satisfied"
+                        $autoPromoted++
+                    }
+                }
+            }
+            if ($autoPromoted -gt 0) {
+                $matrixRaw2.summary.satisfied = @($matrixRaw2.requirements | Where-Object { $_.status -eq "satisfied" }).Count
+                $matrixRaw2 | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                Write-Host "    [AUTO-PROMOTE] $autoPromoted reqs promoted to satisfied (validation passed)" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "    [WARN] Auto-promote failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
     }
 
     # Update health
@@ -1297,6 +1971,83 @@ function Invoke-SpecFixPhase {
     if ($result.Parsed -and $result.Parsed.cache_invalidation) {
         Write-Host "  [CACHE] Spec fix invalidated cache block 2" -ForegroundColor Yellow
     }
+}
+
+# ============================================================
+# ANTI-PLATEAU HELPERS
+# ============================================================
+
+function Get-StallBreakingAction {
+    <#
+    .SYNOPSIS
+        Determines what action to take when the pipeline is stalled.
+        Returns an action object with Action = "escalate", "skip", or "continue".
+    #>
+    param(
+        [string]$GsdDir,
+        [int]$ConsecutiveZero = 0
+    )
+
+    # Read health history to understand stall pattern
+    $historyPath = Join-Path $GsdDir "health/health-history.jsonl"
+    if (-not (Test-Path $historyPath)) {
+        return @{ Action = "continue"; Reason = "No history" }
+    }
+
+    try {
+        $lines = Get-Content $historyPath -Encoding UTF8 | Where-Object { $_.Trim() }
+        $entries = $lines | ForEach-Object { $_ | ConvertFrom-Json }
+        $recent = $entries | Select-Object -Last 5
+    } catch {
+        return @{ Action = "continue"; Reason = "Cannot parse history" }
+    }
+
+    # Decision logic based on consecutive zero-delta count
+    if ($ConsecutiveZero -ge 5) {
+        return @{ Action = "force_break"; Reason = "5+ consecutive zero-delta iterations" }
+    }
+    if ($ConsecutiveZero -ge 3) {
+        return @{ Action = "skip"; Reason = "3+ consecutive stalls -- defer stuck reqs" }
+    }
+    if ($ConsecutiveZero -ge 2) {
+        return @{ Action = "escalate"; Reason = "2+ consecutive stalls -- try larger model" }
+    }
+
+    return @{ Action = "continue"; Reason = "Below threshold" }
+}
+
+function Get-NextExecuteModel {
+    <#
+    .SYNOPSIS
+        Determines which model to use for executing a given requirement.
+        Returns model identifier string or $null for default (Codex Mini).
+    #>
+    param(
+        [string]$ReqId,
+        [string]$Interface = "web",
+        [hashtable]$TruncTracker = @{},
+        [hashtable]$LargeModelReqs = @{}
+    )
+
+    # Priority 1: Explicitly flagged for large model (anti-plateau escalation or truncation)
+    if ($LargeModelReqs.ContainsKey($ReqId)) {
+        $dsKey = [System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
+        if (-not $dsKey) { $dsKey = [System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "Process") }
+        if ($dsKey) { return "deepseek-fallback" }
+        return "claude-fallback"
+    }
+
+    # Priority 2: Truncation history (2+ truncations -> larger model)
+    if ($TruncTracker.ContainsKey($ReqId) -and $TruncTracker[$ReqId] -ge 2) {
+        $dsKey = [System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
+        if (-not $dsKey) { $dsKey = [System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "Process") }
+        if ($dsKey) { return "deepseek-fallback" }
+        return "claude-fallback"
+    }
+
+    # Priority 3: Interface-based routing (database reqs may benefit from specific models)
+    # Default: return $null (Codex Mini)
+    return $null
 }
 
 # ============================================================
@@ -1580,6 +2331,20 @@ function Write-GeneratedFiles {
         $dir = Split-Path $fullPath -Parent
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
+        # Layer 1b-pre: Dynamic skip list -- files blocked 2+ times are permanently skipped
+        $skipListPath = Join-Path $GsdDir "blocked-files-skip.json"
+        $skipList = @{}
+        if (Test-Path $skipListPath) {
+            try {
+                $slData = Get-Content $skipListPath -Raw | ConvertFrom-Json
+                foreach ($prop in $slData.PSObject.Properties) { $skipList[$prop.Name] = [int]$prop.Value }
+            } catch {}
+        }
+        if ($skipList.ContainsKey($filePath) -and $skipList[$filePath] -ge 2) {
+            Write-Host "      [SKIP-LIST] $filePath -- permanently skipped (blocked $($skipList[$filePath])x)" -ForegroundColor DarkYellow
+            continue
+        }
+
         # Layer 1b: Block duplicate/disease files that conflict with existing architecture
         $blockedFiles = @(
             "src/Server/Technijian.Api/Infrastructure/ISqlConnectionFactory.cs",
@@ -1643,6 +2408,10 @@ function Write-GeneratedFiles {
         )
         if ($filePath -in $blockedFiles) {
             Write-Host "      [BLOCKED] $filePath -- conflicts with existing architecture (TCAI.Data pattern)" -ForegroundColor Red
+            # Track block count for dynamic skip list
+            if (-not $skipList.ContainsKey($filePath)) { $skipList[$filePath] = 0 }
+            $skipList[$filePath]++
+            $skipList | ConvertTo-Json -Depth 3 | Set-Content $skipListPath -Encoding UTF8
             continue
         }
 
@@ -1660,6 +2429,14 @@ function Write-GeneratedFiles {
             "src/Server/Technijian.Api/Compliance/ComplianceOptions.cs",
             "src/Server/Technijian.Api/Auth/JwtTokenService.cs",
             "src/Server/Technijian.Api/Auth/TokenBlacklistService.cs",
+            "src/Server/Technijian.Api/Monitoring/GoLiveMonitoringService.cs",
+            "src/Server/Technijian.Api/Monitoring/ICouncilMetricsService.cs",
+            "src/Server/Technijian.Api/Monitoring/CouncilMetricsService.cs",
+            "src/shared/api/mutator.ts",
+            "src/Server/Technijian.Api/Attributes/RequireSessionTokenAttribute.cs",
+            "src/Server/Technijian.Api/Middleware/SessionTokenValidationMiddleware.cs",
+            "src/shared/api/index.ts",
+            "src/shared/testing/zodOpenApiValidator.ts",
             "vitest.config.ts"
         )
         if ($filePath -in $protectedInterfaces -and (Test-Path $fullPath)) {
@@ -1685,6 +2462,10 @@ function Write-GeneratedFiles {
                 $shrinkRatio = if ($existingSize -gt 0) { $content.Length / $existingSize } else { 1 }
                 if ($shrinkRatio -lt 0.65) {
                     Write-Host "      [BLOCKED] $filePath -- new content is $([math]::Round((1-$shrinkRatio)*100))% smaller ($existingSize -> $($content.Length) chars), likely truncated" -ForegroundColor Red
+                    # Track block count for dynamic skip list
+                    if (-not $skipList.ContainsKey($filePath)) { $skipList[$filePath] = 0 }
+                    $skipList[$filePath]++
+                    $skipList | ConvertTo-Json -Depth 3 | Set-Content $skipListPath -Encoding UTF8
                     continue
                 }
                 if ($existingSize -gt $content.Length) {

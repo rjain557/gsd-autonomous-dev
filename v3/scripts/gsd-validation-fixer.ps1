@@ -70,6 +70,118 @@ $script:MissingUsingFixes = @{
 }
 
 # ============================================================
+# MULTI-FILE GROUPING FOR CROSS-FILE LLM FIXES
+# ============================================================
+
+function Group-RelatedFiles {
+    <#
+    .SYNOPSIS
+        Groups error files by directory and shared imports/types for batched LLM fixes.
+    .PARAMETER ErrorFileMap
+        Hashtable of filepath -> array of @{ Code; Msg } error objects
+    .RETURNS
+        Array of groups, each with FilePaths (string[]) and CombinedErrors (hashtable filepath -> errors)
+    #>
+    param([hashtable]$ErrorFileMap)
+
+    if (-not $ErrorFileMap -or $ErrorFileMap.Count -eq 0) { return @() }
+
+    # Step 1: Group files by parent directory
+    $dirGroups = @{}
+    foreach ($filePath in @($ErrorFileMap.Keys)) {
+        $dir = Split-Path $filePath -Parent
+        # Normalize to relative-ish key (last 2 directory segments)
+        $dirParts = $dir -split '[\\/]'
+        $groupKey = if ($dirParts.Count -ge 2) { ($dirParts[-2..-1] -join '/') } else { $dirParts[-1] }
+        if (-not $dirGroups.ContainsKey($groupKey)) { $dirGroups[$groupKey] = @() }
+        $dirGroups[$groupKey] += $filePath
+    }
+
+    # Step 2: Detect shared types/imports across files to merge related groups
+    $fileImports = @{}
+    foreach ($filePath in @($ErrorFileMap.Keys)) {
+        if (-not (Test-Path $filePath)) { continue }
+        $content = Get-Content $filePath -Raw -ErrorAction SilentlyContinue
+        if (-not $content) { continue }
+        $imports = @()
+        # C# usings
+        $usings = [regex]::Matches($content, 'using\s+([\w.]+)\s*;')
+        foreach ($u in $usings) { $imports += $u.Groups[1].Value }
+        # TypeScript imports
+        $tsImports = [regex]::Matches($content, "from\s+['""]([^'""]+)['""]")
+        foreach ($t in $tsImports) { $imports += $t.Groups[1].Value }
+        $fileImports[$filePath] = $imports
+    }
+
+    # Merge directory groups that share imports/types
+    $mergedGroups = @{}
+    $fileToGroup = @{}
+    $groupId = 0
+
+    foreach ($groupKey in @($dirGroups.Keys)) {
+        $files = $dirGroups[$groupKey]
+        # Check if any file in this group shares imports with an existing merged group
+        $mergeTarget = $null
+        foreach ($file in $files) {
+            if ($fileToGroup.ContainsKey($file)) {
+                $mergeTarget = $fileToGroup[$file]
+                break
+            }
+            $myImports = $fileImports[$file]
+            if (-not $myImports) { continue }
+            foreach ($existingGid in @($mergedGroups.Keys)) {
+                foreach ($existingFile in $mergedGroups[$existingGid]) {
+                    $theirImports = $fileImports[$existingFile]
+                    if (-not $theirImports) { continue }
+                    $shared = @($myImports | Where-Object { $theirImports -contains $_ })
+                    if ($shared.Count -ge 2) {
+                        $mergeTarget = $existingGid
+                        break
+                    }
+                }
+                if ($mergeTarget) { break }
+            }
+            if ($mergeTarget) { break }
+        }
+
+        if ($mergeTarget) {
+            # Merge into existing group
+            foreach ($file in $files) {
+                if ($mergedGroups[$mergeTarget] -notcontains $file) {
+                    $mergedGroups[$mergeTarget] += $file
+                }
+                $fileToGroup[$file] = $mergeTarget
+            }
+        } else {
+            # New group
+            $mergedGroups[$groupId] = @() + $files
+            foreach ($file in $files) { $fileToGroup[$file] = $groupId }
+            $groupId++
+        }
+    }
+
+    # Step 3: Build output groups, splitting any group larger than 5 files
+    $maxGroupSize = 5
+    $result = @()
+    foreach ($gid in @($mergedGroups.Keys)) {
+        $allFiles = @($mergedGroups[$gid])
+        for ($i = 0; $i -lt $allFiles.Count; $i += $maxGroupSize) {
+            $chunk = @($allFiles[$i..([math]::Min($i + $maxGroupSize - 1, $allFiles.Count - 1))])
+            $combinedErrors = @{}
+            foreach ($f in $chunk) {
+                if ($ErrorFileMap.ContainsKey($f)) { $combinedErrors[$f] = $ErrorFileMap[$f] }
+            }
+            $result += [PSCustomObject]@{
+                FilePaths      = $chunk
+                CombinedErrors = $combinedErrors
+            }
+        }
+    }
+
+    return $result
+}
+
+# ============================================================
 # MAIN FIX LOOP
 # ============================================================
 
@@ -226,18 +338,25 @@ function Repair-TypeScriptErrors {
             }
         }
 
-        # Try LLM fix for TypeScript files
+        # Try LLM fix for TypeScript files -- use multi-file grouping
         if ($script:HasLlmFixer) {
-            foreach ($tsFile in @($errorFileMap.Keys)) {
-                if (-not (Test-Path $tsFile)) { continue }
-                $errors = $errorFileMap[$tsFile]
-                $errorSummary = ($errors | ForEach-Object { "$($_.Code): $($_.Msg)" }) -join "`n"
-                $fileContent = Get-Content $tsFile -Raw -Encoding UTF8
-                if ($fileContent.Length -gt 8000) {
-                    $fileContent = $fileContent.Substring(0, 8000) + "`n// ... (truncated)"
-                }
+            $tsFileGroups = Group-RelatedFiles -ErrorFileMap $errorFileMap
 
-                $fixPrompt = @"
+            foreach ($group in $tsFileGroups) {
+                $groupFiles = @($group.FilePaths | Where-Object { (Test-Path $_) -and $group.CombinedErrors[$_].Count -gt 0 })
+                if ($groupFiles.Count -eq 0) { continue }
+
+                if ($groupFiles.Count -eq 1) {
+                    # Single file -- original behavior
+                    $tsFile = $groupFiles[0]
+                    $errors = $group.CombinedErrors[$tsFile]
+                    $errorSummary = ($errors | ForEach-Object { "$($_.Code): $($_.Msg)" }) -join "`n"
+                    $fileContent = Get-Content $tsFile -Raw -Encoding UTF8
+                    if ($fileContent.Length -gt 8000) {
+                        $fileContent = $fileContent.Substring(0, 8000) + "`n// ... (truncated)"
+                    }
+
+                    $fixPrompt = @"
 Fix the following TypeScript errors in this file. Return ONLY the complete fixed file content, no markdown fences, no explanations.
 
 File: $tsFile
@@ -248,22 +367,88 @@ Current file content:
 $fileContent
 "@
 
-                try {
-                    Write-Host "      [LLM-FIX] Fixing TS errors in $tsFile ($($errors.Count) errors)..." -ForegroundColor Cyan
-                    $result = Invoke-SonnetApi -UserMessage $fixPrompt -MaxTokens 8192 -Phase "validation-fix-ts"
-                    if ($result -and $result.Success -and $result.Text) {
-                        $fixedContent = $result.Text.Trim()
-                        if ($fixedContent -match '^```(?:typescript|tsx|ts)?\s*\n') {
-                            $fixedContent = $fixedContent -replace '^```(?:typescript|tsx|ts)?\s*\n', '' -replace '\n```\s*$', ''
+                    try {
+                        Write-Host "      [LLM-FIX] Fixing TS errors in $tsFile ($($errors.Count) errors)..." -ForegroundColor Cyan
+                        $result = Invoke-SonnetApi -UserMessage $fixPrompt -MaxTokens 8192 -Phase "validation-fix-ts"
+                        if ($result -and $result.Success -and $result.Text) {
+                            $fixedContent = $result.Text.Trim()
+                            if ($fixedContent -match '^```(?:typescript|tsx|ts)?\s*\n') {
+                                $fixedContent = $fixedContent -replace '^```(?:typescript|tsx|ts)?\s*\n', '' -replace '\n```\s*$', ''
+                            }
+                            if ($fixedContent.Length -gt 100) {
+                                Set-Content $tsFile -Value $fixedContent -Encoding UTF8
+                                Write-Host "      [LLM-FIX] Fixed $tsFile" -ForegroundColor Green
+                                $fixCount++
+                            }
                         }
-                        if ($fixedContent.Length -gt 100) {
-                            Set-Content $tsFile -Value $fixedContent -Encoding UTF8
-                            Write-Host "      [LLM-FIX] Fixed $tsFile" -ForegroundColor Green
-                            $fixCount++
-                        }
+                    } catch {
+                        Write-Host "      [LLM-FIX] Error: $($_.Exception.Message)" -ForegroundColor Red
                     }
-                } catch {
-                    Write-Host "      [LLM-FIX] Error: $($_.Exception.Message)" -ForegroundColor Red
+                } else {
+                    # MULTI-FILE grouped TS fix -- LLM sees related components + imports
+                    $totalErrors = 0
+                    $groupPromptParts = @()
+                    $groupInputTokens = 0
+
+                    foreach ($gFile in $groupFiles) {
+                        $errors = $group.CombinedErrors[$gFile]
+                        $totalErrors += $errors.Count
+                        $errorSummary = ($errors | ForEach-Object { "$($_.Code): $($_.Msg)" }) -join "`n"
+                        $fileContent = Get-Content $gFile -Raw -Encoding UTF8
+
+                        # Cap per-file to stay within 15K input tokens
+                        $maxPerFile = [math]::Floor(60000 / $groupFiles.Count)
+                        if ($fileContent.Length -gt $maxPerFile) {
+                            $fileContent = $fileContent.Substring(0, $maxPerFile) + "`n// ... (truncated)"
+                        }
+                        $groupInputTokens += $fileContent.Length
+
+                        $groupPromptParts += @"
+
+=== FILE: $gFile ===
+Errors ($($errors.Count)):
+$errorSummary
+
+Current content:
+$fileContent
+=== END FILE ===
+"@
+                        if ($groupInputTokens -gt 60000) { break }
+                    }
+
+                    $groupPrompt = @"
+Fix ALL TypeScript errors in these $($groupFiles.Count) RELATED files. They share imports/types and may have cross-file dependencies.
+
+Fix ALL $totalErrors errors across all files. For EACH file that needs changes, output:
+=== FIX: <full-file-path> ===
+<complete fixed file content>
+=== END ===
+
+No markdown fences, no explanations. Only output files that need changes.
+$($groupPromptParts -join "`n")
+"@
+
+                    try {
+                        $fileNames = ($groupFiles | ForEach-Object { Split-Path $_ -Leaf }) -join ', '
+                        Write-Host "      [LLM-FIX] Grouped TS fix: $($groupFiles.Count) files ($fileNames), $totalErrors errors..." -ForegroundColor Cyan
+                        $result = Invoke-SonnetApi -UserMessage $groupPrompt -MaxTokens 12000 -Phase "validation-fix-ts-grouped"
+                        if ($result -and $result.Success -and $result.Text) {
+                            $responseText = $result.Text
+                            $fixes = [regex]::Matches($responseText, '=== FIX:\s*(.+?)\s*===\s*\r?\n([\s\S]*?)(?:=== END ===)')
+                            foreach ($fix in $fixes) {
+                                $fixPath = $fix.Groups[1].Value.Trim()
+                                $fixContent = $fix.Groups[2].Value.Trim()
+                                $fixContent = $fixContent -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+                                if ((Test-Path $fixPath) -and $fixContent.Length -gt 100) {
+                                    Set-Content $fixPath -Value $fixContent -Encoding UTF8
+                                    Write-Host "      [LLM-FIX] Fixed (grouped) $(Split-Path $fixPath -Leaf)" -ForegroundColor Green
+                                    $fixCount++
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Host "      [LLM-FIX] Grouped TS fix error: $($_.Exception.Message)" -ForegroundColor Red
+                    }
                 }
             }
         }
@@ -329,44 +514,118 @@ function Repair-BuildErrors {
         }
     }
 
-    # Phase 3: LLM fixes ALL remaining errors (any error type, any language)
-    # Only runs if pattern fixes didn't resolve everything
-    if ($fixCount -eq 0 -and $script:HasLlmFixer) {
-        foreach ($errorFile in @($errorFileMap.Keys)) {
-            if (-not (Test-Path $errorFile)) { continue }
-            $errors = $errorFileMap[$errorFile]
-            $errorSummary = ($errors | ForEach-Object { "$($_.Code): $($_.Msg)" }) -join "`n"
-            $fileContent = Get-Content $errorFile -Raw -Encoding UTF8
-            if ($fileContent.Length -gt 12000) {
-                $fileContent = $fileContent.Substring(0, 12000) + "`n// ... (truncated)"
-            }
+    # Phase 3: LLM fixes ALL remaining errors using GROUPED multi-file calls
+    # Groups related files (same directory, shared imports) so the LLM sees cross-file dependencies
+    if ($script:HasLlmFixer) {
+        $fileGroups = Group-RelatedFiles -ErrorFileMap $errorFileMap
 
-            $fixPrompt = @"
-Fix ALL the following build errors in this file. Return ONLY the complete fixed file content. No markdown fences, no explanations, no comments about what you changed.
+        foreach ($group in $fileGroups) {
+            $groupFiles = @($group.FilePaths | Where-Object { (Test-Path $_) -and $group.CombinedErrors[$_].Count -gt 0 })
+            if ($groupFiles.Count -eq 0) { continue }
+
+            if ($groupFiles.Count -eq 1) {
+                # Single file -- use original single-file prompt (no grouping overhead)
+                $errorFile = $groupFiles[0]
+                $errors = $group.CombinedErrors[$errorFile]
+                $errorSummary = ($errors | ForEach-Object { "$($_.Code): $($_.Msg)" }) -join "`n"
+                $fileContent = Get-Content $errorFile -Raw -Encoding UTF8
+                if ($fileContent.Length -gt 12000) {
+                    $fileContent = $fileContent.Substring(0, 12000) + "`n// ... (truncated)"
+                }
+
+                $fixPrompt = @"
+Fix ALL the following build errors in this file. There are $($errors.Count) errors total -- fix them ALL at once. Return ONLY the complete fixed file content. No markdown fences, no explanations, no comments about what you changed.
 
 File: $errorFile
-Errors:
+Errors ($($errors.Count) total):
 $errorSummary
 
 Current file content:
 $fileContent
 "@
 
-            try {
-                Write-Host "      [LLM-FIX] Fixing $errorFile ($($errors.Count) errors)..." -ForegroundColor Cyan
-                $result = Invoke-SonnetApi -UserMessage $fixPrompt -MaxTokens 12000 -Phase "validation-fix"
-                if ($result -and $result.Success -and $result.Text) {
-                    $fixedContent = $result.Text.Trim()
-                    # Strip markdown fences if model added them
-                    $fixedContent = $fixedContent -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
-                    if ($fixedContent.Length -gt 100) {
-                        Set-Content $errorFile -Value $fixedContent -Encoding UTF8
-                        Write-Host "      [LLM-FIX] Fixed $errorFile" -ForegroundColor Green
-                        $fixCount++
+                try {
+                    Write-Host "      [LLM-FIX] Fixing $errorFile ($($errors.Count) errors in one pass)..." -ForegroundColor Cyan
+                    $result = Invoke-SonnetApi -UserMessage $fixPrompt -MaxTokens 12000 -Phase "validation-fix"
+                    if ($result -and $result.Success -and $result.Text) {
+                        $fixedContent = $result.Text.Trim()
+                        $fixedContent = $fixedContent -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+                        if ($fixedContent.Length -gt 100) {
+                            Set-Content $errorFile -Value $fixedContent -Encoding UTF8
+                            Write-Host "      [LLM-FIX] Fixed $errorFile ($($errors.Count) errors)" -ForegroundColor Green
+                            $fixCount++
+                        }
                     }
+                } catch {
+                    Write-Host "      [LLM-FIX] Error: $($_.Exception.Message)" -ForegroundColor Red
                 }
-            } catch {
-                Write-Host "      [LLM-FIX] Error: $($_.Exception.Message)" -ForegroundColor Red
+            } else {
+                # MULTI-FILE grouped fix -- LLM sees cross-file dependencies
+                $totalErrors = 0
+                $groupPromptParts = @()
+                $groupInputTokens = 0
+
+                foreach ($gFile in $groupFiles) {
+                    $errors = $group.CombinedErrors[$gFile]
+                    $totalErrors += $errors.Count
+                    $errorSummary = ($errors | ForEach-Object { "$($_.Code): $($_.Msg)" }) -join "`n"
+                    $fileContent = Get-Content $gFile -Raw -Encoding UTF8
+
+                    # Cap per-file content to stay within 15K total input tokens (~60K chars)
+                    $maxPerFile = [math]::Floor(60000 / $groupFiles.Count)
+                    if ($fileContent.Length -gt $maxPerFile) {
+                        $fileContent = $fileContent.Substring(0, $maxPerFile) + "`n// ... (truncated)"
+                    }
+                    $groupInputTokens += $fileContent.Length
+
+                    $groupPromptParts += @"
+
+=== FILE: $gFile ===
+Errors ($($errors.Count)):
+$errorSummary
+
+Current content:
+$fileContent
+=== END FILE ===
+"@
+                    # Hard cap at ~15K input tokens (~60K chars total)
+                    if ($groupInputTokens -gt 60000) { break }
+                }
+
+                $groupPrompt = @"
+Fix ALL build errors in these $($groupFiles.Count) RELATED files. They are in the same area of the codebase and may have cross-file dependencies (shared types, interfaces, imports).
+
+Fix ALL $totalErrors errors across all files. For EACH file that needs changes, output:
+=== FIX: <full-file-path> ===
+<complete fixed file content>
+=== END ===
+
+No markdown fences, no explanations. Only output files that need changes.
+$($groupPromptParts -join "`n")
+"@
+
+                try {
+                    $fileNames = ($groupFiles | ForEach-Object { Split-Path $_ -Leaf }) -join ', '
+                    Write-Host "      [LLM-FIX] Grouped fix: $($groupFiles.Count) files ($fileNames), $totalErrors errors..." -ForegroundColor Cyan
+                    $result = Invoke-SonnetApi -UserMessage $groupPrompt -MaxTokens 16000 -Phase "validation-fix-grouped"
+                    if ($result -and $result.Success -and $result.Text) {
+                        $responseText = $result.Text
+                        $fixes = [regex]::Matches($responseText, '=== FIX:\s*(.+?)\s*===\s*\r?\n([\s\S]*?)(?:=== END ===)')
+                        foreach ($fix in $fixes) {
+                            $fixPath = $fix.Groups[1].Value.Trim()
+                            $fixContent = $fix.Groups[2].Value.Trim()
+                            # Strip markdown fences if present
+                            $fixContent = $fixContent -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+                            if ((Test-Path $fixPath) -and $fixContent.Length -gt 100) {
+                                Set-Content $fixPath -Value $fixContent -Encoding UTF8
+                                Write-Host "      [LLM-FIX] Fixed (grouped) $(Split-Path $fixPath -Leaf)" -ForegroundColor Green
+                                $fixCount++
+                            }
+                        }
+                    }
+                } catch {
+                    Write-Host "      [LLM-FIX] Grouped fix error: $($_.Exception.Message)" -ForegroundColor Red
+                }
             }
         }
     }

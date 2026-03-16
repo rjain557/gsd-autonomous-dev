@@ -1,6 +1,6 @@
 {
     "version": "3.0.0",
-    "max_iterations": 25,
+    "max_iterations": 50,
     "stall_threshold": 3,
     "target_health": 100,
     "batch_size_min": 3,
@@ -10,6 +10,7 @@
     "phase_order": [
         "cache-warm",
         "spec-gate",
+        "spec-align",
         "research",
         "plan",
         "execute-skeleton",
@@ -227,19 +228,19 @@
             "description": "Post-launch feature additions from updated specs. Preserves existing satisfied requirements.",
             "max_iterations": 50,
             "batch_size_min": 3,
-            "batch_size_max": 10,
+            "batch_size_max": 15,
             "phases_active": ["cache-warm", "spec-gate", "research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify", "spec-fix"],
             "research": "full-scoped",
             "spec_gate": "incremental",
             "speculative_execution": true,
             "two_stage_execute": true,
-            "budget_cap_usd": 200.00,
+            "budget_cap_usd": 400.00,
             "scope_filter_default": "source:v{N}_spec",
             "preservation_rules": {
                 "preserve_satisfied": true,
                 "add_spec_version_tag": true,
                 "detect_regression": true,
-                "halt_on_regression": true,
+                "halt_on_regression": false,
                 "regression_detection": "If Verify finds previously-satisfied requirement regressed to partial/not_started"
             },
             "incremental_spec_gate": {
@@ -509,6 +510,69 @@
         "checkpoint_file": ".gsd/.gsd-checkpoint.json",
         "save_after_each_phase": true,
         "include_cache_state": true
+    },
+
+    "execute_model_pool": {
+        "enabled": true,
+        "strategy": "round-robin-weighted",
+        "models": [
+            { "name": "codex-mini", "provider": "openai", "weight": 3 },
+            { "name": "deepseek", "provider": "deepseek", "weight": 2 },
+            { "name": "kimi", "provider": "kimi", "weight": 1 },
+            { "name": "minimax", "provider": "minimax", "weight": 1 },
+            { "name": "claude-sonnet", "provider": "anthropic", "weight": 1 },
+            { "name": "gemini-flash", "provider": "google", "weight": 1 },
+            { "name": "glm5", "provider": "glm", "weight": 1 }
+        ]
+    },
+
+    "anti_plateau": {
+        "enabled": true,
+        "warn_at_zero_delta": 3,
+        "escalate_at_zero_delta": 4,
+        "skip_at_zero_delta": 5,
+        "max_zero_delta": 5,
+        "deferred_recheck_every": 10
+    },
+
+    "spec_alignment": {
+        "enabled": true,
+        "block_on_critical_drift_pct": 20,
+        "warn_on_moderate_drift_pct": 5,
+        "check_every_n_iterations": 10
+    },
+
+    "decomposition_budget": {
+        "max_new_subreqs_per_iteration": 20,
+        "max_depth": 4,
+        "defer_excess": true
+    },
+
+    "phase_model_overrides": {
+        "research": "sonnet",
+        "verify": "sonnet",
+        "review": "sonnet",
+        "spec-align": "sonnet"
+    },
+
+    "multi_pipeline": {
+        "enabled": false,
+        "strategy": "per-interface",
+        "max_parallel": 3,
+        "shared_phases": ["cache-warm", "spec-gate", "spec-align"]
+    },
+
+    "cost_alerts": {
+        "per_requirement_warn_usd": 2.00,
+        "per_requirement_escalate_usd": 5.00,
+        "per_requirement_hard_cap_usd": 10.00,
+        "action_at_hard_cap": "defer"
+    },
+
+    "git_commits": {
+        "per_iteration": true,
+        "include_health_in_message": true,
+        "timeout_seconds": 60
     },
 
     "removed_v2_features": {

@@ -25,9 +25,9 @@ function ConvertTo-CleanJson {
         if ($obj -is [string]) { return [string]"$obj" }
         if ($obj -is [int] -or $obj -is [long] -or $obj -is [double] -or $obj -is [bool] -or $obj -is [decimal]) { return $obj }
         if ($obj -is [array] -or $obj -is [System.Collections.IList]) {
-            $arr = @()
-            foreach ($item in $obj) { $arr += ,(Unwrap $item) }
-            return ,$arr
+            $arr = [System.Collections.ArrayList]::new($obj.Count)
+            foreach ($item in $obj) { [void]$arr.Add((Unwrap $item)) }
+            return ,@($arr)
         }
         if ($obj -is [hashtable] -or $obj -is [System.Collections.IDictionary]) {
             $clean = @{}
@@ -104,6 +104,26 @@ $script:ApiConfig = @{
         BaseUrl    = "https://api.minimax.io/v1"
         Model      = "MiniMax-Text-01"
         ApiKeyEnv  = "MINIMAX_API_KEY"
+        MaxRetries = 2
+        RetryBackoff = @(3, 8)
+        TimeoutSec = 120
+        InterCallDelaySec = 1
+    }
+    # Gemini (Google Generative Language API - non-OpenAI format)
+    Gemini = @{
+        BaseUrl    = "https://generativelanguage.googleapis.com/v1beta"
+        Model      = "gemini-2.5-flash"
+        ApiKeyEnv  = "GEMINI_API_KEY"
+        MaxRetries = 3
+        RetryBackoff = @(2, 4, 8)
+        TimeoutSec = 300
+        InterCallDelaySec = 1
+    }
+    # GLM5 / Zhipu (OpenAI-compatible, needs VPN from US)
+    GLM5 = @{
+        BaseUrl    = "https://open.bigmodel.cn/api/paas/v4"
+        Model      = "glm-4-flash"
+        ApiKeyEnv  = "GLM_API_KEY"
         MaxRetries = 2
         RetryBackoff = @(3, 8)
         TimeoutSec = 120
@@ -286,22 +306,28 @@ function Invoke-SonnetApi {
             while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
             if ($job.State -eq 'Running') {
                 # Kill child processes then the job
-                try { Get-CimInstance Win32_Process -Filter "ParentProcessId=$PID" -EA SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } } catch {}
+                try { $jobPid = $job.ChildJobs[0].Process.Id; if ($jobPid) { Stop-Process -Id $jobPid -Force -EA SilentlyContinue } } catch {}
                 $job | Stop-Job -PassThru | Remove-Job -Force
                 throw [System.TimeoutException]::new("Anthropic API call exceeded hard timeout of $($hardTimeout + 30)s")
             }
             Write-Host "    [DEBUG] ${Phase}: Job completed (state: $($job.State)). Receiving output..." -ForegroundColor Magenta
-            $response = $job | Receive-Job
-            $job | Remove-Job -Force
+            try {
+                $response = $job | Receive-Job
+            } finally {
+                if ($job) { $job | Remove-Job -Force -EA SilentlyContinue }
+                $job = $null
+            }
             Write-Host "    [DEBUG] ${Phase}: API response received." -ForegroundColor Magenta
 
-            # Extract text content
-            $outputText = ""
+            # Extract text content (avoid string += O(n²) allocation)
+            $textParts = [System.Collections.ArrayList]::new()
             foreach ($content in $response.content) {
                 if ($content.type -eq "text") {
-                    $outputText += $content.text
+                    [void]$textParts.Add($content.text)
                 }
             }
+            $outputText = $textParts -join ""
+            $textParts = $null
 
             # Extract usage for cost tracking
             $usage = @{
@@ -357,6 +383,7 @@ function Invoke-SonnetApi {
                 }
             }
 
+            $response = $null  # Free large response object
             return @{
                 Success    = $true
                 Text       = $outputText
@@ -666,25 +693,30 @@ function Invoke-CodexMiniApi {
             $deadline = (Get-Date).AddSeconds($hardTimeout + 30)
             while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
             if ($job.State -eq 'Running') {
-                try { Get-CimInstance Win32_Process -Filter "ParentProcessId=$PID" -EA SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } } catch {}
+                try { $jobPid = $job.ChildJobs[0].Process.Id; if ($jobPid) { Stop-Process -Id $jobPid -Force -EA SilentlyContinue } } catch {}
                 $job | Stop-Job -PassThru | Remove-Job -Force
                 throw [System.TimeoutException]::new("Codex Mini API call exceeded hard timeout of $($hardTimeout + 30)s")
             }
-            $response = $job | Receive-Job
-            $job | Remove-Job -Force
+            try {
+                $response = $job | Receive-Job
+            } finally {
+                if ($job) { $job | Remove-Job -Force -EA SilentlyContinue }
+                $job = $null
+            }
 
-            # Extract text from Responses API output structure
-            # output[] contains reasoning blocks and message blocks
-            $outputText = ""
+            # Extract text from Responses API output structure (avoid string += O(n²) allocation)
+            $textParts = [System.Collections.ArrayList]::new()
             foreach ($outputItem in $response.output) {
                 if ($outputItem.type -eq "message" -and $outputItem.content) {
                     foreach ($contentItem in $outputItem.content) {
                         if ($contentItem.type -eq "output_text") {
-                            $outputText += $contentItem.text
+                            [void]$textParts.Add($contentItem.text)
                         }
                     }
                 }
             }
+            $outputText = $textParts -join ""
+            $textParts = $null
 
             $usage = @{
                 input_tokens  = $response.usage.input_tokens
@@ -700,6 +732,7 @@ function Invoke-CodexMiniApi {
                 Write-Host "    [WARN] ${Phase}: Codex Mini output truncated (max_output_tokens)" -ForegroundColor Yellow
             }
 
+            $response = $null  # Free large response object
             return @{
                 Success      = $true
                 Text         = $outputText
@@ -849,18 +882,23 @@ function Invoke-OpenAICompatFallback {
             $deadline = (Get-Date).AddSeconds($hardTimeout + 30)
             while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
             if ($job.State -eq 'Running') {
-                try { Get-CimInstance Win32_Process -Filter "ParentProcessId=$PID" -EA SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue } } catch {}
+                try { $jobPid = $job.ChildJobs[0].Process.Id; if ($jobPid) { Stop-Process -Id $jobPid -Force -EA SilentlyContinue } } catch {}
                 $job | Stop-Job -PassThru | Remove-Job -Force
                 throw [System.TimeoutException]::new("$ModelName API call exceeded hard timeout of $($hardTimeout + 30)s")
             }
-            $response = $job | Receive-Job
-            $job | Remove-Job -Force
+            try {
+                $response = $job | Receive-Job
+            } finally {
+                if ($job) { $job | Remove-Job -Force -EA SilentlyContinue }
+                $job = $null
+            }
 
             $outputText = $response.choices[0].message.content
             $usage = @{
                 input_tokens  = $response.usage.prompt_tokens
                 output_tokens = $response.usage.completion_tokens
             }
+            $response = $null  # Free large response object
 
             Write-Host "    [FALLBACK] $ModelName success ($($usage.output_tokens) tokens)" -ForegroundColor Green
 
@@ -891,6 +929,250 @@ function Invoke-OpenAICompatFallback {
             }
         }
     }
+}
+
+# ============================================================
+# GEMINI API (Google Generative Language API)
+# ============================================================
+
+function Invoke-GeminiApi {
+    <#
+    .SYNOPSIS
+        Call Gemini via Google Generative Language API.
+    .PARAMETER SystemPrompt
+        System prompt text (sent as systemInstruction).
+    .PARAMETER UserMessage
+        User message content.
+    .PARAMETER MaxTokens
+        Maximum output tokens.
+    .PARAMETER Phase
+        Phase name for cost tracking.
+    .PARAMETER JsonMode
+        Force JSON output (responseMimeType: application/json).
+    #>
+    param(
+        [string]$SystemPrompt,
+        [string]$UserMessage,
+        [int]$MaxTokens = 16384,
+        [string]$Phase = "execute",
+        [switch]$JsonMode
+    )
+
+    $geminiConfig = $script:ApiConfig.Gemini
+    $apiKey = [System.Environment]::GetEnvironmentVariable($geminiConfig.ApiKeyEnv, "User")
+    if (-not $apiKey) { $apiKey = [System.Environment]::GetEnvironmentVariable($geminiConfig.ApiKeyEnv, "Process") }
+    if (-not $apiKey) { $apiKey = [System.Environment]::GetEnvironmentVariable($geminiConfig.ApiKeyEnv, "Machine") }
+    if (-not $apiKey) {
+        return @{
+            Success = $false
+            Error   = "missing_api_key"
+            Message = "Gemini API key not found: Set $($geminiConfig.ApiKeyEnv) environment variable."
+            Phase   = $Phase
+            Usage   = @{ input_tokens = 0; output_tokens = 0 }
+        }
+    }
+
+    $modelId = $geminiConfig.Model
+    $url = "$($geminiConfig.BaseUrl)/models/${modelId}:generateContent?key=$apiKey"
+
+    # Build request body
+    $bodyObj = @{
+        contents = @(
+            @{
+                role  = "user"
+                parts = @( @{ text = "$UserMessage" } )
+            }
+        )
+        generationConfig = @{
+            maxOutputTokens = $MaxTokens
+        }
+    }
+
+    if ($SystemPrompt) {
+        $bodyObj["systemInstruction"] = @{
+            parts = @( @{ text = "$SystemPrompt" } )
+        }
+    }
+
+    if ($JsonMode) {
+        $bodyObj.generationConfig["responseMimeType"] = "application/json"
+    }
+
+    $body = ConvertTo-CleanJson -InputObject $bodyObj -Depth 6 -Compress
+
+    $headers = @{
+        "Content-Type" = "application/json"
+    }
+
+    # Retry loop
+    $attempt = 0
+    $maxRetries = $geminiConfig.MaxRetries
+
+    while ($attempt -le $maxRetries) {
+        $attempt++
+        try {
+            $hardTimeout = if ($geminiConfig.TimeoutSec) { $geminiConfig.TimeoutSec } else { 300 }
+            Write-Host "    [DEBUG] ${Phase}: Gemini attempt $attempt/$($maxRetries+1) (timeout: ${hardTimeout}s)..." -ForegroundColor Magenta
+            $job = Start-Job -ScriptBlock {
+                param($u, $h, $b, $t)
+                try {
+                    Invoke-RestMethod -Uri $u -Method Post -Headers $h -Body ([System.Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec $t -ContentType "application/json; charset=utf-8"
+                } catch {
+                    $errBody = ""
+                    try {
+                        if ($_.Exception.Response) {
+                            $reader = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+                            $errBody = $reader.ReadToEnd()
+                            $reader.Close()
+                        }
+                    } catch {}
+                    throw "$($_.Exception.Message) |BODY| $errBody"
+                }
+            } -ArgumentList $url, $headers, $body, $hardTimeout
+            $deadline = (Get-Date).AddSeconds($hardTimeout + 30)
+            while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if ($job.State -eq 'Running') {
+                try { $jobPid = $job.ChildJobs[0].Process.Id; if ($jobPid) { Stop-Process -Id $jobPid -Force -EA SilentlyContinue } } catch {}
+                $job | Stop-Job -PassThru | Remove-Job -Force
+                throw [System.TimeoutException]::new("Gemini API call exceeded hard timeout of $($hardTimeout + 30)s")
+            }
+            try {
+                $response = $job | Receive-Job
+            } finally {
+                if ($job) { $job | Remove-Job -Force -EA SilentlyContinue }
+                $job = $null
+            }
+
+            # Extract text from Gemini response: candidates[0].content.parts[0].text
+            $outputText = ""
+            if ($response.candidates -and $response.candidates.Count -gt 0) {
+                $candidate = $response.candidates[0]
+                if ($candidate.content -and $candidate.content.parts) {
+                    foreach ($part in $candidate.content.parts) {
+                        if ($part.text) { $outputText += $part.text }
+                    }
+                }
+            }
+
+            # Extract usage from usageMetadata
+            $usage = @{
+                input_tokens  = if ($response.usageMetadata.promptTokenCount) { $response.usageMetadata.promptTokenCount } else { 0 }
+                output_tokens = if ($response.usageMetadata.candidatesTokenCount) { $response.usageMetadata.candidatesTokenCount } else { 0 }
+            }
+
+            # Check finish reason
+            $finishReason = if ($response.candidates -and $response.candidates[0].finishReason) { $response.candidates[0].finishReason } else { "STOP" }
+            if ($finishReason -eq "MAX_TOKENS") {
+                Write-Host "    [WARN] ${Phase}: Gemini output truncated (MAX_TOKENS)" -ForegroundColor Yellow
+            }
+
+            Write-Host "    [GEMINI] $Phase success ($($usage.output_tokens) tokens)" -ForegroundColor Green
+            $response = $null  # Free large response object
+
+            return @{
+                Success      = $true
+                Text         = $outputText
+                Parsed       = $null
+                Usage        = $usage
+                Model        = $modelId
+                Phase        = $Phase
+                StopReason   = $finishReason
+            }
+        }
+        catch {
+            if ($attempt -le $maxRetries) {
+                $backoff = $geminiConfig.RetryBackoff[$attempt - 1]
+                $errDetail = $_.Exception.Message.Substring(0, [Math]::Min(150, $_.Exception.Message.Length))
+                Write-Host "    [RETRY] Gemini API error ($errDetail), attempt $attempt/$maxRetries, waiting ${backoff}s..." -ForegroundColor DarkYellow
+                Start-Sleep -Seconds $backoff
+                continue
+            }
+
+            return @{
+                Success = $false
+                Error   = "api_error"
+                Message = "Gemini API failed after $maxRetries retries: $($_.Exception.Message)"
+                Phase   = $Phase
+                Model   = $modelId
+                Usage   = @{ input_tokens = 0; output_tokens = 0 }
+            }
+        }
+    }
+}
+
+# ============================================================
+# 7-MODEL ROUND-ROBIN DISPATCHER
+# ============================================================
+
+$script:RoundRobinIndex = 0
+
+function Get-NextExecuteModel {
+    <#
+    .SYNOPSIS
+        Returns the next model from the weighted round-robin pool for execute phase.
+        Models with higher weight get more consecutive slots.
+    .DESCRIPTION
+        Weighted pool:
+          codex-mini: 3 slots, deepseek: 2 slots, kimi: 1, minimax: 1,
+          claude-sonnet: 1, gemini: 1, glm5: 1
+        Only includes models whose API key is available.
+    .OUTPUTS
+        Hashtable with Name, Config, and ApiKey (or $null if no models available).
+    #>
+
+    # Define weighted model pool (model name -> weight)
+    $weightedPool = [ordered]@{
+        "codex-mini"     = 3
+        "deepseek"       = 2
+        "kimi"           = 1
+        "minimax"        = 1
+        "claude-sonnet"  = 1
+        "gemini"         = 1
+        "glm5"           = 1
+    }
+
+    # Map model names to API key env vars
+    $keyMap = @{
+        "codex-mini"    = "OPENAI_API_KEY"
+        "deepseek"      = "DEEPSEEK_API_KEY"
+        "kimi"          = "KIMI_API_KEY"
+        "minimax"       = "MINIMAX_API_KEY"
+        "claude-sonnet" = "ANTHROPIC_API_KEY"
+        "gemini"        = "GEMINI_API_KEY"
+        "glm5"          = "GLM_API_KEY"
+    }
+
+    # Build expanded slot array (only models with valid API keys)
+    $slots = [System.Collections.ArrayList]::new()
+    foreach ($modelName in $weightedPool.Keys) {
+        $envVar = $keyMap[$modelName]
+        $key = [System.Environment]::GetEnvironmentVariable($envVar, "User")
+        if (-not $key) { $key = [System.Environment]::GetEnvironmentVariable($envVar, "Process") }
+        if (-not $key) { $key = [System.Environment]::GetEnvironmentVariable($envVar, "Machine") }
+        if (-not $key) {
+            Write-Host "    [DISPATCH] Skipping $modelName (no $envVar)" -ForegroundColor DarkGray
+            continue
+        }
+
+        $weight = $weightedPool[$modelName]
+        for ($w = 0; $w -lt $weight; $w++) {
+            [void]$slots.Add(@{ Name = $modelName; ApiKey = $key })
+        }
+    }
+
+    if ($slots.Count -eq 0) {
+        Write-Host "    [DISPATCH] No execute models available (no API keys set)" -ForegroundColor Red
+        return $null
+    }
+
+    # Pick next slot using round-robin counter
+    $idx = $script:RoundRobinIndex % $slots.Count
+    $script:RoundRobinIndex++
+    $selected = $slots[$idx]
+
+    Write-Host "    [DISPATCH] Round-robin -> $($selected.Name) (slot $($idx+1)/$($slots.Count))" -ForegroundColor Cyan
+
+    return $selected
 }
 
 function Invoke-CodexMiniParallel {
@@ -936,12 +1218,63 @@ function Invoke-CodexMiniParallel {
                 $consecutive429 = 0  # Reset counter, give it one more shot
             }
 
-            $result = Invoke-CodexMiniApi `
-                -SystemPrompt $item.SystemPrompt `
-                -UserMessage $item.UserMessage `
-                -MaxTokens $MaxTokens `
-                -Phase $Phase `
-                -Model $item.Model
+            # Route to appropriate model based on item.Model flag
+            $result = $null
+            if ($item.Model -eq "deepseek-fallback") {
+                # Truncation-escalated req: use DeepSeek (larger output window than Codex Mini)
+                $dsConfig = $script:ApiConfig.DeepSeek
+                $dsKey = [System.Environment]::GetEnvironmentVariable($dsConfig.ApiKeyEnv, "User")
+                if (-not $dsKey) { $dsKey = [System.Environment]::GetEnvironmentVariable($dsConfig.ApiKeyEnv, "Process") }
+                if ($dsKey) {
+                    Write-Host "    [ROUTE] $($item.Id) -> DeepSeek (truncation escalation)" -ForegroundColor Cyan
+                    $result = Invoke-OpenAICompatFallback -Config $dsConfig -ApiKey $dsKey `
+                        -SystemPrompt $item.SystemPrompt -UserMessage $item.UserMessage `
+                        -MaxTokens $MaxTokens -Phase $Phase -ModelName "DeepSeek"
+                }
+            }
+            elseif ($item.Model -eq "claude-fallback") {
+                # Truncation-escalated req: use Claude Sonnet (200K context, large output)
+                Write-Host "    [ROUTE] $($item.Id) -> Claude Sonnet (truncation escalation)" -ForegroundColor Cyan
+                $result = Invoke-SonnetApi -SystemPrompt $item.SystemPrompt `
+                    -UserMessage $item.UserMessage -MaxTokens $MaxTokens -Phase "$Phase-claude-escalation"
+            }
+            elseif ($item.Model -eq "gemini") {
+                # Route to Gemini API
+                Write-Host "    [ROUTE] $($item.Id) -> Gemini (round-robin)" -ForegroundColor Cyan
+                $result = Invoke-GeminiApi -SystemPrompt $item.SystemPrompt `
+                    -UserMessage $item.UserMessage -MaxTokens $MaxTokens -Phase "$Phase-gemini"
+            }
+            elseif ($item.Model -eq "glm5") {
+                # Route to GLM5 via OpenAI-compatible fallback
+                $glmConfig = $script:ApiConfig.GLM5
+                $glmKey = [System.Environment]::GetEnvironmentVariable($glmConfig.ApiKeyEnv, "User")
+                if (-not $glmKey) { $glmKey = [System.Environment]::GetEnvironmentVariable($glmConfig.ApiKeyEnv, "Process") }
+                if (-not $glmKey) { $glmKey = [System.Environment]::GetEnvironmentVariable($glmConfig.ApiKeyEnv, "Machine") }
+                if ($glmKey) {
+                    Write-Host "    [ROUTE] $($item.Id) -> GLM5 (round-robin)" -ForegroundColor Cyan
+                    $result = Invoke-OpenAICompatFallback -Config $glmConfig -ApiKey $glmKey `
+                        -SystemPrompt $item.SystemPrompt -UserMessage $item.UserMessage `
+                        -MaxTokens $MaxTokens -Phase "$Phase-glm5" -ModelName "GLM5"
+                } else {
+                    Write-Host "    [ROUTE] $($item.Id) -> GLM5 skipped (no GLM_API_KEY), falling back to Codex Mini" -ForegroundColor DarkYellow
+                }
+            }
+            elseif ($item.Model -eq "claude-sonnet") {
+                # Route to Claude Sonnet (round-robin execute slot)
+                Write-Host "    [ROUTE] $($item.Id) -> Claude Sonnet (round-robin)" -ForegroundColor Cyan
+                $result = Invoke-SonnetApi -SystemPrompt $item.SystemPrompt `
+                    -UserMessage $item.UserMessage -MaxTokens $MaxTokens -Phase "$Phase-claude-execute"
+            }
+
+            # Default: use Codex Mini
+            if (-not $result) {
+                $result = Invoke-CodexMiniApi `
+                    -SystemPrompt $item.SystemPrompt `
+                    -UserMessage $item.UserMessage `
+                    -MaxTokens $MaxTokens `
+                    -Phase $Phase `
+                    -Model $item.Model
+            }
 
             $results[$item.Id] = $result
 

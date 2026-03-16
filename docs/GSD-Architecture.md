@@ -1342,3 +1342,110 @@ Configuration in `global-config.json` under `maintenance_mode`:
 - Quota exhausted for more than 24 hours (wait for billing cycle)
 - CLI breaking changes (update scripts)
 - Validation fails 3 times (compilation/test issues too complex for auto-fix)
+
+## V3 Architecture Additions
+
+The following sections document V3-specific architectural capabilities that extend the base engine described above.
+
+### Multi-Model Execute Pool
+
+The V3 pipeline distributes code generation across 7 models using a weighted round-robin strategy. This provides resilience against rate limits, cost optimization, and access to independent quota pools.
+
+#### Pool Configuration
+
+| Model | Provider | Weight | Selection Frequency |
+|-------|----------|--------|-------------------|
+| Codex Mini (gpt-5.1-codex-mini) | OpenAI | 3 | ~30% |
+| DeepSeek Chat | DeepSeek | 2 | ~20% |
+| Kimi (moonshot-v1-8k) | Moonshot AI | 1 | ~10% |
+| MiniMax (MiniMax-Text-01) | MiniMax | 1 | ~10% |
+| Claude Sonnet (claude-sonnet-4-6) | Anthropic | 1 | ~10% |
+| Gemini Flash | Google | 1 | ~10% |
+| GLM-5 (glm-4-flash) | Zhipu AI | 1 | ~10% |
+
+#### How Rotation Works
+
+1. Models are ordered by weight (highest first) and cycled through in round-robin fashion
+2. When a model hits a rate limit, it is temporarily removed from the pool and the next model is selected
+3. Models without configured API keys are excluded from the pool at startup
+4. Higher-weight models handle more requests, concentrating work on the fastest and most reliable providers
+5. The pool ensures that rate limits on any single provider never stall the pipeline
+
+#### Cost Optimization
+
+The weighting system naturally routes more work to cost-effective models (Codex Mini at $0.15/M input, DeepSeek at $0.14/M input) while keeping premium models (Claude Sonnet) available for complex requirements or when cheaper models are rate-limited.
+
+### Anti-Plateau Protection
+
+When the pipeline's health score stops improving, anti-plateau protection takes graduated action to break through stalls.
+
+#### Detection Mechanism
+
+The supervisor tracks consecutive zero-delta iterations (iterations where health score did not improve). Each iteration's health delta is recorded in `.gsd/health/health-history.jsonl`.
+
+#### Graduated Escalation
+
+| Zero-Delta Count | Level | Action |
+|-----------------|-------|--------|
+| 3 | Warning | Flag requirements that have failed 3+ times. Log warning to console and notifications. |
+| 4 | Escalate | Recommend upgrading plan and review phases to Claude Opus for the top 3 stuck requirements. Maximum 10 Opus escalations per project. |
+| 5 | Skip | Mark all stuck requirements as "deferred" in the requirements matrix. Remove them from the active pool. Continue pipeline with remaining requirements. |
+
+#### Stuck Requirement Identification
+
+A requirement is considered "stuck" if it appears in `.gsd/requirements/fail-tracker.json` with a fail count of 3 or more. The fail tracker is updated by the Verify phase each time a requirement fails verification.
+
+#### Deferred Requirement Re-Check
+
+Deferred requirements are not permanently abandoned. Every 10 iterations, the pipeline re-evaluates deferred requirements to check if their dependencies have been resolved or if the codebase has changed enough to unblock them.
+
+### Spec Alignment Guard
+
+The spec alignment guard is a mandatory pre-pipeline check that prevents the engine from generating code against outdated or mismatched specifications.
+
+#### How It Works
+
+1. **Pre-pipeline**: Before the first iteration, the guard compares specification documents in `docs/` and `design/` against the requirements matrix and existing codebase
+2. **Periodic re-check**: Every 10 iterations, the guard re-runs to detect drift introduced by code changes
+3. **Drift calculation**: Measures the percentage of requirements whose source specifications have changed or no longer match the codebase
+
+#### Thresholds and Actions
+
+| Drift Percentage | Severity | Action |
+|-----------------|----------|--------|
+| 0-5% | Normal | No action. Pipeline proceeds normally. |
+| 5-20% | Moderate | Warning logged. Notification sent. Pipeline continues with caution. |
+| >20% | Critical | Pipeline blocked. Must update specs or requirements before continuing. |
+
+#### Contamination Prevention
+
+The spec alignment guard was introduced after a contamination incident where the pipeline generated code matching an old spec version while new specs had been added to the repository. The guard ensures that specification documents, requirements, and codebase are all in agreement before any code generation begins.
+
+### Multi-Frontend Parallel Pipelines
+
+For repositories with multiple frontend frameworks (web, admin panel, mobile app, browser extension), the V3 pipeline can run per-interface pipelines in parallel.
+
+#### Execution Order
+
+```
+Sequential: DATABASE --> BACKEND --> SHARED
+Parallel:   WEB | MCP-ADMIN | BROWSER | MOBILE
+```
+
+1. **Sequential phases**: Database, backend, and shared code pipelines run sequentially because each depends on the previous layer
+2. **Parallel phases**: Frontend pipelines run simultaneously (up to `max_parallel` concurrency) because they have no dependencies on each other
+3. **Shared phases**: Cache warm, spec gate, and spec align run once and benefit all pipelines
+
+#### Budget Proportioning
+
+Total budget is split proportionally by requirement count per interface. Each pipeline tracks its own cost independently and halts when its allocation is exhausted without affecting other pipelines.
+
+#### Health Aggregation
+
+Overall project health is the weighted average of all interface health scores, where weights are proportional to requirement counts. Notifications include per-interface health breakdowns.
+
+#### Failure Isolation
+
+- Backend failure pauses all frontend pipelines (dependency)
+- Frontend failure affects only that frontend; others continue
+- Failed pipelines can be restarted independently using scope filters
