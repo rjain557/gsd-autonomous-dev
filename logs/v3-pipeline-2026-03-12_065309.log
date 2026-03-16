@@ -170,3 +170,13 @@ WSManStackVersion: 3.0
       [WRITE] scripts/gates/run-all-gates.ps1
 
   --- Execute: Fill ---
+    [WARN] execute-fill: Codex Mini output truncated (max_output_tokens)
+    [OK] KM-126 (16384 tokens)
+    [WARN] execute-fill: Codex Mini output truncated (max_output_tokens)
+    [OK] CL-168 (16378 tokens)
+    [WARN] execute-fill: Codex Mini output truncated (max_output_tokens)
+    [OK] CL-167 (16384 tokens)
+    [OK] CL-254 (1388 tokens)
+    [WARN] execute-fill: Codex Mini output truncated (max_output_tokens)
+    [OK] CL-165 (16384 tokens)
+    [OK] CL-162 (5563 tokens)

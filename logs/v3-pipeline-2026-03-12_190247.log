@@ -1,0 +1,55 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20260312190247
+Username: TECHNIJIAN\rjain
+RunAs User: TECHNIJIAN\rjain
+Configuration Name: 
+Machine: TE-DC-VDITEC-03 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoExit -ExecutionPolicy Bypass -File D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\scripts\run-pipeline-now.ps1
+Process ID: 18680
+PSVersion: 5.1.26100.7920
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.7920
+BuildVersion: 10.0.26100.7920
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\logs\v3-pipeline-2026-03-12_190247.log
+. : The term '.\scripts\v3-pipeline.ps1' is not recognized as the name of a cmdlet, function, script file, or operable 
+program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\scripts\run-pipeline-now.ps1:5 char:3
++ . .\scripts\v3-pipeline.ps1
++   ~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (.\scripts\v3-pipeline.ps1:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+. : The term '.\scripts\v3-pipeline.ps1' is not recognized as the name of a cmdlet, function, script file, or operable
+program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\scripts\run-pipeline-now.ps1:5 char:3
++ . .\scripts\v3-pipeline.ps1
++   ~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (.\scripts\v3-pipeline.ps1:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+
+Start-V3Pipeline : The term 'Start-V3Pipeline' is not recognized as the name of a cmdlet, function, script file, or 
+operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try 
+again.
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\scripts\run-pipeline-now.ps1:6 char:1
++ Start-V3Pipeline -ProjectPath 'D:\vscode\tech-web-chatai.v8\tech-web- ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (Start-V3Pipeline:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+Start-V3Pipeline : The term 'Start-V3Pipeline' is not recognized as the name of a cmdlet, function, script file, or
+operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try
+again.
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\scripts\run-pipeline-now.ps1:6 char:1
++ Start-V3Pipeline -ProjectPath 'D:\vscode\tech-web-chatai.v8\tech-web- ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (Start-V3Pipeline:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+
+**********************
+Windows PowerShell transcript end
+End time: 20260312190248
+**********************
