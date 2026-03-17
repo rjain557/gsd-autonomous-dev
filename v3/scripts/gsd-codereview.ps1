@@ -263,13 +263,13 @@ Return ONLY the JSON object with issues array.
 
             switch ($model) {
                 "claude" {
-                    $result = Invoke-SonnetApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 2048 -JsonMode -Phase $phase
+                    $result = Invoke-SonnetApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 8192 -JsonMode -Phase $phase
                 }
                 "codex" {
-                    $result = Invoke-CodexMiniApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 2048 -Phase $phase
+                    $result = Invoke-CodexMiniApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 8192 -Phase $phase
                 }
                 "gemini" {
-                    $result = Invoke-GeminiApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 2048 -Phase $phase
+                    $result = Invoke-GeminiApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 8192 -Phase $phase
                 }
             }
 
