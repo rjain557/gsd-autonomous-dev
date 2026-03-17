@@ -277,7 +277,7 @@ Return ONLY the JSON object with issues array.
 
             switch ($model) {
                 "claude" {
-                    $result = Invoke-SonnetApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 2048 -Phase $phase
+                    $result = Invoke-SonnetApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 2048 -JsonMode -Phase $phase
                 }
                 "codex" {
                     $result = Invoke-CodexMiniApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 2048 -Phase $phase
@@ -293,7 +293,7 @@ Return ONLY the JSON object with issues array.
                     $modelId = switch ($model) {
                         "claude" { "claude-sonnet-4-6" }
                         "codex"  { "gpt-5.1-codex-mini" }
-                        "gemini" { "gemini" }
+                        "gemini" { "gemini-2.5-flash" }
                     }
                     Add-ApiCallCost -Model $modelId -Usage $result.Usage -Phase $phase
                 }
