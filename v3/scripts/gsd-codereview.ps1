@@ -266,7 +266,7 @@ Return ONLY the JSON object with issues array.
                     $result = Invoke-SonnetApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 8192 -JsonMode -Phase $phase
                 }
                 "codex" {
-                    $result = Invoke-CodexMiniApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 8192 -Phase $phase
+                    $result = Invoke-CodexMiniApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 16384 -Phase $phase
                 }
                 "gemini" {
                     $result = Invoke-GeminiApi -SystemPrompt $reviewSystemPrompt -UserMessage $userPrompt -MaxTokens 8192 -Phase $phase
