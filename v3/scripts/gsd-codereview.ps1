@@ -168,27 +168,13 @@ Write-Log "Traceability lookup built: $($traceMap.Count) requirement mappings"
 # ============================================================
 
 $reviewSystemPrompt = @"
-You are a senior code reviewer performing a post-convergence quality audit.
-You review code against specific requirements to find issues the automated pipeline may have missed.
+You are a code reviewer. Review code against a requirement. Respond with ONLY a JSON object. No markdown, no explanation, no preamble. Just the JSON object starting with { and ending with }.
 
-For each requirement + code pair, identify issues with severity levels:
-- critical: Security vulnerability, data loss risk, compliance violation, broken core functionality
-- high: Logic error, missing validation, incomplete implementation, performance problem
-- medium: Code smell, missing error handling, weak typing, incomplete edge cases
-- low: Style issue, naming convention, minor optimization opportunity, missing comments
+Format: {"issues":[{"severity":"critical|high|medium|low","issue":"description","suggestion":"fix"}]}
 
-Output ONLY valid JSON in this format:
-{
-  "issues": [
-    {
-      "severity": "critical|high|medium|low",
-      "issue": "Brief description of the problem",
-      "suggestion": "How to fix it"
-    }
-  ]
-}
+If no issues: {"issues":[]}
 
-If the code fully satisfies the requirement with no issues, return: {"issues": []}
+Severity: critical=security/data loss, high=logic/validation error, medium=code smell/missing error handling, low=style/naming.
 "@
 
 # ============================================================
