@@ -19,20 +19,88 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Auto-log to file while keeping console output (timestamped per run)
 $v3Dir = Split-Path $PSScriptRoot -Parent
-$logDir = Join-Path $v3Dir "../logs"
-if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-$timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-$transcriptFile = Join-Path $logDir "v3-pipeline-$timestamp.log"
-# Also maintain a symlink-like "latest" log for easy tailing
-$latestLog = Join-Path $v3Dir "../v3-pipeline-live.log"
-try { Stop-Transcript -EA SilentlyContinue } catch {}
-Start-Transcript -Path $transcriptFile | Out-Null
-# Write the current log path to latest pointer
-Set-Content $latestLog -Value "# Latest log: $transcriptFile`n# Started: $(Get-Date)" -Encoding UTF8
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 $GsdDir = Join-Path $RepoRoot ".gsd"
+
+# ============================================================
+# CENTRALIZED LOGGING — logs stored in ~/.gsd-global/logs/{repo-name}/
+# Each pipeline run gets a run log, each iteration gets its own log
+# Iteration counter is persistent per-repo (survives across runs)
+# ============================================================
+
+$repoName = Split-Path $RepoRoot -Leaf
+$globalLogDir = Join-Path $env:USERPROFILE ".gsd-global/logs/$repoName"
+if (-not (Test-Path $globalLogDir)) { New-Item -ItemType Directory -Path $globalLogDir -Force | Out-Null }
+
+# Also keep local logs dir for backwards compatibility
+$localLogDir = Join-Path $v3Dir "../logs"
+if (-not (Test-Path $localLogDir)) { New-Item -ItemType Directory -Path $localLogDir -Force | Out-Null }
+
+# Persistent iteration counter per repo (never resets between runs)
+$iterCounterFile = Join-Path $globalLogDir "iteration-counter.json"
+if (Test-Path $iterCounterFile) {
+    $iterCounter = Get-Content $iterCounterFile -Raw | ConvertFrom-Json
+    $globalIterationStart = $iterCounter.next_iteration
+} else {
+    $globalIterationStart = 1
+    @{ next_iteration = 1; repo = $repoName; repo_root = $RepoRoot; created = (Get-Date -Format "o") } |
+        ConvertTo-Json | Set-Content $iterCounterFile -Encoding UTF8
+}
+
+# If user specified StartIteration, use that; otherwise use the persistent counter
+if ($StartIteration -gt 1) {
+    $globalIterationStart = $StartIteration
+}
+
+# Pipeline run log (one per pipeline start)
+$timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
+$runId = "run-$timestamp"
+$runLogFile = Join-Path $globalLogDir "$runId.log"
+
+# Also write to local logs for backwards compat
+$localTranscript = Join-Path $localLogDir "v3-pipeline-$timestamp.log"
+
+# Per-iteration log directory
+$iterLogDir = Join-Path $globalLogDir "iterations"
+if (-not (Test-Path $iterLogDir)) { New-Item -ItemType Directory -Path $iterLogDir -Force | Out-Null }
+
+# Latest log pointer (both local and global)
+$latestLog = Join-Path $v3Dir "../v3-pipeline-live.log"
+$globalLatestLog = Join-Path $globalLogDir "latest.log"
+
+try { Stop-Transcript -EA SilentlyContinue } catch {}
+Start-Transcript -Path $localTranscript | Out-Null
+
+# Write run log header
+$runHeader = @{
+    run_id          = $runId
+    repo            = $repoName
+    repo_root       = $RepoRoot
+    started_at      = (Get-Date -Format "o")
+    global_iteration_start = $globalIterationStart
+    mode            = "feature_update"
+    scope           = $Scope
+    log_file        = $runLogFile
+    local_log       = $localTranscript
+    iteration_log_dir = $iterLogDir
+}
+$runHeader | ConvertTo-Json | Set-Content $runLogFile -Encoding UTF8
+
+# Update latest pointers
+Set-Content $latestLog -Value "# Latest log: $localTranscript`n# Started: $(Get-Date)`n# Run ID: $runId`n# Global iter start: $globalIterationStart" -Encoding UTF8
+Copy-Item $latestLog $globalLatestLog -Force -ErrorAction SilentlyContinue
+
+Write-Host "  [LOG] Central: $globalLogDir" -ForegroundColor DarkGray
+Write-Host "  [LOG] Run: $runId | Global iteration: $globalIterationStart" -ForegroundColor DarkGray
+
+# Export for phase-orchestrator to use
+$env:GSD_GLOBAL_LOG_DIR = $globalLogDir
+$env:GSD_ITER_LOG_DIR = $iterLogDir
+$env:GSD_GLOBAL_ITER_START = $globalIterationStart
+$env:GSD_ITER_COUNTER_FILE = $iterCounterFile
+$env:GSD_RUN_ID = $runId
+$env:GSD_REPO_NAME = $repoName
 
 # Always clear stale lock file on startup
 $lockFile = Join-Path $GsdDir ".gsd-lock.json"

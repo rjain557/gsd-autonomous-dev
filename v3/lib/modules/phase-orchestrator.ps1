@@ -172,10 +172,30 @@ function Start-V3Pipeline {
     $converged = $false
     $consecutiveZeroDelta = 0
 
+    # Global iteration counter — persists across pipeline runs, unique per repo
+    $globalIterStart = if ($env:GSD_GLOBAL_ITER_START) { [int]$env:GSD_GLOBAL_ITER_START } else { $StartIteration }
+    $iterCounterFile = $env:GSD_ITER_COUNTER_FILE
+    $iterLogDir = $env:GSD_ITER_LOG_DIR
+    $repoName = if ($env:GSD_REPO_NAME) { $env:GSD_REPO_NAME } else { Split-Path $RepoRoot -Leaf }
+
     for ($iter = $StartIteration; $iter -le $maxIterations; $iter++) {
+        # Calculate global iteration number (unique across all runs for this repo)
+        $globalIter = $globalIterStart + ($iter - $StartIteration)
+
         Write-Host "`n========================================" -ForegroundColor Cyan
-        Write-Host "  ITERATION $iter / $maxIterations" -ForegroundColor Cyan
+        Write-Host "  ITERATION $iter / $maxIterations  (Global #$globalIter)" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Cyan
+
+        # Per-iteration log file in central store
+        $iterStartTime = Get-Date
+        $iterLogData = @{
+            global_iteration = $globalIter
+            local_iteration  = $iter
+            repo             = $repoName
+            started_at       = $iterStartTime.ToString("o")
+            run_id           = $env:GSD_RUN_ID
+            phases           = @{}
+        }
 
         try {  # Crash protection: one bad iteration should not kill the pipeline
 
@@ -911,6 +931,45 @@ function Start-V3Pipeline {
 
         $prevHealth = $currentHealth
 
+        # ============================================================
+        # PER-ITERATION LOG — write to central store
+        # ============================================================
+        $iterEndTime = Get-Date
+        $iterLogData.completed_at = $iterEndTime.ToString("o")
+        $iterLogData.duration_seconds = [math]::Round(($iterEndTime - $iterStartTime).TotalSeconds, 1)
+        $iterLogData.health_pct = $currentHealth
+        $iterLogData.health_delta = $healthDelta
+        $iterLogData.cost_usd = [math]::Round($script:CostState.TotalUsd, 4)
+        $iterLogData.batch_size = $batchReqs.Count
+        $iterLogData.decomp_added = $script:DecompBudget.AddedThisIteration
+        $iterLogData.consecutive_zero_delta = $consecutiveZeroDelta
+
+        if ($iterLogDir) {
+            $iterLogFile = Join-Path $iterLogDir "iter-$($globalIter.ToString('D4')).json"
+            try {
+                $iterLogData | ConvertTo-Json -Depth 5 | Set-Content $iterLogFile -Encoding UTF8
+            } catch {
+                Write-Host "  [WARN] Failed to write iteration log: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+
+        # Update persistent iteration counter (so next run starts from correct number)
+        if ($iterCounterFile) {
+            try {
+                @{
+                    next_iteration    = $globalIter + 1
+                    last_completed    = $globalIter
+                    last_health       = $currentHealth
+                    last_cost         = [math]::Round($script:CostState.TotalUsd, 4)
+                    last_run_id       = $env:GSD_RUN_ID
+                    repo              = $repoName
+                    updated_at        = (Get-Date -Format "o")
+                } | ConvertTo-Json | Set-Content $iterCounterFile -Encoding UTF8
+            } catch {
+                Write-Host "  [WARN] Failed to update iteration counter: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+
         # Memory cleanup between iterations -- prevent OOM/CPU spike from GC thrashing
         # Also clean up any stale background jobs that weren't removed
         Get-Job -State Completed -EA SilentlyContinue | Remove-Job -Force -EA SilentlyContinue
@@ -920,7 +979,7 @@ function Start-V3Pipeline {
         [GC]::WaitForPendingFinalizers()
 
         # Notification
-        Send-GsdNotification -Title "GSD Iteration $iter Complete" `
+        Send-GsdNotification -Title "GSD Iteration $iter (Global #$globalIter) Complete" `
             -Message "Health: $currentHealth% | Delta: $healthDelta | Budget: `$$([math]::Round($script:CostState.TotalUsd, 2))" `
             -Tags "chart_with_upwards_trend"
 
