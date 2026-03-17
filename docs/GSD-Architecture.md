@@ -1449,3 +1449,59 @@ Overall project health is the weighted average of all interface health scores, w
 - Backend failure pauses all frontend pipelines (dependency)
 - Frontend failure affects only that frontend; others continue
 - Failed pipelines can be restarted independently using scope filters
+
+## Existing Codebase Pipeline
+
+### Architecture Overview
+
+The Existing Codebase Pipeline (`gsd-existing.ps1`) is a specialized mode for repositories that already contain code and need verification against specifications. Unlike the standard convergence loop which assumes code needs to be generated, this pipeline front-loads verification to avoid regenerating existing work.
+
+### Architecture Difference from Standard Pipeline
+
+The standard pipeline follows a generate-then-verify loop:
+
+```
+[spec-gate] → [research] → [plan] → [execute] → [validate] → [review] → [verify] → loop
+```
+
+The existing codebase pipeline inverts this to verify-then-fill:
+
+```
+[spec-align] → [deep-extract] → [code-inventory] → [satisfaction-verify] → [targeted-execute] → [verify]
+```
+
+Key architectural distinctions:
+
+| Component | Standard Pipeline | Existing Codebase Pipeline |
+|-----------|------------------|---------------------------|
+| Requirements source | Specs + existing matrix | Specs only (code is evidence, not source) |
+| Iteration model | Multi-iteration convergence loop | Single pass with targeted execution |
+| Execute scope | All unsatisfied requirements | Only verified gaps |
+| Token budget | 4K-8K per phase | 16K with 32K auto-retry (large spec sets) |
+| Cost profile | $50-400 over many iterations | $5-10 in a single pass |
+
+### Data Flow
+
+```
+Spec Documents ──→ Deep Extract ──→ Requirements Matrix (from specs)
+                                          │
+Codebase ────────→ Code Inventory ──→ File-Capability Map
+                                          │
+                    Satisfaction Verify ◄──┘
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+         [satisfied]          [gaps found]
+              │                     │
+         (no action)        Targeted Execute
+                                    │
+                               Final Verify
+```
+
+### Critical Design Decision: Requirements from Specs, Not Code
+
+The pipeline extracts requirements exclusively from specification documents, never from existing code. Code is used only as evidence of satisfaction. This prevents a common failure mode where scanning code generates "requirements" that describe what was built rather than what should have been built, leading to false 100% satisfaction scores.
+
+### Matrix Initialization
+
+The deep-extract phase seeds the requirements matrix with a `requirements` array plus `total` and `summary` properties. All downstream phases use safe property access (`Add-Member` with existence checks) to prevent crashes on fresh or partially-initialized matrices.

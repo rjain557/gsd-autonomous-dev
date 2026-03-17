@@ -575,6 +575,20 @@
         "timeout_seconds": 60
     },
 
+    "existing_codebase_mode": {
+        "enabled": false,
+        "deep_extraction": true,
+        "deep_extraction_max_tokens": 32000,
+        "code_inventory_on_start": true,
+        "verify_by_reading_code": true,
+        "skip_satisfied_in_execute": true,
+        "parallel_verification_agents": 5,
+        "extraction_model": "sonnet",
+        "extraction_budget_usd": 5.00,
+        "stub_detection_patterns": ["// TODO", "// FILL", "throw NotImplementedException", "throw new NotImplementedException"],
+        "skip_patterns_in_execute": ["satisfied"]
+    },
+
     "removed_v2_features": {
         "council_requirements": { "enabled": false, "reason": "Replaced by 2-model deterministic routing" },
         "partitioned_code_review": { "enabled": false, "reason": "Replaced by diff-based single-model review" },

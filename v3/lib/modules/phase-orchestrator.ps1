@@ -1721,6 +1721,39 @@ function Invoke-ExecutePhase {
         [PSObject]$SkeletonResults = $null
     )
 
+    # -- Existing Codebase Mode: skip satisfied requirements in execute --
+    $ecmConfig = $Config.existing_codebase_mode
+    if ($ecmConfig -and $ecmConfig.skip_satisfied_in_execute) {
+        $skipPatterns = @($ecmConfig.skip_patterns_in_execute)
+        if ($skipPatterns.Count -gt 0) {
+            $matrixPathEcm = Join-Path $GsdDir "requirements/requirements-matrix.json"
+            $satisfiedIds = @{}
+            if (Test-Path $matrixPathEcm) {
+                try {
+                    $matrixEcm = Get-Content $matrixPathEcm -Raw | ConvertFrom-Json
+                    foreach ($req in $matrixEcm.requirements) {
+                        $rid = if ($req.id) { $req.id } else { $req.req_id }
+                        if ($req.status -and ($req.status -in $skipPatterns)) {
+                            $satisfiedIds[$rid] = $true
+                        }
+                    }
+                } catch {}
+            }
+            if ($satisfiedIds.Count -gt 0) {
+                $beforeCount = $Plans.Count
+                $Plans = @($Plans | Where-Object { -not $satisfiedIds.ContainsKey($_.req_id) })
+                $skippedCount = $beforeCount - $Plans.Count
+                if ($skippedCount -gt 0) {
+                    Write-Host "    [ECM] Skipped $skippedCount satisfied requirements from execute batch" -ForegroundColor Cyan
+                }
+            }
+        }
+        if ($Plans.Count -eq 0) {
+            Write-Host "    [ECM] All requirements in batch already satisfied. Nothing to execute." -ForegroundColor Green
+            return @{ Results = @{}; Completed = 0; Failed = 0 }
+        }
+    }
+
     $promptPath = if ($Stage -eq "skeleton") {
         Join-Path $script:V3Root "prompts/codex-mini/04a-execute-skeleton.md"
     } else {
@@ -2593,4 +2626,419 @@ function Write-GeneratedFiles {
         Set-Content $fullPath -Value $content -Encoding UTF8
         Write-Host "      [WRITE] $filePath" -ForegroundColor DarkGray
     }
+}
+
+# ============================================================
+# EXISTING CODEBASE MODE FUNCTIONS
+# ============================================================
+
+function Invoke-DeepRequirementsExtraction {
+    <#
+    .SYNOPSIS
+        Reads spec docs from the repo and calls Sonnet with a high token limit
+        to extract granular requirements for existing codebases.
+    .PARAMETER GsdDir
+        Path to the .gsd directory.
+    .PARAMETER RepoRoot
+        Repository root path.
+    .PARAMETER CacheBlocks
+        Cache prefix blocks for Sonnet API calls.
+    .PARAMETER Config
+        Global config object.
+    .RETURNS
+        Count of requirements extracted.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$GsdDir,
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [array]$CacheBlocks,
+        [PSObject]$Config
+    )
+
+    $ecmConfig = $Config.existing_codebase_mode
+    $maxTokens = if ($ecmConfig.deep_extraction_max_tokens) { $ecmConfig.deep_extraction_max_tokens } else { 32000 }
+
+    Write-Host "`n--- Deep Requirements Extraction (Existing Codebase Mode) ---" -ForegroundColor Yellow
+
+    # Collect spec documents from standard locations
+    $specDirs = @("docs", "design", "specs")
+    $specContent = [System.Text.StringBuilder]::new()
+    $fileCount = 0
+
+    foreach ($dir in $specDirs) {
+        $dirPath = Join-Path $RepoRoot $dir
+        if (Test-Path $dirPath) {
+            $specFiles = Get-ChildItem -Path $dirPath -Recurse -Include "*.md","*.txt","*.json","*.yaml","*.yml" -ErrorAction SilentlyContinue
+            foreach ($f in $specFiles) {
+                if ($f.Length -gt 0 -and $f.Length -lt 500000) {
+                    $content = Get-Content $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                    if ($content) {
+                        $relativePath = $f.FullName.Substring($RepoRoot.Length + 1)
+                        [void]$specContent.AppendLine("--- FILE: $relativePath ---")
+                        [void]$specContent.AppendLine($content)
+                        [void]$specContent.AppendLine("")
+                        $fileCount++
+                    }
+                }
+            }
+        }
+    }
+
+    Write-Host "  Collected $fileCount spec files from: $($specDirs -join ', ')" -ForegroundColor DarkGray
+
+    if ($fileCount -eq 0) {
+        Write-Host "  [WARN] No spec documents found. Skipping deep extraction." -ForegroundColor DarkYellow
+        return 0
+    }
+
+    # Build the extraction prompt
+    $extractionPrompt = @"
+You are analyzing an EXISTING codebase's specification documents to extract granular requirements.
+
+## Spec Documents
+$($specContent.ToString())
+
+## Instructions
+Extract every discrete, testable requirement from these specs. For each requirement:
+1. Assign a unique ID (REQ-001, REQ-002, etc.)
+2. Write a clear, specific description
+3. Identify the interface (web, backend, shared, mobile, browser, agent)
+4. List the expected source files that would implement it
+5. Set initial status to "not_started" (verification phase will update)
+6. Set priority (critical, high, medium, low)
+
+Output JSON:
+{
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "...",
+      "interface": "web|backend|shared|...",
+      "expected_files": ["path/to/file.ts"],
+      "status": "not_started",
+      "priority": "high",
+      "acceptance_criteria": ["criterion 1", "criterion 2"]
+    }
+  ],
+  "total_count": N,
+  "extraction_notes": "..."
+}
+"@
+
+    # Call Sonnet for extraction
+    $result = Invoke-SonnetApi -SystemPrompt "You are a requirements extraction specialist." `
+        -UserMessage $extractionPrompt -CacheBlocks $CacheBlocks `
+        -MaxTokens $maxTokens -JsonMode $true
+
+    if ($result.Usage) {
+        Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "deep-extraction"
+    }
+
+    if (-not $result.Success -or -not $result.Text) {
+        Write-Host "  [ERROR] Deep extraction API call failed" -ForegroundColor Red
+        return 0
+    }
+
+    # Parse and save requirements
+    try {
+        $extracted = $result.Text | ConvertFrom-Json
+
+        # Ensure requirements directory exists
+        $reqDir = Join-Path $GsdDir "requirements"
+        if (-not (Test-Path $reqDir)) { New-Item -Path $reqDir -ItemType Directory -Force | Out-Null }
+
+        $matrixPath = Join-Path $reqDir "requirements-matrix.json"
+
+        # If matrix exists, merge; otherwise create fresh
+        if (Test-Path $matrixPath) {
+            $existing = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $existingIds = @{}
+            foreach ($req in $existing.requirements) {
+                $rid = if ($req.id) { $req.id } else { $req.req_id }
+                $existingIds[$rid] = $true
+            }
+            $newReqs = @($extracted.requirements | Where-Object {
+                $rid = if ($_.id) { $_.id } else { $_.req_id }
+                -not $existingIds.ContainsKey($rid)
+            })
+            if ($newReqs.Count -gt 0) {
+                $allReqs = [System.Collections.ArrayList]@($existing.requirements)
+                foreach ($nr in $newReqs) { [void]$allReqs.Add($nr) }
+                $existing.requirements = $allReqs.ToArray()
+                $existing | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                Write-Host "  [MERGE] Added $($newReqs.Count) new requirements (total: $($allReqs.Count))" -ForegroundColor Green
+            } else {
+                Write-Host "  [MERGE] No new requirements to add (all $($extracted.requirements.Count) already exist)" -ForegroundColor DarkGray
+            }
+            return $existing.requirements.Count
+        } else {
+            $extracted | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+            $count = $extracted.requirements.Count
+            Write-Host "  [CREATED] Requirements matrix with $count requirements" -ForegroundColor Green
+            return $count
+        }
+    } catch {
+        Write-Host "  [ERROR] Failed to parse extraction results: $_" -ForegroundColor Red
+        return 0
+    }
+}
+
+
+function Invoke-CodeInventory {
+    <#
+    .SYNOPSIS
+        Scans the repo for source files, detects stubs, and builds a code inventory.
+    .PARAMETER RepoRoot
+        Repository root path.
+    .PARAMETER Config
+        Global config object.
+    .RETURNS
+        Inventory object with files, stubs, and summary stats.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [PSObject]$Config
+    )
+
+    $ecmConfig = $Config.existing_codebase_mode
+    $stubPatterns = if ($ecmConfig.stub_detection_patterns) {
+        @($ecmConfig.stub_detection_patterns)
+    } else {
+        @("// TODO", "// FILL", "throw NotImplementedException", "throw new NotImplementedException")
+    }
+
+    Write-Host "`n--- Code Inventory (Existing Codebase Mode) ---" -ForegroundColor Yellow
+
+    # Source file extensions to scan
+    $sourceExtensions = @("*.cs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.sql", "*.css", "*.scss")
+    $excludeDirs = @("node_modules", "bin", "obj", "dist", "build", ".vs", ".idea", ".gsd", ".git")
+
+    $inventory = @{
+        files        = @()
+        stubs        = @()
+        by_interface = @{}
+        total_files  = 0
+        total_lines  = 0
+        stub_count   = 0
+        scanned_at   = (Get-Date).ToString("o")
+    }
+
+    foreach ($ext in $sourceExtensions) {
+        $files = Get-ChildItem -Path $RepoRoot -Recurse -Filter $ext -ErrorAction SilentlyContinue |
+            Where-Object {
+                $skip = $false
+                foreach ($exDir in $excludeDirs) {
+                    if ($_.FullName -match [regex]::Escape($exDir)) { $skip = $true; break }
+                }
+                -not $skip
+            }
+
+        foreach ($f in $files) {
+            $relativePath = $f.FullName.Substring($RepoRoot.Length + 1).Replace("\", "/")
+            $lineCount = 0
+            $stubsFound = @()
+
+            try {
+                $content = Get-Content $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($content) {
+                    $lineCount = ($content -split "`n").Count
+
+                    # Detect stubs
+                    foreach ($pattern in $stubPatterns) {
+                        if ($content -match [regex]::Escape($pattern)) {
+                            $stubsFound += $pattern
+                        }
+                    }
+                }
+            } catch {}
+
+            # Determine interface from path
+            $interface = "unknown"
+            if ($relativePath -match '^src/web/') { $interface = "web" }
+            elseif ($relativePath -match '^src/Server/' -or $relativePath -match '^backend/') { $interface = "backend" }
+            elseif ($relativePath -match '^src/shared/') { $interface = "shared" }
+            elseif ($relativePath -match '^src/mobile/') { $interface = "mobile" }
+            elseif ($relativePath -match '^src/browser/') { $interface = "browser" }
+            elseif ($relativePath -match '^src/agent/') { $interface = "agent" }
+            elseif ($relativePath -match '^src/mcp-admin/') { $interface = "mcp-admin" }
+
+            $fileEntry = @{
+                path      = $relativePath
+                lines     = $lineCount
+                interface = $interface
+                is_stub   = ($stubsFound.Count -gt 0)
+                stubs     = $stubsFound
+                size      = $f.Length
+            }
+
+            $inventory.files += $fileEntry
+            $inventory.total_files++
+            $inventory.total_lines += $lineCount
+
+            if ($stubsFound.Count -gt 0) {
+                $inventory.stubs += @{
+                    path     = $relativePath
+                    patterns = $stubsFound
+                }
+                $inventory.stub_count++
+            }
+
+            # Track by interface
+            if (-not $inventory.by_interface.ContainsKey($interface)) {
+                $inventory.by_interface[$interface] = @{ files = 0; lines = 0; stubs = 0 }
+            }
+            $inventory.by_interface[$interface].files++
+            $inventory.by_interface[$interface].lines += $lineCount
+            if ($stubsFound.Count -gt 0) { $inventory.by_interface[$interface].stubs++ }
+        }
+    }
+
+    Write-Host "  Total files: $($inventory.total_files) | Total lines: $($inventory.total_lines) | Stubs: $($inventory.stub_count)" -ForegroundColor DarkGray
+    foreach ($iface in $inventory.by_interface.Keys | Sort-Object) {
+        $stats = $inventory.by_interface[$iface]
+        Write-Host "    $iface`: $($stats.files) files, $($stats.lines) lines, $($stats.stubs) stubs" -ForegroundColor DarkGray
+    }
+
+    # Save inventory to disk
+    $GsdDir = Join-Path $RepoRoot ".gsd"
+    if (-not (Test-Path $GsdDir)) { New-Item -Path $GsdDir -ItemType Directory -Force | Out-Null }
+    $inventoryPath = Join-Path $GsdDir "code-inventory.json"
+    $inventory | ConvertTo-Json -Depth 5 | Set-Content $inventoryPath -Encoding UTF8
+    Write-Host "  [SAVED] $inventoryPath" -ForegroundColor Green
+
+    return $inventory
+}
+
+
+function Invoke-SatisfactionVerification {
+    <#
+    .SYNOPSIS
+        Verifies each requirement against actual code to determine accurate satisfaction status.
+        If deep verify is enabled, reads source code to check for real implementations vs stubs.
+    .PARAMETER GsdDir
+        Path to the .gsd directory.
+    .PARAMETER RepoRoot
+        Repository root path.
+    .PARAMETER Config
+        Global config object.
+    .PARAMETER Inventory
+        Code inventory from Invoke-CodeInventory.
+    .RETURNS
+        Health percentage (0-100).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$GsdDir,
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [PSObject]$Config,
+        [PSObject]$Inventory
+    )
+
+    $ecmConfig = $Config.existing_codebase_mode
+    $deepVerify = if ($ecmConfig.verify_by_reading_code) { $ecmConfig.verify_by_reading_code } else { $false }
+    $stubPatterns = if ($ecmConfig.stub_detection_patterns) {
+        @($ecmConfig.stub_detection_patterns)
+    } else {
+        @("// TODO", "// FILL", "throw NotImplementedException", "throw new NotImplementedException")
+    }
+
+    Write-Host "`n--- Satisfaction Verification (Existing Codebase Mode) ---" -ForegroundColor Yellow
+
+    $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+    if (-not (Test-Path $matrixPath)) {
+        Write-Host "  [ERROR] No requirements matrix found at $matrixPath" -ForegroundColor Red
+        return 0
+    }
+
+    $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+    $reqs = $matrix.requirements
+    $total = $reqs.Count
+    $satisfied = 0
+    $partial = 0
+    $notStarted = 0
+
+    # Build a lookup of inventory files for fast matching
+    $fileIndex = @{}
+    if ($Inventory -and $Inventory.files) {
+        foreach ($f in $Inventory.files) {
+            $fileIndex[$f.path] = $f
+        }
+    }
+
+    for ($i = 0; $i -lt $reqs.Count; $i++) {
+        $req = $reqs[$i]
+        $reqId = if ($req.id) { $req.id } else { $req.req_id }
+        $expectedFiles = @()
+        if ($req.expected_files) { $expectedFiles = @($req.expected_files) }
+        if ($req.files) { $expectedFiles += @($req.files) }
+
+        if ($expectedFiles.Count -eq 0) {
+            # No file mapping -- leave status unchanged
+            continue
+        }
+
+        $filesExist = 0
+        $filesWithStubs = 0
+        $totalExpected = $expectedFiles.Count
+
+        foreach ($filePath in $expectedFiles) {
+            $normalizedPath = $filePath.Replace("\", "/")
+            $fullPath = Join-Path $RepoRoot $normalizedPath
+
+            if (Test-Path $fullPath) {
+                $filesExist++
+
+                if ($deepVerify) {
+                    # Read file and check for stubs
+                    try {
+                        $content = Get-Content $fullPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                        if ($content) {
+                            $hasStub = $false
+                            foreach ($pattern in $stubPatterns) {
+                                if ($content -match [regex]::Escape($pattern)) {
+                                    $hasStub = $true
+                                    break
+                                }
+                            }
+                            if ($hasStub) {
+                                $filesWithStubs++
+                            }
+                        }
+                    } catch {}
+                }
+            }
+        }
+
+        # Determine status
+        $oldStatus = $req.status
+        if ($filesExist -eq 0) {
+            $req.status = "not_started"
+            $notStarted++
+        } elseif ($deepVerify -and $filesWithStubs -gt 0) {
+            $req.status = "partial"
+            $partial++
+        } elseif ($filesExist -lt $totalExpected) {
+            $req.status = "partial"
+            $partial++
+        } else {
+            $req.status = "satisfied"
+            $satisfied++
+        }
+
+        if ($oldStatus -ne $req.status) {
+            Write-Host "    [$reqId] $oldStatus -> $($req.status) ($filesExist/$totalExpected files, $filesWithStubs stubs)" -ForegroundColor DarkGray
+        }
+
+        $reqs[$i] = $req
+    }
+
+    # Save updated matrix
+    $matrix.requirements = $reqs
+    $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+
+    $healthPct = if ($total -gt 0) { [math]::Round(($satisfied / $total) * 100, 1) } else { 0 }
+
+    Write-Host "  [RESULTS] Total: $total | Satisfied: $satisfied | Partial: $partial | Not Started: $notStarted" -ForegroundColor Cyan
+    Write-Host "  [HEALTH] $healthPct%" -ForegroundColor $(if ($healthPct -ge 80) { "Green" } elseif ($healthPct -ge 50) { "Yellow" } else { "Red" })
+
+    return $healthPct
 }
