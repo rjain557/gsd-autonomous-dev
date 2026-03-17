@@ -300,10 +300,19 @@ function Start-V3Pipeline {
 
             if ($totalAdded -gt 0) {
                 $matrix.requirements = $reqs.ToArray()
-                $matrix.total = $reqs.Count
-                $matrix.summary.satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
-                $matrix.summary.partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
-                $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                # Safely update summary fields (may not exist on freshly seeded matrix)
+                if (-not ($matrix.PSObject.Properties.Name -contains 'total')) {
+                    $matrix | Add-Member -NotePropertyName 'total' -NotePropertyValue $reqs.Count -Force
+                } else { $matrix.total = $reqs.Count }
+                if (-not ($matrix.PSObject.Properties.Name -contains 'summary')) {
+                    $matrix | Add-Member -NotePropertyName 'summary' -NotePropertyValue @{
+                        satisfied = 0; partial = 0; not_started = $reqs.Count
+                    } -Force
+                } else {
+                    $matrix.summary.satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
+                    $matrix.summary.partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
+                    $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                }
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
 
                 Write-Host "  [RESEARCH-DECOMPOSE] Split $($parentsDecomposed.Count) large reqs into $totalAdded sub-reqs (budget: $($script:DecompBudget.AddedThisIteration)/$($script:DecompBudget.MaxPerIteration))" -ForegroundColor Cyan
@@ -626,10 +635,19 @@ function Start-V3Pipeline {
 
             if ($totalAdded -gt 0) {
                 $matrix.requirements = $reqs.ToArray()
-                $matrix.total = $reqs.Count
-                $matrix.summary.satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
-                $matrix.summary.partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
-                $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                # Safely update summary fields (may not exist on freshly seeded matrix)
+                if (-not ($matrix.PSObject.Properties.Name -contains 'total')) {
+                    $matrix | Add-Member -NotePropertyName 'total' -NotePropertyValue $reqs.Count -Force
+                } else { $matrix.total = $reqs.Count }
+                if (-not ($matrix.PSObject.Properties.Name -contains 'summary')) {
+                    $matrix | Add-Member -NotePropertyName 'summary' -NotePropertyValue @{
+                        satisfied = 0; partial = 0; not_started = $reqs.Count
+                    } -Force
+                } else {
+                    $matrix.summary.satisfied = @($reqs | Where-Object { $_.status -eq "satisfied" }).Count
+                    $matrix.summary.partial = @($reqs | Where-Object { $_.status -eq "partial" }).Count
+                    $matrix.summary.not_started = @($reqs | Where-Object { $_.status -eq "not_started" }).Count
+                }
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
                 Write-Host "  [ENFORCE-DECOMPOSE] Auto-split $($plansToDecompose.Count) reqs into $totalAdded sub-reqs (budget: $($script:DecompBudget.AddedThisIteration)/$($script:DecompBudget.MaxPerIteration))" -ForegroundColor Cyan
             }
