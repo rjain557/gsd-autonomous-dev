@@ -1531,10 +1531,21 @@ function Invoke-SpecGatePhase {
         if (Test-Path $incrPath) { $prompt = Get-Content $incrPath -Raw -Encoding UTF8 }
     }
 
+    # Spec-gate needs enough tokens for large projects (MyTest had 228+ lines of JSON output)
+    $specGateMaxTokens = 16000
     $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
-        -MaxTokens 4096 -UseCache -JsonMode -Phase "spec-gate"
+        -MaxTokens $specGateMaxTokens -UseCache -JsonMode -Phase "spec-gate"
 
     if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-gate" }
+
+    # Retry with larger token limit if truncated
+    if (-not $result.Parsed -and ($result.StopReason -eq "max_tokens" -or ($result.Text -and $result.Text.Length -gt 3000))) {
+        Write-Host "    [RETRY] Spec-gate truncated at $specGateMaxTokens tokens, retrying with 32000..." -ForegroundColor Yellow
+        $specGateMaxTokens = 32000
+        $result = Invoke-SonnetApi -CacheBlocks $CacheBlocks -UserMessage $prompt `
+            -MaxTokens $specGateMaxTokens -UseCache -JsonMode -Phase "spec-gate-retry"
+        if ($result.Usage) { Add-ApiCallCost -Model $script:SonnetModel -Usage $result.Usage -Phase "spec-gate-retry" }
+    }
 
     $blocked = $false
     if ($result.Parsed) {
@@ -1544,11 +1555,39 @@ function Invoke-SpecGatePhase {
         $reportPath = Join-Path $GsdDir "specs/spec-quality-report.json"
         $result.Text | Set-Content $reportPath -Encoding UTF8
 
+        # If spec-gate returned requirements_derived, seed the requirements matrix
+        if ($report.requirements_derived -and $report.requirements_derived.Count -gt 0) {
+            $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+            if (-not (Test-Path $matrixPath)) {
+                Write-Host "    [SEED] Seeding requirements matrix with $($report.requirements_derived.Count) requirements from spec-gate" -ForegroundColor Cyan
+                $matrix = @{
+                    generated_at = (Get-Date -Format "o")
+                    source = "spec-gate"
+                    requirements = @($report.requirements_derived | ForEach-Object {
+                        @{
+                            id = $_.id
+                            description = $_.description
+                            source = if ($_.source) { $_.source } else { "spec" }
+                            interface = if ($_.interface) { $_.interface } else { "backend" }
+                            category = if ($_.category) { $_.category } else { "implementation" }
+                            priority = if ($_.priority) { $_.priority } else { "medium" }
+                            status = "not_started"
+                            acceptance_criteria = if ($_.acceptance_criteria) { $_.acceptance_criteria } else { @() }
+                        }
+                    })
+                }
+                $matrix | ConvertTo-Json -Depth 5 | Set-Content $matrixPath -Encoding UTF8
+                Write-Host "    [SEED] Requirements matrix created: $($matrix.requirements.Count) requirements" -ForegroundColor Green
+            }
+        }
+
         Write-Host "  Status: $($report.overall_status) | Clarity: $($report.clarity_score)" -ForegroundColor $(
             if ($report.overall_status -eq "block") { "Red" }
             elseif ($report.overall_status -eq "warn") { "Yellow" }
             else { "Green" }
         )
+    } else {
+        Write-Host "    [WARN] Spec-gate failed to parse. Pipeline will attempt to proceed with research phase." -ForegroundColor DarkYellow
     }
 
     return @{ Blocked = $blocked; Report = $result.Parsed; Success = $result.Success }
