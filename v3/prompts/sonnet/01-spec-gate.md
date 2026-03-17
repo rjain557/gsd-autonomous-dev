@@ -19,6 +19,21 @@ If multiple interfaces are present (web, mcp-admin, browser, mobile, agent):
 - Verify auth flows are compatible across all interfaces
 - Verify shared design tokens are consistent
 
+## CRITICAL: Requirements Must Cover ALL Project Layers
+
+When deriving requirements, you MUST create requirements for EVERY layer of the project:
+- **database**: Schema, stored procedures, migrations, seeds, indexes
+- **backend**: API controllers, services, repositories, DTOs, middleware, auth, health checks
+- **web** (frontend): React screens, components, hooks, state management, routing, forms
+- **mcp-server**: MCP tool implementations, LLM integration, transport layer
+- **mcp-admin**: Admin portal screens, management UI
+- **shared**: Shared types, utilities, API clients
+- **integration**: CI/CD, Docker, deployment, E2E tests
+- **security**: Auth flows, RBAC, encryption, audit logging
+- **compliance**: HIPAA, SOC2, PCI, GDPR requirements
+
+Do NOT only generate backend requirements. Every feature should have requirements for EACH layer it touches (database + backend + frontend + tests at minimum).
+
 ## Gate Rules
 
 - Set `overall_status: "block"` if ANY critical conflicts found
@@ -56,7 +71,9 @@ If multiple interfaces are present (web, mcp-admin, browser, mobile, agent):
     {
       "id": "REQ-001",
       "name": "",
+      "description": "",
       "category": "",
+      "interface": "backend | web | database | mcp-server | mcp-admin | shared | integration | security",
       "complexity": "small | medium | large",
       "priority": "critical | high | medium | low",
       "interfaces": ["web"],
