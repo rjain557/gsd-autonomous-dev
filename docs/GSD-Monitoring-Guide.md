@@ -264,3 +264,62 @@ Health history is stored as JSONL at `.gsd/health/health-history.jsonl`, with on
 ```
 
 Current health snapshot is at `.gsd/health/health-current.json`.
+
+## Supervision Insights — Learning Across Sessions
+
+The monitoring session accumulates valuable pattern data that should feed back into the pipeline. A central insights file at `~/.gsd-global/logs/supervision-insights.md` captures cross-session learning.
+
+### What to Record
+
+Each monitoring session should append entries when it observes:
+
+| Insight Type | When to Record | Example |
+|-------------|---------------|---------|
+| **Disease** | Recurring pipeline failure pattern | "Plateau at 84% for 10 iterations" |
+| **Fix** | Successful workaround for a disease | "Proactive MyGPTsController !int→==0 fix" |
+| **Optimization** | Process improvement discovered | "70% of late-stage partials already implemented" |
+| **Pattern** | Behavioral observation | "Pre-filter accuracy is 100%" |
+
+### How to Use Insights
+
+**At session start**: Read `supervision-insights.md` to understand known diseases and patterns.
+
+**During monitoring**:
+- When you see a disease pattern, check if it's already documented
+- If new, append it with date, repo, description, and fix
+- If recurring, update the existing entry with new occurrence
+
+**At session end**: Append a summary of what was observed, fixed, and learned.
+
+### Feeding Back into Pipeline
+
+The pipeline reads `supervision-insights.md` during the spec-align phase to check for known issues. Future improvements:
+- Auto-flag reqs that match known disease patterns
+- Adjust model selection based on which models succeeded/failed for similar reqs
+- Pre-populate fix patterns in the validation fixer
+
+### Centralized Log Analysis
+
+All pipeline logs are stored at `~/.gsd-global/logs/{repo-name}/`:
+
+```
+~/.gsd-global/logs/
+├── tech-web-chatai.v8/
+│   ├── iteration-counter.json     # Persistent iteration number
+│   ├── run-2026-03-16_100709.json # Per-run metadata
+│   ├── latest.log                 # Pointer to current run
+│   └── iterations/
+│       ├── iter-0001.json         # Per-iteration: health, cost, duration
+│       ├── iter-0002.json
+│       └── ...
+├── another-project/
+│   ├── iteration-counter.json
+│   └── iterations/
+└── supervision-insights.md        # Cross-session learning
+```
+
+This structure enables:
+- **Cross-repo analysis**: Compare convergence rates between projects
+- **Iteration trends**: Chart health/cost over time
+- **Disease detection**: Identify patterns across repos (e.g., "all .NET projects plateau at 85%")
+- **Budget forecasting**: Predict cost based on historical iterations
