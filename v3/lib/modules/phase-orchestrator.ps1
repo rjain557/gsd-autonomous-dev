@@ -166,6 +166,28 @@ function Start-V3Pipeline {
         }
     }
 
+    # -- Phase 1c: Figma Requirement Derivation (after spec gate, before iteration loop) --
+    Write-Host "`n--- Phase 1c: Figma Requirement Derivation ---" -ForegroundColor Yellow
+    $figmaDeriverPath = Join-Path $script:V3Root "lib/modules/figma-req-deriver.ps1"
+    if (Test-Path $figmaDeriverPath) {
+        if (-not (Get-Command Invoke-FigmaRequirementDerivation -ErrorAction SilentlyContinue)) {
+            . $figmaDeriverPath
+        }
+        try {
+            $figmaDerivation = Invoke-FigmaRequirementDerivation -RepoRoot $RepoRoot -GsdDir $GsdDir -Config $Config
+            if ($figmaDerivation.MergedCount -gt 0) {
+                Write-Host "  [FIGMA] Derived $($figmaDerivation.DerivedCount) requirements, merged $($figmaDerivation.MergedCount) new into matrix" -ForegroundColor Green
+                Write-Host "  [FIGMA] Interfaces: $($figmaDerivation.Interfaces -join ', ')" -ForegroundColor DarkCyan
+            } elseif (-not $figmaDerivation.Skipped) {
+                Write-Host "  [FIGMA] All Figma requirements already in matrix (0 new)" -ForegroundColor DarkGray
+            }
+        } catch {
+            Write-Host "  [WARN] Figma requirement derivation error: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    } else {
+        Write-Host "  [SKIP] figma-req-deriver.ps1 not found at $figmaDeriverPath" -ForegroundColor DarkGray
+    }
+
     # -- Iteration Loop --
     $prevHealth = 0
     $currentHealth = 0
@@ -517,6 +539,93 @@ function Start-V3Pipeline {
             }
         }
 
+        # -- Proactive Decomposition: split large Figma screen reqs into sub-components --
+        # Screen pages often produce 10-16K+ tokens. Split into: hooks+types, page component, sub-components
+        $proactiveDecompCount = 0
+        $proactivePlans = @()
+        foreach ($plan in $planOutput.plans) {
+            $rid = if ($plan.req_id) { $plan.req_id } else { $plan.id }
+            $isFigmaScreen = ($rid -match 'FIGMA-.*-SCR-')
+            $createFiles = if ($plan.files_to_create) { @($plan.files_to_create) } else { @() }
+
+            # Check if this is a single large screen file estimated to exceed 12K tokens
+            $singleLargeFile = $false
+            if ($isFigmaScreen -and $createFiles.Count -eq 1) {
+                $est = 0
+                if ($createFiles[0].estimated_tokens) { $est = $createFiles[0].estimated_tokens }
+                if ($est -gt 12000 -or $createFiles[0].path -match 'Page\.tsx$') {
+                    $singleLargeFile = $true
+                }
+            }
+            # Also flag screen reqs that were previously truncated
+            $prevTruncated = $false
+            $truncTrackerPath = Join-Path $GsdDir "requirements/truncation-tracker.json"
+            if (Test-Path $truncTrackerPath) {
+                try {
+                    $ttCheck = Get-Content $truncTrackerPath -Raw | ConvertFrom-Json
+                    if ($ttCheck.PSObject.Properties.Name -contains $rid) { $prevTruncated = $true }
+                } catch {}
+            }
+
+            if (($singleLargeFile -or $prevTruncated) -and ($rid -split '-').Count -le 6) {
+                # Split: create plan variants for hooks+types vs page component
+                $filePath = $createFiles[0].path
+                $fileDir = [System.IO.Path]::GetDirectoryName($filePath) -replace '\\','/'
+                $fileName = [System.IO.Path]::GetFileNameWithoutExtension($filePath)
+
+                # Sub-plan 1: hooks + types + API service (supporting files)
+                $hooksPlan = $plan.PSObject.Copy()
+                $hooksPlan | Add-Member -NotePropertyName "req_id" -NotePropertyValue "$rid-HOOKS" -Force
+                $hooksPlan | Add-Member -NotePropertyName "files_to_create" -NotePropertyValue @(
+                    @{ path = "$fileDir/hooks/use${fileName}Data.ts"; description = "Data fetching hook with React Query for $fileName — all API calls, loading/error states, mutations"; type = "create" }
+                    @{ path = "$fileDir/types/${fileName}Types.ts"; description = "TypeScript interfaces and types for $fileName"; type = "create" }
+                ) -Force
+
+                # Sub-plan 2: page component (imports hooks, renders UI)
+                $pagePlan = $plan.PSObject.Copy()
+                $pagePlan | Add-Member -NotePropertyName "req_id" -NotePropertyValue "$rid-PAGE" -Force
+                # Keep original files_to_create but add note that hooks are separate
+                $pagePlan | Add-Member -NotePropertyName "notes" -NotePropertyValue "Page component only — data hooks are in separate use${fileName}Data.ts hook. Import and use the hook. Keep the page component focused on UI rendering." -Force
+
+                # Add sub-requirements to matrix
+                $matrixPath2 = Join-Path $GsdDir "requirements/requirements-matrix.json"
+                $matrix2 = Get-Content $matrixPath2 -Raw | ConvertFrom-Json
+                $reqsList2 = [System.Collections.ArrayList]@($matrix2.requirements)
+                foreach ($subId in @("$rid-HOOKS", "$rid-PAGE")) {
+                    $existing2 = $reqsList2 | Where-Object { $_.id -eq $subId }
+                    if (-not $existing2) {
+                        $parentReq2 = $reqsList2 | Where-Object { ($_.id -eq $rid) -or ($_.req_id -eq $rid) }
+                        $desc2 = if ($parentReq2) { $parentReq2.description } else { $rid }
+                        $layer2 = if ($subId -match 'HOOKS') { "hooks+types" } else { "page component" }
+                        $reqsList2.Add([PSCustomObject]@{
+                            id = $subId; description = "$desc2 [$layer2]"
+                            interface = "web"; priority = "high"; status = "not_started"
+                            source = "proactive-decompose"; parent_id = $rid; category = "figma-screen"
+                        }) | Out-Null
+                    }
+                }
+                # Mark parent satisfied
+                $parentR = $reqsList2 | Where-Object { ($_.id -eq $rid) -or ($_.req_id -eq $rid) }
+                if ($parentR) {
+                    $parentR.status = "satisfied"
+                    $parentR | Add-Member -NotePropertyName "decomposed" -NotePropertyValue $true -Force
+                }
+                $matrix2.requirements = $reqsList2.ToArray()
+                $matrix2 | ConvertTo-Json -Depth 10 | Set-Content $matrixPath2 -Encoding UTF8
+
+                $proactivePlans += $hooksPlan
+                $proactivePlans += $pagePlan
+                $proactiveDecompCount++
+                Write-Host "  [PROACTIVE-DECOMPOSE] $rid split into $rid-HOOKS + $rid-PAGE (prevent truncation)" -ForegroundColor Magenta
+            } else {
+                $proactivePlans += $plan
+            }
+        }
+        if ($proactiveDecompCount -gt 0) {
+            Write-Host "  [PROACTIVE-DECOMPOSE] Split $proactiveDecompCount large screen reqs to prevent truncation" -ForegroundColor Magenta
+            $planOutput.plans = $proactivePlans
+        }
+
         # -- Enforce Decomposition (post-plan check) --
         # If Sonnet didn't decompose but plan has requirements with too many files, force decomposition
         $plansToDecompose = @()
@@ -725,13 +834,13 @@ function Start-V3Pipeline {
             if ($truncatedReqs.Count -gt 0) {
                 Write-Host "  [TRUNCATION] $($truncatedReqs.Count) reqs hit token limit: $($truncatedReqs -join ', ')" -ForegroundColor Red
 
-                # Separate reqs: those truncated 2+ times get routed to larger model next time,
-                # first-time truncations get flagged for decomposition
-                $escalateReqs = @($truncatedReqs | Where-Object { $truncTracker[$_] -ge 2 })
-                $decompReqs = @($truncatedReqs | Where-Object { $truncTracker[$_] -lt 2 })
+                # Immediate escalation: ALL truncated reqs get routed to larger model on very next iteration
+                # (Don't wait for 2nd truncation — that wastes an entire iteration)
+                $escalateReqs = @($truncatedReqs)
+                $decompReqs = @($truncatedReqs | Where-Object { $truncTracker[$_] -ge 2 })
 
                 if ($escalateReqs.Count -gt 0) {
-                    Write-Host "  [TRUNCATION-ESCALATE] $($escalateReqs.Count) reqs truncated 2+ times -- flagged for larger model (DeepSeek/Claude): $($escalateReqs -join ', ')" -ForegroundColor Yellow
+                    Write-Host "  [TRUNCATION-ESCALATE] $($escalateReqs.Count) reqs truncated -- flagged for larger model (DeepSeek/Claude) on next iteration: $($escalateReqs -join ', ')" -ForegroundColor Yellow
                 }
 
                 $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
@@ -740,14 +849,10 @@ function Start-V3Pipeline {
                     $req = $matrix.requirements | Where-Object { ($_.id -eq $tReqId) -or ($_.req_id -eq $tReqId) }
                     if ($req -and -not $req.decomposed) {
                         $req.status = "not_started"
-                        if ($truncTracker[$tReqId] -ge 2) {
-                            # Flag for larger model routing instead of decomposition
-                            $req | Add-Member -NotePropertyName "use_large_model" -NotePropertyValue $true -Force
-                            $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated $($truncTracker[$tReqId])x -- route to DeepSeek/Claude instead of Codex Mini" -Force
-                        } else {
-                            $req | Add-Member -NotePropertyName "needs_decomposition" -NotePropertyValue $true -Force
-                            $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated at 16K tokens -- force decompose next iteration" -Force
-                        }
+                        # Immediate escalation: flag for larger model on very next iteration
+                        $req | Add-Member -NotePropertyName "use_large_model" -NotePropertyValue $true -Force
+                        $req | Add-Member -NotePropertyName "needs_decomposition" -NotePropertyValue $true -Force
+                        $req | Add-Member -NotePropertyName "notes" -NotePropertyValue "Truncated at 16K tokens (attempt $($truncTracker[$tReqId])) -- route to DeepSeek/Claude + decompose next iteration" -Force
                     }
                 }
                 $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
@@ -822,6 +927,103 @@ function Start-V3Pipeline {
             }
         }
 
+        # -- Phase 5b: Design System Gate (between local-validate and review) --
+        $dsgConfig = $Config.design_system_gate
+        if ($dsgConfig -and $dsgConfig.enabled) {
+            Write-Host "`n  --- Design System Gate ---" -ForegroundColor Yellow
+            $dsgModulePath = Join-Path $script:V3Root "lib/modules/design-system-gate.ps1"
+            if (Test-Path $dsgModulePath) {
+                if (-not (Get-Command Invoke-DesignSystemGate -ErrorAction SilentlyContinue)) {
+                    . $dsgModulePath
+                }
+                try {
+                    $dsgResult = Invoke-DesignSystemGate -RepoRoot $RepoRoot -GsdDir $GsdDir -Config $Config
+
+                    if ($dsgResult -and $dsgResult.Violations) {
+                        $blockingCount = @($dsgResult.Violations | Where-Object { $_.Severity -eq "blocking" }).Count
+                        $warningCount = @($dsgResult.Violations | Where-Object { $_.Severity -ne "blocking" }).Count
+                        Write-Host "    Design System Gate: $blockingCount blocking, $warningCount warnings" -ForegroundColor $(
+                            if ($blockingCount -gt 0) { "Red" } elseif ($warningCount -gt 0) { "Yellow" } else { "Green" }
+                        )
+
+                        # If block_on_violations is true and there are blocking violations, demote affected reqs
+                        if ($dsgConfig.block_on_violations -and $blockingCount -gt 0) {
+                            $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+                            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+                            $demotedCount = 0
+                            foreach ($violation in ($dsgResult.Violations | Where-Object { $_.Severity -eq "blocking" })) {
+                                $affectedReq = $matrix.requirements | Where-Object {
+                                    ($_.id -eq $violation.ReqId) -or ($_.req_id -eq $violation.ReqId)
+                                }
+                                if ($affectedReq -and $affectedReq.status -ne "partial") {
+                                    $affectedReq.status = "partial"
+                                    $affectedReq | Add-Member -NotePropertyName "design_gate_violation" -NotePropertyValue $violation.Rule -Force
+                                    $demotedCount++
+                                }
+                            }
+                            if ($demotedCount -gt 0) {
+                                $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                                Write-Host "    [DEMOTE] $demotedCount reqs demoted to 'partial' due to design system violations" -ForegroundColor Red
+                            }
+                        }
+                    }
+                    else {
+                        Write-Host "    Design System Gate: PASSED (no violations)" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Host "    [WARN] Design System Gate error: $($_.Exception.Message)" -ForegroundColor DarkYellow
+                }
+            }
+            else {
+                Write-Host "    [SKIP] design-system-gate.ps1 not found at $dsgModulePath" -ForegroundColor DarkGray
+            }
+        }
+
+        # -- Phase 5c: Figma Completeness Check (after design system gate, before review) --
+        $figmaCheckerPath = Join-Path $script:V3Root "lib/modules/figma-completeness-checker.ps1"
+        if (Test-Path $figmaCheckerPath) {
+            if (-not (Get-Command Invoke-FigmaCompletenessCheck -ErrorAction SilentlyContinue)) {
+                . $figmaCheckerPath
+            }
+            try {
+                Write-Host "`n  --- Figma Completeness Check ---" -ForegroundColor Yellow
+                $figmaCheck = Invoke-FigmaCompletenessCheck -RepoRoot $RepoRoot -GsdDir $GsdDir -Config $Config
+
+                if (-not $figmaCheck.Skipped -and $figmaCheck.NotSatisfied -gt 0) {
+                    Write-Host "    Figma completeness: $($figmaCheck.Completeness)% ($($figmaCheck.Satisfied)/$($figmaCheck.Checked) satisfied)" -ForegroundColor $(
+                        if ($figmaCheck.Completeness -ge 90) { "Yellow" } else { "Red" }
+                    )
+
+                    # Demote unsatisfied Figma reqs to not_started so they get picked up in next iteration
+                    $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
+                    $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+                    $demotedCount = 0
+                    foreach ($unsatItem in ($figmaCheck.Report.unsatisfied | Where-Object { $_.partial })) {
+                        $affectedReq = $matrix.requirements | Where-Object {
+                            ($_.id -eq $unsatItem.req_id) -or ($_.req_id -eq $unsatItem.req_id)
+                        }
+                        if ($affectedReq -and $affectedReq.status -eq "satisfied") {
+                            $affectedReq.status = "partial"
+                            $affectedReq | Add-Member -NotePropertyName "figma_violation" -NotePropertyValue $unsatItem.reason -Force
+                            $demotedCount++
+                        }
+                    }
+                    if ($demotedCount -gt 0) {
+                        $matrix.summary.satisfied = @($matrix.requirements | Where-Object { $_.status -eq "satisfied" }).Count
+                        $matrix.summary.partial = @($matrix.requirements | Where-Object { $_.status -eq "partial" }).Count
+                        $matrix.summary.not_started = @($matrix.requirements | Where-Object { $_.status -eq "not_started" }).Count
+                        $matrix | ConvertTo-Json -Depth 10 | Set-Content $matrixPath -Encoding UTF8
+                        Write-Host "    [FIGMA-DEMOTE] $demotedCount reqs demoted due to Figma completeness violations" -ForegroundColor Red
+                    }
+                }
+                elseif (-not $figmaCheck.Skipped) {
+                    Write-Host "    Figma completeness: 100% ($($figmaCheck.Satisfied)/$($figmaCheck.Checked))" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "    [WARN] Figma completeness check error: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+
         # -- Review Phase (only for failed items after fix attempts) --
         if ("review" -in $phasesActive -and "review" -notin $phasesSkipped) {
             if ($validateResults.FailItems.Count -gt 0) {
@@ -850,6 +1052,16 @@ function Start-V3Pipeline {
         Write-Host "  Health: $currentHealth% (delta: $([math]::Round($healthDelta, 1)))" -ForegroundColor $(
             if ($healthDelta -gt 0) { "Green" } elseif ($healthDelta -eq 0) { "Yellow" } else { "Red" }
         )
+
+        # Traceability matrix regeneration (zero LLM cost -- pure file scan)
+        try {
+            $traceResult = Invoke-TraceabilityUpdate -RepoRoot $RepoRoot -GsdDir $GsdDir -Config $Config
+            if ($traceResult.Success) {
+                Write-Host "  Traceability: $($traceResult.Mapped)/$($traceResult.Total) mapped ($($traceResult.ElapsedSec)s)" -ForegroundColor DarkGray
+            }
+        } catch {
+            Write-Host "  [WARN] Traceability update failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
 
         # Cost summary
         Save-CostSummary -GsdDir $GsdDir
@@ -1019,10 +1231,53 @@ function Start-V3Pipeline {
     Remove-GsdLock -GsdDir $GsdDir
     Save-CostSummary -GsdDir $GsdDir
 
+    # Final traceability matrix (captures all iterations)
+    try {
+        Write-Host "`n  --- Final Traceability ---" -ForegroundColor Cyan
+        $finalTrace = Invoke-TraceabilityUpdate -RepoRoot $RepoRoot -GsdDir $GsdDir -Config $Config
+        if ($finalTrace.Success) {
+            Write-Host "  Final traceability: $($finalTrace.Mapped)/$($finalTrace.Total) reqs mapped to files" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "  [WARN] Final traceability update failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+
     if ($converged) {
         Clear-Checkpoint -GsdDir $GsdDir
+
+        # -- Post-Convergence Integration Smoke Test --
+        Write-Host "`n  --- Post-Convergence Integration Smoke Test ---" -ForegroundColor Cyan
+        try {
+            $smokeTestModule = Join-Path $PSScriptRoot "integration-smoke-test.ps1"
+            if (Test-Path $smokeTestModule) {
+                if (-not (Get-Command 'Invoke-IntegrationSmokeTest' -ErrorAction SilentlyContinue)) {
+                    . $smokeTestModule
+                }
+                $smokeResult = Invoke-IntegrationSmokeTest -RepoRoot $RepoRoot
+                $smokeColor = if ($smokeResult.Failed -eq 0) { "Green" } else { "Yellow" }
+                Write-Host "  Integration smoke: $($smokeResult.Passed) pass, $($smokeResult.Failed) fail, $($smokeResult.Warnings) warn" -ForegroundColor $smokeColor
+
+                # Write smoke test report to .gsd directory
+                $smokeReportPath = Join-Path $GsdDir "integration-smoke-report.json"
+                $smokeResult | ConvertTo-Json -Depth 5 | Set-Content $smokeReportPath -Encoding UTF8
+                Write-Host "  Report saved: $smokeReportPath" -ForegroundColor DarkGray
+
+                # Include smoke test results in notification
+                $smokeMsg = if ($smokeResult.Failed -gt 0) {
+                    $failDetails = ($smokeResult.Details | Where-Object { $_.Status -eq 'fail' } | ForEach-Object { $_.CheckName }) -join ', '
+                    " | Smoke: $($smokeResult.Failed) FAIL ($failDetails)"
+                } else { " | Smoke: ALL PASS" }
+            } else {
+                Write-Host "  [SKIP] integration-smoke-test.ps1 not found" -ForegroundColor DarkYellow
+                $smokeMsg = ""
+            }
+        } catch {
+            Write-Host "  [WARN] Integration smoke test failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            $smokeMsg = " | Smoke: ERROR"
+        }
+
         Send-GsdNotification -Title "GSD CONVERGED!" `
-            -Message "Health: 100% | Cost: `$$([math]::Round($script:CostState.TotalUsd, 2)) | Mode: $Mode" `
+            -Message "Health: 100% | Cost: `$$([math]::Round($script:CostState.TotalUsd, 2)) | Mode: $Mode$smokeMsg" `
             -Tags "white_check_mark" -Priority "high"
     }
 

@@ -300,8 +300,14 @@ function Test-PreFlightV3 {
         $checks += Test-Check "Requirements matrix exists" (Test-Path $matrixPath) "Run gsd-blueprint first to create initial requirements"
     }
     elseif ($Mode -eq "feature_update") {
+        # feature_update mode: matrix is optional at preflight — gsd-existing.ps1 generates it in Phase 2
         $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
-        $checks += Test-Check "Requirements matrix exists" (Test-Path $matrixPath) "Run gsd-blueprint first to create initial requirements"
+        if (Test-Path $matrixPath) {
+            $checks += Test-Check "Requirements matrix exists" $true ""
+        } else {
+            Write-Host "    [INFO] No requirements matrix yet — will be generated during deep extraction" -ForegroundColor DarkGray
+            $checks += Test-Check "Requirements matrix (will be generated)" $true ""
+        }
     }
 
     # 8. Git repo check

@@ -16,6 +16,7 @@
         "execute-skeleton",
         "execute-fill",
         "local-validate",
+        "design-system-gate",
         "review",
         "verify",
         "spec-fix"
@@ -391,6 +392,21 @@
         "scan_extensions": [".css", ".scss", ".tsx", ".jsx", ".ts"],
         "ignore_files": ["*.min.css", "*.bundle.*", "node_modules/*"],
         "allowed_raw_colors": ["#000000", "#ffffff", "#000", "#fff", "transparent", "inherit", "currentColor"]
+    },
+
+    "design_system_gate": {
+        "enabled": true,
+        "block_on_violations": false,
+        "min_css_variable_ratio": 0.8,
+        "allowed_hardcoded_colors": ["#000", "#fff", "#000000", "#ffffff", "transparent", "inherit", "currentColor"],
+        "checks": {
+            "hardcoded_colors": true,
+            "theme_provider": true,
+            "design_token_completeness": true,
+            "css_variable_ratio": true,
+            "responsive_design": true,
+            "dark_mode": true
+        }
     },
 
     "compliance_engine": {

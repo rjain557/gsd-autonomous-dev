@@ -44,6 +44,16 @@ Add decomposed items to the `decomposed` array in the output. The orchestrator w
 6. Shared code (types, hooks, utils) goes in src/shared/ — no platform imports allowed there.
 7. Backend code (controllers, services) goes in backend/ — shared across all interfaces.
 
+### Frontend Design System Rules
+
+When planning ANY frontend requirement (web, mcp-admin, browser, mobile):
+
+1. **Design tokens first**: If the project does not yet have a `tokens.css` / `theme.css`, the FIRST frontend plan must include creating it with all CSS custom properties from `_analysis/03-design-system.md`.
+2. **ThemeProvider**: If the app entry point does not already wrap with `ThemeProvider`/`FluentProvider`, include a step to add it.
+3. **Color references**: Every plan step that involves visual styling must note: "Use CSS variables from tokens.css — no hardcoded colors."
+4. **Responsive**: Include responsive breakpoint considerations (`sm:`, `md:`, `lg:`) in the description of any page or layout component.
+5. **Dark mode**: If the project supports dark mode, include `.dark` class overrides in the tokens file and `dark:` variants in Tailwind classes.
+
 ## Confidence Scoring
 
 - Complexity small: +0.3 | medium: +0.1 | large: -0.1

@@ -34,6 +34,70 @@ When deriving requirements, you MUST create requirements for EVERY layer of the 
 
 Do NOT only generate backend requirements. Every feature should have requirements for EACH layer it touches (database + backend + frontend + tests at minimum).
 
+## Figma Design Analysis Verification
+
+If the project has a frontend (web, mcp-admin, browser, mobile), you MUST check for Figma analysis files and ensure complete coverage.
+
+### Step 1: Locate Figma Analysis Files
+
+Look for `_analysis/` directories under `design/` or interface folders. Key files:
+- `01-screen-inventory.md` — every screen the user will see
+- `02-component-inventory.md` — reusable UI components
+- `03-design-system.md` — colors, typography, spacing, shadows
+- `04-navigation-routing.md` — all routes and navigation flows
+- `06-api-contracts.md` — API endpoints the frontend must call
+
+### Step 2: Screen & Route Coverage
+
+For each screen in `01-screen-inventory.md`:
+- DERIVE a requirement: "Screen [Name] must be implemented as a React component at [route]"
+- Every screen MUST map to at least one requirement
+- Flag any screen that has no corresponding requirement as a CONFLICT
+
+For each route in `04-navigation-routing.md`:
+- DERIVE a requirement: "Route [path] must be implemented in App.tsx routing"
+- Flag routes with no page component as gaps
+
+### Step 3: API Wiring Completeness
+
+For each endpoint in `06-api-contracts.md`:
+- DERIVE a requirement: "API endpoint [METHOD] [path] must be called from the frontend"
+- Set priority to "critical" — mock data in production pages is NEVER acceptable
+- Flag mock data patterns as "not satisfied" (const mockXxx = [...], // FILL, // TODO)
+
+### Step 4: Design System Verification
+
+1. CHECK for `03-design-system.md` in `_analysis/`.
+2. If `03-design-system.md` exists, verify it contains:
+   - Color palette with token names
+   - Typography scale (font sizes, weights, line heights)
+   - Spacing scale
+   - Elevation/shadow definitions
+   - Border radius values
+3. If `03-design-system.md` is MISSING and the project has frontend interfaces, add an ambiguity:
+   - `"id": "AMBIG-DS-001", "issue": "No design system file found at _analysis/03-design-system.md. Frontend code will lack consistent design tokens.", "impact": "Frontend components may use inconsistent colors, typography, and spacing."`
+4. If the file exists but is INCOMPLETE (missing color palette, typography, or spacing), add ambiguities for each missing section.
+5. DERIVE design-system requirements for the frontend:
+   - A `tokens.css` (or `theme.css`) file containing all CSS custom properties from the design system
+   - A `ThemeProvider` wrapper in the app entry point
+   - Dark mode CSS variable overrides
+
+### Step 5: Component Coverage
+
+For each component in `02-component-inventory.md`:
+- DERIVE a requirement for its React implementation
+- Priority: "medium" (components are building blocks, screens are more critical)
+
+### CRITICAL: Mock Data Detection
+
+When analyzing requirements, flag these patterns as BLOCKING issues:
+- `const mock` / `const fake` / `const dummy` / `const sample` — hardcoded test data in production code
+- `// FILL` / `// TODO` / `// PLACEHOLDER` / `// STUB` — unfinished code
+- Screens that render static arrays instead of API-fetched data
+- Pages with no fetch/axios/apiClient/useQuery calls (they're probably using mock data)
+
+Any interface with Figma designs that has these patterns should have its requirements marked as NOT satisfied.
+
 ## Gate Rules
 
 - Set `overall_status: "block"` if ANY critical conflicts found

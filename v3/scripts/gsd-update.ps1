@@ -122,6 +122,7 @@ $modulesDir = Join-Path $v3Dir "lib/modules"
 . (Join-Path $modulesDir "local-validator.ps1")
 . (Join-Path $modulesDir "resilience.ps1")
 . (Join-Path $modulesDir "supervisor.ps1")
+. (Join-Path $modulesDir "traceability-updater.ps1")
 . (Join-Path $modulesDir "phase-orchestrator.ps1")
 
 # Load config

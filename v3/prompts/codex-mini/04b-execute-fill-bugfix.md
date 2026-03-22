@@ -23,6 +23,14 @@ Fix the bug with MINIMAL, TARGETED changes. Generate a regression test.
 5. Handle errors explicitly. No empty catch blocks.
 6. Use the `--- FILE: path/to/file ---` marker format for each file.
 
+## SQL Server Compliance (if fix involves .sql files)
+
+- ALL SQL must be idempotent — guard CREATE/ALTER with IF NOT EXISTS / IF OBJECT_ID / COL_LENGTH.
+- Stored procedures: `SET ANSI_NULLS ON; SET QUOTED_IDENTIFIER ON;` + `CREATE OR ALTER` + `SET NOCOUNT ON;` + `BEGIN TRY...CATCH`.
+- Bracket reserved words: `[Plan]`, `[User]`, `[Key]`, `[Order]`, `[Group]`, `[Role]`, `[Type]`, `[Status]`, `[Name]`, `[Value]`.
+- No hardcoded DB names (`USE [DbName]` is banned).
+- ALTER TABLE ADD/DROP column must have COL_LENGTH guards.
+
 ## Quality Checks
 
 Before outputting each file, verify:

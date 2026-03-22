@@ -130,6 +130,7 @@ $modulesDir = Join-Path $v3Dir "lib/modules"
 . (Join-Path $modulesDir "local-validator.ps1")
 . (Join-Path $modulesDir "resilience.ps1")
 . (Join-Path $modulesDir "supervisor.ps1")
+. (Join-Path $modulesDir "traceability-updater.ps1")
 . (Join-Path $modulesDir "phase-orchestrator.ps1")
 
 # Load config
@@ -226,9 +227,10 @@ $specAlignResult = Invoke-SpecAlignmentPhase -GsdDir $GsdDir -RepoRoot $RepoRoot
     -CacheBlocks $cacheBlocks -Config $Config -Inventory $inventory
 
 if ($specAlignResult.Blocked) {
-    Write-Host "  [BLOCKED] Spec alignment drift too high. Fix alignment first." -ForegroundColor Red
-    try { Stop-Transcript -EA SilentlyContinue } catch {}
-    exit 1
+    # In existing codebase mode, drift is expected — that's what the pipeline is here to fix.
+    # Log the drift but don't block. The convergence loop will close the gaps.
+    Write-Host "  [DRIFT] Spec alignment drift detected — convergence pipeline will address gaps." -ForegroundColor Yellow
+    Write-Host "  [DRIFT] Pipeline will continue to fix drift through iterations." -ForegroundColor DarkGray
 }
 
 # ============================================================
@@ -574,9 +576,39 @@ $satisfied = ($matrix.requirements | Where-Object { $_.status -eq "satisfied" })
 $total = $matrix.requirements.Count
 $healthPct = if ($total -gt 0) { [math]::Round(($satisfied / $total) * 100, 1) } else { 0 }
 
+# ── Run Figma Requirement Derivation BEFORE convergence check ──
+# This adds FIGMA-* requirements (screens, routes, APIs, components) that may be missing from the matrix
+$figmaDeriverPath = Join-Path $v3Dir "lib/modules/figma-req-deriver.ps1"
+if (Test-Path $figmaDeriverPath) {
+    Write-Host "`n--- Figma Requirement Derivation ---" -ForegroundColor Yellow
+    try {
+        if (-not (Get-Command Invoke-FigmaRequirementDerivation -ErrorAction SilentlyContinue)) {
+            . $figmaDeriverPath
+        }
+        $figmaResult = Invoke-FigmaRequirementDerivation -RepoRoot $RepoRoot -GsdDir $GsdDir -Config $Config
+        if ($figmaResult -and $figmaResult.MergedCount -gt 0) {
+            Write-Host "  [FIGMA] Derived $($figmaResult.DerivedCount) requirements, merged $($figmaResult.MergedCount) new into matrix" -ForegroundColor Green
+            # Re-read matrix after Figma requirements were added
+            $matrix = Get-Content $matrixPath -Raw | ConvertFrom-Json
+            $satisfied = ($matrix.requirements | Where-Object { $_.status -eq "satisfied" }).Count
+            $total = $matrix.requirements.Count
+            $healthPct = if ($total -gt 0) { [math]::Round(($satisfied / $total) * 100, 1) } else { 0 }
+            Write-Host "  [FIGMA] Updated health: ${healthPct}% ($satisfied/$total)" -ForegroundColor $(if ($healthPct -ge 100) { "Green" } else { "Yellow" })
+        } elseif ($figmaResult -and -not $figmaResult.Skipped) {
+            Write-Host "  [FIGMA] All Figma requirements already in matrix (0 new)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "  [FIGMA] No Figma analysis files found — skipped" -ForegroundColor DarkGray
+        }
+    } catch {
+        Write-Host "  [WARN] Figma requirement derivation error: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+
 if ($healthPct -ge 100) {
     Write-Host "`n  [CONVERGED] All requirements satisfied! No pipeline run needed." -ForegroundColor Green
-    Write-Host "  Total cost: `$$(Get-TotalCost)" -ForegroundColor DarkGray
+    if (Get-Command Get-TotalCost -ErrorAction SilentlyContinue) {
+        Write-Host "  Total cost: `$$(Get-TotalCost)" -ForegroundColor DarkGray
+    }
     try { Stop-Transcript -EA SilentlyContinue } catch {}
     exit 0
 }
