@@ -1,0 +1,100 @@
+**********************
+PowerShell transcript start
+Start time: 20260318093500
+Username: TECHNIJIAN\rjain
+RunAs User: TECHNIJIAN\rjain
+Configuration Name: 
+Machine: TE-DC-VDITEC-03 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -File D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\scripts\gsd-existing.ps1 -RepoRoot D:\vscode\tech-web-chatai.v8\tech-web-chatai.v8 -SkipSpecGate -StartIteration 1
+Process ID: 31004
+PSVersion: 7.5.4
+PSEdition: Core
+GitCommitId: 7.5.4
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+  [LOG] Central: C:\Users\rjain\.gsd-global\logs\tech-web-chatai.v8
+  [LOG] Run: run-2026-03-18_093500 | Global iteration: 1
+
+============================================
+  GSD V3 - Existing Codebase Verification
+  Repo: D:\vscode\tech-web-chatai.v8\tech-web-chatai.v8
+  Log: D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\..\logs\v3-pipeline-2026-03-18_093500.log
+  DeepVerify: True | SkipSpecGate: True
+  Global iter: 1
+============================================
+
+--- Pre-flight ---
+    [OK] npx (npx for running local tools)
+    [OK] dotnet (.NET build/test)
+    [OK] npm (npm for package management)
+    [OK] node (Node.js for TypeScript/React projects)
+    [INFO] No requirements matrix yet — will be generated during deep extraction
+  [OK] Pre-flight passed (8 checks)
+
+--- File Inventory ---
+  [INVENTORY] Scanning repository...
+  [INVENTORY] Found 9934 files across 17 directories
+     : 1738 files
+    .bat : 6 files
+    .cs : 1029 files
+    .csproj : 10 files
+    .css : 16 files
+    .dotnetuserlevelcache : 6 files
+    .example : 9 files
+    .html : 8 files
+    .js : 19 files
+    .json : 126 files
+    .jsonl : 6 files
+    .log : 628 files
+    .md : 1867 files
+    .meta : 8 files
+    .mjs : 11 files
+    .prompt : 35 files
+    .ps1 : 135 files
+    .sh : 28 files
+    .sql : 1102 files
+    .stderr : 608 files
+    .stdout : 35 files
+    .trn : 9 files
+    .ts : 735 files
+    .tsx : 1072 files
+    .txt : 622 files
+
+--- Building Cache Prefix ---
+  Spec context: 53100 chars
+  Blueprint context: 3842 chars
+
+--- Cache Warm ---
+  [CACHE] Writing cache prefix...
+    [DEBUG] cache-warm: Starting JSON serialization...
+    [DEBUG] cache-warm: JSON done in 0.0s, body size: 60480 chars
+    [DEBUG] cache-warm: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] cache-warm: Job completed (state: Completed). Receiving output...
+    [DEBUG] cache-warm: API response received.
+  [CACHE] Warm-up complete (v1)
+
+--- Spec Gate: SKIPPED (user override) ---
+
+--- Spec Alignment ---
+
+--- Spec Alignment ---
+    [DEBUG] spec-align: Starting JSON serialization...
+    [DEBUG] spec-align: JSON done in 0.0s, body size: 96912 chars
+    [DEBUG] spec-align: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] spec-align: Job completed (state: Completed). Receiving output...
+    [DEBUG] spec-align: API response received.
+  Drift: 42% | Status: block
+  42% drift — 33 spec items lack implementation evidence and 17 significant source files have no matching spec requirement; v1.3 Phases 378-396 are entirely unimplemented and multiple compliance-critical stored procedures and API endpoints are missing.
+  Missing in code: 32 items
+  Orphaned code: 17 files
+  [BLOCKED] Drift 42% exceeds 20% threshold. Fix spec alignment first.
+  [BLOCKED] Spec alignment drift too high. Fix alignment first.
+**********************
+PowerShell transcript end
+End time: 20260318093630
+**********************
