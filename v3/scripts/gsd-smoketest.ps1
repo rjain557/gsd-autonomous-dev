@@ -51,7 +51,8 @@ param(
     [string]$TestUsers = "",
     [string]$AzureAdConfig = "",
     [switch]$SkipBuild,
-    [switch]$SkipDbValidation
+    [switch]$SkipDbValidation,
+    [bool]$CostOptimize = $true
 )
 
 $ErrorActionPreference = "Continue"
@@ -95,6 +96,7 @@ Write-Host "  Fix model: $FixModel | MaxCycles: $MaxCycles" -ForegroundColor Dar
 if ($ConnectionString) { Write-Host "  DB: Connected" -ForegroundColor DarkGray }
 if ($SkipBuild) { Write-Host "  Build: SKIPPED" -ForegroundColor DarkGray }
 if ($SkipDbValidation) { Write-Host "  DB Validation: SKIPPED" -ForegroundColor DarkGray }
+Write-Host "  Cost Optimize: $(if ($CostOptimize) { 'ON (tiered models)' } else { 'OFF (all premium)' })" -ForegroundColor DarkGray
 Write-Host "  Log: $logFile" -ForegroundColor DarkGray
 Write-Host "============================================" -ForegroundColor Cyan
 
@@ -113,6 +115,12 @@ if (Test-Path $costTrackerPath) { . $costTrackerPath }
 $traceabilityUpdaterPath = Join-Path $modulesDir "traceability-updater.ps1"
 if (Test-Path $traceabilityUpdaterPath) { . $traceabilityUpdaterPath }
 
+$mockDataDetectorPath = Join-Path $modulesDir "mock-data-detector.ps1"
+if (Test-Path $mockDataDetectorPath) { . $mockDataDetectorPath }
+
+$routeRoleMatrixPath = Join-Path $modulesDir "route-role-matrix.ps1"
+if (Test-Path $routeRoleMatrixPath) { . $routeRoleMatrixPath }
+
 # Load config
 $configPath = Join-Path $v3Dir "config/global-config.json"
 if (Test-Path $configPath) {
@@ -122,6 +130,200 @@ if (Test-Path $configPath) {
 # Initialize cost tracking
 if (Get-Command Initialize-CostTracker -ErrorAction SilentlyContinue) {
     Initialize-CostTracker -Mode "smoke_test" -BudgetCap 10.0 -GsdDir $GsdDir
+}
+
+# Load model tiers config
+$modelTiersPath = Join-Path $v3Dir "config/model-tiers.json"
+$ModelTiers = $null
+if (Test-Path $modelTiersPath) {
+    $ModelTiers = Get-Content $modelTiersPath -Raw | ConvertFrom-Json
+}
+
+# Cost tracking by tier
+$script:costByTier = @{ local = 0.0; cheap = 0.0; mid = 0.0; premium = 0.0 }
+$script:tasksByTier = @{ local = 0; cheap = 0; mid = 0; premium = 0 }
+
+# ============================================================
+# TIERED MODEL SELECTION (cost optimization)
+# ============================================================
+
+function Select-ModelForTask {
+    param(
+        [ValidateSet("local","cheap","mid","premium")]
+        [string]$Tier
+    )
+    switch ($Tier) {
+        "local"   { return $null }  # No LLM needed
+        "cheap"   {
+            # Try DeepSeek first (cheapest), fallback to Kimi, then MiniMax
+            $cheapModels = @("deepseek", "kimi", "minimax")
+            foreach ($m in $cheapModels) {
+                $keyVar = switch ($m) {
+                    "deepseek" { "DEEPSEEK_API_KEY" }
+                    "kimi"     { "KIMI_API_KEY" }
+                    "minimax"  { "MINIMAX_API_KEY" }
+                }
+                if ([Environment]::GetEnvironmentVariable($keyVar)) { return $m }
+            }
+            return "codex"  # fallback to mid-tier if no cheap keys
+        }
+        "mid"     { return "codex" }
+        "premium" { return "claude" }
+    }
+}
+
+function Invoke-CheapModel {
+    param(
+        [string]$Model,      # "deepseek", "kimi", "minimax"
+        [string]$System,
+        [string]$UserMessage,
+        [int]$MaxTokens = 4096
+    )
+
+    $endpoint = switch ($Model) {
+        "deepseek" { "https://api.deepseek.com/v1/chat/completions" }
+        "kimi"     { "https://api.moonshot.ai/v1/chat/completions" }
+        "minimax"  { "https://api.minimax.io/v1/chat/completions" }
+    }
+    $modelId = switch ($Model) {
+        "deepseek" { "deepseek-chat" }
+        "kimi"     { "moonshot-v1-8k" }
+        "minimax"  { "MiniMax-Text-01" }
+    }
+    $apiKey = switch ($Model) {
+        "deepseek" { $env:DEEPSEEK_API_KEY }
+        "kimi"     { $env:KIMI_API_KEY }
+        "minimax"  { $env:MINIMAX_API_KEY }
+    }
+
+    if (-not $apiKey) { return $null }
+
+    # Standard OpenAI-compatible format
+    $body = @{
+        model = $modelId
+        messages = @(
+            @{ role = "system"; content = $System }
+            @{ role = "user"; content = $UserMessage }
+        )
+        max_tokens = [Math]::Min($MaxTokens, 8192)  # DeepSeek cap
+    } | ConvertTo-Json -Depth 10
+
+    $headers = @{
+        "Authorization" = "Bearer $apiKey"
+        "Content-Type"  = "application/json"
+    }
+
+    try {
+        $response = Invoke-RestMethod -Uri $endpoint -Method POST -Headers $headers -Body $body -TimeoutSec 120
+        return $response.choices[0].message.content
+    } catch {
+        Write-Log "Cheap model $Model failed: $_" -Level WARN
+        return $null
+    }
+}
+
+function Estimate-TierCost {
+    param(
+        [string]$Text,
+        [string]$Tier
+    )
+    # Rough token estimate: 1 token ~ 4 chars
+    $tokens = [math]::Max(1, [math]::Ceiling($Text.Length / 4))
+    $costPer1M = switch ($Tier) {
+        "local"   { 0 }
+        "cheap"   { 0.21 }
+        "mid"     { 1.50 }
+        "premium" { 9.00 }
+        default   { 0 }
+    }
+    return [math]::Round(($tokens / 1000000) * $costPer1M, 4)
+}
+
+function Invoke-TieredSmokePhase {
+    <#
+    .SYNOPSIS
+        Routes a smoke test phase to the appropriate model tier.
+        If CostOptimize is off, always uses premium (Claude).
+    #>
+    param(
+        [string]$PhaseName,
+        [string]$Tier,       # "local", "cheap", "mid", "premium"
+        [string]$System,
+        [string]$UserMessage,
+        [int]$MaxTokens = 8192
+    )
+
+    # If cost optimization is off, force premium for all LLM tasks
+    if (-not $CostOptimize -and $Tier -ne "local") {
+        $Tier = "premium"
+    }
+
+    $model = Select-ModelForTask -Tier $Tier
+    $script:tasksByTier[$Tier]++
+
+    if ($null -eq $model) {
+        # Local processing -- caller handles directly
+        Write-Log "$PhaseName : local processing (no LLM)" "INFO"
+        return $null
+    }
+
+    Write-Log "$PhaseName : using $Tier tier ($model)" "INFO"
+
+    $result = $null
+    switch ($Tier) {
+        "cheap" {
+            $raw = Invoke-CheapModel -Model $model -System $System -UserMessage $UserMessage -MaxTokens $MaxTokens
+            if (-not $raw) {
+                # Fallback: try codex (mid-tier)
+                Write-Log "$PhaseName : cheap model failed, falling back to codex" "WARN"
+                $raw = $null
+                try {
+                    $codexResult = Invoke-CodexMiniApi -SystemPrompt $System -UserMessage $UserMessage -MaxTokens $MaxTokens -Phase "smoke-test-$PhaseName"
+                    if ($codexResult -and $codexResult.Success) { $raw = $codexResult.Text }
+                } catch { }
+                if (-not $raw) {
+                    # Final fallback: premium
+                    Write-Log "$PhaseName : codex fallback also failed, using Claude" "WARN"
+                    return Invoke-SmokePhase -PhaseName $PhaseName -UserPrompt $UserMessage -MaxTokens $MaxTokens
+                }
+                $script:costByTier["mid"] += (Estimate-TierCost -Text "$System$UserMessage$raw" -Tier "mid")
+            } else {
+                $script:costByTier["cheap"] += (Estimate-TierCost -Text "$System$UserMessage$raw" -Tier "cheap")
+            }
+            # Parse JSON from raw text
+            $raw = $raw.Trim() -replace '(?s)^```(?:json)?\s*\n', '' -replace '\n```\s*$', ''
+            try { $result = $raw | ConvertFrom-Json } catch {
+                Write-Log "$PhaseName : cheap model JSON parse failed - $($_.Exception.Message)" "WARN"
+                return $null
+            }
+        }
+        "mid" {
+            # Use Codex Mini (Responses API)
+            $phase = "smoke-test-$PhaseName"
+            try {
+                $codexResult = Invoke-CodexMiniApi -SystemPrompt $System -UserMessage $UserMessage -MaxTokens $MaxTokens -Phase $phase
+                if ($codexResult -and $codexResult.Success -and $codexResult.Text) {
+                    if ($codexResult.Usage -and (Get-Command Add-ApiCallCost -ErrorAction SilentlyContinue)) {
+                        Add-ApiCallCost -Model "gpt-5.1-codex-mini" -Usage $codexResult.Usage -Phase $phase
+                    }
+                    $raw = $codexResult.Text.Trim() -replace '(?s)^```(?:json)?\s*\n', '' -replace '\n```\s*$', ''
+                    try { $result = $raw | ConvertFrom-Json } catch {
+                        Write-Log "$PhaseName : codex JSON parse failed - $($_.Exception.Message)" "WARN"
+                    }
+                    $script:costByTier["mid"] += (Estimate-TierCost -Text "$System$UserMessage$raw" -Tier "mid")
+                }
+            } catch {
+                Write-Log "$PhaseName : codex exception - $($_.Exception.Message)" "ERROR"
+            }
+        }
+        "premium" {
+            # Use Claude Sonnet via existing Invoke-SmokePhase
+            $result = Invoke-SmokePhase -PhaseName $PhaseName -UserPrompt $UserMessage -MaxTokens $MaxTokens
+            $script:costByTier["premium"] += (Estimate-TierCost -Text "$System$UserMessage" -Tier "premium")
+        }
+    }
+
+    return $result
 }
 
 # Output directory
@@ -393,6 +595,9 @@ function Invoke-BuildValidation {
     Write-Host "`n--- Phase 1: Build Validation ---" -ForegroundColor Yellow
     Write-Log "=== Phase 1: Build Validation ===" "PHASE"
 
+    # Tier: LOCAL -- just run dotnet build / npm run build
+    $script:tasksByTier["local"]++
+
     $result = @{
         phase = "build_validation"
         status = "pass"
@@ -569,7 +774,8 @@ Return a JSON object:
 {"phase":"database_validation","status":"pass|fail|warn","issues":[{"severity":"critical|high|medium|low","category":"db_gap","file":"path","description":"description","fix_suggestion":"suggestion"}],"summary":"1-2 sentence summary"}
 "@
 
-    $parsed = Invoke-SmokePhase -PhaseName "db-validation" -UserPrompt $prompt
+    # Tier: cheap (structured schema comparison) -- falls back to mid/premium
+    $parsed = Invoke-TieredSmokePhase -PhaseName "db-validation" -Tier "cheap" -System $smokeSystemPrompt -UserMessage $prompt
 
     if ($parsed) {
         $result.status = if ($parsed.status) { $parsed.status } else { "warn" }
@@ -646,7 +852,8 @@ Return a JSON object:
 {"phase":"api_smoke_test","status":"pass|fail|warn","issues":[{"severity":"critical|high|medium|low","category":"api_gap","file":"path","description":"description","fix_suggestion":"suggestion"}],"summary":"1-2 sentence summary"}
 "@
 
-    $parsed = Invoke-SmokePhase -PhaseName "api-smoke" -UserPrompt $prompt
+    # Tier: mid (needs code understanding for API wiring)
+    $parsed = Invoke-TieredSmokePhase -PhaseName "api-smoke" -Tier "mid" -System $smokeSystemPrompt -UserMessage $prompt
 
     if ($parsed) {
         $result.status = if ($parsed.status) { $parsed.status } else { "warn" }
@@ -705,50 +912,106 @@ function Invoke-FrontendRouteValidation {
     $pageListStr = if ($pageFiles.Count -gt 0) { ($pageFiles | ForEach-Object { "- $_" }) -join "`n" } else { "(no page files found)" }
     $lazyContent = Read-ProjectFiles -Root $Root -Patterns @("index.ts", "index.tsx") -MaxFiles 10 -MaxSizePerFile 4000 -ExcludePatterns @('bin', 'obj', 'node_modules', 'dist', '.gsd', 'components')
 
-    $prompt = @"
-# Smoke Test Phase: Frontend Route Validation
+    # Tier: LOCAL — parse router file with regex using route-role-matrix module
+    $script:tasksByTier["local"]++
+    Write-Log "Frontend routes: using local tier (regex parsing)" "INFO"
 
-## Context
-Validate that all React routes have matching components that exist and are properly wired.
-
-## Router / App Files
-$routerContent
-
-## Index/Barrel Files
-$lazyContent
-
-## Existing Page Component Files
-$pageListStr
-
-## What To Check
-1. Every <Route path="..." element={...} /> has a component that is imported
-2. Every lazy(() => import(...)) points to a file that exists in the page list above
-3. No duplicate route paths
-4. Nested routes have proper <Outlet /> in parent components
-5. All imports in App.tsx/router.tsx resolve to existing files
-6. Protected routes have auth guards wrapping them
-7. 404/NotFound route exists as a catch-all
-8. No broken lazy loads (import paths that don't match actual files)
-9. Route hierarchy is logical (no orphaned child routes)
-
-## Output Format
-Return a JSON object:
-{"phase":"frontend_route_validation","status":"pass|fail|warn","issues":[{"severity":"critical|high|medium|low","category":"frontend_gap","file":"path","description":"description","fix_suggestion":"suggestion"}],"summary":"1-2 sentence summary"}
-"@
-
-    $parsed = Invoke-SmokePhase -PhaseName "frontend-routes" -UserPrompt $prompt
-
-    if ($parsed) {
-        $result.status = if ($parsed.status) { $parsed.status } else { "warn" }
-        $result.issues = if ($parsed.issues) { @($parsed.issues) } else { @() }
-        $result.summary = if ($parsed.summary) { $parsed.summary } else { "$($result.issues.Count) frontend route issue(s) found" }
-    }
-    else {
-        $result.status = "warn"
-        $result.summary = "Frontend route validation API call failed"
+    # Use the local route-role-matrix module if available
+    if (Get-Command Build-RouteRoleMatrix -ErrorAction SilentlyContinue) {
+        try {
+            $matrix = Build-RouteRoleMatrix -RepoRoot $Root
+            if ($matrix -and $matrix.Gaps) {
+                foreach ($gap in $matrix.Gaps) {
+                    $result.issues += @{
+                        severity = $gap.Severity
+                        category = "frontend_gap"
+                        file = if ($gap.Route) { $gap.Route } else { "" }
+                        description = $gap.Description
+                        fix_suggestion = switch ($gap.Type) {
+                            'unguarded_route' { 'Wrap route with ProtectedRoute/AuthGuard component' }
+                            'orphan_nav'      { 'Add a matching <Route> for this navigation item' }
+                            'hidden_route'    { 'Add navigation entry so users can reach this route' }
+                            'missing_file'    { 'Create the missing file in the expected location' }
+                            'empty_role'      { 'Assign routes to this role or remove it' }
+                            default           { 'Review and fix the route configuration' }
+                        }
+                    }
+                }
+                $result.status = if ($result.issues.Count -eq 0) { "pass" } elseif (@($result.issues | Where-Object { $_.severity -eq "critical" }).Count -gt 0) { "fail" } else { "warn" }
+                $result.summary = "Local scan: $($matrix.Summary.TotalRoutes) routes, $($matrix.Summary.GuardedRoutes) guarded, $($matrix.Summary.TotalGaps) gap(s)"
+                Write-Log "Frontend routes (local): $($result.status) - $($result.issues.Count) issue(s)" $(if ($result.status -eq "pass") { "OK" } else { "WARN" })
+                return $result
+            }
+        } catch {
+            Write-Log "Local route parsing failed, falling back to LLM: $($_.Exception.Message)" "WARN"
+        }
     }
 
-    Write-Log "Frontend routes: $($result.status) - $($result.issues.Count) issue(s)" $(if ($result.status -eq "pass") { "OK" } else { "WARN" })
+    # Fallback: also do local regex-based route/component existence check
+    $localIssues = @()
+    foreach ($srcDir in @("src", "client", "frontend", "app")) {
+        $dir = Join-Path $Root $srcDir
+        if (-not (Test-Path $dir)) { continue }
+
+        # Find router files and extract Route paths + components
+        $routerFiles = Get-ChildItem -Path $dir -Include "App.tsx", "router.tsx", "routes.tsx", "Router.tsx", "AppRoutes.tsx" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '(node_modules|dist)[/\\]' }
+
+        foreach ($rf in $routerFiles) {
+            try {
+                $content = [System.IO.File]::ReadAllText($rf.FullName)
+                # Extract Route elements
+                $routeMatches = [regex]::Matches($content, '<Route[^>]*path\s*=\s*"([^"]+)"[^>]*(element\s*=\s*\{\s*<(\w+)|component\s*=\s*\{?\s*(\w+))')
+                foreach ($m in $routeMatches) {
+                    $path = $m.Groups[1].Value
+                    $component = if ($m.Groups[3].Value) { $m.Groups[3].Value } else { $m.Groups[4].Value }
+
+                    # Check if component file exists in page list
+                    $componentExists = $pageFiles | Where-Object { $_ -match "(?i)$component" }
+                    if (-not $componentExists -and $component -notin @('Navigate', 'Outlet', 'NotFound', 'Loading')) {
+                        $localIssues += @{
+                            severity = "high"
+                            category = "frontend_gap"
+                            file = $rf.FullName.Replace($Root, '').TrimStart('\', '/')
+                            description = "Route '$path' references component '$component' but no matching page file found"
+                            fix_suggestion = "Create the $component page component"
+                        }
+                    }
+                }
+
+                # Check for duplicate paths
+                $allPaths = [regex]::Matches($content, '<Route[^>]*path\s*=\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }
+                $dupes = $allPaths | Group-Object | Where-Object { $_.Count -gt 1 }
+                foreach ($d in $dupes) {
+                    $localIssues += @{
+                        severity = "high"
+                        category = "frontend_gap"
+                        file = $rf.FullName.Replace($Root, '').TrimStart('\', '/')
+                        description = "Duplicate route path: '$($d.Name)' appears $($d.Count) times"
+                        fix_suggestion = "Remove duplicate route definition"
+                    }
+                }
+
+                # Check for 404 catch-all
+                if ($content -notmatch '<Route[^>]*path\s*=\s*"\*"') {
+                    $localIssues += @{
+                        severity = "medium"
+                        category = "frontend_gap"
+                        file = $rf.FullName.Replace($Root, '').TrimStart('\', '/')
+                        description = "No catch-all 404 route (path='*') found"
+                        fix_suggestion = "Add <Route path='*' element={<NotFound />} /> as the last route"
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    if ($localIssues.Count -gt 0) {
+        $result.issues = $localIssues
+        $result.status = if (@($localIssues | Where-Object { $_.severity -eq "critical" }).Count -gt 0) { "fail" } else { "warn" }
+    }
+    $result.summary = "Local scan: $($localIssues.Count) frontend route issue(s) found"
+    Write-Log "Frontend routes (local): $($result.status) - $($result.issues.Count) issue(s)" $(if ($result.status -eq "pass") { "OK" } else { "WARN" })
     return $result
 }
 
@@ -817,7 +1080,8 @@ Return a JSON object:
 {"phase":"auth_flow_validation","status":"pass|fail|warn","issues":[{"severity":"critical|high|medium|low","category":"auth_gap","file":"path","description":"description","fix_suggestion":"suggestion"}],"summary":"1-2 sentence summary"}
 "@
 
-    $parsed = Invoke-SmokePhase -PhaseName "auth-flow" -UserPrompt $prompt
+    # Tier: mid (needs code understanding for auth flow analysis)
+    $parsed = Invoke-TieredSmokePhase -PhaseName "auth-flow" -Tier "mid" -System $smokeSystemPrompt -UserMessage $prompt
 
     if ($parsed) {
         $result.status = if ($parsed.status) { $parsed.status } else { "warn" }
@@ -907,7 +1171,8 @@ Return a JSON object:
 {"phase":"module_completeness","status":"pass|fail|warn","issues":[{"severity":"critical|high|medium|low","category":"module_gap","file":"path","description":"description","fix_suggestion":"suggestion"}],"summary":"1-2 sentence summary"}
 "@
 
-    $parsed = Invoke-SmokePhase -PhaseName "module-completeness" -UserPrompt $prompt
+    # Tier: cheap (structured checklist verification)
+    $parsed = Invoke-TieredSmokePhase -PhaseName "module-completeness" -Tier "cheap" -System $smokeSystemPrompt -UserMessage $prompt
 
     if ($parsed) {
         $result.status = if ($parsed.status) { $parsed.status } else { "warn" }
@@ -976,65 +1241,107 @@ function Invoke-MockDataDetection {
         }
     }
 
+    # Tier: LOCAL — use mock-data-detector module (pure regex, no LLM)
+    $script:tasksByTier["local"]++
+    Write-Log "Mock data: using local tier (regex scanning)" "INFO"
+
+    # Use the local mock-data-detector module if available
+    if (Get-Command Find-MockDataPatterns -ErrorAction SilentlyContinue) {
+        try {
+            $mockPatternResults = Find-MockDataPatterns -RepoRoot $Root
+            $stubResults = Find-StubImplementations -RepoRoot $Root
+            $placeholderResults = Find-PlaceholderConfigs -RepoRoot $Root
+
+            # Convert mock patterns to smoke test issue format
+            foreach ($mp in $mockPatternResults) {
+                $sev = if (Get-Command Get-MockDataSeverity -ErrorAction SilentlyContinue) {
+                    Get-MockDataSeverity -Finding $mp
+                } else { $mp.Severity }
+                $result.issues += @{
+                    severity = $sev
+                    category = "mock_data"
+                    file = $mp.File
+                    description = "$($mp.Pattern): $($mp.Match)"
+                    fix_suggestion = $mp.Suggestion
+                }
+            }
+            # Convert stubs
+            foreach ($s in $stubResults) {
+                $sev = if (Get-Command Get-MockDataSeverity -ErrorAction SilentlyContinue) {
+                    Get-MockDataSeverity -Finding $s
+                } else { "high" }
+                $result.issues += @{
+                    severity = $sev
+                    category = "mock_data"
+                    file = $s.File
+                    description = "$($s.Type): $($s.Description)"
+                    fix_suggestion = $s.Suggestion
+                }
+            }
+            # Convert placeholder configs
+            foreach ($pc in $placeholderResults) {
+                $sev = if (Get-Command Get-MockDataSeverity -ErrorAction SilentlyContinue) {
+                    Get-MockDataSeverity -Finding $pc
+                } else { "critical" }
+                $result.issues += @{
+                    severity = $sev
+                    category = "mock_data"
+                    file = $pc.File
+                    description = "Placeholder $($pc.ConfigKey): $($pc.PlaceholderValue)"
+                    fix_suggestion = $pc.Suggestion
+                }
+            }
+
+            $critCount = @($result.issues | Where-Object { $_.severity -eq "critical" }).Count
+            $highCount = @($result.issues | Where-Object { $_.severity -eq "high" }).Count
+            $result.status = if ($result.issues.Count -eq 0) { "pass" } elseif ($critCount -gt 0) { "fail" } else { "warn" }
+            $result.summary = "Local scan: $($mockPatternResults.Count) patterns, $($stubResults.Count) stubs, $($placeholderResults.Count) placeholder configs"
+            Write-Log "Mock data (local): $($result.status) - $($result.issues.Count) issue(s)" $(if ($result.status -eq "pass") { "OK" } else { "WARN" })
+            return $result
+        } catch {
+            Write-Log "Local mock data scan failed: $($_.Exception.Message)" "WARN"
+        }
+    }
+
+    # Fallback: use the regex pre-filter results directly (still local, no LLM)
     if ($suspiciousFiles.Count -eq 0) {
         $result.summary = "No mock data or placeholder patterns detected"
         Write-Log "No mock data found" "OK"
         return $result
     }
 
-    # Read suspicious files for Claude analysis
-    $fileContent = ""
-    $filesRead = 0
-    foreach ($filePath in ($suspiciousFiles | Select-Object -Unique -First 15)) {
+    # Convert suspicious file matches to issues
+    foreach ($filePath in ($suspiciousFiles | Select-Object -Unique -First 30)) {
         try {
-            $raw = Get-Content -Path $filePath -Raw -Encoding UTF8 -ErrorAction Stop
-            if ($raw.Length -gt 8000) { $raw = $raw.Substring(0, 8000) + "`n[... truncated ...]" }
+            $content = Get-Content -Path $filePath -Raw -ErrorAction Stop
             $relPath = $filePath.Replace($Root, '').TrimStart('\', '/')
-            $fileContent += "`n### File: $relPath`n$raw`n"
-            $filesRead++
-        }
-        catch { }
+            $lines = $content -split "`n"
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                $line = $lines[$i]
+                foreach ($pattern in $mockPatterns) {
+                    if ($line -match $pattern) {
+                        $sev = if ($line -match '(?i)(password|secret|apikey|credential)') { "critical" }
+                               elseif ($line -match '(?i)(mock|fake|dummy|stub)') { "high" }
+                               elseif ($line -match '(?i)(TODO|FIXME|HACK|console\.)') { "medium" }
+                               else { "low" }
+                        $result.issues += @{
+                            severity = $sev
+                            category = "mock_data"
+                            file = $relPath
+                            description = "Line $($i+1): Pattern match '$pattern'"
+                            fix_suggestion = "Replace with real implementation"
+                        }
+                        break  # One issue per line
+                    }
+                }
+            }
+        } catch { }
     }
 
-    $prompt = @"
-# Smoke Test Phase: Mock Data Detection
-
-## Context
-Scan production code for hardcoded mock data, TODO markers, console.log statements, and placeholder implementations that should be replaced with real implementations.
-
-## Suspicious Files (pre-filtered by pattern match)
-$fileContent
-
-## What To Check
-1. const mockXxx = [...] or const fakeXxx = [...] in non-test files
-2. // TODO, // FIXME, // HACK, // PLACEHOLDER, // FILL comments
-3. console.log/warn/error statements (should use structured logging)
-4. Empty function bodies: () => {}
-5. throw new Error("Not implemented")
-6. Hardcoded data arrays that should come from API
-7. Static return values in service functions that should call APIs
-8. Commented-out code blocks (dead code)
-
-Only flag items in PRODUCTION code (not test files, not __mocks__, not *.test.*, not *.spec.*).
-
-## Output Format
-Return a JSON object:
-{"phase":"mock_data_detection","status":"pass|fail|warn","issues":[{"severity":"critical|high|medium|low","category":"mock_data","file":"path","description":"description","fix_suggestion":"suggestion"}],"summary":"1-2 sentence summary"}
-"@
-
-    $parsed = Invoke-SmokePhase -PhaseName "mock-data" -UserPrompt $prompt
-
-    if ($parsed) {
-        $result.status = if ($parsed.status) { $parsed.status } else { "warn" }
-        $result.issues = if ($parsed.issues) { @($parsed.issues) } else { @() }
-        $result.summary = if ($parsed.summary) { $parsed.summary } else { "$($result.issues.Count) mock data issue(s) found" }
-    }
-    else {
-        $result.status = "warn"
-        $result.summary = "Mock data detection API call failed"
-    }
-
-    Write-Log "Mock data: $($result.status) - $($result.issues.Count) issue(s)" $(if ($result.status -eq "pass") { "OK" } else { "WARN" })
+    $critCount = @($result.issues | Where-Object { $_.severity -eq "critical" }).Count
+    $result.status = if ($result.issues.Count -eq 0) { "pass" } elseif ($critCount -gt 0) { "fail" } else { "warn" }
+    $result.summary = "Local regex scan: $($result.issues.Count) mock data issue(s) in $($suspiciousFiles.Count) file(s)"
+    Write-Log "Mock data (local fallback): $($result.status) - $($result.issues.Count) issue(s)" $(if ($result.status -eq "pass") { "OK" } else { "WARN" })
     return $result
 }
 
@@ -1055,6 +1362,84 @@ function Invoke-RbacMatrixValidation {
         summary = ""
     }
 
+    # Tier: LOCAL — use route-role-matrix module (regex parsing + set operations)
+    $script:tasksByTier["local"]++
+    Write-Log "RBAC matrix: using local tier (regex parsing)" "INFO"
+
+    # Use the local route-role-matrix module if available
+    if (Get-Command Build-RouteRoleMatrix -ErrorAction SilentlyContinue) {
+        try {
+            $matrix = Build-RouteRoleMatrix -RepoRoot $Root
+            if ($matrix) {
+                # Convert matrix gaps to smoke test issue format
+                foreach ($gap in $matrix.Gaps) {
+                    $result.issues += @{
+                        severity = $gap.Severity
+                        category = "rbac_gap"
+                        file = if ($gap.Route) { $gap.Route } else { "" }
+                        description = $gap.Description
+                        fix_suggestion = switch ($gap.Type) {
+                            'unguarded_route' { 'Add [Authorize] attribute or wrap with auth guard' }
+                            'orphan_nav'      { 'Add a matching route or remove the navigation entry' }
+                            'hidden_route'    { 'Add navigation entry with proper role visibility' }
+                            'empty_role'      { 'Assign accessible routes to this role or remove it' }
+                            'missing_file'    { 'Create the missing router/RBAC config file' }
+                            default           { 'Review RBAC configuration' }
+                        }
+                    }
+                }
+
+                # Also do local C# [Authorize] analysis
+                $csControllers = Get-ChildItem -Path $Root -Filter "*Controller.cs" -Recurse -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -notmatch '(bin|obj|node_modules)[/\\]' }
+
+                foreach ($ctrl in $csControllers) {
+                    try {
+                        $content = [System.IO.File]::ReadAllText($ctrl.FullName)
+                        $relPath = $ctrl.FullName.Replace($Root, '').TrimStart('\', '/')
+
+                        # Check if controller has [Authorize] at class level
+                        $hasClassAuthorize = $content -match '(?m)^\s*\[Authorize'
+                        # Check for action methods
+                        $actionMatches = [regex]::Matches($content, '\[(Http(Get|Post|Put|Delete|Patch))\]')
+
+                        if ($actionMatches.Count -gt 0 -and -not $hasClassAuthorize) {
+                            # Check if individual actions have [Authorize]
+                            $lines = $content -split "`n"
+                            for ($i = 0; $i -lt $lines.Count; $i++) {
+                                if ($lines[$i] -match '\[(Http(Get|Post|Put|Delete|Patch))') {
+                                    # Look up to 3 lines before for [Authorize]
+                                    $hasActionAuth = $false
+                                    for ($j = [Math]::Max(0, $i - 3); $j -lt $i; $j++) {
+                                        if ($lines[$j] -match '\[Authorize') { $hasActionAuth = $true; break }
+                                    }
+                                    if (-not $hasActionAuth -and $relPath -notmatch '(?i)(health|status|ping|auth|login|register)') {
+                                        $result.issues += @{
+                                            severity = "high"
+                                            category = "rbac_gap"
+                                            file = $relPath
+                                            description = "Line $($i+1): Action has no [Authorize] attribute"
+                                            fix_suggestion = "Add [Authorize] to this action or the controller class"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch { }
+                }
+
+                $critCount = @($result.issues | Where-Object { $_.severity -eq "critical" }).Count
+                $result.status = if ($result.issues.Count -eq 0) { "pass" } elseif ($critCount -gt 0) { "fail" } else { "warn" }
+                $result.summary = "Local scan: $($matrix.Summary.TotalRoutes) routes, $($matrix.Summary.TotalRoles) roles, $($result.issues.Count) gap(s)"
+                Write-Log "RBAC matrix (local): $($result.status) - $($result.issues.Count) issue(s)" $(if ($result.status -eq "pass") { "OK" } else { "WARN" })
+                return $result
+            }
+        } catch {
+            Write-Log "Local RBAC parsing failed: $($_.Exception.Message)" "WARN"
+        }
+    }
+
+    # Fallback: use LLM (mid tier) if local parsing fails
     $controllerContent = Read-ProjectFiles -Root $Root -Patterns @("*Controller.cs") -MaxFiles 15 -MaxSizePerFile 6000
     $routerContent = Read-ProjectFiles -Root $Root -Patterns @("App.tsx", "router.tsx", "routes.tsx", "ProtectedRoute.tsx", "AuthGuard.tsx", "RequireAuth.tsx") -MaxFiles 5 -MaxSizePerFile 8000
     $roleContent = Read-ProjectFiles -Root $Root -Patterns @("*Role*.cs", "*Role*.ts", "*Permission*.cs", "*Permission*.ts", "*policy*.cs") -MaxFiles 5 -MaxSizePerFile 4000
@@ -1096,7 +1481,8 @@ Return a JSON object:
 {"phase":"rbac_matrix","status":"pass|fail|warn","issues":[{"severity":"critical|high|medium|low","category":"rbac_gap","file":"path","description":"description","fix_suggestion":"suggestion"}],"summary":"1-2 sentence summary"}
 "@
 
-    $parsed = Invoke-SmokePhase -PhaseName "rbac-matrix" -UserPrompt $prompt
+    # Fallback to mid-tier LLM
+    $parsed = Invoke-TieredSmokePhase -PhaseName "rbac-matrix" -Tier "mid" -System $smokeSystemPrompt -UserMessage $prompt
 
     if ($parsed) {
         $result.status = if ($parsed.status) { $parsed.status } else { "warn" }
@@ -1121,6 +1507,9 @@ function Invoke-IntegrationGapReport {
 
     Write-Host "`n--- Phase 9: Integration Gap Report ---" -ForegroundColor Yellow
     Write-Log "=== Phase 9: Integration Gap Report ===" "PHASE"
+
+    # Tier: LOCAL -- pure aggregation, no LLM
+    $script:tasksByTier["local"]++
 
     # Aggregate all issues
     $allIssues = @()
@@ -1351,6 +1740,7 @@ $report = @{
     cycles_completed = $cycle
     max_cycles       = $MaxCycles
     fix_model        = $FixModel
+    cost_optimize    = $CostOptimize
     total_issues     = $allIssues.Count
     by_severity      = $bySeverity
     cycle_history    = $cycleHistory
@@ -1512,6 +1902,45 @@ Write-Host "  Gap Report: $gapPath" -ForegroundColor DarkGray
 
 if (Get-Command Get-TotalCost -ErrorAction SilentlyContinue) {
     Write-Host "  Cost:       `$$(Get-TotalCost)" -ForegroundColor DarkGray
+}
+
+# Cost optimization summary
+if ($CostOptimize) {
+    Write-Host "" -NoNewline
+    Write-Host "  === Cost Optimization Summary ===" -ForegroundColor Cyan
+    $localTasks  = $script:tasksByTier["local"]
+    $cheapTasks  = $script:tasksByTier["cheap"]
+    $midTasks    = $script:tasksByTier["mid"]
+    $premiumTasks = $script:tasksByTier["premium"]
+    $cheapCost   = [math]::Round($script:costByTier["cheap"], 4)
+    $midCost     = [math]::Round($script:costByTier["mid"], 4)
+    $premiumCost = [math]::Round($script:costByTier["premium"], 4)
+    $totalTieredCost = [math]::Round($cheapCost + $midCost + $premiumCost, 4)
+    # Estimate what it would cost if everything used premium
+    $allPremiumEstimate = [math]::Round(($script:costByTier["cheap"] / [math]::Max(0.01, 0.21) * 9.0) + ($script:costByTier["mid"] / [math]::Max(0.01, 1.50) * 9.0) + $premiumCost, 4)
+    $saved = [math]::Round([math]::Max(0, $allPremiumEstimate - $totalTieredCost), 4)
+
+    Write-Host "  Local (free):     $localTasks task(s), `$0.00" -ForegroundColor Green
+    Write-Host "  Cheap (DeepSeek): $cheapTasks task(s), `$$cheapCost" -ForegroundColor Green
+    Write-Host "  Mid (Codex):      $midTasks task(s), `$$midCost" -ForegroundColor Yellow
+    Write-Host "  Premium (Claude): $premiumTasks task(s), `$$premiumCost" -ForegroundColor Red
+    Write-Host "  Total:            `$$totalTieredCost (saved ~`$$saved vs all-premium)" -ForegroundColor Cyan
+
+    Write-Log "Cost summary: Local=$localTasks Cheap=$cheapTasks/$cheapCost Mid=$midTasks/$midCost Premium=$premiumTasks/$premiumCost Total=$totalTieredCost Saved=$saved" "OK"
+
+    # Also save to report
+    $costSummary = @{
+        tiers = @{
+            local   = @{ tasks = $localTasks; cost = 0 }
+            cheap   = @{ tasks = $cheapTasks; cost = $cheapCost }
+            mid     = @{ tasks = $midTasks; cost = $midCost }
+            premium = @{ tasks = $premiumTasks; cost = $premiumCost }
+        }
+        total_cost = $totalTieredCost
+        estimated_savings = $saved
+    }
+    $costSummaryPath = Join-Path $smokeDir "cost-summary.json"
+    $costSummary | ConvertTo-Json -Depth 5 | Set-Content $costSummaryPath -Encoding UTF8
 }
 
 Write-Host "============================================`n" -ForegroundColor Cyan

@@ -401,6 +401,64 @@ function Find-PlaceholderConfigs {
 }
 
 
+function Get-MockDataSeverity {
+    <#
+    .SYNOPSIS
+        Assigns severity to mock data findings locally based on pattern type.
+        No LLM needed — pure algorithmic classification.
+    .PARAMETER Finding
+        A PSCustomObject from Find-MockDataPatterns, Find-StubImplementations, or Find-PlaceholderConfigs.
+    .OUTPUTS
+        String: "critical", "high", "medium", or "low"
+    #>
+    param(
+        [Parameter(Mandatory)]$Finding
+    )
+
+    # If the finding already has a severity from the pattern definition, use it
+    if ($Finding.Severity) {
+        return $Finding.Severity
+    }
+
+    $desc = ""
+    if ($Finding.Description) { $desc = $Finding.Description }
+    if ($Finding.Pattern) { $desc = $Finding.Pattern }
+    if ($Finding.Type) { $desc += " $($Finding.Type)" }
+
+    # CRITICAL: hardcoded credentials, secrets in code, placeholder connection strings
+    if ($desc -match '(?i)(credential|password|secret|apikey|connection.?string|placeholder.*(url|uri|connection))') {
+        return 'critical'
+    }
+    if ($Finding.ConfigKey -and $Finding.ConfigKey -match '(?i)(secret|password|key|connection)') {
+        return 'critical'
+    }
+
+    # HIGH: mock/static data in production pages, fake services, stub hooks
+    if ($desc -match '(?i)(mock.?data|fake.?service|static.?hook|hardcoded.?(return|list|array)|no.?http|import.*mock|promise\.resolve)') {
+        return 'high'
+    }
+    if ($Finding.Type -and $Finding.Type -in @('fake_service', 'static_hook', 'hardcoded_return', 'not_implemented', 'no_di')) {
+        return 'high'
+    }
+
+    # MEDIUM: TODO/FIXME markers, console.log statements, empty functions
+    if ($desc -match '(?i)(TODO|FIXME|HACK|PLACEHOLDER|console\.|empty.?function|empty.?arrow)') {
+        return 'medium'
+    }
+    if ($Finding.Type -and $Finding.Type -eq 'empty_function') {
+        return 'medium'
+    }
+
+    # LOW: unused imports, commented-out code, hardcoded role assignments
+    if ($desc -match '(?i)(unused|commented|dead.?code|role.?assignment|low)') {
+        return 'low'
+    }
+
+    # Default to medium if unknown
+    return 'medium'
+}
+
+
 function Invoke-MockDataScan {
     <#
     .SYNOPSIS

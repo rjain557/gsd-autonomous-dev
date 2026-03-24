@@ -1,0 +1,41 @@
+{
+  "description": "Model tier assignments per pipeline task. Override to use different cost profiles.",
+  "tiers": {
+    "local": {
+      "cost_per_1m_tokens": 0,
+      "description": "No LLM — local regex/file processing only",
+      "tasks": ["build_validation", "mock_data_scan", "route_parsing", "rbac_matrix", "placeholder_detection"]
+    },
+    "cheap": {
+      "cost_per_1m_tokens": 0.21,
+      "models": ["deepseek", "kimi", "minimax"],
+      "fallback": "codex",
+      "description": "Structured analysis — schema comparison, config validation",
+      "tasks": ["db_schema_check", "module_completeness", "config_validation"]
+    },
+    "mid": {
+      "cost_per_1m_tokens": 1.50,
+      "models": ["codex"],
+      "description": "Code understanding — API wiring, auth flow, DI checks",
+      "tasks": ["api_wiring_check", "auth_flow_check", "di_registration_check"]
+    },
+    "premium": {
+      "cost_per_1m_tokens": 9.00,
+      "models": ["claude"],
+      "description": "Judgment calls — security, architecture, fix generation",
+      "tasks": ["security_review", "gap_report", "fix_generation", "architecture_analysis"]
+    }
+  },
+  "code_review": {
+    "review_models": ["claude", "codex", "gemini"],
+    "fix_model": "claude",
+    "note": "Code review uses 3 models for consensus. Fix generation requires premium quality."
+  },
+  "cost_optimization_notes": [
+    "Local processing handles ~60% of smoke test work at zero cost",
+    "Cheap models handle ~20% (structured analysis) at $0.14-0.28/M",
+    "Mid-tier handles ~15% (code understanding) at ~$1.50/M",
+    "Premium handles ~5% (security + fixes) at ~$9/M",
+    "Estimated smoke test cost: ~$0.50-1.00 per run (vs ~$5-8 without optimization)"
+  ]
+}
