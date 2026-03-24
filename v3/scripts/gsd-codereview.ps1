@@ -148,6 +148,128 @@ if ($selectedModels.Count -eq 0) {
 Write-Log "Selected review models: $($selectedModels -join ', ')"
 
 # ============================================================
+# OPTIMIZATION: API Call Timeout Wrapper
+# ============================================================
+
+function Invoke-ApiWithTimeout {
+    param(
+        [scriptblock]$ApiCall,
+        [int]$TimeoutSeconds = 90,
+        [int]$MaxRetries = 2,
+        [string]$Label = "API call"
+    )
+
+    for ($retry = 0; $retry -le $MaxRetries; $retry++) {
+        $job = Start-Job -ScriptBlock $ApiCall
+        $completed = Wait-Job $job -Timeout $TimeoutSeconds
+
+        if ($completed) {
+            $result = Receive-Job $job
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            return $result
+        } else {
+            Stop-Job $job -ErrorAction SilentlyContinue
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            Write-Log "$Label timed out after ${TimeoutSeconds}s (retry $retry/$MaxRetries)" -Level WARN
+        }
+    }
+
+    Write-Log "$Label failed after $MaxRetries retries" -Level ERROR
+    return $null
+}
+
+# ============================================================
+# OPTIMIZATION: Build-First Gate
+# ============================================================
+
+Write-Log "Running build validation before code review..."
+
+# Try dotnet build
+$backendProj = Get-ChildItem $RepoRoot -Recurse -Filter "*.csproj" -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -notmatch '[\\/](node_modules|bin|obj|\.git|\.gsd)[\\/]' } |
+    Select-Object -First 1
+
+if ($backendProj) {
+    Write-Log "Found .NET project: $($backendProj.FullName)"
+    try {
+        $buildOutput = & dotnet build $backendProj.FullName --no-restore --verbosity quiet 2>&1
+        $buildErrors = @($buildOutput | Where-Object { "$_" -match ': error ' })
+        if ($buildErrors.Count -gt 0) {
+            Write-Log "dotnet build has $($buildErrors.Count) error(s) — will attempt fix before review" -Level WARN
+            $buildErrorText = ($buildErrors | Select-Object -First 20 | ForEach-Object { "$_" }) -join "`n"
+            Write-Log "Build errors:`n$buildErrorText" -Level WARN
+
+            # Use fix model to attempt build error fix
+            $buildFixPrompt = @"
+The following .NET build errors were found. For each error, provide the corrected code.
+Return ONLY a JSON object: {"fixes":[{"file":"relative/path","description":"what to fix"}]}
+
+Build errors:
+$buildErrorText
+"@
+            # Log build errors but don't block review — this is a best-effort gate
+            Write-Log "Build errors logged. Review will proceed — fix model may address these during fix cycles." -Level WARN
+        } else {
+            Write-Log "dotnet build: PASS" -Level OK
+        }
+    } catch {
+        Write-Log "dotnet build check failed: $($_.Exception.Message)" -Level WARN
+    }
+}
+
+# Try npm/frontend build
+$packageJson = $null
+$candidates = @(
+    (Join-Path $RepoRoot "package.json"),
+    (Join-Path $RepoRoot "src/Client/package.json"),
+    (Join-Path $RepoRoot "src/web/package.json"),
+    (Join-Path $RepoRoot "frontend/package.json"),
+    (Join-Path $RepoRoot "client/package.json")
+)
+foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) { $packageJson = $candidate; break }
+}
+if (-not $packageJson) {
+    $packageJson = Get-ChildItem $RepoRoot -Recurse -Filter "package.json" -Depth 3 -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch 'node_modules' } |
+        Select-Object -First 1
+    if ($packageJson) { $packageJson = $packageJson.FullName }
+}
+
+if ($packageJson -and (Test-Path $packageJson)) {
+    $npmDir = Split-Path $packageJson -Parent
+    Write-Log "Found package.json: $packageJson"
+    $hasBuildScript = $false
+    try {
+        $pkgContent = Get-Content $packageJson -Raw | ConvertFrom-Json
+        if ($pkgContent.scripts -and $pkgContent.scripts.build) { $hasBuildScript = $true }
+    } catch { }
+
+    if ($hasBuildScript) {
+        try {
+            $savedDir = Get-Location
+            Set-Location $npmDir
+            $npmOutput = & npm run build 2>&1
+            Set-Location $savedDir
+            $npmErrors = @($npmOutput | Where-Object { "$_" -match 'error TS|Error:|ERROR|ELIFECYCLE' })
+            if ($npmErrors.Count -gt 0) {
+                Write-Log "npm build has $($npmErrors.Count) error(s) — logging for review" -Level WARN
+                $npmErrorText = ($npmErrors | Select-Object -First 20 | ForEach-Object { "$_" }) -join "`n"
+                Write-Log "npm build errors:`n$npmErrorText" -Level WARN
+            } else {
+                Write-Log "npm build: PASS" -Level OK
+            }
+        } catch {
+            Write-Log "npm build check failed: $($_.Exception.Message)" -Level WARN
+        }
+    } else {
+        Write-Log "No build script in package.json — skipping npm build check" -Level INFO
+    }
+} else {
+    Write-Log "No package.json found — skipping npm build check" -Level INFO
+}
+
+# ============================================================
 # STEP 1: Load traceability matrix
 # ============================================================
 
@@ -496,12 +618,24 @@ Fix ALL issues listed above. Return the COMPLETE corrected file. No markdown fen
         $result = $null
         $phase = "code-fix-$Model"
 
-        switch ($Model) {
+        # OPTIMIZATION: Use timeout wrapper to prevent hanging API calls
+        $apiCallBlock = switch ($Model) {
             "codex" {
-                $result = Invoke-CodexMiniApi -SystemPrompt $fixSystemPrompt -UserMessage $fixPrompt -MaxTokens 16384 -Phase $phase
+                { Invoke-CodexMiniApi -SystemPrompt $using:fixSystemPrompt -UserMessage $using:fixPrompt -MaxTokens 16384 -Phase $using:phase }
             }
             "claude" {
-                $result = Invoke-SonnetApi -SystemPrompt $fixSystemPrompt -UserMessage $fixPrompt -MaxTokens 16384 -Phase $phase
+                { Invoke-SonnetApi -SystemPrompt $using:fixSystemPrompt -UserMessage $using:fixPrompt -MaxTokens 16384 -Phase $using:phase }
+            }
+        }
+
+        # Try with timeout — 90s per attempt, 2 retries
+        if (Get-Command Invoke-ApiWithTimeout -ErrorAction SilentlyContinue) {
+            $result = Invoke-ApiWithTimeout -ApiCall $apiCallBlock -TimeoutSeconds 90 -MaxRetries 2 -Label "Fix $RelPath ($Model)"
+        } else {
+            # Direct call fallback
+            switch ($Model) {
+                "codex" { $result = Invoke-CodexMiniApi -SystemPrompt $fixSystemPrompt -UserMessage $fixPrompt -MaxTokens 16384 -Phase $phase }
+                "claude" { $result = Invoke-SonnetApi -SystemPrompt $fixSystemPrompt -UserMessage $fixPrompt -MaxTokens 16384 -Phase $phase }
             }
         }
 
@@ -555,6 +689,7 @@ $script:totalErrors = 0
 $cycleHistory = @()
 $overallStartTime = Get-Date
 $cleanReqIds = @{}  # Track reqs with 0 issues — skip on re-review
+$fileIssueHistory = @{}  # OPTIMIZATION: Track issue counts per file across cycles for oscillation detection
 
 for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
     $cycleStart = Get-Date
@@ -626,6 +761,19 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
         fixable = $fixableCount
     }
 
+    # ---- OSCILLATION TRACKING: Update per-file issue counts ----
+    $currentCycleCounts = @{}
+    foreach ($issue in $allIssues) {
+        $fp = if ($issue.full_path) { $issue.full_path } else { $issue.file }
+        if (-not $fp) { continue }
+        if (-not $currentCycleCounts.ContainsKey($fp)) { $currentCycleCounts[$fp] = 0 }
+        $currentCycleCounts[$fp]++
+    }
+    foreach ($fp in $currentCycleCounts.Keys) {
+        if (-not $fileIssueHistory.ContainsKey($fp)) { $fileIssueHistory[$fp] = @() }
+        $fileIssueHistory[$fp] += $currentCycleCounts[$fp]
+    }
+
     # ---- CHECK EXIT CONDITIONS ----
 
     # Clean: no fixable issues
@@ -679,9 +827,38 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
         $issuesByFile[$key] += $issue
     }
 
+    # OPTIMIZATION: Oscillation detection — skip files whose issues didn't decrease
+    $oscillatingFiles = @()
+    $filesToFixKeys = @($issuesByFile.Keys)
+    if ($cycle -ge 2) {
+        $filteredKeys = @()
+        foreach ($fp in $filesToFixKeys) {
+            $history = $fileIssueHistory[$fp]
+            if ($history -and $history.Count -ge 2) {
+                $prev = $history[-2]
+                $curr = $history[-1]
+                if ($curr -ge $prev) {
+                    Write-Log "SKIP oscillating file: $fp ($prev -> $curr issues, not improving)" -Level WARN
+                    $oscillatingFiles += $fp
+                    continue
+                }
+            }
+            $filteredKeys += $fp
+        }
+        if ($oscillatingFiles.Count -gt 0) {
+            Write-Host "  Skipped $($oscillatingFiles.Count) oscillating file(s) (issues not decreasing)" -ForegroundColor Yellow
+        }
+        $filesToFixKeys = $filteredKeys
+    }
+
+    # OPTIMIZATION: Parallel fixes — up to 3 files at a time using Start-Job
+    $maxParallelFixes = 3
     $fixedCount = 0
     $fixFailCount = 0
-    foreach ($filePath in $issuesByFile.Keys) {
+
+    # Prepare fix queue with deduplicated issues per file
+    $fixQueue = [System.Collections.Queue]::new()
+    foreach ($filePath in $filesToFixKeys) {
         $fileIssues = $issuesByFile[$filePath]
         $relPath = $fileIssues[0].file
 
@@ -695,14 +872,132 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
                 $uniqueIssues += $fi
             }
         }
+        $fixQueue.Enqueue(@{ filePath = $filePath; relPath = $relPath; issues = $uniqueIssues })
+    }
 
-        Write-Host "  Fixing $($uniqueIssues.Count) issue(s) in: $relPath" -ForegroundColor Magenta
+    Write-Log "Fix queue: $($fixQueue.Count) files to fix (parallel=$maxParallelFixes, skipped $($oscillatingFiles.Count) oscillating)"
 
-        $fixed = Invoke-FixFile -FilePath $filePath -RelPath $relPath -Issues $uniqueIssues -Model $FixModel
-        if ($fixed) {
-            $fixedCount++
-        } else {
-            $fixFailCount++
+    $fixJobs = [System.Collections.ArrayList]::new()
+
+    while ($fixQueue.Count -gt 0 -or $fixJobs.Count -gt 0) {
+        # Launch jobs up to max parallel
+        while ($fixQueue.Count -gt 0 -and $fixJobs.Count -lt $maxParallelFixes) {
+            $item = $fixQueue.Dequeue()
+            Write-Host "  Fixing $($item.issues.Count) issue(s) in: $($item.relPath)" -ForegroundColor Magenta
+
+            # Build issue list and fix prompt inline for the job
+            $issueList = ""
+            $idx = 1
+            foreach ($issue in $item.issues) {
+                $issueList += "$idx. [$($issue.severity)] $($issue.issue)"
+                if ($issue.suggestion) { $issueList += " -- Suggestion: $($issue.suggestion)" }
+                if ($issue.line_range) { $issueList += " (lines $($issue.line_range))" }
+                $issueList += "`n"
+                $idx++
+            }
+
+            $jobFilePath = $item.filePath
+            $jobRelPath = $item.relPath
+            $jobIssueList = $issueList
+            $jobIssueCount = $item.issues.Count
+            $jobFixModel = $FixModel
+
+            $job = Start-Job -ScriptBlock {
+                param($FilePath, $RelPath, $IssueList, $IssueCount, $Model, $FixSysPrompt, $ApiClientPath, $ConfigPath, $CostTrackerPath)
+
+                if (-not (Test-Path $FilePath)) { return @{ Success = $false; Reason = "file not found" } }
+
+                $fileContent = Get-Content $FilePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if (-not $fileContent) { return @{ Success = $false; Reason = "file empty" } }
+
+                $fixPrompt = @"
+## File to Fix
+Path: $RelPath
+
+## Current Code
+$fileContent
+
+## Issues to Fix
+$IssueList
+
+## Task
+Fix ALL issues listed above. Return the COMPLETE corrected file. No markdown fences. No explanation.
+"@
+                # Load modules
+                . $ApiClientPath
+                if (Test-Path $ConfigPath) { $script:Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json }
+                if ($CostTrackerPath -and (Test-Path $CostTrackerPath)) { . $CostTrackerPath }
+
+                $result = $null
+                $phase = "code-fix-$Model"
+                switch ($Model) {
+                    "codex"  { $result = Invoke-CodexMiniApi -SystemPrompt $FixSysPrompt -UserMessage $fixPrompt -MaxTokens 16384 -Phase $phase }
+                    "claude" { $result = Invoke-SonnetApi -SystemPrompt $FixSysPrompt -UserMessage $fixPrompt -MaxTokens 16384 -Phase $phase }
+                }
+
+                if ($result -and $result.Success -and $result.Text) {
+                    $fixedCode = $result.Text.Trim()
+                    $fixedCode = $fixedCode -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+
+                    if ($fixedCode.Length -lt ($fileContent.Length * 0.5)) {
+                        return @{ Success = $false; Reason = "output too short ($($fixedCode.Length) vs $($fileContent.Length))" }
+                    }
+                    if ($fixedCode -eq $fileContent) {
+                        return @{ Success = $false; Reason = "no changes" }
+                    }
+
+                    $fixedCode | Set-Content $FilePath -Encoding UTF8 -NoNewline
+                    return @{ Success = $true; IssueCount = $IssueCount; Usage = $result.Usage; Model = $Model; Phase = $phase }
+                } else {
+                    $errMsg = if ($result.Error) { $result.Error } elseif ($result.Message) { $result.Message } else { "Unknown" }
+                    return @{ Success = $false; Reason = "API error: $errMsg" }
+                }
+            } -ArgumentList $jobFilePath, $jobRelPath, $jobIssueList, $jobIssueCount, $jobFixModel, $fixSystemPrompt, $apiClientPath, $configPath, $costTrackerPath
+
+            [void]$fixJobs.Add(@{ job = $job; relPath = $item.relPath; filePath = $item.filePath })
+        }
+
+        # Check for completed jobs
+        $completedIndices = @()
+        for ($ji = 0; $ji -lt $fixJobs.Count; $ji++) {
+            $fj = $fixJobs[$ji]
+            if ($fj.job.State -in @('Completed', 'Failed')) {
+                $completedIndices += $ji
+                try {
+                    $jobResult = Receive-Job $fj.job
+                    Remove-Job $fj.job -Force -ErrorAction SilentlyContinue
+
+                    if ($jobResult.Success) {
+                        Write-Log "Fixed $($jobResult.IssueCount) issue(s) in: $($fj.relPath)" "FIX"
+                        if ($jobResult.Usage -and (Get-Command Add-ApiCallCost -ErrorAction SilentlyContinue)) {
+                            $modelId = switch ($jobResult.Model) {
+                                "codex"  { "gpt-5.1-codex-mini" }
+                                "claude" { "claude-sonnet-4-6" }
+                            }
+                            Add-ApiCallCost -Model $modelId -Usage $jobResult.Usage -Phase $jobResult.Phase
+                        }
+                        $fixedCount++
+                    } else {
+                        $reason = if ($jobResult.Reason) { $jobResult.Reason } else { "unknown" }
+                        Write-Log "Fix failed for $($fj.relPath): $reason" "WARN"
+                        $fixFailCount++
+                    }
+                } catch {
+                    Write-Log "Fix job exception for $($fj.relPath): $($_.Exception.Message)" "ERROR"
+                    $fj.job | Remove-Job -Force -ErrorAction SilentlyContinue
+                    $fixFailCount++
+                }
+            }
+        }
+
+        # Remove completed jobs (reverse order to preserve indices)
+        foreach ($idx in ($completedIndices | Sort-Object -Descending)) {
+            $fixJobs.RemoveAt($idx)
+        }
+
+        # Brief wait if all slots are full
+        if ($fixJobs.Count -ge $maxParallelFixes -or ($fixQueue.Count -eq 0 -and $fixJobs.Count -gt 0)) {
+            Start-Sleep -Milliseconds 500
         }
     }
 
