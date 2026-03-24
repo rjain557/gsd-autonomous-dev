@@ -237,13 +237,20 @@ function Invoke-BuildFix {
         return @()
     }
 
-    # Parse JSON
-    $fixJson = $fixJson.Trim() -replace '(?s)^```(?:json)?\s*\n', '' -replace '\n```\s*$', ''
+    # Parse JSON — strip markdown fences and any text before/after the JSON array
+    $fixJson = $fixJson.Trim()
+    # Remove markdown code fences
+    $fixJson = $fixJson -replace '(?s)^```(?:json)?\s*\n', '' -replace '\n```\s*$', ''
+    # Extract JSON array from response (Claude often adds text before/after)
+    if ($fixJson -match '(?s)(\[[\s\S]*\])') {
+        $fixJson = $matches[1]
+    }
     try {
         $fixes = $fixJson | ConvertFrom-Json
         return @($fixes)
     } catch {
         Write-Log "Failed to parse fix JSON: $($_.Exception.Message)" -Level WARN
+        Write-Log "Raw response (first 200 chars): $($fixJson.Substring(0, [Math]::Min(200, $fixJson.Length)))" -Level WARN
         return @()
     }
 }
