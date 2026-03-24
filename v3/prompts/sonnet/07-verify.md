@@ -64,4 +64,42 @@ You are the VERIFIER. Update requirement statuses, calculate health, detect drif
 }
 ```
 
+## Integration Completeness Verification
+
+**CRITICAL**: File existence is NOT sufficient for "satisfied" status. Before promoting any
+requirement to "satisfied", verify these integration criteria:
+
+1. **Frontend requirements**: Component must call real API (not mock/static data). Check for:
+   - `useState` with hardcoded arrays → NOT satisfied (still partial)
+   - Mock service imports → NOT satisfied
+   - API calls to placeholder URLs → NOT satisfied
+   - Component exists but not in router → NOT satisfied
+
+2. **Backend requirements**: Controller must use injected services calling real DB. Check for:
+   - Controller returning hardcoded data → NOT satisfied
+   - Repository with `NotImplementedException` → NOT satisfied
+   - Missing DI registration → NOT satisfied
+   - No stored procedure calls in repository → NOT satisfied
+
+3. **Integration requirements**: End-to-end data flow must work. Check for:
+   - Frontend calls mock hook but real API exists → partial (not satisfied)
+   - Backend exists but connection string is placeholder → partial
+   - Auth guard missing on protected route → partial
+
+4. **Status rules with integration awareness**:
+   - `not_started`: No files generated
+   - `partial`: Files exist BUT contain mock data, stubs, or broken wiring
+   - `satisfied`: Files exist AND use real API calls, real DB queries, real auth
+
+Add an `integration_issues` field to any requirement that has wiring problems:
+```json
+{
+  "req_id": "REQ-xxx",
+  "status": "partial",
+  "satisfaction_pct": 60,
+  "blocking_issues": ["Frontend uses mock data instead of real API"],
+  "integration_issues": ["mock_data", "placeholder_url"]
+}
+```
+
 Respond with ONLY the JSON object.
