@@ -30,6 +30,14 @@
     Filter output by severity: critical, high, medium, low, all (default: "all")
 .PARAMETER OutputFormat
     Output format: json or markdown (default: "json")
+.PARAMETER RunSmokeTest
+    After code review completes, automatically run gsd-smoketest.ps1 for integration validation
+.PARAMETER ConnectionString
+    SQL Server connection string passed to smoke test for live DB validation (optional)
+.PARAMETER TestUsers
+    JSON array of test user credentials passed to smoke test (optional)
+.PARAMETER AzureAdConfig
+    JSON object with Azure AD configuration passed to smoke test (optional)
 #>
 
 [CmdletBinding()]
@@ -47,7 +55,11 @@ param(
     [string]$Severity = "all",
     [ValidateSet("json","markdown")]
     [string]$OutputFormat = "json",
-    [int]$SkipReqs = 0
+    [int]$SkipReqs = 0,
+    [switch]$RunSmokeTest,
+    [string]$ConnectionString = "",
+    [string]$TestUsers = "",
+    [string]$AzureAdConfig = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -923,6 +935,36 @@ if ($totalFixesAllCycles -gt 0 -and (Get-Command Invoke-TraceabilityUpdate -Erro
 }
 
 Write-Host "============================================`n" -ForegroundColor Cyan
+
+# ============================================================
+# OPTIONAL: Run Smoke Test after Code Review
+# ============================================================
+
+if ($RunSmokeTest) {
+    Write-Host "`n============================================" -ForegroundColor Cyan
+    Write-Host "  LAUNCHING SMOKE TEST (post-code-review)" -ForegroundColor Cyan
+    Write-Host "============================================`n" -ForegroundColor Cyan
+
+    $smokeScript = Join-Path $PSScriptRoot "gsd-smoketest.ps1"
+    if (-not (Test-Path $smokeScript)) {
+        Write-Host "  [ERROR] gsd-smoketest.ps1 not found at $smokeScript" -ForegroundColor Red
+        Write-Log "Smoke test script not found: $smokeScript" "ERROR"
+    }
+    else {
+        $smokeArgs = @{
+            RepoRoot = $RepoRoot
+            FixModel = $FixModel
+        }
+        if ($ConnectionString) { $smokeArgs.ConnectionString = $ConnectionString }
+        if ($TestUsers) { $smokeArgs.TestUsers = $TestUsers }
+        if ($AzureAdConfig) { $smokeArgs.AzureAdConfig = $AzureAdConfig }
+
+        Write-Log "Invoking smoke test: $smokeScript" "INFO"
+        & $smokeScript @smokeArgs
+        $smokeExitCode = $LASTEXITCODE
+        Write-Log "Smoke test completed with exit code: $smokeExitCode" $(if ($smokeExitCode -eq 0) { "OK" } else { "WARN" })
+    }
+}
 
 # Return exit code: 0 if no critical/high issues remain, 1 otherwise
 exit $(if (($bySeverity.critical + $bySeverity.high) -gt 0) { 1 } else { 0 })
