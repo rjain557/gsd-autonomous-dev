@@ -1,22 +1,25 @@
 <#
 .SYNOPSIS
-    GSD V3 Full Pipeline — Wire-Up → Code Review → Smoke Test → Final Review → Handoff
+    GSD V4 Full Pipeline - 9-phase pipeline from convergence to dev handoff
 .DESCRIPTION
-    Orchestrates all pipeline phases to take a generated codebase from "code exists"
-    to "production-ready dev handoff". Runs each phase in sequence, passing results
-    forward, and generates a comprehensive handoff report.
+    Orchestrates all pipeline phases to take a codebase from requirements convergence
+    through build verification, code review, runtime validation, and dev handoff.
 
     Phases:
-      1. WIRE-UP: Mock data scan, route-role matrix, integration wiring
-      2. CODE REVIEW: 3-model review (Claude+Codex+Gemini) + auto-fix
-      3. SMOKE TEST: 9-phase integration validation (build, DB, API, auth, etc.)
-      4. FINAL REVIEW: Post-smoke-test verification pass
-      5. HANDOFF: Generate developer handoff documentation
+      1. CONVERGENCE    - Run convergence loop (skip if already 100% health)
+      2. BUILD GATE     - Compile check + auto-fix (dotnet build + npm run build)
+      3. WIRE-UP        - Mock data scan, route-role matrix, wire-up fixes
+      4. CODE REVIEW    - 3-model review (Claude+Codex+Gemini) + auto-fix
+      5. BUILD VERIFY   - Re-run build gate to confirm review fixes compile
+      6. RUNTIME        - Start services, test endpoints, validate CRUD
+      7. SMOKE TEST     - 9-phase integration validation
+      8. FINAL REVIEW   - Post-smoke-test verification (fix all severities)
+      9. DEV HANDOFF    - Generate PIPELINE-HANDOFF.md
 
     Usage:
       pwsh -File gsd-full-pipeline.ps1 -RepoRoot "D:\repos\project"
+      pwsh -File gsd-full-pipeline.ps1 -RepoRoot "D:\repos\project" -StartFrom buildgate -SkipConvergence
       pwsh -File gsd-full-pipeline.ps1 -RepoRoot "D:\repos\project" -ConnectionString "Data Source=..."
-      pwsh -File gsd-full-pipeline.ps1 -RepoRoot "D:\repos\project" -StartFrom smoketest
 .PARAMETER RepoRoot
     Repository root path (mandatory)
 .PARAMETER ConnectionString
@@ -26,17 +29,29 @@
 .PARAMETER TestUsers
     JSON array of test user credentials (optional)
 .PARAMETER StartFrom
-    Resume from a specific phase: wireup, codereview, smoketest, finalreview, handoff
+    Resume from a specific phase: convergence, buildgate, wireup, codereview, buildverify, runtime, smoketest, finalreview, handoff
 .PARAMETER MaxCycles
     Maximum review-fix cycles per phase (default: 3)
 .PARAMETER MaxReqs
     Maximum requirements per batch (default: 50)
+.PARAMETER BackendPort
+    Port for the backend server (default: 5000)
+.PARAMETER FrontendPort
+    Port for the frontend dev server (default: 3000)
+.PARAMETER SkipConvergence
+    Skip the convergence phase
+.PARAMETER SkipBuildGate
+    Skip the build gate phase
 .PARAMETER SkipWireUp
     Skip the wire-up phase
 .PARAMETER SkipCodeReview
     Skip the code review phase
+.PARAMETER SkipRuntime
+    Skip the runtime validation phase
 .PARAMETER SkipSmokeTest
     Skip the smoke test phase
+.PARAMETER SkipFinalReview
+    Skip the final review phase
 #>
 
 [CmdletBinding()]
@@ -45,13 +60,19 @@ param(
     [string]$ConnectionString,
     [string]$AzureAdConfig,
     [string]$TestUsers,
-    [ValidateSet("wireup","codereview","smoketest","finalreview","handoff")]
-    [string]$StartFrom = "wireup",
+    [ValidateSet("convergence","buildgate","wireup","codereview","buildverify","runtime","smoketest","finalreview","handoff")]
+    [string]$StartFrom = "convergence",
     [int]$MaxCycles = 3,
     [int]$MaxReqs = 50,
+    [int]$BackendPort = 5000,
+    [int]$FrontendPort = 3000,
+    [switch]$SkipConvergence,
+    [switch]$SkipBuildGate,
     [switch]$SkipWireUp,
     [switch]$SkipCodeReview,
-    [switch]$SkipSmokeTest
+    [switch]$SkipRuntime,
+    [switch]$SkipSmokeTest,
+    [switch]$SkipFinalReview
 )
 
 $ErrorActionPreference = "Continue"
@@ -71,9 +92,9 @@ $GsdDir = Join-Path $RepoRoot ".gsd"
 # ============================================================
 
 $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-$logDir = Join-Path $env:USERPROFILE ".gsd-global\logs\$repoName"
+$logDir = Join-Path $env:USERPROFILE ".gsd-global\logs\${repoName}"
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-$logFile = Join-Path $logDir "full-pipeline-$timestamp.log"
+$logFile = Join-Path $logDir "full-pipeline-${timestamp}.log"
 
 function Write-PipelineLog {
     param([string]$Message, [string]$Level = "INFO")
@@ -92,7 +113,7 @@ function Write-PipelineLog {
 
 $phaseResults = @{}
 $startTime = Get-Date
-$phases = @("wireup", "codereview", "smoketest", "finalreview", "handoff")
+$phases = @("convergence", "buildgate", "wireup", "codereview", "buildverify", "runtime", "smoketest", "finalreview", "handoff")
 $startIndex = $phases.IndexOf($StartFrom)
 
 function Start-Phase {
@@ -109,7 +130,7 @@ function Complete-Phase {
     $duration = (Get-Date) - $StartedAt
     $phaseResults[$Name] = @{ status = $Status; duration = $duration.TotalMinutes; summary = $Summary }
     $level = if ($Status -eq "PASS") { "OK" } elseif ($Status -eq "WARN") { "WARN" } else { "ERROR" }
-    Write-PipelineLog "$Name completed in $([math]::Round($duration.TotalMinutes, 1)) min - $Status : $Summary" -Level $level
+    Write-PipelineLog "$Name completed in $([math]::Round($duration.TotalMinutes, 1)) min - ${Status} - $Summary" -Level $level
 }
 
 # ============================================================
@@ -118,7 +139,7 @@ function Complete-Phase {
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Magenta
-Write-Host "  GSD Full Pipeline: $repoName" -ForegroundColor Magenta
+Write-Host "  GSD V4 Full Pipeline: $repoName" -ForegroundColor Magenta
 Write-Host "  Starting from: $StartFrom" -ForegroundColor Magenta
 Write-Host "  Log: $logFile" -ForegroundColor Magenta
 Write-Host "================================================================" -ForegroundColor Magenta
@@ -129,14 +150,82 @@ if ($AzureAdConfig) { Write-PipelineLog "Azure AD configured" }
 if ($TestUsers) { Write-PipelineLog "Test users configured" }
 
 # ============================================================
-# PHASE 1: WIRE-UP
+# PHASE 1: CONVERGENCE
 # ============================================================
 
-if ($startIndex -le 0 -and -not $SkipWireUp) {
+if ($startIndex -le 0 -and -not $SkipConvergence) {
+    $ps = Start-Phase "CONVERGENCE" "Run convergence loop until 100% health"
+
+    # Check current health score
+    $healthFile = Join-Path $GsdDir "health\health-score.json"
+    $currentHealth = 0
+    if (Test-Path $healthFile) {
+        try {
+            $healthData = Get-Content $healthFile -Raw | ConvertFrom-Json
+            $currentHealth = $healthData.health_percent
+        } catch { }
+    }
+
+    if ($currentHealth -ge 100) {
+        Write-PipelineLog "Health already at ${currentHealth}% - skipping convergence" -Level OK
+        Complete-Phase "CONVERGENCE" $ps "SKIP" "Already at ${currentHealth}%"
+    } else {
+        Write-PipelineLog "Current health: ${currentHealth}% - running convergence pipeline"
+
+        $existingScript = Join-Path $ScriptsDir "gsd-existing.ps1"
+        if (Test-Path $existingScript) {
+            & pwsh -File $existingScript -RepoRoot $RepoRoot
+            # Re-check health
+            if (Test-Path $healthFile) {
+                try {
+                    $healthData = Get-Content $healthFile -Raw | ConvertFrom-Json
+                    $currentHealth = $healthData.health_percent
+                } catch { }
+            }
+            $status = if ($currentHealth -ge 100) { "PASS" } elseif ($currentHealth -ge 80) { "WARN" } else { "FAIL" }
+            Complete-Phase "CONVERGENCE" $ps $status "Health at ${currentHealth}%"
+        } else {
+            Write-PipelineLog "gsd-existing.ps1 not found" -Level ERROR
+            Complete-Phase "CONVERGENCE" $ps "SKIP" "Convergence script not found"
+        }
+    }
+}
+
+# ============================================================
+# PHASE 2: BUILD GATE
+# ============================================================
+
+if ($startIndex -le 1 -and -not $SkipBuildGate) {
+    $ps = Start-Phase "BUILD-GATE" "Compile check + auto-fix (dotnet build + npm run build)"
+
+    $buildGateScript = Join-Path $ScriptsDir "gsd-build-gate.ps1"
+    if (Test-Path $buildGateScript) {
+        & pwsh -File $buildGateScript -RepoRoot $RepoRoot -FixModel claude -MaxAttempts $MaxCycles
+
+        $bgReport = Join-Path $GsdDir "build-gate\build-gate-report.json"
+        if (Test-Path $bgReport) {
+            $bgData = Get-Content $bgReport -Raw | ConvertFrom-Json
+            $status = if ($bgData.status -eq "pass") { "PASS" } else { "FAIL" }
+            Complete-Phase "BUILD-GATE" $ps $status "Build $($bgData.status) on attempt $($bgData.attempts) of $($bgData.max_attempts)"
+        } else {
+            Complete-Phase "BUILD-GATE" $ps "WARN" "Build gate report not found"
+        }
+    } else {
+        Write-PipelineLog "gsd-build-gate.ps1 not found" -Level ERROR
+        Complete-Phase "BUILD-GATE" $ps "SKIP" "Script not found"
+    }
+}
+
+# ============================================================
+# PHASE 3: WIRE-UP
+# ============================================================
+
+if ($startIndex -le 2 -and -not $SkipWireUp) {
     $ps = Start-Phase "WIRE-UP" "Mock data scan, route-role matrix, integration wiring"
 
     # Mock data scan (local, free)
     $mockDetector = Join-Path $v3Dir "lib\modules\mock-data-detector.ps1"
+    $mockCount = 0
     if (Test-Path $mockDetector) {
         . $mockDetector
         $mockResults = Invoke-MockDataScan -RepoRoot $RepoRoot
@@ -149,13 +238,18 @@ if ($startIndex -le 0 -and -not $SkipWireUp) {
 
     # Route-role matrix (local, free)
     $routeMatrixMod = Join-Path $v3Dir "lib\modules\route-role-matrix.ps1"
+    $matrixCount = 0
+    $gapCount = 0
     if (Test-Path $routeMatrixMod) {
         . $routeMatrixMod
         $matrix = Build-RouteRoleMatrix -RepoRoot $RepoRoot
         if ($matrix) {
+            $matrixCount = $matrix.Count
             $gapCount = ($matrix | Where-Object { $_.guard_type -eq 'none' -or $_.required_roles.Count -eq 0 }).Count
-            Write-PipelineLog "Route-role matrix: $($matrix.Count) routes, $gapCount gaps" -Level $(if ($gapCount -gt 0) { "WARN" } else { "OK" })
+            Write-PipelineLog "Route-role matrix: $matrixCount routes, $gapCount gaps" -Level $(if ($gapCount -gt 0) { "WARN" } else { "OK" })
             Format-RouteRoleMatrix -Matrix $matrix
+            $outDir = Join-Path $GsdDir "smoke-test"
+            if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
             Export-RouteRoleMatrix -Matrix $matrix -OutputPath (Join-Path $outDir "route-role-matrix.json")
         }
     }
@@ -164,14 +258,14 @@ if ($startIndex -le 0 -and -not $SkipWireUp) {
     Write-PipelineLog "Running wire-up review pass..."
     & pwsh -File (Join-Path $ScriptsDir "gsd-codereview.ps1") -RepoRoot $RepoRoot -MaxCycles 2 -MaxReqs $MaxReqs -FixModel claude -MinSeverityToFix high
 
-    Complete-Phase "WIRE-UP" $ps "DONE" "Mock scan ($mockCount issues) + route matrix ($($matrix.Count) routes)"
+    Complete-Phase "WIRE-UP" $ps "DONE" "Mock scan ($mockCount issues) + route matrix ($matrixCount routes, $gapCount gaps)"
 }
 
 # ============================================================
-# PHASE 2: CODE REVIEW
+# PHASE 4: CODE REVIEW
 # ============================================================
 
-if ($startIndex -le 1 -and -not $SkipCodeReview) {
+if ($startIndex -le 3 -and -not $SkipCodeReview) {
     $ps = Start-Phase "CODE-REVIEW" "3-model review (Claude+Codex+Gemini) with auto-fix"
 
     & pwsh -File (Join-Path $ScriptsDir "gsd-codereview.ps1") `
@@ -189,10 +283,66 @@ if ($startIndex -le 1 -and -not $SkipCodeReview) {
 }
 
 # ============================================================
-# PHASE 3: SMOKE TEST
+# PHASE 5: BUILD VERIFY
 # ============================================================
 
-if ($startIndex -le 2 -and -not $SkipSmokeTest) {
+if ($startIndex -le 4 -and -not $SkipBuildGate) {
+    $ps = Start-Phase "BUILD-VERIFY" "Re-run build gate to confirm review fixes compile"
+
+    $buildGateScript = Join-Path $ScriptsDir "gsd-build-gate.ps1"
+    if (Test-Path $buildGateScript) {
+        & pwsh -File $buildGateScript -RepoRoot $RepoRoot -FixModel claude -MaxAttempts 2
+
+        $bgReport = Join-Path $GsdDir "build-gate\build-gate-report.json"
+        if (Test-Path $bgReport) {
+            $bgData = Get-Content $bgReport -Raw | ConvertFrom-Json
+            $status = if ($bgData.status -eq "pass") { "PASS" } else { "FAIL" }
+            Complete-Phase "BUILD-VERIFY" $ps $status "Build $($bgData.status) on attempt $($bgData.attempts)"
+        } else {
+            Complete-Phase "BUILD-VERIFY" $ps "WARN" "Report not found"
+        }
+    } else {
+        Complete-Phase "BUILD-VERIFY" $ps "SKIP" "Script not found"
+    }
+}
+
+# ============================================================
+# PHASE 6: RUNTIME VALIDATION
+# ============================================================
+
+if ($startIndex -le 5 -and -not $SkipRuntime) {
+    $ps = Start-Phase "RUNTIME" "Start services, test endpoints, validate CRUD"
+
+    $runtimeScript = Join-Path $ScriptsDir "gsd-runtime-validate.ps1"
+    if (Test-Path $runtimeScript) {
+        $rtParams = @("-RepoRoot", $RepoRoot, "-BackendPort", "$BackendPort", "-FrontendPort", "$FrontendPort", "-FixModel", "claude")
+        if ($ConnectionString) { $rtParams += @("-ConnectionString", $ConnectionString) }
+        if ($TestUsers) { $rtParams += @("-TestUsers", $TestUsers) }
+        if ($AzureAdConfig) { $rtParams += @("-AzureAdConfig", $AzureAdConfig) }
+
+        & pwsh -File $runtimeScript @rtParams
+
+        $rtReport = Join-Path $GsdDir "runtime-validation\runtime-validation-report.json"
+        if (Test-Path $rtReport) {
+            $rtData = Get-Content $rtReport -Raw | ConvertFrom-Json
+            $failCount = $rtData.summary.failed
+            $passCount = $rtData.summary.passed
+            $status = if ($failCount -eq 0) { "PASS" } elseif ($failCount -lt 5) { "WARN" } else { "FAIL" }
+            Complete-Phase "RUNTIME" $ps $status "$passCount passed, $failCount failed"
+        } else {
+            Complete-Phase "RUNTIME" $ps "WARN" "Report not found"
+        }
+    } else {
+        Write-PipelineLog "gsd-runtime-validate.ps1 not found" -Level ERROR
+        Complete-Phase "RUNTIME" $ps "SKIP" "Script not found"
+    }
+}
+
+# ============================================================
+# PHASE 7: SMOKE TEST
+# ============================================================
+
+if ($startIndex -le 6 -and -not $SkipSmokeTest) {
     $ps = Start-Phase "SMOKE-TEST" "9-phase integration validation (cost-optimized)"
 
     $stScript = Join-Path $ScriptsDir "gsd-smoketest.ps1"
@@ -220,11 +370,11 @@ if ($startIndex -le 2 -and -not $SkipSmokeTest) {
 }
 
 # ============================================================
-# PHASE 4: FINAL REVIEW
+# PHASE 8: FINAL REVIEW
 # ============================================================
 
-if ($startIndex -le 3) {
-    $ps = Start-Phase "FINAL-REVIEW" "Post-smoke-test verification"
+if ($startIndex -le 7 -and -not $SkipFinalReview) {
+    $ps = Start-Phase "FINAL-REVIEW" "Post-smoke-test verification (fix all severities)"
 
     & pwsh -File (Join-Path $ScriptsDir "gsd-codereview.ps1") `
         -RepoRoot $RepoRoot -MaxCycles 2 -MaxReqs $MaxReqs `
@@ -241,24 +391,37 @@ if ($startIndex -le 3) {
 }
 
 # ============================================================
-# PHASE 5: HANDOFF
+# PHASE 9: DEV HANDOFF
 # ============================================================
 
-if ($startIndex -le 4) {
+if ($startIndex -le 8) {
     $ps = Start-Phase "DEV-HANDOFF" "Generate handoff documentation"
 
     $totalDuration = (Get-Date) - $startTime
-    $handoffDoc = "# $repoName - Developer Handoff Report`nGenerated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n`n"
-    $handoffDoc += "## Pipeline Summary`n| Phase | Status | Duration | Summary |`n|-------|--------|----------|---------|`n"
+    $handoffDoc = "# $repoName - Pipeline V4 Handoff Report`n"
+    $handoffDoc += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n`n"
+    $handoffDoc += "## Pipeline Summary`n"
+    $handoffDoc += "| Phase | Status | Duration | Summary |`n"
+    $handoffDoc += "|-------|--------|----------|---------|`n"
 
-    foreach ($key in ($phaseResults.Keys | Sort-Object)) {
-        $r = $phaseResults[$key]
-        $handoffDoc += "| $key | $($r.status) | $([math]::Round($r.duration, 1)) min | $($r.summary) |`n"
+    foreach ($phaseName in $phases) {
+        $key = $phaseName.ToUpper() -replace 'BUILDGATE','BUILD-GATE' -replace 'BUILDVERIFY','BUILD-VERIFY' -replace 'CODEREVIEW','CODE-REVIEW' -replace 'SMOKETEST','SMOKE-TEST' -replace 'FINALREVIEW','FINAL-REVIEW'
+        # Check both formats
+        $r = $null
+        foreach ($k in $phaseResults.Keys) {
+            if ($k -eq $key -or $k -eq $phaseName.ToUpper()) { $r = $phaseResults[$k]; break }
+        }
+        if ($r) {
+            $handoffDoc += "| $key | $($r.status) | $([math]::Round($r.duration, 1)) min | $($r.summary) |`n"
+        }
     }
 
     $handoffDoc += "`n## Total Duration: $([math]::Round($totalDuration.TotalMinutes, 1)) minutes`n`n"
+
     $handoffDoc += "## Output Files`n"
+    $handoffDoc += "- Build Gate: .gsd/build-gate/build-gate-report.json`n"
     $handoffDoc += "- Code Review: .gsd/code-review/review-summary.md`n"
+    $handoffDoc += "- Runtime Validation: .gsd/runtime-validation/runtime-validation-summary.md`n"
     $handoffDoc += "- Smoke Test: .gsd/smoke-test/smoke-test-summary.md`n"
     $handoffDoc += "- Gap Report: .gsd/smoke-test/gap-report.md`n"
     $handoffDoc += "- Mock Scan: .gsd/smoke-test/mock-data-scan.json`n"

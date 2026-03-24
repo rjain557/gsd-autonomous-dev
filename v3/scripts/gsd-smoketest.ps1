@@ -1219,25 +1219,49 @@ function Invoke-MockDataDetection {
     )
 
     $suspiciousFiles = @()
+    $rgExcludeGlobs = @("!bin", "!obj", "!node_modules", "!dist", "!test", "!spec", "!__test__", "!design", "!generated", "!docs", "!.gsd", "!.git")
 
-    foreach ($srcDir in @("src", "client", "frontend", "app", "backend")) {
-        $dir = Join-Path $Root $srcDir
-        if (-not (Test-Path $dir)) { continue }
+    # Try ripgrep first (much faster on large codebases)
+    $rgPath = Get-Command rg -ErrorAction SilentlyContinue
+    if ($rgPath) {
+        Write-Log "Mock data: using ripgrep for fast pre-filter" "INFO"
+        $rgPattern = 'const\s+(mock|fake|dummy|sample|stub)\w*\s*=|//\s*(TODO|FIXME|HACK|PLACEHOLDER|FILL)|console\.(log|warn|error|debug)\s*\(|throw\s+new\s+Error\s*\(\s*[''"]Not\s+implemented|\(\)\s*=>\s*\{\s*\}'
+        $rgArgs = @("--files-with-matches", "--type", "ts", "--type", "cs", "--type", "tsx")
+        foreach ($glob in $rgExcludeGlobs) { $rgArgs += @("-g", $glob) }
 
-        $codeFiles = Get-ChildItem -Path $dir -Include "*.ts", "*.tsx", "*.cs" -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '(bin|obj|node_modules|dist|test|spec|__test__)[/\\]' }
+        try {
+            $rgOutput = & rg $rgPattern $Root @rgArgs 2>$null
+            if ($rgOutput) {
+                $suspiciousFiles = @($rgOutput -split "`n" | Where-Object { $_ })
+            }
+            Write-Log "Ripgrep found $($suspiciousFiles.Count) suspicious files" "INFO"
+        } catch {
+            Write-Log "Ripgrep failed, falling back to Get-ChildItem: $($_.Exception.Message)" "WARN"
+            $rgPath = $null
+        }
+    }
 
-        foreach ($file in $codeFiles) {
-            try {
-                $content = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
-                foreach ($pattern in $mockPatterns) {
-                    if ($content -match $pattern) {
-                        $suspiciousFiles += $file.FullName
-                        break
+    # Fallback to Get-ChildItem if ripgrep not available or failed
+    if (-not $rgPath) {
+        foreach ($srcDir in @("src", "client", "frontend", "app", "backend")) {
+            $dir = Join-Path $Root $srcDir
+            if (-not (Test-Path $dir)) { continue }
+
+            $codeFiles = Get-ChildItem -Path $dir -Include "*.ts", "*.tsx", "*.cs" -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notmatch '(bin|obj|node_modules|dist|test|spec|__test__|design|generated|docs|\.gsd|\.git)[/\\]' }
+
+            foreach ($file in $codeFiles) {
+                try {
+                    $content = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+                    foreach ($pattern in $mockPatterns) {
+                        if ($content -match $pattern) {
+                            $suspiciousFiles += $file.FullName
+                            break
+                        }
                     }
                 }
+                catch { }
             }
-            catch { }
         }
     }
 
