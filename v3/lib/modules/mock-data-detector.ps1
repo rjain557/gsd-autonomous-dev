@@ -16,7 +16,7 @@ function Find-MockDataPatterns {
     #>
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
-        [string[]]$ExcludeDirs = @("node_modules", ".git", "bin", "obj", "dist", ".gsd", "coverage", ".next", "__pycache__")
+        [string[]]$ExcludeDirs = @("node_modules", ".git", "bin", "obj", "dist", ".gsd", "coverage", ".next", "__pycache__", "design", "generated", "docs", ".planning", ".claude", "wwwroot", "packages", "TestResults")
     )
 
     $results = [System.Collections.ArrayList]::new()
@@ -160,7 +160,7 @@ function Find-StubImplementations {
     #>
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
-        [string[]]$ExcludeDirs = @("node_modules", ".git", "bin", "obj", "dist", ".gsd", "coverage")
+        [string[]]$ExcludeDirs = @("node_modules", ".git", "bin", "obj", "dist", ".gsd", "coverage", ".next", "__pycache__", "design", "generated", "docs", ".planning", ".claude", "wwwroot", "packages", "TestResults")
     )
 
     $results = [System.Collections.ArrayList]::new()
