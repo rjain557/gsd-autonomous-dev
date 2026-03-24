@@ -96,7 +96,7 @@ $excludeDirPattern = '\\(bin|obj|node_modules|design|generated|\.gsd|\.git|wwwro
 
 $csprojFiles = @(Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notmatch $excludeDirPattern } |
-    Where-Object { $_.FullName -notmatch '\\(Tests|IntegrationTests|UnitTests)\.' })  # Skip test projects on first pass
+    Where-Object { $_.Name -notmatch '\.(Tests|IntegrationTests|UnitTests)\.' })  # Skip test projects - match on filename
 $packageJsonFiles = @(Get-ChildItem -Path $RepoRoot -Filter "package.json" -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notmatch $excludeDirPattern } |
     Where-Object {

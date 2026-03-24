@@ -255,8 +255,13 @@ if ($startIndex -le 2 -and -not $SkipWireUp) {
     }
 
     # Wire-up code review pass (focused on integration issues)
-    Write-PipelineLog "Running wire-up review pass..."
-    & pwsh -File (Join-Path $ScriptsDir "gsd-codereview.ps1") -RepoRoot $RepoRoot -MaxCycles 2 -MaxReqs $MaxReqs -FixModel claude -MinSeverityToFix high
+    # Only run wire-up code review if code review phase is not skipped
+    if (-not $SkipCodeReview) {
+        Write-PipelineLog "Running wire-up review pass..."
+        & pwsh -File (Join-Path $ScriptsDir "gsd-codereview.ps1") -RepoRoot $RepoRoot -MaxCycles 1 -MaxReqs $MaxReqs -FixModel claude -MinSeverityToFix high
+    } else {
+        Write-PipelineLog "Wire-up review skipped (code review disabled)" -Level SKIP
+    }
 
     Complete-Phase "WIRE-UP" $ps "DONE" "Mock scan ($mockCount issues) + route matrix ($matrixCount routes, $gapCount gaps)"
 }
