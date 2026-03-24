@@ -310,7 +310,15 @@ if ($startIndex -le 4 -and -not $SkipBuildGate) {
 # PHASE 6: RUNTIME VALIDATION
 # ============================================================
 
-if ($startIndex -le 5 -and -not $SkipRuntime) {
+# Check if build passed before attempting runtime validation
+$buildPassed = $false
+foreach ($k in $phaseResults.Keys) {
+    if ($k -match 'BUILD') {
+        if ($phaseResults[$k].status -eq 'PASS') { $buildPassed = $true }
+    }
+}
+
+if ($startIndex -le 5 -and -not $SkipRuntime -and ($buildPassed -or $startIndex -eq 5)) {
     $ps = Start-Phase "RUNTIME" "Start services, test endpoints, validate CRUD"
 
     $runtimeScript = Join-Path $ScriptsDir "gsd-runtime-validate.ps1"

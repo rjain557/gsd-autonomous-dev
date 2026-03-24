@@ -91,10 +91,14 @@ Write-Host "============================================" -ForegroundColor Cyan
 # DISCOVER BUILD TARGETS
 # ============================================================
 
+# Exclude non-production directories (design prototypes, generated refs, test projects are optional)
+$excludeDirPattern = '\\(bin|obj|node_modules|design|generated|\.gsd|\.git|wwwroot)\\'
+
 $csprojFiles = @(Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch '\\(bin|obj|node_modules)\\' })
+    Where-Object { $_.FullName -notmatch $excludeDirPattern } |
+    Where-Object { $_.FullName -notmatch '\\(Tests|IntegrationTests|UnitTests)\.' })  # Skip test projects on first pass
 $packageJsonFiles = @(Get-ChildItem -Path $RepoRoot -Filter "package.json" -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch '\\node_modules\\' } |
+    Where-Object { $_.FullName -notmatch $excludeDirPattern } |
     Where-Object {
         $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
         $content -and ($content -match '"build"')
@@ -221,7 +225,7 @@ function Invoke-BuildFix {
 
     $fixJson = $null
     if ($FixModel -eq "claude") {
-        $result = Invoke-ClaudeApi -SystemPrompt $systemPrompt -UserMessage $userMessage -MaxTokens 8192 -Phase "build-gate-fix"
+        $result = Invoke-SonnetApi -SystemPrompt $systemPrompt -UserMessage $userMessage -MaxTokens 8192 -Phase "build-gate-fix"
         if ($result -and $result.Success) { $fixJson = $result.Text }
     } else {
         $result = Invoke-CodexMiniApi -SystemPrompt $systemPrompt -UserMessage $userMessage -MaxTokens 8192 -Phase "build-gate-fix"
