@@ -212,6 +212,80 @@ if ($csprojFiles.Count -gt 0) {
             $backendStarted = Wait-ForEndpoint -Url $backendUrl -TimeoutSeconds 15 -Label "Backend (root)"
         }
 
+        # If backend didn't start, capture stdout/stderr to diagnose WHY
+        if (-not $backendStarted) {
+            Write-Log "Backend failed to respond - capturing process output for diagnosis..." -Level WARN
+            $stdoutText = ""
+            $stderrText = ""
+            try {
+                if ($script:backendProcess.HasExited) {
+                    $stdoutText = $script:backendProcess.StandardOutput.ReadToEnd()
+                    $stderrText = $script:backendProcess.StandardError.ReadToEnd()
+                } else {
+                    # Process is still running but not responding - read available output
+                    # Give it a moment then kill and capture
+                    Start-Sleep -Seconds 2
+                    $script:backendProcess.Kill($true)
+                    Start-Sleep -Seconds 1
+                    $stdoutText = $script:backendProcess.StandardOutput.ReadToEnd()
+                    $stderrText = $script:backendProcess.StandardError.ReadToEnd()
+                }
+            } catch {
+                Write-Log "Could not capture process output: $($_.Exception.Message)" -Level WARN
+            }
+
+            $combinedOutput = "$stdoutText`n$stderrText"
+
+            # Check for DI resolution failures
+            if ($combinedOutput -match "Unable to resolve service|No service for type|InvalidOperationException.*registered") {
+                $missingServices = [regex]::Matches($combinedOutput, "Unable to resolve service for type '([^']+)'") |
+                    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+                $noServiceTypes = [regex]::Matches($combinedOutput, "No service for type '([^']+)'") |
+                    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+                $allMissing = @($missingServices) + @($noServiceTypes) | Sort-Object -Unique
+
+                Write-Log "ROOT CAUSE: DI container missing $($allMissing.Count) service registration(s)" -Level ERROR
+                foreach ($svc in $allMissing) {
+                    Write-Log "  Missing DI: $svc" -Level ERROR
+                }
+                $validationResults.backend.errors += "DI_RESOLUTION_FAILURE"
+                $validationResults.backend.errors += $allMissing
+
+                # Save DI errors for pipeline consumption
+                $diErrorFile = Join-Path $outDir "di-errors.json"
+                @{
+                    timestamp = (Get-Date -Format "o")
+                    missing_services = $allMissing
+                    raw_output = ($combinedOutput -split "`n" | Select-Object -First 100) -join "`n"
+                } | ConvertTo-Json -Depth 5 | Set-Content $diErrorFile -Encoding UTF8
+            } elseif ($combinedOutput -match "Unhandled exception|Application startup exception|Host terminated unexpectedly") {
+                # Other startup crash - log the actual error
+                $errorLines = @($combinedOutput -split "`n" |
+                    Where-Object { $_ -match 'Exception|Error|Unhandled|terminated|FATAL|fail' } |
+                    Select-Object -First 15)
+                Write-Log "ROOT CAUSE: Application startup crash" -Level ERROR
+                foreach ($line in $errorLines) {
+                    Write-Log "  $($line.Trim())" -Level ERROR
+                }
+                $validationResults.backend.errors += "STARTUP_CRASH"
+                $validationResults.backend.errors += $errorLines
+            } else {
+                # Unknown failure - log whatever output we got
+                $outputLines = @($combinedOutput -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 20)
+                if ($outputLines.Count -gt 0) {
+                    Write-Log "Backend output (no specific error pattern matched):" -Level WARN
+                    foreach ($line in $outputLines) {
+                        Write-Log "  $($line.Trim())" -Level WARN
+                    }
+                    $validationResults.backend.errors += "UNKNOWN_STARTUP_FAILURE"
+                    $validationResults.backend.errors += $outputLines
+                } else {
+                    Write-Log "Backend produced no output - may have failed silently" -Level WARN
+                    $validationResults.backend.errors += "NO_OUTPUT"
+                }
+            }
+        }
+
         $validationResults.backend.started = $backendStarted
     } catch {
         Write-Log "Failed to start backend: $($_.Exception.Message)" -Level ERROR

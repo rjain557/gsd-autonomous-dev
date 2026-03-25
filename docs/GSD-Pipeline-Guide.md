@@ -540,3 +540,225 @@ Direct fixes via Claude Code are 10-100x more efficient than pipeline execution 
 5. Re-run verification to confirm all gaps are closed
 
 This hybrid approach typically costs $5-10 for verification plus $0 for direct fixes, compared to $50-400 for a full pipeline run.
+
+---
+
+## Full Pipeline Orchestrator
+
+### Overview
+
+The Full Pipeline Orchestrator (`gsd-full-pipeline.ps1`) takes converged code through 5 sequential quality phases to produce production-ready output. Run this after the convergence pipeline reaches 100% health.
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Absolute path to the repository root |
+| -ConnectionString | "" | SQL Server connection for DB validation |
+| -AzureAdConfig | "" | JSON: {tenantId, clientId, audience, instance, scopes} |
+| -TestUsers | "" | JSON array: [{username, password, roles}] |
+| -StartFrom | "wireup" | Resume point: wireup\|codereview\|smoketest\|finalreview\|handoff |
+| -MaxCycles | 3 | Review-fix cycles per phase |
+| -MaxReqs | 50 | Requirements per batch |
+| -SkipWireUp | false | Skip wire-up phase |
+| -SkipCodeReview | false | Skip code review phase |
+| -SkipSmokeTest | false | Skip smoke test phase |
+
+### Phase Flow
+
+```
+Phase 1: WIRE-UP ─────────→ Mock data scan + route-role matrix + integration checks
+Phase 2: CODE REVIEW ─────→ 3-model consensus (Claude+Codex+Gemini) + auto-fix cycles
+Phase 3: SMOKE TEST ──────→ 9-phase integration validation (tiered cost optimization)
+Phase 4: FINAL REVIEW ────→ Post-smoke-test re-review at lower severity threshold
+Phase 5: HANDOFF ─────────→ PIPELINE-HANDOFF.md with all results + output file paths
+```
+
+### Running the Full Pipeline
+
+```powershell
+# Basic run
+pwsh -NoExit -File gsd-full-pipeline.ps1 -RepoRoot "C:\repos\my-project"
+
+# With database and auth validation
+pwsh -NoExit -File gsd-full-pipeline.ps1 -RepoRoot "C:\repos\my-project" `
+    -ConnectionString "Server=.;Database=MyDb;Trusted_Connection=true" `
+    -AzureAdConfig '{"tenantId":"...","clientId":"...","audience":"..."}' `
+    -TestUsers '[{"username":"admin@test.com","password":"...","roles":["Admin"]}]'
+
+# Resume from smoke test (skip wire-up and code review)
+pwsh -NoExit -File gsd-full-pipeline.ps1 -RepoRoot "C:\repos\my-project" -StartFrom smoketest
+```
+
+### Output Files
+
+| File | Content |
+|------|---------|
+| `PIPELINE-HANDOFF.md` | Phase summary table + all output paths |
+| `.gsd/code-review/review-report.json` | Structured review issues |
+| `.gsd/code-review/review-summary.md` | Human-readable review |
+| `.gsd/smoke-test/smoke-test-report.json` | Per-phase validation results |
+| `.gsd/smoke-test/mock-data-scan.json` | Mock data patterns found |
+| `.gsd/smoke-test/route-role-matrix.json` | RBAC gaps |
+| `.gsd/smoke-test/gap-report.md` | Integration issues |
+
+---
+
+## Smoke Testing
+
+### Overview
+
+The smoke test (`gsd-smoketest.ps1`) performs 9-phase integration validation to verify runtime functionality. Uses tiered LLM cost optimization to reduce costs by ~85%.
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository path |
+| -ConnectionString | "" | SQL Server connection |
+| -MaxCycles | 3 | Fix attempts before stopping |
+| -FixModel | "claude" | claude or codex |
+| -TestUsers | "" | JSON array of test users |
+| -AzureAdConfig | "" | Azure AD config JSON |
+| -SkipBuild | false | Skip build validation |
+| -SkipDbValidation | false | Skip DB validation |
+| -CostOptimize | true | Use tiered models |
+
+### Nine Validation Phases
+
+| # | Phase | Tier | Cost | What It Checks |
+|---|-------|------|------|----------------|
+| 1 | Build Validation | LOCAL | $0 | `dotnet build` + `npm run build` |
+| 2 | Database Validation | CHEAP | ~$0.05 | Tables, SPs, FKs, migrations |
+| 3 | API Smoke Test | MID | ~$0.10 | Controllers, middleware, DI, CORS |
+| 4 | Frontend Route Validation | LOCAL | $0 | Route-component mapping |
+| 5 | Auth Flow Validation | MID | ~$0.10 | JWT/Azure AD, guards, tokens |
+| 6 | Module Completeness | CHEAP | ~$0.05 | API + frontend + DB per module |
+| 7 | Mock Data Detection | LOCAL | $0 | Hardcoded data, TODOs |
+| 8 | RBAC Matrix | LOCAL | $0 | Route → role → guard |
+| 9 | Integration Gap Report | PREMIUM | ~$0.50 | Aggregated analysis |
+
+### Tiered Cost Optimization
+
+| Tier | Models | Cost/1M Tokens | Tasks |
+|------|--------|---------------|-------|
+| LOCAL | None (regex/file) | $0 | Build, routes, RBAC, mock scan |
+| CHEAP | DeepSeek, Kimi, MiniMax | $0.14-0.21 | DB schema, module completeness |
+| MID | Codex Mini | $1.50 | API wiring, auth flow, DI check |
+| PREMIUM | Claude Sonnet | $9.00 | Security review, gap report, fixes |
+
+Fallback: CHEAP → Kimi → MiniMax → Codex Mini (mid-tier fallback).
+
+### Running Smoke Tests
+
+```powershell
+# Basic smoke test
+pwsh -NoExit -File gsd-smoketest.ps1 -RepoRoot "C:\repos\my-project"
+
+# With database validation
+pwsh -NoExit -File gsd-smoketest.ps1 -RepoRoot "C:\repos\my-project" `
+    -ConnectionString "Server=.;Database=MyDb;Trusted_Connection=true"
+
+# Skip build, use codex for fixes
+pwsh -NoExit -File gsd-smoketest.ps1 -RepoRoot "C:\repos\my-project" -SkipBuild -FixModel codex
+```
+
+---
+
+## 3-Model Code Review
+
+### Overview
+
+The code review (`gsd-codereview.ps1`) uses Claude + Codex + Gemini for consensus-based review with automated fix cycles.
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository path |
+| -Models | "claude,codex,gemini" | Comma-separated model list |
+| -FixModel | "claude" | Model for generating fixes |
+| -MaxReqs | 50 | Requirements per run |
+| -MaxCycles | 5 | Review-fix cycles |
+| -MinSeverityToFix | "medium" | Minimum severity to fix |
+| -ReviewOnly | false | Skip auto-fix |
+| -Severity | "all" | Filter: critical\|high\|medium\|low\|all |
+| -OutputFormat | "json" | json or markdown |
+| -RunSmokeTest | false | Chain to smoke test after review |
+
+### Running Code Review
+
+```powershell
+# Full review with auto-fix
+pwsh -NoExit -File gsd-codereview.ps1 -RepoRoot "C:\repos\my-project"
+
+# Review only (no fixes)
+pwsh -NoExit -File gsd-codereview.ps1 -RepoRoot "C:\repos\my-project" -ReviewOnly
+
+# Chain to smoke test after review
+pwsh -NoExit -File gsd-codereview.ps1 -RepoRoot "C:\repos\my-project" -RunSmokeTest `
+    -ConnectionString "Server=.;Database=MyDb;Trusted_Connection=true"
+```
+
+---
+
+## LLM Pre-Validate Fix Phase
+
+### Overview
+
+The validation fixer (`gsd-validation-fixer.ps1`) runs before local build to proactively fix common code generation errors.
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository path |
+| -RequirementIds | (required) | Requirement IDs to fix |
+| -MaxAttempts | 10 | Max fix attempts |
+| -PreValidate | false | Run in proactive mode |
+
+### Fix Strategy
+
+1. **Quick namespace fixes** (zero LLM cost): 60+ regex patterns for known namespace remapping
+2. **Sonnet review**: Batches of 5 related files sent to LLM for cross-file fix analysis
+3. **Multi-file grouping**: Related errors grouped by directory and shared imports
+4. **Validation loop**: dotnet build → tsc --noEmit → test build → unit tests
+
+---
+
+## Centralized Logging
+
+### Log Structure
+
+```
+~/.gsd-global/logs/{repo-name}/
+├── run-{timestamp}.log              # Pipeline run log
+├── smoketest-{timestamp}.log        # Smoke test log
+├── codereview-{timestamp}.log       # Code review log
+├── full-pipeline-{timestamp}.log    # Full pipeline log
+├── latest.log                       # Pointer to latest run
+├── iteration-counter.json           # Persistent iteration counter
+└── iterations/
+    └── iter-NNNN.json               # Per-iteration metrics
+```
+
+### Iteration Counter
+
+Persistent across pipeline restarts:
+
+```json
+{ "next_iteration": 5, "repo": "my-project", "repo_root": "C:\\repos\\my-project" }
+```
+
+### Per-Iteration Metrics
+
+```json
+{
+  "iteration_number": 1,
+  "global_iteration_number": 47,
+  "health": { "start": 19.4, "end": 22.5, "delta": 3.1 },
+  "cost": { "total": 5.32, "by_model": { "claude": 4.50, "codex": 0.82 } },
+  "duration_minutes": 12.5,
+  "batch_info": { "size": 10, "satisfied": 3, "partial": 5, "not_started": 2 }
+}
+```

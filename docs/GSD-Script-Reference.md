@@ -1190,6 +1190,105 @@ Returns multi-line LOC vs Cost summary text for inclusion in final ntfy notifica
 
 Returns a LOC history table (lines added/deleted/net per iteration) for injection into code review prompts. Gives the review agent awareness of code churn patterns across iterations.
 
+## V3 Pipeline Scripts
+
+### gsd-full-pipeline.ps1
+
+End-to-end quality orchestrator. Runs 5 phases: wire-up → code review → smoke test → final review → handoff.
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" [-ConnectionString "..."] [-AzureAdConfig "..."] [-TestUsers "..."] [-StartFrom wireup|codereview|smoketest|finalreview|handoff] [-MaxCycles 3] [-MaxReqs 50] [-SkipWireUp] [-SkipCodeReview] [-SkipSmokeTest]
+```
+
+Output: `PIPELINE-HANDOFF.md`, `.gsd/code-review/`, `.gsd/smoke-test/`
+
+### gsd-smoketest.ps1
+
+9-phase integration validation with tiered LLM cost optimization (~85% cheaper).
+
+```powershell
+pwsh -File gsd-smoketest.ps1 -RepoRoot "C:\repo" [-ConnectionString "..."] [-MaxCycles 3] [-FixModel claude|codex] [-TestUsers "..."] [-AzureAdConfig "..."] [-SkipBuild] [-SkipDbValidation] [-CostOptimize $true]
+```
+
+Phases: build → DB → API → routes → auth → modules → mock data → RBAC → gap report.
+Output: `.gsd/smoke-test/smoke-test-report.json`, `mock-data-scan.json`, `route-role-matrix.json`, `gap-report.md`
+
+### gsd-codereview.ps1
+
+3-model consensus code review (Claude + Codex + Gemini) with auto-fix cycles.
+
+```powershell
+pwsh -File gsd-codereview.ps1 -RepoRoot "C:\repo" [-Models "claude,codex,gemini"] [-FixModel claude|codex] [-MaxReqs 50] [-MaxCycles 5] [-MinSeverityToFix medium] [-ReviewOnly] [-Severity all] [-OutputFormat json|markdown] [-RunSmokeTest] [-ConnectionString "..."]
+```
+
+Output: `.gsd/code-review/review-report.json`, `review-summary.md`
+
+### gsd-existing.ps1
+
+Existing codebase verification pipeline. Deep-extracts requirements from specs, inventories code, verifies satisfaction, fills gaps.
+
+```powershell
+pwsh -File gsd-existing.ps1 -RepoRoot "C:\repo" [-NtfyTopic "auto"] [-SkipSpecGate] [-DeepVerify:$true] [-StartIteration 1]
+```
+
+6-phase flow: spec-align → deep-extract → code-inventory → satisfaction-verify → targeted-execute → verify.
+
+### gsd-validation-fixer.ps1
+
+LLM-assisted build error fixer with proactive mode.
+
+```powershell
+pwsh -File gsd-validation-fixer.ps1 -RepoRoot "C:\repo" -RequirementIds @("REQ-001","REQ-002") [-MaxAttempts 10] [-PreValidate]
+```
+
+Applies 60+ regex namespace fixes (zero cost), then batches of 5 files to Sonnet for cross-file fixes.
+
+### V3 Library Modules
+
+| Module | Purpose |
+|--------|---------|
+| `v3/lib/modules/api-client.ps1` | Direct HTTP API client for all 7 models |
+| `v3/lib/modules/phase-orchestrator.ps1` | 10-phase convergence loop engine |
+| `v3/lib/modules/cost-tracker.ps1` | Per-phase, per-model, per-requirement cost tracking |
+| `v3/lib/modules/mock-data-detector.ps1` | Mock data + stub + placeholder scanner |
+| `v3/lib/modules/route-role-matrix.ps1` | RBAC route-role-guard matrix builder |
+
+### Key V3 Functions
+
+#### Invoke-MockDataScan
+
+```powershell
+$results = Invoke-MockDataScan -RepoRoot "C:\repo" [-OutputFile ".gsd/smoke-test/mock-data-scan.json"]
+# Returns: MockPatterns, StubImplementations, PlaceholderConfigs, Summary
+```
+
+Scans for 12 mock data patterns, stub implementations (empty functions, static hooks, fake services, NotImplementedException), and placeholder configs (connection strings, Azure AD, API URLs, secrets).
+
+#### Build-RouteRoleMatrix
+
+```powershell
+$matrix = Build-RouteRoleMatrix -RepoRoot "C:\repo" [-RouterFile "src/App.tsx"] [-RbacFile "..."] [-NavFile "..."]
+# Returns: Routes, Roles, RolePermissions, NavigationItems, Gaps, Summary
+```
+
+Auto-detects router, RBAC, and navigation files. Identifies gaps: unguarded routes, orphan nav items, hidden routes, empty roles.
+
+#### Initialize-CostTracker
+
+```powershell
+Initialize-CostTracker -Mode "feature_update" -BudgetCap 50.0 -GsdDir ".gsd"
+Add-ApiCallCost -Model "claude-sonnet-4-6" -Usage @{ input_tokens=1000; output_tokens=500 } -Phase "code-review"
+Test-BudgetAvailable [-EstimatedCost 2.0]  # Returns $true/$false, warns at 80%
+Save-CostSummary -GsdDir ".gsd"
+```
+
+#### Select-ModelForTask
+
+```powershell
+$model = Select-ModelForTask -Tier "cheap"  # Returns model from tier with fallback chain
+# Tiers: local, cheap, mid, premium
+```
+
 ## VS Code Integration
 
 After installation, two tasks are available via Ctrl+Shift+P -> "Run Task":

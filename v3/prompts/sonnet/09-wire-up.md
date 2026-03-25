@@ -43,6 +43,33 @@ Given the project structure, generated files, and requirements, verify and fix A
 - Verify health endpoint exists (`/api/health` or `/health`) and returns 200
 - Verify model/DTO property names match what frontend expects (casing, naming)
 
+### 1b. DI Registration Validation (Critical)
+
+This is the #1 cause of "builds but crashes at startup". Verify the FULL dependency graph:
+
+- **Transitive dependencies**: For every `AddScoped<IFoo, Foo>()`, check that `Foo`'s constructor parameters are ALSO registered. Walk the entire chain.
+- **IDbConnection**: Must be registered. Common pattern:
+  ```csharp
+  builder.Services.AddScoped<IDbConnection>(sp =>
+      new SqlConnection(builder.Configuration.GetConnectionString("DefaultConnection")));
+  ```
+  If ANY repository uses `IDbConnection` in its constructor and this is missing, the app will crash.
+- **IConnectionMultiplexer** (Redis): Must be registered if any service injects it:
+  ```csharp
+  builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+      ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")));
+  ```
+- **BlobServiceClient** (Azure Storage): Must be registered if any service injects it:
+  ```csharp
+  builder.Services.AddSingleton(new BlobServiceClient(
+      builder.Configuration.GetConnectionString("AzureBlobStorage")));
+  ```
+- **HttpClient registrations**: Services using `HttpClient` must use `AddHttpClient<T>()` not just `AddScoped<T>()`.
+- **Options pattern**: If any service injects `IOptions<T>`, verify `builder.Services.Configure<T>(builder.Configuration.GetSection("..."))` exists.
+- **AutoMapper / MediatR / FluentValidation**: If used, verify `AddAutoMapper()`, `AddMediatR()`, `AddValidatorsFromAssembly()` are called.
+
+**Verification method**: For each `AddScoped/AddTransient/AddSingleton` registration, open the implementation class, read its constructor, and confirm every parameter type is also registered. Report any missing registrations as `severity: "critical"`.
+
 ### 2. Frontend Wiring
 
 - Verify every page component is imported and routed in router/App.tsx

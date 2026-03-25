@@ -342,6 +342,140 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
 }
 
 # ============================================================
+# STARTUP VALIDATION (DI CHECK)
+# ============================================================
+
+# After build passes, try to start the app briefly to catch DI registration failures
+if ($overallPass -and $csprojFiles.Count -gt 0) {
+    Write-Log "--- Startup Validation (DI Check) ---"
+
+    # Find the main API project (prefer *.Api.csproj with Program.cs)
+    $mainCsproj = $csprojFiles | Where-Object {
+        $_.Name -match '\.Api\.csproj$' -and (Test-Path (Join-Path (Split-Path $_.FullName -Parent) "Program.cs"))
+    } | Select-Object -First 1
+    if (-not $mainCsproj) {
+        $mainCsproj = $csprojFiles | Where-Object {
+            Test-Path (Join-Path (Split-Path $_.FullName -Parent) "Program.cs")
+        } | Select-Object -First 1
+    }
+    if (-not $mainCsproj) { $mainCsproj = $csprojFiles[0] }
+
+    Write-Log "Running startup validation against $($mainCsproj.Name)..."
+
+    $startupJob = Start-Job -ScriptBlock {
+        param($CsprojPath)
+        $env:ASPNETCORE_ENVIRONMENT = "Development"
+        $env:ASPNETCORE_URLS = "http://localhost:0"  # random port to avoid conflicts
+        $output = & dotnet run --project $CsprojPath --no-build 2>&1
+        return $output -join "`n"
+    } -ArgumentList $mainCsproj.FullName
+
+    $completed = Wait-Job $startupJob -Timeout 15
+    if ($completed) {
+        $startupOutput = Receive-Job $startupJob
+        Remove-Job $startupJob -Force
+
+        # Check for DI resolution failures
+        $diFailure = $false
+        if ($startupOutput -match "Unable to resolve service|No service for type|InvalidOperationException.*registered|AggregateException.*resolution") {
+            $diFailure = $true
+            $missingServices = [regex]::Matches($startupOutput, "Unable to resolve service for type '([^']+)'") |
+                ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+            $noServiceTypes = [regex]::Matches($startupOutput, "No service for type '([^']+)'") |
+                ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+            $allMissing = @($missingServices) + @($noServiceTypes) | Sort-Object -Unique
+
+            Write-Log "STARTUP FAILED: $($allMissing.Count) missing DI registration(s)" -Level ERROR
+            foreach ($svc in $allMissing) {
+                Write-Log "  Missing: $svc" -Level ERROR
+            }
+
+            # Save DI errors for downstream fix
+            $diErrorFile = Join-Path $GsdDir "build-gate/di-errors.json"
+            $diErrorDir = Split-Path $diErrorFile -Parent
+            if (-not (Test-Path $diErrorDir)) { New-Item -ItemType Directory -Path $diErrorDir -Force | Out-Null }
+            @{
+                timestamp = (Get-Date -Format "o")
+                missing_services = $allMissing
+                raw_output = ($startupOutput | Select-Object -First 100) -join "`n"
+                project = $mainCsproj.Name
+            } | ConvertTo-Json -Depth 5 | Set-Content $diErrorFile -Encoding UTF8
+
+            # Attempt auto-fix: ask LLM to generate DI registrations
+            if ($attempt -le $MaxAttempts) {
+                $programCsPath = Join-Path (Split-Path $mainCsproj.FullName -Parent) "Program.cs"
+                $startupCsPath = Join-Path (Split-Path $mainCsproj.FullName -Parent) "Startup.cs"
+                $diContext = ""
+                if (Test-Path $programCsPath) {
+                    $diContext += "`n--- FILE: $programCsPath ---`n$(Get-Content $programCsPath -Raw)`n"
+                }
+                if (Test-Path $startupCsPath) {
+                    $diContext += "`n--- FILE: $startupCsPath ---`n$(Get-Content $startupCsPath -Raw)`n"
+                }
+
+                $diSystemPrompt = "You are a DI registration fixer for .NET 8. Given missing service types and the Program.cs/Startup.cs file, output ONLY a JSON array of fixes. Each fix: {""file_path"": ""absolute path"", ""old_text"": ""exact text to replace"", ""new_text"": ""replacement text""}. Add the missing AddScoped/AddTransient/AddSingleton registrations. Common fixes: IDbConnection -> SqlConnection, IConnectionMultiplexer -> ConnectionMultiplexer.Connect, BlobServiceClient -> new BlobServiceClient(connStr). No markdown, no explanation - just the JSON array."
+                $diUserMessage = "MISSING DI SERVICES:`n$($allMissing -join "`n")`n`nSTARTUP ERROR OUTPUT:`n$($startupOutput | Select-Object -First 50)`n`nSOURCE FILES:`n$diContext`n`nGenerate fixes as a JSON array."
+
+                Write-Log "Requesting DI fix from $FixModel..." -Level FIX
+                $fixJson = $null
+                if ($FixModel -eq "claude") {
+                    $result = Invoke-SonnetApi -SystemPrompt $diSystemPrompt -UserMessage $diUserMessage -MaxTokens 8192 -Phase "build-gate-di-fix"
+                    if ($result -and $result.Success) { $fixJson = $result.Text }
+                } else {
+                    $result = Invoke-CodexMiniApi -SystemPrompt $diSystemPrompt -UserMessage $diUserMessage -MaxTokens 8192 -Phase "build-gate-di-fix"
+                    if ($result -and $result.Success) { $fixJson = $result.Text }
+                }
+
+                if ($fixJson) {
+                    $fixJson = $fixJson.Trim()
+                    $fixJson = $fixJson -replace '(?s)^```(?:json)?\s*\n', '' -replace '\n```\s*$', ''
+                    if ($fixJson -match '(?s)(\[[\s\S]*\])') { $fixJson = $matches[1] }
+                    try {
+                        $diFixes = $fixJson | ConvertFrom-Json
+                        $applied = Apply-Fixes -Fixes @($diFixes)
+                        Write-Log "Applied $applied DI fix(es)" -Level FIX
+
+                        if ($applied -gt 0) {
+                            # Re-build after DI fixes
+                            Write-Log "Re-building after DI fixes..."
+                            $rebuildResult = Invoke-DotnetBuild -CsprojPath $mainCsproj.FullName
+                            if ($rebuildResult.success) {
+                                Write-Log "Rebuild after DI fix: PASS" -Level OK
+                            } else {
+                                Write-Log "Rebuild after DI fix: FAIL - $($rebuildResult.errors.Count) error(s)" -Level ERROR
+                                $overallPass = $false
+                            }
+                        }
+                    } catch {
+                        Write-Log "Failed to parse DI fix JSON: $($_.Exception.Message)" -Level WARN
+                    }
+                } else {
+                    Write-Log "DI fix model returned no response" -Level WARN
+                }
+            }
+
+            $overallPass = $false
+        } elseif ($startupOutput -match "Unhandled exception|Application startup exception|Host terminated unexpectedly") {
+            Write-Log "STARTUP FAILED: Application threw exception during startup" -Level ERROR
+            # Log first 10 lines of error
+            $errorLines = ($startupOutput -split "`n" | Where-Object { $_ -match 'Exception|Error|Unhandled|terminated' } | Select-Object -First 10)
+            foreach ($line in $errorLines) {
+                Write-Log "  $line" -Level ERROR
+            }
+            $overallPass = $false
+        } else {
+            # Process exited but no DI error — could be other startup failure
+            Write-Log "Startup process exited (checking output)..." -Level WARN
+        }
+    } else {
+        # App is still running after 15s — means it started successfully (no crash)
+        Stop-Job $startupJob
+        Remove-Job $startupJob -Force
+        Write-Log "Startup validation: PASS (no DI errors detected)" -Level OK
+    }
+}
+
+# ============================================================
 # OUTPUT REPORT
 # ============================================================
 
@@ -366,6 +500,11 @@ $report = @{
         results = @($npmResults | ForEach-Object {
             @{ project = $_.project; success = $_.success; error_count = $_.errors.Count }
         })
+    }
+    di_check = @{
+        ran = ($overallPass -or $diFailure)
+        passed = (-not $diFailure)
+        missing_services = if ($allMissing) { @($allMissing) } else { @() }
     }
     fix_model = $FixModel
     log_file = $logFile

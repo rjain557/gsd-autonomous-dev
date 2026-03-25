@@ -1469,3 +1469,176 @@ Controls automatic git commit behavior during pipeline execution.
 - Git commits are always local; the pipeline does not push to remote unless configured separately
 - Commit messages include the iteration number, health score, and number of requirements processed
 - If a git commit fails (e.g., due to lock contention), the pipeline logs a warning and continues without committing
+
+### existing_codebase_mode
+
+Controls behavior when running `gsd-existing.ps1` for existing codebases.
+
+```json
+{
+  "existing_codebase_mode": {
+    "deep_extraction": true,
+    "code_inventory_on_start": true,
+    "verify_by_reading_code": true,
+    "skip_satisfied_in_execute": true,
+    "stub_detection_patterns": ["TODO", "FILL", "NotImplementedException", "throw new NotImplementedException"]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| deep_extraction | boolean | true | Use extended token limits (16K, 32K auto-retry) for large spec sets |
+| code_inventory_on_start | boolean | true | Scan entire codebase before satisfaction verification |
+| verify_by_reading_code | boolean | true | Read actual code to verify satisfaction (not just file existence) |
+| skip_satisfied_in_execute | boolean | true | Skip already-satisfied requirements in execute phase |
+| stub_detection_patterns | string[] | ["TODO", "FILL", "NotImplementedException", "throw new NotImplementedException"] | Patterns that indicate incomplete implementation |
+
+### smoke_test
+
+Controls smoke test behavior and tiered cost optimization.
+
+```json
+{
+  "smoke_test": {
+    "max_cycles": 3,
+    "fix_model": "claude",
+    "cost_optimize": true,
+    "budget_cap_usd": 10.0
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| max_cycles | integer | 3 | Maximum fix attempts before stopping |
+| fix_model | string | "claude" | Model for generating fixes: "claude" or "codex" |
+| cost_optimize | boolean | true | Enable tiered model routing (local/cheap/mid/premium) |
+| budget_cap_usd | number | 10.0 | Maximum budget for smoke test runs |
+
+### model_tiers
+
+Defines the 4-tier model routing for smoke testing. Configured in `v3/config/model-tiers.json`.
+
+```json
+{
+  "tiers": {
+    "local": {
+      "cost_per_1m_tokens": 0,
+      "tasks": ["build_validation", "mock_data_scan", "route_parsing", "rbac_matrix", "placeholder_detection"]
+    },
+    "cheap": {
+      "cost_per_1m_tokens": 0.21,
+      "models": ["deepseek", "kimi", "minimax"],
+      "fallback": "codex",
+      "tasks": ["db_schema_check", "module_completeness", "config_validation"]
+    },
+    "mid": {
+      "cost_per_1m_tokens": 1.50,
+      "models": ["codex"],
+      "tasks": ["api_wiring_check", "auth_flow_check", "di_registration_check"]
+    },
+    "premium": {
+      "cost_per_1m_tokens": 9.00,
+      "models": ["claude"],
+      "tasks": ["security_review", "gap_report", "fix_generation", "architecture_analysis"]
+    }
+  }
+}
+```
+
+### code_review
+
+Controls 3-model code review behavior.
+
+```json
+{
+  "code_review": {
+    "models": "claude,codex,gemini",
+    "fix_model": "claude",
+    "max_cycles": 5,
+    "min_severity_to_fix": "medium",
+    "max_reqs": 50,
+    "budget_cap_usd": 20.0
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| models | string | "claude,codex,gemini" | Comma-separated list of review models |
+| fix_model | string | "claude" | Model for generating fixes |
+| max_cycles | integer | 5 | Maximum review-fix iterations |
+| min_severity_to_fix | string | "medium" | Minimum severity level to auto-fix (critical\|high\|medium\|low) |
+| max_reqs | integer | 50 | Maximum requirements per review run |
+| budget_cap_usd | number | 20.0 | Maximum budget for code review |
+
+### full_pipeline
+
+Controls the full pipeline orchestrator phases.
+
+```json
+{
+  "full_pipeline": {
+    "max_cycles": 3,
+    "max_reqs": 50,
+    "skip_wireup": false,
+    "skip_codereview": false,
+    "skip_smoketest": false
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| max_cycles | integer | 3 | Review-fix cycles per phase |
+| max_reqs | integer | 50 | Requirements per batch |
+| skip_wireup | boolean | false | Skip wire-up phase |
+| skip_codereview | boolean | false | Skip code review phase |
+| skip_smoketest | boolean | false | Skip smoke test phase |
+
+### validators
+
+Controls local validation behavior.
+
+```json
+{
+  "validators": {
+    "local_validate": {
+      "dotnet_build_required": true,
+      "npm_build_required": true,
+      "test_run_required": false,
+      "max_errors_before_escalate": 20
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| dotnet_build_required | boolean | true | Run `dotnet build` during local validation |
+| npm_build_required | boolean | true | Run `npm run build` during local validation |
+| test_run_required | boolean | false | Run unit tests during local validation |
+| max_errors_before_escalate | integer | 20 | Escalate to LLM fixer if more than this many build errors |
+
+### cost_tracking
+
+Controls per-requirement cost alerts and budget enforcement.
+
+```json
+{
+  "cost_tracking": {
+    "enabled": true,
+    "per_req_warn_threshold": 2.0,
+    "per_req_escalate_threshold": 5.0,
+    "per_req_hard_cap": 10.0
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable cost tracking |
+| per_req_warn_threshold | number | 2.0 | Warn when a single requirement exceeds this cost ($) |
+| per_req_escalate_threshold | number | 5.0 | Escalate (flag for review) when requirement exceeds this cost ($) |
+| per_req_hard_cap | number | 10.0 | Hard cap: defer requirement automatically when this cost is reached ($) |

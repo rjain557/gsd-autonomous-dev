@@ -1214,3 +1214,181 @@ gsd-blueprint -ThrottleSeconds 60
 ```
 
 Each project auto-subscribes to its own ntfy topic. Subscribe to all three in the ntfy app to monitor them simultaneously.
+
+---
+
+## V3 Pipeline Issues
+
+### Smoke Test Failures
+
+#### Build validation fails
+
+```
+Phase 1 FAILED: dotnet build returned errors
+```
+
+1. Check the smoke test log at `~/.gsd-global/logs/{repo}/smoketest-{timestamp}.log`
+2. Common causes: missing NuGet packages, wrong .NET SDK version, missing project references
+3. Fix: run `dotnet restore` manually, verify SDK version with `dotnet --version`
+4. Skip build validation temporarily: `-SkipBuild`
+
+#### Database validation fails without connection string
+
+```
+Phase 2 SKIPPED: No ConnectionString provided
+```
+
+DB validation requires a live SQL Server connection. Pass `-ConnectionString "Server=.;Database=MyDb;Trusted_Connection=true"` to enable.
+
+#### Mock data detected in generated code
+
+```
+Phase 7: 15 mock data patterns found (3 critical, 5 high, 7 medium)
+```
+
+This is expected for freshly generated code. The fix model (Claude by default) will auto-fix critical/high patterns. For persistent mock data:
+
+1. Check `.gsd/smoke-test/mock-data-scan.json` for specific patterns
+2. Verify that real API endpoints exist for each mock hook
+3. Manual fix: replace `useState([{...}])` with `useQuery` + real API calls
+
+#### Route-role matrix shows unguarded routes
+
+```
+Phase 8: 5 unguarded routes found (HIGH severity)
+```
+
+1. Check `.gsd/smoke-test/route-role-matrix.json` for which routes are unguarded
+2. Verify RBAC config exists at `src/config/rbac.ts` or similar
+3. Add `ProtectedRoute` or `RequireAuth` wrappers to exposed routes
+4. Public routes (login, register, public pages) should be explicitly marked as intentionally unguarded
+
+### Wire-Up Issues
+
+#### Mock data detector false positives
+
+The detector uses pattern matching and may flag intentional test data or example code. Review `.gsd/smoke-test/mock-data-scan.json` and filter by severity.
+
+Exclude directories with `-ExcludeDirs @("node_modules", ".git", "bin", "obj", "__tests__")`.
+
+#### Route-role matrix can't find router file
+
+```
+Missing file: Router file not found
+```
+
+The matrix builder checks standard locations (`src/App.tsx`, `src/router.tsx`, etc.). If your router is in a non-standard location, specify it explicitly:
+
+```powershell
+Build-RouteRoleMatrix -RepoRoot "C:\repo" -RouterFile "src/app/AppRouter.tsx"
+```
+
+### Code Review Issues
+
+#### All 3 models disagree on severity
+
+When Claude, Codex, and Gemini report different severities for the same issue, the review system uses the maximum severity. This is conservative by design.
+
+If too many false positives: use `-MinSeverityToFix high` to only auto-fix high/critical issues.
+
+#### Review cycles not converging
+
+```
+Cycle 5/5: Still 12 issues remaining
+```
+
+1. Check `.gsd/code-review/review-report.json` for recurring issues
+2. Common cause: the fix model generates code that introduces new issues
+3. Try: `-FixModel codex` (switch from Claude to Codex for fixes)
+4. Or: `-ReviewOnly` to just report without attempting fixes
+
+#### Code review budget exceeded
+
+The default budget for code review is $20. For large codebases:
+
+1. Use `-MaxReqs 25` to reduce batch size
+2. Use `-SkipReqs N` to resume from where you left off
+3. Or increase budget in config: `code_review.budget_cap_usd`
+
+### Tiered Model Fallback Issues
+
+#### CHEAP tier models all failing
+
+```
+DeepSeek: rate limited, Kimi: rate limited, MiniMax: rate limited
+Falling back to MID tier (Codex Mini)
+```
+
+All cheap-tier models are rate limited simultaneously. This is rare but possible during heavy usage. The system automatically falls back to Codex Mini (MID tier). Cost will be slightly higher for those tasks.
+
+Verify API keys are set:
+```powershell
+[System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
+[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "User")
+[System.Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "User")
+```
+
+#### GLM-5 connection failures (from US)
+
+GLM-5 (Zhipu AI) requires VPN access from the US. If you see connection timeouts, either:
+1. Set up a VPN to China
+2. Remove GLM_API_KEY to exclude GLM-5 from the pool (the pipeline will use the remaining 6 models)
+
+### Full Pipeline Issues
+
+#### Pipeline hangs at wire-up phase
+
+1. Check log at `~/.gsd-global/logs/{repo}/full-pipeline-{timestamp}.log`
+2. Wire-up scans can be slow on large codebases. Wait for completion.
+3. Skip wire-up: `-SkipWireUp` or `-StartFrom codereview`
+
+#### Resuming after partial completion
+
+```powershell
+# Resume from smoke test (skip completed wire-up and code review)
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -StartFrom smoketest
+```
+
+### Centralized Logging Issues
+
+#### Logs not appearing
+
+Verify the log directory exists:
+```powershell
+ls "$env:USERPROFILE\.gsd-global\logs\"
+```
+
+If missing, the first pipeline run will create it automatically.
+
+#### Iteration counter reset
+
+The iteration counter at `~/.gsd-global/logs/{repo}/iteration-counter.json` persists across pipeline restarts. If it gets corrupted, delete it and the pipeline will start a new counter.
+
+### Decomposition Spiral
+
+#### Requirement count keeps growing
+
+```
+Iteration 10: 527 reqs → Iteration 15: 890 reqs → Iteration 20: 1400 reqs
+```
+
+This is a decomposition spiral — requirements failing on blocked files get decomposed into sub-requirements that also need the same blocked files.
+
+Fix:
+1. Check `.gsd/requirements/blocked-files-skip.json` for permanently blocked files
+2. Unblock key shared files (App.tsx, Program.cs) by removing them from the skip list
+3. Use direct fixes via Claude Code to update blocked files
+4. The decomposition budget (max 20/iter, depth ≤4) limits the growth rate
+
+### Anti-Plateau Stuck
+
+#### Pipeline force-breaks after 5 zero-delta iterations
+
+```
+[ANTI-PLATEAU] Force break: 5+ consecutive zero-delta
+```
+
+1. Review the deferred requirements in the log
+2. Common causes: blocked files, circular dependencies, spec ambiguity
+3. Fix blocked files directly, then re-run with `-StartIteration N`
+4. Consider running `gsd-existing.ps1` to re-verify satisfaction

@@ -1505,3 +1505,95 @@ The pipeline extracts requirements exclusively from specification documents, nev
 ### Matrix Initialization
 
 The deep-extract phase seeds the requirements matrix with a `requirements` array plus `total` and `summary` properties. All downstream phases use safe property access (`Add-Member` with existence checks) to prevent crashes on fresh or partially-initialized matrices.
+
+## Full Pipeline Orchestrator
+
+The Full Pipeline (`gsd-full-pipeline.ps1`) is the post-convergence quality gate that takes code from "converged" to "production-ready" through 5 sequential phases:
+
+```
+WIRE-UP → CODE REVIEW → SMOKE TEST → FINAL REVIEW → HANDOFF
+```
+
+### Phase Architecture
+
+| Phase | Purpose | Tools |
+|-------|---------|-------|
+| Wire-Up | Detect integration gaps (mock data, missing DI, unguarded routes) | mock-data-detector.ps1, route-role-matrix.ps1 |
+| Code Review | 3-model consensus review (Claude + Codex + Gemini) with auto-fix | gsd-codereview.ps1 |
+| Smoke Test | 9-phase integration validation with tiered cost optimization | gsd-smoketest.ps1 |
+| Final Review | Post-smoke-test re-review at lower severity threshold | gsd-codereview.ps1 |
+| Handoff | Generate PIPELINE-HANDOFF.md with all results | Built-in |
+
+The pipeline is resumable via `-StartFrom` parameter and logs to `~/.gsd-global/logs/{repo}/full-pipeline-{timestamp}.log`.
+
+## Smoke Testing (9-Phase Integration Validation)
+
+The smoke test (`gsd-smoketest.ps1`) verifies runtime integration through 9 phases:
+
+| Phase | Tier | Cost | Validates |
+|-------|------|------|-----------|
+| Build Validation | LOCAL | $0 | dotnet build + npm run build |
+| Database Validation | CHEAP | ~$0.05 | Tables, SPs, FKs, migrations |
+| API Smoke Test | MID | ~$0.10 | Controllers, middleware, DI, CORS |
+| Frontend Routes | LOCAL | $0 | Route-component mapping, lazy loads |
+| Auth Flow | MID | ~$0.10 | JWT/Azure AD, guards, token refresh |
+| Module Completeness | CHEAP | ~$0.05 | API + frontend + DB per module |
+| Mock Data Detection | LOCAL | $0 | Hardcoded data, TODOs, placeholders |
+| RBAC Matrix | LOCAL | $0 | Route → role → guard mapping |
+| Integration Gap Report | PREMIUM | ~$0.50 | Aggregated analysis + fix recommendations |
+
+Total cost per run: ~$0.50-1.00 with tiered optimization (vs $5-8 without).
+
+### Tiered LLM Cost Optimization
+
+Four tiers route each task to the cheapest suitable model:
+
+| Tier | Models | Cost/1M Tokens | Tasks |
+|------|--------|---------------|-------|
+| LOCAL | None | $0 | Build, route parsing, RBAC matrix, mock data scan |
+| CHEAP | DeepSeek, Kimi, MiniMax | $0.14-0.21 | DB schema, module completeness, config validation |
+| MID | Codex Mini | $1.50 | API wiring, auth flow, DI registration |
+| PREMIUM | Claude Sonnet | $9.00 | Security review, gap report, fix generation |
+
+Fallback chain: CHEAP models fall back to MID tier if all cheap models fail.
+
+## Wire-Up Phase (Integration Gap Prevention)
+
+Detects integration gaps that code review cannot catch:
+
+- **Mock Data Detector**: Scans for 12 patterns (hardcoded useState, mock constants, TODO/FIXME, placeholder URLs, fake credentials, mock imports, Promise.resolve stubs)
+- **Route-Role Matrix**: Maps every route → role → guard. Identifies unguarded routes, orphan navigation, unused roles, missing config files
+- **Backend Wiring**: Controllers discoverable, services in DI, connection strings real, auth middleware ordered, CORS configured
+- **Frontend Wiring**: Pages routed in App.tsx, API base URL from env, auth provider wraps app, protected routes guarded
+- **Database Wiring**: Connection strings match real DB, stored procedures exist, parameter names/types match
+- **Auth Wiring**: Real Azure AD/JWT values, MSAL configured, token refresh exists, logout clears tokens
+
+## 3-Model Code Review
+
+The code review (`gsd-codereview.ps1`) uses 3-model consensus:
+
+1. Claude, Codex, and Gemini review the same requirements independently
+2. Issues found by 2+ models receive higher confidence
+3. Fix model (Claude by default) generates corrections for critical/high issues
+4. Re-review after fixes until clean or MaxCycles (5) reached
+
+Output: `.gsd/code-review/review-report.json` + `review-summary.md`
+
+## LLM Pre-Validate Fix Phase
+
+The validation fixer (`gsd-validation-fixer.ps1`) runs before local build to proactively fix errors:
+
+1. Quick namespace fixes (60+ regex patterns, zero LLM cost)
+2. Sonnet reviews recently generated files in batches of 5
+3. Multi-file grouping for cross-file fixes
+4. Local build runs as confirmation, not discovery
+
+## Centralized Logging
+
+All pipeline runs write to `~/.gsd-global/logs/{repo-name}/`:
+
+- **Per-run logs**: `run-{timestamp}.log` + `.json` metadata
+- **Per-iteration metrics**: `iterations/iter-NNNN.json` with health, cost, duration, batch info
+- **Persistent iteration counter**: `iteration-counter.json` survives pipeline restarts
+- **Tool-specific logs**: `smoketest-{ts}.log`, `codereview-{ts}.log`, `full-pipeline-{ts}.log`
+- **Supervision insights**: `~/.gsd-global/logs/supervision-insights.md` for cross-session learning
