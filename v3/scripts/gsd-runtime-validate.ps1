@@ -352,7 +352,7 @@ if ($backendStarted) {
         $checkUrl = "${backendUrl}${endpoint}"
         $checkResult = @{ endpoint = $endpoint; url = $checkUrl; status = "unknown"; status_code = 0 }
         try {
-            $curlCode = [int](& curl -s -o /dev/null -w '%{http_code}' --max-time 10 $checkUrl 2>$null)
+            $curlCode = [int](& curl.exe -s -o /dev/null -w '%{http_code}' --max-time 10 $checkUrl 2>$null)
             $response = @{ StatusCode = $curlCode }
             $checkResult.status_code = $response.StatusCode
             $checkResult.status = if ($response.StatusCode -eq 200) { "pass" } else { "warn" }
@@ -504,7 +504,7 @@ if ($backendStarted -and $discoveredEndpoints.Count -gt 0) {
 
         try {
             # Use curl for reliable HTTP status detection (Invoke-WebRequest has timeout issues on Windows)
-            $curlResult = & curl -s -o /dev/null -w '%{http_code}' --max-time 5 $testUrl 2>$null
+            $curlResult = & curl.exe -s -o /dev/null -w '%{http_code}' --max-time 5 $testUrl 2>$null
             $statusCode = [int]$curlResult
             $endpointResult.status_code = $statusCode
 
@@ -522,7 +522,7 @@ if ($backendStarted -and $discoveredEndpoints.Count -gt 0) {
             if ($statusCode -eq 401 -and $defaultToken) {
                 # Retry with auth using curl
                 $endpointResult.auth_required = $true
-                $retryCode = [int](& curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $defaultToken" $testUrl 2>$null)
+                $retryCode = [int](& curl.exe -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $defaultToken" $testUrl 2>$null)
                 $endpointResult.status_code = $retryCode
                 if ($retryCode -ge 200 -and $retryCode -lt 400) {
                     $endpointResult.status = "pass_with_auth"
