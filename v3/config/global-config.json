@@ -264,6 +264,14 @@
         }
     },
 
+    "database": {
+        "default_server": "localhost",
+        "default_user": "sa",
+        "default_password": "Support911",
+        "default_port": 1433,
+        "connection_template": "Data Source={server};Initial Catalog={database};User ID={user};Password={password};Encrypt=True;TrustServerCertificate=True"
+    },
+
     "patterns": {
         "backend": ".NET 8 with Dapper",
         "database": "SQL Server stored procedures only",

@@ -1,20 +1,21 @@
 <#
 .SYNOPSIS
-    GSD V4 Full Pipeline - 9-phase pipeline from convergence to dev handoff
+    GSD V4 Full Pipeline - 10-phase pipeline from convergence to dev handoff
 .DESCRIPTION
     Orchestrates all pipeline phases to take a codebase from requirements convergence
     through build verification, code review, runtime validation, and dev handoff.
 
     Phases:
-      1. CONVERGENCE    - Run convergence loop (skip if already 100% health)
-      2. BUILD GATE     - Compile check + auto-fix (dotnet build + npm run build)
-      3. WIRE-UP        - Mock data scan, route-role matrix, wire-up fixes
-      4. CODE REVIEW    - 3-model review (Claude+Codex+Gemini) + auto-fix
-      5. BUILD VERIFY   - Re-run build gate to confirm review fixes compile
-      6. RUNTIME        - Start services, test endpoints, validate CRUD
-      7. SMOKE TEST     - 9-phase integration validation
-      8. FINAL REVIEW   - Post-smoke-test verification (fix all severities)
-      9. DEV HANDOFF    - Generate PIPELINE-HANDOFF.md
+      1.  CONVERGENCE    - Run convergence loop (skip if already 100% health)
+      1.5 DATABASE-SETUP - Discover and execute SQL scripts (tables, SPs, functions, seeds)
+      2.  BUILD GATE     - Compile check + auto-fix (dotnet build + npm run build)
+      3.  WIRE-UP        - Mock data scan, route-role matrix, wire-up fixes
+      4.  CODE REVIEW    - 3-model review (Claude+Codex+Gemini) + auto-fix
+      5.  BUILD VERIFY   - Re-run build gate to confirm review fixes compile
+      6.  RUNTIME        - Start services, test endpoints, validate CRUD
+      7.  SMOKE TEST     - 9-phase integration validation
+      8.  FINAL REVIEW   - Post-smoke-test verification (fix all severities)
+      9.  DEV HANDOFF    - Generate PIPELINE-HANDOFF.md
 
     Usage:
       pwsh -File gsd-full-pipeline.ps1 -RepoRoot "D:\repos\project"
@@ -29,7 +30,7 @@
 .PARAMETER TestUsers
     JSON array of test user credentials (optional)
 .PARAMETER StartFrom
-    Resume from a specific phase: convergence, buildgate, wireup, codereview, buildverify, runtime, smoketest, finalreview, handoff
+    Resume from a specific phase: convergence, databasesetup, buildgate, wireup, codereview, buildverify, runtime, smoketest, finalreview, handoff
 .PARAMETER MaxCycles
     Maximum review-fix cycles per phase (default: 3)
 .PARAMETER MaxReqs
@@ -40,6 +41,8 @@
     Port for the frontend dev server (default: 3000)
 .PARAMETER SkipConvergence
     Skip the convergence phase
+.PARAMETER SkipDatabaseSetup
+    Skip the database setup phase
 .PARAMETER SkipBuildGate
     Skip the build gate phase
 .PARAMETER SkipWireUp
@@ -52,6 +55,14 @@
     Skip the smoke test phase
 .PARAMETER SkipFinalReview
     Skip the final review phase
+.PARAMETER DbServer
+    Database server hostname (default: localhost)
+.PARAMETER DbUser
+    Database user (default: sa)
+.PARAMETER DbPassword
+    Database password (default: Support911)
+.PARAMETER DbName
+    Database name (default: derived from repo name)
 #>
 
 [CmdletBinding()]
@@ -60,19 +71,24 @@ param(
     [string]$ConnectionString,
     [string]$AzureAdConfig,
     [string]$TestUsers,
-    [ValidateSet("convergence","buildgate","wireup","codereview","buildverify","runtime","smoketest","finalreview","handoff")]
+    [ValidateSet("convergence","databasesetup","buildgate","wireup","codereview","buildverify","runtime","smoketest","finalreview","handoff")]
     [string]$StartFrom = "convergence",
     [int]$MaxCycles = 3,
     [int]$MaxReqs = 50,
     [int]$BackendPort = 5000,
     [int]$FrontendPort = 3000,
     [switch]$SkipConvergence,
+    [switch]$SkipDatabaseSetup,
     [switch]$SkipBuildGate,
     [switch]$SkipWireUp,
     [switch]$SkipCodeReview,
     [switch]$SkipRuntime,
     [switch]$SkipSmokeTest,
-    [switch]$SkipFinalReview
+    [switch]$SkipFinalReview,
+    [string]$DbServer = "localhost",
+    [string]$DbUser = "sa",
+    [string]$DbPassword = "Support911",
+    [string]$DbName = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -113,7 +129,7 @@ function Write-PipelineLog {
 
 $phaseResults = @{}
 $startTime = Get-Date
-$phases = @("convergence", "buildgate", "wireup", "codereview", "buildverify", "runtime", "smoketest", "finalreview", "handoff")
+$phases = @("convergence", "databasesetup", "buildgate", "wireup", "codereview", "buildverify", "runtime", "smoketest", "finalreview", "handoff")
 $startIndex = $phases.IndexOf($StartFrom)
 
 function Start-Phase {
@@ -192,10 +208,52 @@ if ($startIndex -le 0 -and -not $SkipConvergence) {
 }
 
 # ============================================================
+# PHASE 1.5: DATABASE SETUP
+# ============================================================
+
+if ($startIndex -le 1 -and -not $SkipDatabaseSetup) {
+    $ps = Start-Phase "DATABASE-SETUP" "Discover and execute SQL scripts (tables, SPs, functions, seeds)"
+
+    # Build connection string if not provided
+    $dbConnStr = $ConnectionString
+    if (-not $dbConnStr) {
+        $effectiveDbName = if ($DbName) { $DbName } else { ($repoName -replace '[^a-zA-Z0-9]', '') }
+        $dbConnStr = "Data Source=$DbServer;Initial Catalog=$effectiveDbName;User ID=$DbUser;Password=$DbPassword;Encrypt=True;TrustServerCertificate=True"
+        Write-PipelineLog "Built connection string for database: $effectiveDbName on $DbServer"
+    }
+
+    $dbSetupScript = Join-Path $ScriptsDir "gsd-database-setup.ps1"
+    if (Test-Path $dbSetupScript) {
+        & pwsh -File $dbSetupScript -RepoRoot $RepoRoot -ConnectionString $dbConnStr -FixModel deepseek -SkipIfExists
+
+        $dbReport = Join-Path $GsdDir "database-setup\database-setup-report.json"
+        if (Test-Path $dbReport) {
+            $dbData = Get-Content $dbReport -Raw | ConvertFrom-Json
+            if ($dbData.status -eq "skipped") {
+                Complete-Phase "DATABASE-SETUP" $ps "SKIP" $dbData.reason
+            } elseif ($dbData.status -eq "pass") {
+                $v = $dbData.verification
+                Complete-Phase "DATABASE-SETUP" $ps "PASS" "Tables: $($v.tables), SPs: $($v.procedures), Functions: $($v.functions)"
+            } elseif ($dbData.status -eq "partial") {
+                $s = $dbData.summary
+                Complete-Phase "DATABASE-SETUP" $ps "WARN" "$($s.succeeded) OK, $($s.fixed) fixed, $($s.failed) failed"
+            } else {
+                Complete-Phase "DATABASE-SETUP" $ps "FAIL" "Database setup failed"
+            }
+        } else {
+            Complete-Phase "DATABASE-SETUP" $ps "WARN" "Report not found"
+        }
+    } else {
+        Write-PipelineLog "gsd-database-setup.ps1 not found" -Level ERROR
+        Complete-Phase "DATABASE-SETUP" $ps "SKIP" "Script not found"
+    }
+}
+
+# ============================================================
 # PHASE 2: BUILD GATE
 # ============================================================
 
-if ($startIndex -le 1 -and -not $SkipBuildGate) {
+if ($startIndex -le 2 -and -not $SkipBuildGate) {
     $ps = Start-Phase "BUILD-GATE" "Compile check + auto-fix (dotnet build + npm run build)"
 
     $buildGateScript = Join-Path $ScriptsDir "gsd-build-gate.ps1"
@@ -220,7 +278,7 @@ if ($startIndex -le 1 -and -not $SkipBuildGate) {
 # PHASE 3: WIRE-UP
 # ============================================================
 
-if ($startIndex -le 2 -and -not $SkipWireUp) {
+if ($startIndex -le 3 -and -not $SkipWireUp) {
     $ps = Start-Phase "WIRE-UP" "Mock data scan, route-role matrix, integration wiring"
 
     # Mock data scan (local, free)
@@ -270,7 +328,7 @@ if ($startIndex -le 2 -and -not $SkipWireUp) {
 # PHASE 4: CODE REVIEW
 # ============================================================
 
-if ($startIndex -le 3 -and -not $SkipCodeReview) {
+if ($startIndex -le 4 -and -not $SkipCodeReview) {
     $ps = Start-Phase "CODE-REVIEW" "3-model review (Claude+Codex+Gemini) with auto-fix"
 
     & pwsh -File (Join-Path $ScriptsDir "gsd-codereview.ps1") `
@@ -291,7 +349,7 @@ if ($startIndex -le 3 -and -not $SkipCodeReview) {
 # PHASE 5: BUILD VERIFY
 # ============================================================
 
-if ($startIndex -le 4 -and -not $SkipBuildGate) {
+if ($startIndex -le 5 -and -not $SkipBuildGate) {
     $ps = Start-Phase "BUILD-VERIFY" "Re-run build gate to confirm review fixes compile"
 
     $buildGateScript = Join-Path $ScriptsDir "gsd-build-gate.ps1"
@@ -350,7 +408,7 @@ if (-not $buildPassed) {
     }
 }
 
-if ($startIndex -le 5 -and -not $SkipRuntime -and ($buildPassed -or $startIndex -eq 5)) {
+if ($startIndex -le 6 -and -not $SkipRuntime -and ($buildPassed -or $startIndex -eq 6)) {
     $ps = Start-Phase "RUNTIME" "Start services, test endpoints, validate CRUD"
 
     $runtimeScript = Join-Path $ScriptsDir "gsd-runtime-validate.ps1"
@@ -382,7 +440,7 @@ if ($startIndex -le 5 -and -not $SkipRuntime -and ($buildPassed -or $startIndex 
 # PHASE 7: SMOKE TEST
 # ============================================================
 
-if ($startIndex -le 6 -and -not $SkipSmokeTest) {
+if ($startIndex -le 7 -and -not $SkipSmokeTest) {
     $ps = Start-Phase "SMOKE-TEST" "9-phase integration validation (cost-optimized)"
 
     $stScript = Join-Path $ScriptsDir "gsd-smoketest.ps1"
@@ -413,7 +471,7 @@ if ($startIndex -le 6 -and -not $SkipSmokeTest) {
 # PHASE 8: FINAL REVIEW
 # ============================================================
 
-if ($startIndex -le 7 -and -not $SkipFinalReview) {
+if ($startIndex -le 8 -and -not $SkipFinalReview) {
     $ps = Start-Phase "FINAL-REVIEW" "Post-smoke-test verification (fix all severities)"
 
     & pwsh -File (Join-Path $ScriptsDir "gsd-codereview.ps1") `
@@ -434,7 +492,7 @@ if ($startIndex -le 7 -and -not $SkipFinalReview) {
 # PHASE 9: DEV HANDOFF
 # ============================================================
 
-if ($startIndex -le 8) {
+if ($startIndex -le 9) {
     $ps = Start-Phase "DEV-HANDOFF" "Generate handoff documentation"
 
     $totalDuration = (Get-Date) - $startTime
@@ -445,7 +503,7 @@ if ($startIndex -le 8) {
     $handoffDoc += "|-------|--------|----------|---------|`n"
 
     foreach ($phaseName in $phases) {
-        $key = $phaseName.ToUpper() -replace 'BUILDGATE','BUILD-GATE' -replace 'BUILDVERIFY','BUILD-VERIFY' -replace 'CODEREVIEW','CODE-REVIEW' -replace 'SMOKETEST','SMOKE-TEST' -replace 'FINALREVIEW','FINAL-REVIEW'
+        $key = $phaseName.ToUpper() -replace 'DATABASESETUP','DATABASE-SETUP' -replace 'BUILDGATE','BUILD-GATE' -replace 'BUILDVERIFY','BUILD-VERIFY' -replace 'CODEREVIEW','CODE-REVIEW' -replace 'SMOKETEST','SMOKE-TEST' -replace 'FINALREVIEW','FINAL-REVIEW'
         # Check both formats
         $r = $null
         foreach ($k in $phaseResults.Keys) {
@@ -459,6 +517,7 @@ if ($startIndex -le 8) {
     $handoffDoc += "`n## Total Duration: $([math]::Round($totalDuration.TotalMinutes, 1)) minutes`n`n"
 
     $handoffDoc += "## Output Files`n"
+    $handoffDoc += "- Database Setup: .gsd/database-setup/database-setup-report.json`n"
     $handoffDoc += "- Build Gate: .gsd/build-gate/build-gate-report.json`n"
     $handoffDoc += "- Code Review: .gsd/code-review/review-summary.md`n"
     $handoffDoc += "- Runtime Validation: .gsd/runtime-validation/runtime-validation-summary.md`n"
