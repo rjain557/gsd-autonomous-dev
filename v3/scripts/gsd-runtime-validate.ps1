@@ -163,10 +163,17 @@ $csprojFiles = @(Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -File
 
 $backendStarted = $false
 if ($csprojFiles.Count -gt 0) {
-    # Pick the main project (prefer one with Program.cs nearby)
+    # Pick the main API project (prefer *.Api.csproj with Program.cs nearby)
     $mainCsproj = $csprojFiles | Where-Object {
-        Test-Path (Join-Path (Split-Path $_.FullName -Parent) "Program.cs")
+        $_.Name -match '\.Api\.csproj$' -and (Test-Path (Join-Path (Split-Path $_.FullName -Parent) "Program.cs"))
     } | Select-Object -First 1
+
+    # Fallback: any csproj with Program.cs
+    if (-not $mainCsproj) {
+        $mainCsproj = $csprojFiles | Where-Object {
+            Test-Path (Join-Path (Split-Path $_.FullName -Parent) "Program.cs")
+        } | Select-Object -First 1
+    }
 
     if (-not $mainCsproj) { $mainCsproj = $csprojFiles[0] }
 
