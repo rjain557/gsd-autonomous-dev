@@ -316,10 +316,37 @@ if ($startIndex -le 4 -and -not $SkipBuildGate) {
 # ============================================================
 
 # Check if build passed before attempting runtime validation
+# Check if dotnet build passed (even if npm failed — backend can still run)
+# Also check the build gate report directly for partial pass
 $buildPassed = $false
 foreach ($k in $phaseResults.Keys) {
     if ($k -match 'BUILD') {
         if ($phaseResults[$k].status -eq 'PASS') { $buildPassed = $true }
+    }
+}
+# Check build gate report for dotnet-only pass
+if (-not $buildPassed) {
+    $bgReport = Join-Path $GsdDir "build-gate\build-gate-report.json"
+    if (Test-Path $bgReport) {
+        try {
+            $bgData = Get-Content $bgReport -Raw | ConvertFrom-Json
+            if ($bgData.dotnet_status -eq "pass" -or ($bgData.results | Where-Object { $_.type -eq "dotnet" -and $_.status -eq "pass" })) {
+                $buildPassed = $true
+                Write-PipelineLog "Dotnet build passed (npm failed) - proceeding with runtime validation" -Level WARN
+            }
+        } catch { }
+    }
+    # Fallback: try a quick dotnet build check
+    if (-not $buildPassed) {
+        $csproj = Get-ChildItem -Path $RepoRoot -Filter "*.Api.csproj" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\(design|generated|bin|obj)\\' } | Select-Object -First 1
+        if ($csproj) {
+            $buildCheck = & dotnet build $csproj.FullName --no-restore 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $buildPassed = $true
+                Write-PipelineLog "Quick dotnet build check passed - proceeding with runtime validation" -Level OK
+            }
+        }
     }
 }
 
