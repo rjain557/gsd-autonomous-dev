@@ -158,7 +158,8 @@ function Wait-ForEndpoint {
 Write-Log "--- Phase 1: Start Backend ---" -Level PHASE
 
 $csprojFiles = @(Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch '\\(bin|obj|node_modules|test|Test)\\' })
+    Where-Object { $_.FullName -notmatch '\\(bin|obj|node_modules|test|Test|design|generated)\\' } |
+    Where-Object { $_.Name -notmatch '\.(Tests|IntegrationTests)\.' })
 
 $backendStarted = $false
 if ($csprojFiles.Count -gt 0) {
