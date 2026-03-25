@@ -352,7 +352,8 @@ if ($backendStarted) {
         $checkUrl = "${backendUrl}${endpoint}"
         $checkResult = @{ endpoint = $endpoint; url = $checkUrl; status = "unknown"; status_code = 0 }
         try {
-            $response = Invoke-WebRequest -Uri $checkUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+            $curlCode = [int](& curl -s -o /dev/null -w "%{http_code}" --max-time 10 $checkUrl 2>$null)
+            $response = @{ StatusCode = $curlCode }
             $checkResult.status_code = $response.StatusCode
             $checkResult.status = if ($response.StatusCode -eq 200) { "pass" } else { "warn" }
             Write-Log "Health check $endpoint - HTTP $($response.StatusCode)" -Level $(if ($response.StatusCode -eq 200) { "OK" } else { "WARN" })
@@ -502,30 +503,31 @@ if ($backendStarted -and $discoveredEndpoints.Count -gt 0) {
         }
 
         try {
-            $response = Invoke-WebRequest -Uri $testUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-            $endpointResult.status_code = $response.StatusCode
-            $endpointResult.status = "pass"
-            Write-Log "GET $($ep.route) - HTTP $($response.StatusCode)" -Level OK
+            # Use curl for reliable HTTP status detection (Invoke-WebRequest has timeout issues on Windows)
+            $curlResult = & curl -s -o /dev/null -w "%{http_code}" --max-time 5 $testUrl 2>$null
+            $statusCode = [int]$curlResult
+            $endpointResult.status_code = $statusCode
+
+            if ($statusCode -ge 200 -and $statusCode -lt 400) {
+                $endpointResult.status = "pass"
+                Write-Log "GET $($ep.route) - HTTP $statusCode" -Level OK
+            } elseif ($statusCode -eq 0) {
+                Write-Log "GET $($ep.route) - HTTP 0 (timeout/unreachable)" -Level ERROR
+                $endpointResult.status = "fail"
+            }
         } catch {
             $statusCode = 0
-            if ($_.Exception.Response) {
-                $statusCode = [int]$_.Exception.Response.StatusCode
-            }
             $endpointResult.status_code = $statusCode
 
             if ($statusCode -eq 401 -and $defaultToken) {
-                # Retry with auth
+                # Retry with auth using curl
                 $endpointResult.auth_required = $true
-                try {
-                    $headers = @{ "Authorization" = "Bearer $defaultToken" }
-                    $retryResponse = Invoke-WebRequest -Uri $testUrl -UseBasicParsing -Headers $headers -TimeoutSec 10 -ErrorAction Stop
-                    $endpointResult.status_code = $retryResponse.StatusCode
+                $retryCode = [int](& curl -s -o /dev/null -w "%{http_code}" --max-time 5 -H "Authorization: Bearer $defaultToken" $testUrl 2>$null)
+                $endpointResult.status_code = $retryCode
+                if ($retryCode -ge 200 -and $retryCode -lt 400) {
                     $endpointResult.status = "pass_with_auth"
-                    Write-Log "GET $($ep.route) - HTTP $($retryResponse.StatusCode) (with auth)" -Level OK
-                } catch {
-                    $retryCode = 0
-                    if ($_.Exception.Response) { $retryCode = [int]$_.Exception.Response.StatusCode }
-                    $endpointResult.status_code = $retryCode
+                    Write-Log "GET $($ep.route) - HTTP $retryCode (with auth)" -Level OK
+                } else {
                     $endpointResult.status = "fail"
                     Write-Log "GET $($ep.route) - HTTP $retryCode (even with auth)" -Level ERROR
                 }
