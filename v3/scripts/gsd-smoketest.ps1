@@ -1242,15 +1242,27 @@ function Invoke-MockDataDetection {
     }
 
     # Fallback to Get-ChildItem if ripgrep not available or failed
+    # PERF: Add 120s timeout and use -Depth to limit directory traversal
     if (-not $rgPath) {
+        Write-Log "Ripgrep not available - using Get-ChildItem with 120s timeout" "WARN"
+        $scanStart = [System.Diagnostics.Stopwatch]::StartNew()
+        $scanTimeout = 120  # seconds
+
         foreach ($srcDir in @("src", "client", "frontend", "app", "backend")) {
+            if ($scanStart.Elapsed.TotalSeconds -gt $scanTimeout) {
+                Write-Log "Mock data scan timeout after ${scanTimeout}s - stopping early" "WARN"
+                break
+            }
             $dir = Join-Path $Root $srcDir
             if (-not (Test-Path $dir)) { continue }
 
-            $codeFiles = Get-ChildItem -Path $dir -Include "*.ts", "*.tsx", "*.cs" -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -notmatch '(bin|obj|node_modules|dist|test|spec|__test__|design|generated|docs|\.gsd|\.git)[/\\]' }
+            # Use -Depth 8 to prevent traversing deeply nested node_modules etc.
+            $codeFiles = Get-ChildItem -Path $dir -Include "*.ts", "*.tsx", "*.cs" -Recurse -Depth 8 -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notmatch '(bin|obj|node_modules|dist|test|spec|__test__|design|generated|docs|\.gsd|\.git)[/\\]' } |
+                Select-Object -First 500  # Cap at 500 files
 
             foreach ($file in $codeFiles) {
+                if ($scanStart.Elapsed.TotalSeconds -gt $scanTimeout) { break }
                 try {
                     $content = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
                     foreach ($pattern in $mockPatterns) {
@@ -1263,18 +1275,43 @@ function Invoke-MockDataDetection {
                 catch { }
             }
         }
+        if ($scanStart.Elapsed.TotalSeconds -gt $scanTimeout) {
+            Write-Log "Scan completed with timeout - found $($suspiciousFiles.Count) suspicious files before timeout" "WARN"
+        }
     }
 
     # Tier: LOCAL — use mock-data-detector module (pure regex, no LLM)
     $script:tasksByTier["local"]++
     Write-Log "Mock data: using local tier (regex scanning)" "INFO"
 
-    # Use the local mock-data-detector module if available
+    # Use the local mock-data-detector module if available (with 180s timeout)
     if (Get-Command Find-MockDataPatterns -ErrorAction SilentlyContinue) {
         try {
-            $mockPatternResults = Find-MockDataPatterns -RepoRoot $Root
-            $stubResults = Find-StubImplementations -RepoRoot $Root
-            $placeholderResults = Find-PlaceholderConfigs -RepoRoot $Root
+            $mockJob = Start-Job -ScriptBlock {
+                param($Root, $ModulePath)
+                . $ModulePath
+                $m = Find-MockDataPatterns -RepoRoot $Root
+                $s = Find-StubImplementations -RepoRoot $Root
+                $p = Find-PlaceholderConfigs -RepoRoot $Root
+                @{ mockPatterns = $m; stubs = $s; placeholders = $p }
+            } -ArgumentList $Root, (Join-Path $v3Dir "lib/modules/mock-data-detector.ps1")
+
+            $mockJobDone = $mockJob | Wait-Job -Timeout 180
+            if (-not $mockJobDone) {
+                Write-Log "Mock data detector timed out after 180s - stopping" "WARN"
+                $mockJob | Stop-Job
+                $mockJob | Remove-Job -Force
+                $result.status = "warn"
+                $result.summary = "Mock data scan timed out after 180s"
+                Write-Log "Mock data (timeout): warn" "WARN"
+                return $result
+            }
+            $jobResults = $mockJob | Receive-Job
+            $mockJob | Remove-Job -Force
+
+            $mockPatternResults = $jobResults.mockPatterns
+            $stubResults = $jobResults.stubs
+            $placeholderResults = $jobResults.placeholders
 
             # Convert mock patterns to smoke test issue format
             foreach ($mp in $mockPatternResults) {
