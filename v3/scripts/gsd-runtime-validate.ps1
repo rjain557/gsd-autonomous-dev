@@ -352,8 +352,14 @@ if ($backendStarted) {
         $checkUrl = "${backendUrl}${endpoint}"
         $checkResult = @{ endpoint = $endpoint; url = $checkUrl; status = "unknown"; status_code = 0 }
         try {
-            $curlCode = [int](& curl.exe -s -o /dev/null -w '%{http_code}' --max-time 10 $checkUrl 2>$null)
-            $response = @{ StatusCode = $curlCode }
+            if (-not $script:httpClient) {
+                $handler = [System.Net.Http.HttpClientHandler]::new()
+                $handler.ServerCertificateCustomValidationCallback = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+                $script:httpClient = [System.Net.Http.HttpClient]::new($handler)
+                $script:httpClient.Timeout = [TimeSpan]::FromSeconds(10)
+            }
+            $httpResp = $script:httpClient.GetAsync($checkUrl).GetAwaiter().GetResult()
+            $response = @{ StatusCode = [int]$httpResp.StatusCode }
             $checkResult.status_code = $response.StatusCode
             $checkResult.status = if ($response.StatusCode -eq 200) { "pass" } else { "warn" }
             Write-Log "Health check $endpoint - HTTP $($response.StatusCode)" -Level $(if ($response.StatusCode -eq 200) { "OK" } else { "WARN" })
@@ -503,9 +509,15 @@ if ($backendStarted -and $discoveredEndpoints.Count -gt 0) {
         }
 
         try {
-            # Use curl for reliable HTTP status detection (Invoke-WebRequest has timeout issues on Windows)
-            $curlResult = & curl.exe -s -o /dev/null -w '%{http_code}' --max-time 5 $testUrl 2>$null
-            $statusCode = [int]$curlResult
+            # Use .NET HttpClient for reliable HTTP from PowerShell (curl.exe and Invoke-WebRequest both have issues)
+            if (-not $script:httpClient) {
+                $handler = [System.Net.Http.HttpClientHandler]::new()
+                $handler.ServerCertificateCustomValidationCallback = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+                $script:httpClient = [System.Net.Http.HttpClient]::new($handler)
+                $script:httpClient.Timeout = [TimeSpan]::FromSeconds(5)
+            }
+            $httpResponse = $script:httpClient.GetAsync($testUrl).GetAwaiter().GetResult()
+            $statusCode = [int]$httpResponse.StatusCode
             $endpointResult.status_code = $statusCode
 
             if ($statusCode -ge 200 -and $statusCode -lt 400) {
@@ -522,7 +534,10 @@ if ($backendStarted -and $discoveredEndpoints.Count -gt 0) {
             if ($statusCode -eq 401 -and $defaultToken) {
                 # Retry with auth using curl
                 $endpointResult.auth_required = $true
-                $retryCode = [int](& curl.exe -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $defaultToken" $testUrl 2>$null)
+                $retryReq = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $testUrl)
+                $retryReq.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $defaultToken)
+                $retryResp = $script:httpClient.SendAsync($retryReq).GetAwaiter().GetResult()
+                $retryCode = [int]$retryResp.StatusCode
                 $endpointResult.status_code = $retryCode
                 if ($retryCode -ge 200 -and $retryCode -lt 400) {
                     $endpointResult.status = "pass_with_auth"
