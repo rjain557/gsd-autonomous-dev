@@ -244,6 +244,48 @@ If compilation, tests, or runtime smoke tests fail, health is set to 99% and the
 
 When the pipeline exits (converged, stalled, or max iterations), it generates `developer-handoff.md` in the repository root with build commands, database setup, environment configuration, requirements status, validation results, known issues, and cost summary.
 
+### Full Pipeline (V4): 15-Phase Post-Convergence Flow
+
+After convergence completes (100% health), you can optionally run the full post-convergence pipeline to take the codebase from "requirements satisfied" to "production-ready." Run it from the repository root:
+
+```powershell
+pwsh -File "$env:USERPROFILE\.gsd-global\v3\scripts\gsd-full-pipeline.ps1" -RepoRoot "C:\path\to\your\repo"
+```
+
+The V4 pipeline runs 15 sequential phases:
+
+| Phase | Name | What It Does |
+|-------|------|-------------|
+| 1 | convergence | Runs convergence loop until 100% health |
+| 2 | databasesetup | Applies SQL migrations and seeds data |
+| 3 | buildgate | Verifies dotnet build + npm run build succeed |
+| 4 | wireup | Detects mock data, missing DI registrations, unguarded routes |
+| 5 | codereview | 3-model consensus code review with auto-fix cycles |
+| 6 | **securitygate** | SAST, secrets detection, dependency vulnerability scan |
+| 7 | buildverify | Re-build after security fixes |
+| 8 | **apicontract** | Extracts OpenAPI spec, detects breaking changes, verifies frontend alignment |
+| 9 | runtime | Starts app, validates HTTP endpoints, checks DI and FK errors |
+| 10 | smoketest | 9-phase integration validation (build → DB → API → routes → auth → modules → mock data → RBAC → gap report) |
+| 11 | finalreview | Post-smoke-test code review at lower severity threshold |
+| 12 | **testgeneration** | Generates and runs xUnit, Jest/RTL, and Playwright E2E tests |
+| 13 | **compliancegate** | Enforces HIPAA, PCI DSS, GDPR, SOC 2 rules |
+| 14 | **deployprep** | Generates Dockerfile, docker-compose, CI/CD workflow, env configs |
+| 15 | handoff | Generates PIPELINE-HANDOFF.md and developer-handoff.md |
+
+Phases 6, 8, 12, 13, and 14 are new in V4. Skip any phase with the corresponding `-Skip*` flag. Resume from any phase with `-StartFrom {phase-name}`.
+
+**New dependencies for V4 phases** (no manual install required — auto-installed on first use):
+
+| Dependency | Used By | Auto-Install Method |
+|------------|---------|-------------------|
+| `npm audit` | Security gate (phase 6) | Built into npm 6+ — already available |
+| `dotnet list package --vulnerable` | Security gate (phase 6) | Built into .NET SDK 5+ — already available |
+| Playwright (`@playwright/test`) | Test generation (phase 12) | Auto-installed via `npm install -D @playwright/test` |
+| Chromium browser | Test generation E2E (phase 12) | Auto-installed via `npx playwright install --with-deps chromium` |
+| `openapi-typescript` | API contract (phase 8, optional) | Auto-installed when `-GenerateTsClient` is set |
+
+No additional software needs to be installed before running the full pipeline. Required tools (`dotnet`, `npm`) are already prerequisites for the base engine.
+
 ### Using Blueprint Pipeline (new projects)
 
 Best for building a project from specifications (greenfield development). Actual API token costs are automatically tracked in `.gsd/costs/` from the first run.

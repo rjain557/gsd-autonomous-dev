@@ -1194,13 +1194,215 @@ Returns a LOC history table (lines added/deleted/net per iteration) for injectio
 
 ### gsd-full-pipeline.ps1
 
-End-to-end quality orchestrator. Runs 5 phases: wire-up → code review → smoke test → final review → handoff.
+End-to-end quality orchestrator. V4 runs 15 phases: convergence → databasesetup → buildgate → wireup → codereview → **securitygate** → buildverify → **apicontract** → runtime → smoketest → finalreview → **testgeneration** → **compliancegate** → **deployprep** → handoff.
 
 ```powershell
-pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" [-ConnectionString "..."] [-AzureAdConfig "..."] [-TestUsers "..."] [-StartFrom wireup|codereview|smoketest|finalreview|handoff] [-MaxCycles 3] [-MaxReqs 50] [-SkipWireUp] [-SkipCodeReview] [-SkipSmokeTest]
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" `
+  [-ConnectionString "..."] [-AzureAdConfig "..."] [-TestUsers "..."] `
+  [-StartFrom wireup|codereview|smoketest|finalreview|handoff|securitygate|apicontract|testgeneration|compliancegate|deployprep] `
+  [-MaxCycles 3] [-MaxReqs 50] [-MaxPostConvIter 5] `
+  [-SkipWireUp] [-SkipCodeReview] [-SkipSmokeTest] `
+  [-SkipSecurityGate] [-SkipApiContract] [-SkipTestGeneration] [-SkipComplianceGate] [-SkipDeployPrep] `
+  [-ComplianceFrameworks "HIPAA,SOC2"] [-CloudTarget generic|azure|aws|gcp] `
+  [-FailOnSecurityHigh] [-FailOnComplianceHigh] [-GenerateTsClient] `
+  [-ClarificationsFile "PIPELINE-CLARIFICATIONS.md"]
 ```
 
-Output: `PIPELINE-HANDOFF.md`, `.gsd/code-review/`, `.gsd/smoke-test/`
+Parameters (V4 additions):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -SkipSecurityGate | false | Skip the SAST / secrets / dependency scan phase |
+| -SkipApiContract | false | Skip OpenAPI extraction and breaking-change check |
+| -SkipTestGeneration | false | Skip xUnit / Jest / Playwright test generation and execution |
+| -SkipComplianceGate | false | Skip HIPAA / PCI / GDPR / SOC 2 enforcement phase |
+| -SkipDeployPrep | false | Skip Dockerfile / CI-CD / env config generation |
+| -ComplianceFrameworks | "HIPAA,SOC2" | Comma-separated list of frameworks to enforce (HIPAA, PCI, GDPR, SOC2) |
+| -CloudTarget | "generic" | Cloud platform for generated deployment artifacts (azure, aws, gcp, generic) |
+| -FailOnSecurityHigh | false | Treat high-severity security findings as pipeline failures |
+| -FailOnComplianceHigh | false | Treat high-severity compliance findings as pipeline failures |
+| -GenerateTsClient | false | Generate TypeScript API client from OpenAPI spec in api-contract phase |
+| -MaxPostConvIter | 5 | Max retry cycles for phases 6, 7, 8 (security, buildverify, apicontract) |
+| -ClarificationsFile | (none) | Path to answered PIPELINE-CLARIFICATIONS.md for re-run after pause |
+| -StartFrom | (phase name) | Resume from a specific phase. V4 adds: securitygate, apicontract, testgeneration, compliancegate, deployprep |
+
+Output: `PIPELINE-HANDOFF.md`, `.gsd/code-review/`, `.gsd/smoke-test/`, `.gsd/security-gate/`, `.gsd/api-contract/`, `.gsd/test-generation/`, `.gsd/compliance-gate/`, `.gsd/deploy-prep/`
+
+### gsd-security-gate.ps1
+
+Runs SAST pattern scanning, hardcoded secrets detection, NuGet and npm dependency vulnerability auditing, authentication flow review, and cryptographic pattern review. Designed to run after the code-review phase (phase 6 of the full pipeline) as a dedicated security checkpoint before the application is started.
+
+```powershell
+pwsh -File gsd-security-gate.ps1 -RepoRoot "C:\repo" `
+  [-FailOnSeverity critical|high|medium|low|none] `
+  [-MaxFiles 500] `
+  [-SkipDependencyScan] [-SkipSast] [-SkipSecretsDetection]
+```
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository root path |
+| -FailOnSeverity | "high" | Minimum severity that causes a non-zero exit (critical, high, medium, low, none) |
+| -MaxFiles | 500 | Maximum files to scan (prevents runaway on very large repos) |
+| -SkipDependencyScan | false | Skip `dotnet list package --vulnerable` and `npm audit` |
+| -SkipSast | false | Skip static code pattern analysis |
+| -SkipSecretsDetection | false | Skip hardcoded secret and credential scanning |
+
+Output files:
+- `.gsd/security-gate/security-gate-report.json` — structured findings with severity, file, line, description, remediation
+- `.gsd/security-gate/summary.md` — human-readable summary with counts by severity
+
+SAST patterns checked: SQL injection, XSS via `dangerouslySetInnerHTML`, `eval()` / `new Function()`, hardcoded credentials, exposed connection strings, missing `[Authorize]`, weak cryptography (`MD5`, `SHA1` for passwords), HTTP (non-HTTPS) external calls, `BinaryFormatter` deserialization.
+
+Secrets detection patterns: API keys in source files, private keys in tracked files, `.env` files with real values committed, appsettings with production connection strings.
+
+Dependency scan uses existing CLI tools (`dotnet list package --vulnerable --include-transitive`, `npm audit --audit-level=high`) — no additional installs required.
+
+### gsd-test-generation.ps1
+
+Generates automated tests for the repository: xUnit unit tests for .NET backend, Jest + React Testing Library tests for frontend components, and Playwright E2E tests for critical user flows. After generation, executes the tests and runs a fix loop (up to `-MaxFixCycles` attempts) to resolve compilation errors and test failures.
+
+```powershell
+pwsh -File gsd-test-generation.ps1 -RepoRoot "C:\repo" `
+  [-MaxFixCycles 3] `
+  [-FixModel claude|codex] `
+  [-SkipUnitTests] [-SkipFrontendTests] [-SkipE2E] [-SkipExecution] `
+  [-MaxTestFilesPerType 10]
+```
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository root path |
+| -MaxFixCycles | 3 | Maximum fix attempts per test type when tests fail |
+| -FixModel | "claude" | Model used for fix generation: "claude" or "codex" |
+| -SkipUnitTests | false | Skip xUnit unit test generation and execution |
+| -SkipFrontendTests | false | Skip Jest/RTL frontend test generation and execution |
+| -SkipE2E | false | Skip Playwright E2E test generation and execution |
+| -SkipExecution | false | Generate test files but do not execute them |
+| -MaxTestFilesPerType | 10 | Maximum test files to generate per test type (controls cost) |
+
+Output files:
+- `.gsd/test-generation/test-generation-report.json` — per-type status (generated, executed, passed, failed), fix cycles used, cost
+
+**Playwright auto-install**: If Playwright is not installed, the script runs `npm install -D @playwright/test` and `npx playwright install --with-deps chromium` automatically. No manual installation is required.
+
+**xUnit test project**: If no `*.Tests.csproj` exists, the script creates one adjacent to the main project using `dotnet new xunit`.
+
+**Jest setup**: If no `jest.config.js` exists, creates one with the standard React Testing Library preset.
+
+### gsd-compliance-gate.ps1
+
+Enforces regulatory compliance frameworks (HIPAA, PCI DSS, GDPR, SOC 2) through static code analysis, configuration review, and policy verification. Runs after test-generation (phase 13) to provide a compliance checkpoint before deployment preparation.
+
+```powershell
+pwsh -File gsd-compliance-gate.ps1 -RepoRoot "C:\repo" `
+  [-Frameworks "HIPAA,SOC2"] `
+  [-FailOnSeverity critical|high|medium|none] `
+  [-GenerateEvidenceReport]
+```
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository root path |
+| -Frameworks | "HIPAA,SOC2" | Comma-separated frameworks to enforce. Valid values: HIPAA, PCI, GDPR, SOC2 |
+| -FailOnSeverity | "high" | Minimum severity that causes a non-zero exit (critical, high, medium, none) |
+| -GenerateEvidenceReport | false | Generate a detailed evidence report suitable for auditors |
+
+Output files:
+- `.gsd/compliance-gate/compliance-gate-report.json` — per-framework findings with severity, file, rule ID, description, remediation
+- `.gsd/compliance-gate/summary.md` — human-readable summary
+- `.gsd/compliance-gate/evidence-report.md` — auditor-facing evidence document (when `-GenerateEvidenceReport` is set)
+
+Framework rules checked:
+
+| Framework | Key Rules |
+|-----------|-----------|
+| HIPAA | PHI encryption at rest and in transit, audit logging, access controls, minimum necessary access |
+| PCI DSS | Cardholder data masking in logs, TLS enforcement, no credential storage, input validation |
+| GDPR | Consent handling, right to erasure endpoints, data minimization, PII in logs |
+| SOC 2 | Change management controls, access provisioning, incident logging, encryption key management |
+
+Use `-Frameworks "HIPAA,PCI,GDPR,SOC2"` to enforce all four. For projects that are not in healthcare or payments, remove the irrelevant frameworks to avoid false positives.
+
+### gsd-deploy-prep.ps1
+
+Generates all deployment artifacts needed to containerize and ship the application: Dockerfiles for backend and frontend, docker-compose for local development, GitHub Actions CI/CD pipeline, environment-specific appsettings, nginx reverse-proxy config, and a `.env.example` file with all required environment variables listed.
+
+```powershell
+pwsh -File gsd-deploy-prep.ps1 -RepoRoot "C:\repo" `
+  [-CloudTarget azure|aws|gcp|generic] `
+  [-BackendPort 5000] [-FrontendPort 3000] `
+  [-SkipCiCd] [-SkipDocker] [-SkipEnvConfigs]
+```
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository root path |
+| -CloudTarget | "generic" | Target cloud platform — affects CI/CD workflow and generated registry/deployment steps (azure = ACR + AKS, aws = ECR + ECS, gcp = GCR + Cloud Run, generic = Docker Hub + docker-compose) |
+| -BackendPort | 5000 | Port the .NET backend listens on inside the container |
+| -FrontendPort | 3000 | Port the React frontend listens on inside the container |
+| -SkipCiCd | false | Skip `.github/workflows/ci-cd.yml` generation |
+| -SkipDocker | false | Skip Dockerfile and docker-compose.yml generation |
+| -SkipEnvConfigs | false | Skip appsettings.Staging.json, appsettings.Production.json, nginx.conf, .env.example |
+
+Files generated in the repository root (not `.gsd/`):
+
+| File | Description |
+|------|-------------|
+| `Dockerfile` | Multi-stage .NET 8 backend image (build + runtime stages) |
+| `Dockerfile.frontend` | Multi-stage React frontend image (Node build + nginx serve) |
+| `docker-compose.yml` | Local development orchestration (backend + frontend + SQL Server) |
+| `.github/workflows/ci-cd.yml` | Build → test → push image → deploy workflow (cloud-targeted) |
+| `appsettings.Staging.json` | Staging environment config with placeholder values |
+| `appsettings.Production.json` | Production environment config with placeholder values |
+| `nginx.conf` | Reverse-proxy config routing `/api/` to backend, `/` to frontend |
+| `.env.example` | All environment variables the application needs, with placeholder values |
+
+Output: `.gsd/deploy-prep/deploy-prep-report.json` — lists every file generated, skipped, or failed.
+
+**Project structure detection**: The script auto-detects whether a `.sln` file exists (uses solution build), whether `package.json` is at root or in a `frontend/` subdirectory, and adjusts COPY paths in Dockerfiles accordingly. If detection fails, see [Deploy Prep Creates Wrong Dockerfile](#deploy-prep-creates-wrong-dockerfile-in-troubleshooting).
+
+### gsd-api-contract.ps1
+
+Extracts the OpenAPI specification from a running backend (or falls back to parsing source code), compares it against the previous run to detect breaking changes, verifies that all frontend API calls reference valid endpoints, and optionally generates a TypeScript API client from the spec.
+
+```powershell
+pwsh -File gsd-api-contract.ps1 -RepoRoot "C:\repo" `
+  [-BackendPort 5000] `
+  [-GenerateTsClient] `
+  [-FailOnBreakingChange] `
+  [-SkipFrontendAlignment]
+```
+
+Parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| -RepoRoot | (required) | Repository root path |
+| -BackendPort | 5000 | Port where the running backend exposes `/swagger/v1/swagger.json` |
+| -GenerateTsClient | false | Generate TypeScript API client from extracted OpenAPI spec (uses openapi-typescript or similar) |
+| -FailOnBreakingChange | false | Exit with non-zero code if any breaking changes are detected vs the previous run's spec |
+| -SkipFrontendAlignment | false | Skip scanning frontend API calls for alignment with the extracted spec |
+
+Output files:
+- `.gsd/api-contract/openapi.json` — the extracted OpenAPI spec
+- `.gsd/api-contract/api-contract-report.json` — breaking change analysis, frontend alignment results, client generation status
+- `.gsd/api-contract/summary.md` — human-readable summary
+- `src/api/` (or `frontend/src/api/`) — generated TypeScript client files (when `-GenerateTsClient` is set)
+
+**Breaking changes detected**: Removed endpoints, changed HTTP methods, removed required parameters, changed response schemas, renamed operation IDs.
+
+**Frontend alignment check**: Scans `.ts`, `.tsx`, `.js`, `.jsx` files for `fetch()`, `axios.`, and `useQuery()` calls. Verifies the path matches a defined operation in the OpenAPI spec.
+
+**Source-code fallback**: If the backend is not running (no response at `http://localhost:{BackendPort}/swagger/v1/swagger.json`), the script parses `[Http*]` attributes in `.cs` controller files to build an approximate spec. The report marks this as `source: "code-analysis"` (lower confidence than a live extraction).
 
 ### gsd-smoketest.ps1
 
@@ -1252,6 +1454,49 @@ Applies 60+ regex namespace fixes (zero cost), then batches of 5 files to Sonnet
 | `v3/lib/modules/cost-tracker.ps1` | Per-phase, per-model, per-requirement cost tracking |
 | `v3/lib/modules/mock-data-detector.ps1` | Mock data + stub + placeholder scanner |
 | `v3/lib/modules/route-role-matrix.ps1` | RBAC route-role-guard matrix builder |
+| `v3/lib/modules/clarification-system.ps1` | Pipeline pause + clarification file management (see below) |
+
+#### clarification-system.ps1
+
+Manages the pipeline clarification workflow. When agents encounter ambiguous requirements — RBAC policies, auth providers, TODO markers, or missing business rules — they emit structured clarification requests. This module aggregates those requests and writes a `PIPELINE-CLARIFICATIONS.md` file in the repository root, then exits the pipeline with code 2 (pause) rather than code 1 (error).
+
+Usage within the pipeline (called automatically by `gsd-full-pipeline.ps1`):
+
+```powershell
+# Called internally — not typically invoked directly
+. "v3/lib/modules/clarification-system.ps1"
+
+# Check for pending clarifications at any phase
+$pending = Get-PendingClarifications -GsdDir ".gsd"
+if ($pending.Count -gt 0) {
+    Write-ClarificationsFile -Questions $pending -OutputFile "PIPELINE-CLARIFICATIONS.md"
+    exit 2   # Pipeline pauses here
+}
+
+# On re-run with answers:
+$answers = Read-ClarificationsFile -FilePath "PIPELINE-CLARIFICATIONS.md"
+Inject-ClarificationsIntoPrompts -Answers $answers -GsdDir ".gsd"
+```
+
+**PIPELINE-CLARIFICATIONS.md format** (edit the `Answer:` lines and re-run):
+
+```markdown
+## Pipeline Clarifications Required
+
+### RBAC / Permissions
+**Q1**: Should the `/api/patients` endpoint require the `Admin` role or `ReadPatients` permission?
+Answer: (fill in your answer here)
+
+### Authentication
+**Q2**: Which Azure AD tenant ID should be used for production authentication?
+Answer: (fill in your answer here)
+```
+
+Re-run after answering:
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -StartFrom codereview -ClarificationsFile "PIPELINE-CLARIFICATIONS.md"
+```
 
 ### Key V3 Functions
 

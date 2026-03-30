@@ -57,6 +57,49 @@ function Write-Log {
     Write-Host "  $entry" -ForegroundColor $color
 }
 
+function Get-PreferredBackendProject {
+    $preferredPaths = @(
+        (Join-Path $RepoRoot "src\\Server\\Technijian.Api\\Technijian.Api.csproj"),
+        (Join-Path $RepoRoot "src\\backend\\Technijian.Api\\Technijian.Api.csproj")
+    )
+
+    foreach ($candidate in $preferredPaths) {
+        if (Test-Path $candidate) {
+            return @(Get-Item $candidate)
+        }
+    }
+
+    return @(Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj|node_modules|design|generated|\.gsd|\.git|wwwroot)\\' } |
+        Where-Object { $_.Name -notmatch '\.(Tests|IntegrationTests|UnitTests)\.' } |
+        Sort-Object FullName |
+        Select-Object -First 1)
+}
+
+function Get-PreferredPackageJsonFiles {
+    $preferredPaths = @(
+        (Join-Path $RepoRoot "package.json"),
+        (Join-Path $RepoRoot "src\\web\\package.json"),
+        (Join-Path $RepoRoot "src\\Client\\technijian-spa\\package.json")
+    )
+
+    $resolved = @()
+    foreach ($candidate in $preferredPaths) {
+        if (Test-Path $candidate) {
+            $resolved += Get-Item $candidate
+        }
+    }
+
+    if ($resolved.Count -gt 0) {
+        return @($resolved | Sort-Object FullName -Unique)
+    }
+
+    return @(Get-ChildItem -Path $RepoRoot -Filter "package.json" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj|node_modules|design|generated|\.gsd|\.git|wwwroot)\\' } |
+        Sort-Object FullName |
+        Select-Object -First 1)
+}
+
 # Load modules
 $modulesDir = Join-Path $v3Dir "lib/modules"
 $apiClientPath = Join-Path $modulesDir "api-client.ps1"
@@ -94,15 +137,11 @@ Write-Host "============================================" -ForegroundColor Cyan
 # Exclude non-production directories (design prototypes, generated refs, test projects are optional)
 $excludeDirPattern = '\\(bin|obj|node_modules|design|generated|\.gsd|\.git|wwwroot)\\'
 
-$csprojFiles = @(Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch $excludeDirPattern } |
-    Where-Object { $_.Name -notmatch '\.(Tests|IntegrationTests|UnitTests)\.' })  # Skip test projects - match on filename
-$packageJsonFiles = @(Get-ChildItem -Path $RepoRoot -Filter "package.json" -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch $excludeDirPattern } |
-    Where-Object {
-        $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
-        $content -and ($content -match '"build"')
-    })
+$csprojFiles = @(Get-PreferredBackendProject | Where-Object { $_ })
+$packageJsonFiles = @(Get-PreferredPackageJsonFiles | Where-Object {
+    $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+    $content -and ($content -match '"build"')
+})
 
 Write-Log "Found $($csprojFiles.Count) .csproj file(s) and $($packageJsonFiles.Count) package.json with build script(s)"
 
@@ -132,7 +171,7 @@ function Invoke-DotnetBuild {
 
     $buildOutput = ""
     try {
-        $buildOutput = & dotnet build $CsprojPath --no-restore 2>&1 | Out-String
+        $buildOutput = & dotnet build $CsprojPath -c Release 2>&1 | Out-String
     } catch {
         $buildOutput = $_.Exception.Message
     }
@@ -159,14 +198,21 @@ function Invoke-NpmBuild {
     $buildOutput = ""
     try {
         Push-Location $projDir
+        $previousCi = $env:CI
+        $previousBrowser = $env:BROWSER
+        $env:CI = "1"
+        $env:BROWSER = "none"
         $buildOutput = & npm run build 2>&1 | Out-String
+        $npmExitCode = $LASTEXITCODE
     } catch {
         $buildOutput = $_.Exception.Message
     } finally {
+        $env:CI = $previousCi
+        $env:BROWSER = $previousBrowser
         Pop-Location
     }
 
-    $hasErrors = ($LASTEXITCODE -ne 0) -or ($buildOutput -match 'ERROR in') -or ($buildOutput -match 'error TS')
+    $hasErrors = ($npmExitCode -ne 0) -or ($buildOutput -match 'error TS') -or ($buildOutput -match 'error during build:') -or ($buildOutput -match 'Build failed') -or ($buildOutput -match 'Failed to compile')
     $errorLines = @()
     if ($hasErrors) {
         $errorLines = @($buildOutput -split "`n" |
@@ -225,7 +271,7 @@ function Invoke-BuildFix {
 
     $fixJson = $null
     if ($FixModel -eq "claude") {
-        $result = Invoke-SonnetApi -SystemPrompt $systemPrompt -UserMessage $userMessage -MaxTokens 8192 -Phase "build-gate-fix"
+        $result = Invoke-SonnetApi -SystemPrompt $systemPrompt -UserMessage $userMessage -MaxTokens 16384 -Phase "build-gate-fix"
         if ($result -and $result.Success) { $fixJson = $result.Text }
     } else {
         $result = Invoke-CodexMiniApi -SystemPrompt $systemPrompt -UserMessage $userMessage -MaxTokens 8192 -Phase "build-gate-fix"
@@ -419,7 +465,7 @@ if ($overallPass -and $csprojFiles.Count -gt 0) {
                 Write-Log "Requesting DI fix from $FixModel..." -Level FIX
                 $fixJson = $null
                 if ($FixModel -eq "claude") {
-                    $result = Invoke-SonnetApi -SystemPrompt $diSystemPrompt -UserMessage $diUserMessage -MaxTokens 8192 -Phase "build-gate-di-fix"
+                    $result = Invoke-SonnetApi -SystemPrompt $diSystemPrompt -UserMessage $diUserMessage -MaxTokens 16384 -Phase "build-gate-di-fix"
                     if ($result -and $result.Success) { $fixJson = $result.Text }
                 } else {
                     $result = Invoke-CodexMiniApi -SystemPrompt $diSystemPrompt -UserMessage $diUserMessage -MaxTokens 8192 -Phase "build-gate-di-fix"

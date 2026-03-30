@@ -147,6 +147,49 @@ if ($selectedModels.Count -eq 0) {
 }
 Write-Log "Selected review models: $($selectedModels -join ', ')"
 
+function Get-PreferredBackendProject {
+    $preferredPaths = @(
+        (Join-Path $RepoRoot "src\\Server\\Technijian.Api\\Technijian.Api.csproj"),
+        (Join-Path $RepoRoot "src\\backend\\Technijian.Api\\Technijian.Api.csproj")
+    )
+
+    foreach ($candidate in $preferredPaths) {
+        if (Test-Path $candidate) {
+            return Get-Item $candidate
+        }
+    }
+
+    return Get-ChildItem $RepoRoot -Recurse -Filter "*.csproj" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '[\\/](node_modules|bin|obj|\.git|\.gsd|design|generated)[\\/]' } |
+        Sort-Object FullName |
+        Select-Object -First 1
+}
+
+function Get-PreferredPackageJsonPath {
+    $preferredPaths = @(
+        (Join-Path $RepoRoot "package.json"),
+        (Join-Path $RepoRoot "src\\web\\package.json"),
+        (Join-Path $RepoRoot "src\\Client\\technijian-spa\\package.json")
+    )
+
+    foreach ($candidate in $preferredPaths) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    $fallback = Get-ChildItem $RepoRoot -Recurse -Filter "package.json" -Depth 3 -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '[\\/](node_modules|design|generated)[\\/]' } |
+        Sort-Object FullName |
+        Select-Object -First 1
+
+    if ($fallback) {
+        return $fallback.FullName
+    }
+
+    return $null
+}
+
 # ============================================================
 # OPTIMIZATION: API Call Timeout Wrapper
 # ============================================================
@@ -185,14 +228,12 @@ function Invoke-ApiWithTimeout {
 Write-Log "Running build validation before code review..."
 
 # Try dotnet build
-$backendProj = Get-ChildItem $RepoRoot -Recurse -Filter "*.csproj" -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch '[\\/](node_modules|bin|obj|\.git|\.gsd)[\\/]' } |
-    Select-Object -First 1
+$backendProj = Get-PreferredBackendProject
 
 if ($backendProj) {
     Write-Log "Found .NET project: $($backendProj.FullName)"
     try {
-        $buildOutput = & dotnet build $backendProj.FullName --no-restore --verbosity quiet 2>&1
+        $buildOutput = & dotnet build $backendProj.FullName -c Release --verbosity quiet 2>&1
         $buildErrors = @($buildOutput | Where-Object { "$_" -match ': error ' })
         if ($buildErrors.Count -gt 0) {
             Write-Log "dotnet build has $($buildErrors.Count) error(s) — will attempt fix before review" -Level WARN
@@ -218,23 +259,7 @@ $buildErrorText
 }
 
 # Try npm/frontend build
-$packageJson = $null
-$candidates = @(
-    (Join-Path $RepoRoot "package.json"),
-    (Join-Path $RepoRoot "src/Client/package.json"),
-    (Join-Path $RepoRoot "src/web/package.json"),
-    (Join-Path $RepoRoot "frontend/package.json"),
-    (Join-Path $RepoRoot "client/package.json")
-)
-foreach ($candidate in $candidates) {
-    if (Test-Path $candidate) { $packageJson = $candidate; break }
-}
-if (-not $packageJson) {
-    $packageJson = Get-ChildItem $RepoRoot -Recurse -Filter "package.json" -Depth 3 -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -notmatch 'node_modules' } |
-        Select-Object -First 1
-    if ($packageJson) { $packageJson = $packageJson.FullName }
-}
+$packageJson = Get-PreferredPackageJsonPath
 
 if ($packageJson -and (Test-Path $packageJson)) {
     $npmDir = Split-Path $packageJson -Parent
@@ -248,11 +273,20 @@ if ($packageJson -and (Test-Path $packageJson)) {
     if ($hasBuildScript) {
         try {
             $savedDir = Get-Location
+            $previousCi = $env:CI
+            $previousBrowser = $env:BROWSER
             Set-Location $npmDir
+            $env:CI = "1"
+            $env:BROWSER = "none"
             $npmOutput = & npm run build 2>&1
+            $npmExitCode = $LASTEXITCODE
             Set-Location $savedDir
-            $npmErrors = @($npmOutput | Where-Object { "$_" -match 'error TS|Error:|ERROR|ELIFECYCLE' })
-            if ($npmErrors.Count -gt 0) {
+            $env:CI = $previousCi
+            $env:BROWSER = $previousBrowser
+            $npmErrors = @($npmOutput | Where-Object {
+                "$_" -match 'error TS| error during build:|ELIFECYCLE|Build failed|Failed to compile'
+            })
+            if ($npmExitCode -ne 0 -or $npmErrors.Count -gt 0) {
                 Write-Log "npm build has $($npmErrors.Count) error(s) — logging for review" -Level WARN
                 $npmErrorText = ($npmErrors | Select-Object -First 20 | ForEach-Object { "$_" }) -join "`n"
                 Write-Log "npm build errors:`n$npmErrorText" -Level WARN
@@ -261,6 +295,8 @@ if ($packageJson -and (Test-Path $packageJson)) {
             }
         } catch {
             Write-Log "npm build check failed: $($_.Exception.Message)" -Level WARN
+        } finally {
+            Set-Location $savedDir
         }
     } else {
         Write-Log "No build script in package.json — skipping npm build check" -Level INFO
@@ -350,6 +386,7 @@ If no issues: {"issues":[]}
 
 Severity: critical=security/data loss, high=logic/validation error, medium=code smell/missing error handling, low=style/naming.
 Focus on real problems. Do NOT report issues about truncation or file length. Do NOT report style-only issues unless they affect correctness.
+If the provided evidence is incomplete or a behavior is not visible, do NOT speculate. Missing context is not a bug.
 "@
 
 $fixSystemPrompt = @"
@@ -413,8 +450,12 @@ function Get-ReqFileContent {
             $rawContent = Get-Content $fullPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
             if ($rawContent) {
                 $truncated = $false
-                if ($rawContent.Length -gt 32000) {
-                    $rawContent = $rawContent.Substring(0, 32000)
+                if ($rawContent.Length -gt 48000) {
+                    $headLength = 24000
+                    $tailLength = 16000
+                    $rawContent = $rawContent.Substring(0, $headLength) +
+                        "`n`n[NOTE: middle portion omitted for brevity. Review only the visible code.]`n`n" +
+                        $rawContent.Substring($rawContent.Length - $tailLength)
                     $truncated = $true
                 }
                 $fileContents += @{

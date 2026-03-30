@@ -1575,16 +1575,27 @@ Controls 3-model code review behavior.
 
 ### full_pipeline
 
-Controls the full pipeline orchestrator phases.
+Controls the full pipeline orchestrator phases (V4: 15 phases).
 
 ```json
 {
   "full_pipeline": {
     "max_cycles": 3,
     "max_reqs": 50,
+    "max_post_conv_iter": 5,
     "skip_wireup": false,
     "skip_codereview": false,
-    "skip_smoketest": false
+    "skip_smoketest": false,
+    "skip_security_gate": false,
+    "skip_api_contract": false,
+    "skip_test_generation": false,
+    "skip_compliance_gate": false,
+    "skip_deploy_prep": false,
+    "compliance_frameworks": "HIPAA,SOC2",
+    "cloud_target": "generic",
+    "fail_on_security_high": false,
+    "fail_on_compliance_high": false,
+    "generate_ts_client": false
   }
 }
 ```
@@ -1593,9 +1604,160 @@ Controls the full pipeline orchestrator phases.
 |-------|------|---------|-------------|
 | max_cycles | integer | 3 | Review-fix cycles per phase |
 | max_reqs | integer | 50 | Requirements per batch |
+| max_post_conv_iter | integer | 5 | Max retry cycles for phases 6, 7, 8 (security, buildverify, apicontract) |
 | skip_wireup | boolean | false | Skip wire-up phase |
 | skip_codereview | boolean | false | Skip code review phase |
 | skip_smoketest | boolean | false | Skip smoke test phase |
+| skip_security_gate | boolean | false | Skip SAST / secrets / dependency scan (phase 6) |
+| skip_api_contract | boolean | false | Skip OpenAPI extraction and breaking-change check (phase 8) |
+| skip_test_generation | boolean | false | Skip xUnit / Jest / Playwright generation and execution (phase 12) |
+| skip_compliance_gate | boolean | false | Skip HIPAA / PCI / GDPR / SOC 2 enforcement (phase 13) |
+| skip_deploy_prep | boolean | false | Skip Dockerfile / CI-CD / env config generation (phase 14) |
+| compliance_frameworks | string | "HIPAA,SOC2" | Comma-separated compliance frameworks for phase 13 (HIPAA, PCI, GDPR, SOC2) |
+| cloud_target | string | "generic" | Cloud platform for generated deployment artifacts (azure, aws, gcp, generic) |
+| fail_on_security_high | boolean | false | Treat high-severity security findings as pipeline failures |
+| fail_on_compliance_high | boolean | false | Treat high-severity compliance findings as pipeline failures |
+| generate_ts_client | boolean | false | Generate TypeScript API client from OpenAPI spec in api-contract phase |
+
+### security_gate
+
+Controls the SAST, secrets detection, and dependency vulnerability scan phase.
+
+```json
+{
+  "security_gate": {
+    "enabled": true,
+    "fail_on_severity": "high",
+    "max_files": 500,
+    "skip_dependency_scan": false,
+    "skip_sast": false,
+    "skip_secrets_detection": false
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable/disable the security gate phase |
+| fail_on_severity | string | "high" | Minimum severity that causes pipeline failure (critical, high, medium, low, none) |
+| max_files | integer | 500 | Maximum files to SAST-scan per run |
+| skip_dependency_scan | boolean | false | Skip `dotnet list package --vulnerable` and `npm audit` |
+| skip_sast | boolean | false | Skip static code analysis patterns |
+| skip_secrets_detection | boolean | false | Skip hardcoded credential and secret scanning |
+
+Set `fail_on_severity` to `"none"` to run the security gate in reporting-only mode (findings are recorded but never block the pipeline).
+
+### compliance_gate
+
+Controls HIPAA, PCI DSS, GDPR, and SOC 2 enforcement.
+
+```json
+{
+  "compliance_gate": {
+    "enabled": true,
+    "frameworks": "HIPAA,SOC2",
+    "fail_on_severity": "high",
+    "generate_evidence_report": false
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable/disable the compliance gate phase |
+| frameworks | string | "HIPAA,SOC2" | Comma-separated compliance frameworks (HIPAA, PCI, GDPR, SOC2) |
+| fail_on_severity | string | "high" | Minimum severity that causes failure (critical, high, medium, none) |
+| generate_evidence_report | boolean | false | Generate auditor-facing evidence report at `.gsd/compliance-gate/evidence-report.md` |
+
+**Selecting frameworks**: Only include frameworks relevant to your project. Including irrelevant frameworks generates false positives:
+- `HIPAA` — healthcare applications handling Protected Health Information
+- `PCI` — applications handling payment card data
+- `GDPR` — applications serving EU users with personal data
+- `SOC2` — all SaaS applications seeking SOC 2 certification (recommended baseline)
+
+### test_generation
+
+Controls automated test generation and execution.
+
+```json
+{
+  "test_generation": {
+    "enabled": true,
+    "max_fix_cycles": 3,
+    "fix_model": "claude",
+    "skip_unit_tests": false,
+    "skip_frontend_tests": false,
+    "skip_e2e": false,
+    "skip_execution": false,
+    "max_test_files_per_type": 10
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable/disable the test generation phase |
+| max_fix_cycles | integer | 3 | Maximum fix attempts per test type when tests fail |
+| fix_model | string | "claude" | Model used for fix generation: "claude" or "codex" |
+| skip_unit_tests | boolean | false | Skip xUnit unit test generation |
+| skip_frontend_tests | boolean | false | Skip Jest/RTL frontend test generation |
+| skip_e2e | boolean | false | Skip Playwright E2E test generation |
+| skip_execution | boolean | false | Generate test files but do not execute them |
+| max_test_files_per_type | integer | 10 | Cap on generated test files per type (controls token cost) |
+
+Set `skip_e2e: true` for CI environments where browser installation is not possible. Set `skip_execution: true` to generate test stubs for manual review without running them.
+
+### deploy_prep
+
+Controls deployment artifact generation.
+
+```json
+{
+  "deploy_prep": {
+    "enabled": true,
+    "cloud_target": "generic",
+    "backend_port": 5000,
+    "frontend_port": 3000,
+    "skip_ci_cd": false,
+    "skip_docker": false,
+    "skip_env_configs": false
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable/disable the deploy prep phase |
+| cloud_target | string | "generic" | Target cloud: azure (ACR + AKS), aws (ECR + ECS), gcp (GCR + Cloud Run), generic (Docker Hub) |
+| backend_port | integer | 5000 | Port the .NET backend listens on inside the container |
+| frontend_port | integer | 3000 | Port the React frontend listens on inside the container |
+| skip_ci_cd | boolean | false | Skip `.github/workflows/ci-cd.yml` generation |
+| skip_docker | boolean | false | Skip Dockerfile and docker-compose.yml generation |
+| skip_env_configs | boolean | false | Skip appsettings, nginx.conf, and .env.example generation |
+
+### api_contract
+
+Controls OpenAPI extraction, breaking-change detection, and frontend alignment checking.
+
+```json
+{
+  "api_contract": {
+    "enabled": true,
+    "backend_port": 5000,
+    "generate_ts_client": false,
+    "fail_on_breaking_change": false,
+    "skip_frontend_alignment": false
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| enabled | boolean | true | Enable/disable the API contract phase |
+| backend_port | integer | 5000 | Port where the running backend exposes `/swagger/v1/swagger.json` |
+| generate_ts_client | boolean | false | Generate TypeScript API client from the extracted spec |
+| fail_on_breaking_change | boolean | false | Exit with failure if breaking changes are detected vs previous run |
+| skip_frontend_alignment | boolean | false | Skip scanning frontend API calls against the OpenAPI spec |
 
 ### validators
 

@@ -1217,6 +1217,224 @@ Each project auto-subscribes to its own ntfy topic. Subscribe to all three in th
 
 ---
 
+## V4 Full Pipeline Issues
+
+### Security Gate (gsd-security-gate.ps1)
+
+#### Security gate fails with false positives
+
+The SAST patterns use regex and may flag code that is not actually vulnerable. For example, a test file that contains `eval(` in a string literal or a stored procedure that uses string concatenation for legitimate metadata queries.
+
+**Tune the severity threshold** so that only higher-severity findings block the pipeline:
+
+```powershell
+# Allow the pipeline to continue if only medium/low issues exist
+pwsh -File gsd-security-gate.ps1 -RepoRoot "C:\repo" -FailOnSeverity critical
+```
+
+**Skip specific checks** if they are not applicable to your project:
+
+```powershell
+# Skip dependency scan (e.g., offline environment or known-safe packages)
+pwsh -File gsd-security-gate.ps1 -RepoRoot "C:\repo" -SkipDependencyScan
+
+# Skip SAST (run only secrets and dependency checks)
+pwsh -File gsd-security-gate.ps1 -RepoRoot "C:\repo" -SkipSast
+```
+
+**Skip the entire phase** in `gsd-full-pipeline.ps1`:
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -SkipSecurityGate
+```
+
+Review the detailed findings to determine whether each finding is a true positive:
+
+```powershell
+Get-Content ".gsd\security-gate\security-gate-report.json" | ConvertFrom-Json | Select-Object -ExpandProperty findings | Format-Table severity, file, description
+```
+
+#### Security gate reports "NuGet/npm audit unavailable"
+
+The dependency scan requires `dotnet` and `npm` to be in PATH. If they are not found:
+1. Verify `dotnet --version` returns 8.x
+2. Verify `npm --version` returns 9+
+3. Use `-SkipDependencyScan` if you are running in a CI environment without these tools
+
+### Test Generation (gsd-test-generation.ps1)
+
+#### Test generation fails to create test project
+
+If `dotnet new xunit` fails during test generation:
+
+1. **Check .NET SDK version**: xUnit 3 requires .NET SDK 8 or later. Verify: `dotnet --version`
+2. **Missing SDK workload**: Run `dotnet workload update` to ensure all workloads are current
+3. **Conflicting project name**: If a `*.Tests.csproj` already exists but targets a different .NET version, the script may fail to create a compatible project. Manually create the test project and re-run with `-SkipUnitTests $false`
+4. **Skip unit tests temporarily**: Use `-SkipUnitTests` to generate only Jest/RTL and Playwright tests
+
+```powershell
+# Create test project manually and retry
+dotnet new xunit -n "MyApp.Tests" --framework net8.0
+dotnet sln add MyApp.Tests/MyApp.Tests.csproj
+pwsh -File gsd-test-generation.ps1 -RepoRoot "C:\repo" -SkipUnitTests
+```
+
+#### Playwright not installing
+
+`gsd-test-generation.ps1` runs `npm install -D @playwright/test` and `npx playwright install --with-deps chromium` automatically. If this fails:
+
+1. **Node.js version**: Playwright requires Node.js 18+. Verify: `node --version`
+2. **Disk space**: Browser installation requires ~400 MB. Check free space.
+3. **Corporate proxy**: Set `HTTPS_PROXY` environment variable before running
+4. **Offline environment**: Pre-install Playwright in a connected environment and copy the browser cache to the target machine. Set `PLAYWRIGHT_BROWSERS_PATH` to the cache location.
+5. **Skip E2E tests**: Use `-SkipE2E` if Playwright cannot be installed in your environment
+
+```powershell
+# Skip E2E, generate unit + frontend tests only
+pwsh -File gsd-test-generation.ps1 -RepoRoot "C:\repo" -SkipE2E
+```
+
+#### Generated tests are failing (fix loop exhausted)
+
+If tests fail after all fix cycles (`MaxFixCycles` exhausted):
+
+1. Review `.gsd/test-generation/test-generation-report.json` for the specific failure messages
+2. Common causes: test code references a namespace that doesn't exist yet, or the test exercises a flow that requires a database connection
+3. Use `-SkipExecution` to generate test files without running them, then fix manually
+4. Reduce `-MaxTestFilesPerType` to generate fewer, simpler tests that are more likely to pass immediately
+
+### Compliance Gate (gsd-compliance-gate.ps1)
+
+#### Compliance gate flags issues that don't apply to your project
+
+If you are building a project that is not in healthcare, you do not need HIPAA enforcement. Remove inapplicable frameworks from the `-Frameworks` parameter:
+
+```powershell
+# Only enforce SOC 2 (skip HIPAA, PCI, GDPR)
+pwsh -File gsd-compliance-gate.ps1 -RepoRoot "C:\repo" -Frameworks "SOC2"
+
+# Enforce all four for a healthcare payments application
+pwsh -File gsd-compliance-gate.ps1 -RepoRoot "C:\repo" -Frameworks "HIPAA,PCI,GDPR,SOC2"
+```
+
+In `gsd-full-pipeline.ps1`, use the `-ComplianceFrameworks` parameter:
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -ComplianceFrameworks "SOC2"
+```
+
+**Tune severity** to allow warnings without blocking:
+
+```powershell
+# Only block on critical compliance violations
+pwsh -File gsd-compliance-gate.ps1 -RepoRoot "C:\repo" -FailOnSeverity critical
+```
+
+**Skip entirely**:
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -SkipComplianceGate
+```
+
+#### Compliance finding references a file that is excluded
+
+If the compliance gate flags a finding in `appsettings.Development.json` or a test fixture file, those are standard development files that should not be evaluated against production compliance rules. The gate automatically excludes `*.Development.*` config files. If other development-only files are flagged, open a GitHub issue with the false-positive pattern.
+
+### Deploy Prep (gsd-deploy-prep.ps1)
+
+#### Deploy prep creates wrong Dockerfile
+
+The script auto-detects project structure. If detection fails and the Dockerfile has incorrect COPY paths:
+
+1. **Check the detection log**: Review `.gsd/deploy-prep/deploy-prep-report.json` for the `detected_structure` field
+2. **Solution file location**: The script expects `*.sln` at the repository root. If the solution is in a subdirectory, run with the `-RepoRoot` pointing to the subdirectory
+3. **Frontend in subdirectory**: If `package.json` is at `frontend/package.json` (not root), the script should detect this. If it generates COPY commands for root instead, verify that the frontend directory is named `frontend/`, `web/`, or `client/` — these are the standard names the detection checks
+4. **Regenerate after manual fix**: After correcting the Dockerfiles manually, re-run to regenerate the CI/CD and compose files which reference the Dockerfile paths
+
+```powershell
+# Regenerate only the env configs (skip Dockerfiles you fixed manually)
+pwsh -File gsd-deploy-prep.ps1 -RepoRoot "C:\repo" -SkipDocker
+
+# Regenerate only CI/CD
+pwsh -File gsd-deploy-prep.ps1 -RepoRoot "C:\repo" -SkipDocker -SkipEnvConfigs
+```
+
+#### Cloud target-specific CI/CD issues
+
+- **Azure**: The generated workflow references `AZURE_CREDENTIALS` and `ACR_LOGIN_SERVER` secrets. Set these in your GitHub repository secrets.
+- **AWS**: References `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `ECR_REGISTRY`. Set these in GitHub secrets.
+- **GCP**: References `GCP_SA_KEY` (service account JSON), `GCR_HOSTNAME`. Set these in GitHub secrets.
+- **Generic**: References `DOCKER_USERNAME` and `DOCKER_PASSWORD` for Docker Hub.
+
+### API Contract (gsd-api-contract.ps1)
+
+#### API contract extraction fails (backend not running)
+
+The script first attempts to pull the OpenAPI spec from a running backend at `http://localhost:{BackendPort}/swagger/v1/swagger.json`. If the backend is not running, it falls back to parsing `[Http*]` attributes in `.cs` controller files.
+
+**Start the backend before running this phase**:
+
+```powershell
+# Start backend in background, then run API contract
+Start-Process -FilePath "dotnet" -ArgumentList "run --project src/MyApp.Api" -NoNewWindow
+Start-Sleep -Seconds 10
+pwsh -File gsd-api-contract.ps1 -RepoRoot "C:\repo" -BackendPort 5000
+```
+
+When the full pipeline runs this phase (phase 8), it starts the backend as part of the `runtime` phase (phase 9) after API contract. If you are running `gsd-api-contract.ps1` standalone, start the backend manually or accept that the source-code fallback will be used.
+
+**Non-default port**: If your backend listens on a port other than 5000, specify it explicitly:
+
+```powershell
+pwsh -File gsd-api-contract.ps1 -RepoRoot "C:\repo" -BackendPort 7001
+```
+
+**Check Swagger is enabled**: The API contract script requires that `app.UseSwagger()` is configured in `Program.cs` and that the Swagger JSON endpoint is accessible. Verify by opening `http://localhost:5000/swagger/v1/swagger.json` in a browser while the backend is running.
+
+#### Breaking changes detected unexpectedly
+
+If `-FailOnBreakingChange` is set and the script detects breaking changes that you believe are intentional:
+
+1. Review `.gsd/api-contract/api-contract-report.json` → `breaking_changes[]` for the full list
+2. Delete the previous spec to reset the baseline: `Remove-Item ".gsd\api-contract\openapi.json.previous" -Force`
+3. On the next run, the new spec becomes the baseline with no breaking changes
+
+#### TypeScript client generation fails
+
+If `-GenerateTsClient` is set but client generation fails:
+
+1. Verify `npm` is available and internet-connected
+2. The script installs `openapi-typescript` on first use. Check for npm errors in `.gsd/api-contract/api-contract-report.json` → `ts_client.error`
+3. Use `-SkipFrontendAlignment` to skip the frontend check which uses the generated client
+
+### Clarification Pause
+
+#### Pipeline PAUSED — clarifications needed
+
+When the pipeline exits with code 2, it has paused to collect your answers to policy questions. This is not an error.
+
+**What happened**: An agent encountered a decision point that requires human input (RBAC policies, auth configuration, TODO markers, ambiguous business rules). The pipeline wrote all questions to `PIPELINE-CLARIFICATIONS.md` in your repository root.
+
+**How to resolve**:
+
+1. Open `PIPELINE-CLARIFICATIONS.md` in your editor
+2. Fill in the `Answer:` line for each question
+3. Save the file
+4. Re-run the pipeline with `-ClarificationsFile`:
+
+```powershell
+# Resume from the phase that paused (check the console output for the phase name)
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" `
+  -StartFrom codereview `
+  -ClarificationsFile "PIPELINE-CLARIFICATIONS.md"
+```
+
+**Finding which phase paused**: The console output before exit code 2 prints the current phase name. The `PIPELINE-HANDOFF.md` file (if it exists from a previous run) shows the last completed phase.
+
+**Skipping clarification check**: If you want the pipeline to continue without pausing for clarifications, there is no skip flag — clarification pauses are intentional. Instead, fill in the answers with placeholder values (e.g., "TBD — use Admin role") and re-run. The pipeline will use your placeholder answers to proceed and you can update the code afterward.
+
+---
+
 ## V3 Pipeline Issues
 
 ### Smoke Test Failures

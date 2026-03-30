@@ -4,31 +4,18 @@ description: Current running tasks, PIDs, monitoring checklist
 type: project
 ---
 
-# Active Tasks (Updated 2026-03-14 12:40 AM)
+# Active Tasks (Updated 2026-03-25 12:32 PM America/Los_Angeles)
 
-## Task 1: V3 Pipeline Running — PID 20848
-- **Health**: **84.6% (1796/2124)**
-- **Cost**: $53.92 / $200 (27%)
-- **Phase**: Iter 18 — Research
-- **Iterations**: 18/50 (32 remaining, $146 budget)
+## Task 1: tech-web-chatai.v8 recovery handoff
+- **Pipeline status**: stopped by user; no matching pipeline process found in follow-up check
+- **App status**: frontend build passes, API build passes, runtime validation passes (`178 passed, 0 failed`)
+- **Latest visible run**: `full-pipeline-2026-03-25_120636.log`
+- **Current blocker**: stale smoke-test autofix loop touched dependency/design/app files and needs review before the next trusted rerun
 
-## Iter 17 Final
-- CL-176-A-1/A-2: SATISFIED (openapi-ts, orval configs)
-- Health delta: +0.2 (84.4→84.6)
-- Cost for iter: ~$0.43
-
-## Per-Iteration Pace
-- Iter 14: +0.0 (CX-161 only, decomposition)
-- Iter 15: +0.0 (CX-161 only, decomposition)
-- Iter 16: +0.1 (CL-159 auth code)
-- Iter 17: +0.2 (CL-176 API config)
-- Avg cost/iter: ~$0.40-0.50
-
-## Recurring Issue: .git/index.lock
-- Stale lock left after each iter-end git commit
-- Removing proactively each time it appears
-
-## Diseases — NONE
+## Ready for next session
+- Review and clean up the unsafe smoke-test edits from the `12:10` to `12:27` window.
+- Start exactly one visible PowerShell pipeline from `runtime`.
+- Monitor the new pipeline every minute and intervene only on real failures, not false-positive drift.
 
 ## Last Updated
-2026-03-14 12:40 AM
+2026-03-25 12:32 PM America/Los_Angeles

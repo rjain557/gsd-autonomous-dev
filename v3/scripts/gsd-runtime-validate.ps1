@@ -35,7 +35,8 @@ param(
     [int]$BackendPort = 5000,
     [int]$FrontendPort = 3000,
     [ValidateSet("claude","codex")]
-    [string]$FixModel = "claude"
+    [string]$FixModel = "claude",
+    [switch]$KeepServicesRunning
 )
 
 $ErrorActionPreference = "Continue"
@@ -124,7 +125,7 @@ $script:backendProcess = $null
 $script:frontendProcess = $null
 
 # ============================================================
-# HELPER: Invoke-BashCurl - Uses bash curl (bypasses Windows .NET loopback issue)
+# HELPER: Invoke-BashCurl - Uses native curl.exe for reliable loopback checks
 # ============================================================
 
 function Invoke-BashCurl {
@@ -136,18 +137,14 @@ function Invoke-BashCurl {
         [string]$AuthToken = "",
         [int]$TimeoutSec = 10
     )
-    # Build curl args
-    $curlArgs = "-s -o /dev/null -w '%{http_code}' --max-time $TimeoutSec"
-    if ($Method -ne "GET") { $curlArgs += " -X $Method" }
-    if ($ContentType) { $curlArgs += " -H 'Content-Type: $ContentType'" }
-    if ($AuthToken) { $curlArgs += " -H 'Authorization: Bearer $AuthToken'" }
-    if ($Body) {
-        $escapedBody = $Body -replace "'", "'\''"
-        $curlArgs += " -d '$escapedBody'"
-    }
-    $curlArgs += " '$Url'"
+    $curlArgs = @("-s", "-o", "NUL", "-w", "%{http_code}", "--max-time", "$TimeoutSec")
+    if ($Method -ne "GET") { $curlArgs += @("-X", $Method) }
+    if ($ContentType) { $curlArgs += @("-H", "Content-Type: $ContentType") }
+    if ($AuthToken) { $curlArgs += @("-H", "Authorization: Bearer $AuthToken") }
+    if ($Body) { $curlArgs += @("--data-raw", $Body) }
+    $curlArgs += $Url
 
-    $result = bash -c "curl $curlArgs" 2>$null
+    $result = & curl.exe @curlArgs 2>$null
     $statusCode = 0
     if ($result -match '(\d{3})') { $statusCode = [int]$Matches[1] }
     return $statusCode
@@ -162,18 +159,14 @@ function Invoke-BashCurlWithBody {
         [string]$AuthToken = "",
         [int]$TimeoutSec = 10
     )
-    # Returns both status code and response body
-    $curlArgs = "-s -w '`n%{http_code}' --max-time $TimeoutSec"
-    if ($Method -ne "GET") { $curlArgs += " -X $Method" }
-    if ($ContentType) { $curlArgs += " -H 'Content-Type: $ContentType'" }
-    if ($AuthToken) { $curlArgs += " -H 'Authorization: Bearer $AuthToken'" }
-    if ($Body) {
-        $escapedBody = $Body -replace "'", "'\''"
-        $curlArgs += " -d '$escapedBody'"
-    }
-    $curlArgs += " '$Url'"
+    $curlArgs = @("-s", "-w", "`n%{http_code}", "--max-time", "$TimeoutSec")
+    if ($Method -ne "GET") { $curlArgs += @("-X", $Method) }
+    if ($ContentType) { $curlArgs += @("-H", "Content-Type: $ContentType") }
+    if ($AuthToken) { $curlArgs += @("-H", "Authorization: Bearer $AuthToken") }
+    if ($Body) { $curlArgs += @("--data-raw", $Body) }
+    $curlArgs += $Url
 
-    $rawOutput = bash -c "curl $curlArgs" 2>$null
+    $rawOutput = & curl.exe @curlArgs 2>$null
     $lines = $rawOutput -split "`n"
     $statusCode = 0
     $responseBody = ""
@@ -209,6 +202,25 @@ function Wait-ForEndpoint {
     return $false
 }
 
+function Add-StartupCheckResult {
+    param(
+        [string]$Component,
+        [bool]$Started,
+        [string]$Details = ""
+    )
+
+    $validationResults.summary.total_checks++
+    if ($Started) {
+        $validationResults.summary.passed++
+        return
+    }
+
+    $validationResults.summary.failed++
+    if ($Details) {
+        Write-Log "$Component startup failed: $Details" -Level ERROR
+    }
+}
+
 # ============================================================
 # PHASE 1: START BACKEND
 # ============================================================
@@ -242,6 +254,8 @@ if ($csprojFiles.Count -gt 0) {
     $envVars = @{
         ASPNETCORE_URLS = "http://localhost:${BackendPort}"
         ASPNETCORE_ENVIRONMENT = "Development"
+        DOTNET_LAUNCH_PROFILE = ""
+        Kestrel__Endpoints__Http__Url = "http://localhost:${BackendPort}"
     }
     if ($ConnectionString) {
         $envVars["ConnectionStrings__DefaultConnection"] = $ConnectionString
@@ -268,7 +282,7 @@ if ($csprojFiles.Count -gt 0) {
 
     # Suppress console output by redirecting via cmd
     $psi.FileName = "cmd.exe"
-    $psi.Arguments = "/c dotnet run --project `"$($mainCsproj.FullName)`" --no-build > `"$backendLogFile`" 2> `"$backendErrFile`""
+    $psi.Arguments = "/c dotnet run --project `"$($mainCsproj.FullName)`" --no-build --no-launch-profile > `"$backendLogFile`" 2> `"$backendErrFile`""
 
     try {
         $script:backendProcess = [System.Diagnostics.Process]::Start($psi)
@@ -336,9 +350,11 @@ if ($csprojFiles.Count -gt 0) {
         }
 
         $validationResults.backend.started = $backendStarted
+        Add-StartupCheckResult -Component "Backend" -Started:$backendStarted -Details "Startup logs written to $backendLogFile"
     } catch {
         Write-Log "Failed to start backend: $($_.Exception.Message)" -Level ERROR
         $validationResults.backend.errors += $_.Exception.Message
+        Add-StartupCheckResult -Component "Backend" -Started:$false -Details $_.Exception.Message
     }
 } else {
     Write-Log "No .csproj files found - skipping backend" -Level SKIP
@@ -352,14 +368,31 @@ Write-Log "--- Phase 2: Start Frontend ---" -Level PHASE
 
 $packageJsonFiles = @(Get-ChildItem -Path $RepoRoot -Filter "package.json" -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notmatch '\\node_modules\\' } |
-    Where-Object {
+    ForEach-Object {
         $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
-        $content -and ($content -match '"start"')
+        if (-not $content) { return }
+
+        $scriptCommand = if ($content -match '"start"') {
+            "npm start"
+        } elseif ($content -match '"dev"') {
+            "npm run dev -- --host 127.0.0.1 --port $FrontendPort --strictPort"
+        } else {
+            $null
+        }
+
+        if ($scriptCommand) {
+            [PSCustomObject]@{
+                PackageJson = $_
+                ScriptCommand = $scriptCommand
+            }
+        }
     })
 
 $frontendStarted = $false
 if ($packageJsonFiles.Count -gt 0) {
-    $frontendDir = Split-Path $packageJsonFiles[0].FullName -Parent
+    $frontendPackage = $packageJsonFiles[0]
+    $frontendDir = Split-Path $frontendPackage.PackageJson.FullName -Parent
+    $frontendCommand = $frontendPackage.ScriptCommand
     Write-Log "Starting frontend: $frontendDir on port $FrontendPort"
 
     $frontendLogFile = Join-Path $outDir "frontend-stdout.log"
@@ -367,7 +400,7 @@ if ($packageJsonFiles.Count -gt 0) {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "cmd.exe"
-    $psi.Arguments = "/c set PORT=$FrontendPort && set BROWSER=none && npm start > `"$frontendLogFile`" 2> `"$frontendErrFile`""
+    $psi.Arguments = "/c set PORT=$FrontendPort && set BROWSER=none && set CI=1 && $frontendCommand < NUL > `"$frontendLogFile`" 2> `"$frontendErrFile`""
     $psi.WorkingDirectory = $frontendDir
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $false
@@ -376,16 +409,21 @@ if ($packageJsonFiles.Count -gt 0) {
 
     try {
         $script:frontendProcess = [System.Diagnostics.Process]::Start($psi)
-        $frontendUrl = "http://localhost:${FrontendPort}"
+        $frontendUrl = "http://127.0.0.1:${FrontendPort}"
         $frontendStarted = Wait-ForEndpoint -Url $frontendUrl -TimeoutSeconds 60 -Label "Frontend"
+        if (-not $frontendStarted) {
+            $frontendStarted = Wait-ForEndpoint -Url "http://localhost:${FrontendPort}" -TimeoutSeconds 15 -Label "Frontend (localhost)"
+        }
         $validationResults.frontend.started = $frontendStarted
         $validationResults.frontend.responding = $frontendStarted
+        Add-StartupCheckResult -Component "Frontend" -Started:$frontendStarted -Details "Startup logs written to $frontendLogFile"
     } catch {
         Write-Log "Failed to start frontend: $($_.Exception.Message)" -Level ERROR
         $validationResults.frontend.errors += $_.Exception.Message
+        Add-StartupCheckResult -Component "Frontend" -Started:$false -Details $_.Exception.Message
     }
 } else {
-    Write-Log "No package.json with start script found - skipping frontend" -Level SKIP
+    Write-Log "No package.json with start/dev script found - skipping frontend" -Level SKIP
 }
 
 # ============================================================
@@ -460,7 +498,7 @@ if ($backendStarted -and $TestUsers) {
         $loginResult = @{ user = $email; status = "unknown"; token_received = $false }
 
         $loginUrl = "${backendUrl}/api/auth/login"
-        $loginBody = @{ email = $email; password = $password } | ConvertTo-Json -Compress
+        $loginBody = @{ loginHint = $email } | ConvertTo-Json -Compress
 
         $resp = Invoke-BashCurlWithBody -Url $loginUrl -Method "POST" -Body $loginBody -ContentType "application/json" -TimeoutSec 15
 
@@ -471,11 +509,20 @@ if ($backendStarted -and $TestUsers) {
                          elseif ($parsed.accessToken) { $parsed.accessToken }
                          elseif ($parsed.access_token) { $parsed.access_token }
                          else { $null }
+                $authorizationUrl = if ($parsed.authorizationUrl) { $parsed.authorizationUrl }
+                                    elseif ($parsed.AuthorizationUrl) { $parsed.AuthorizationUrl }
+                                    else { $null }
+                $state = if ($parsed.state) { $parsed.state }
+                         elseif ($parsed.State) { $parsed.State }
+                         else { $null }
                 if ($token) {
                     $authTokens[$email] = $token
                     $loginResult.status = "pass"
                     $loginResult.token_received = $true
                     Write-Log "Login $email - SUCCESS (token received)" -Level OK
+                } elseif ($authorizationUrl) {
+                    $loginResult.status = "pass"
+                    Write-Log "Login $email - SUCCESS (OAuth initiation response received)" -Level OK
                 } else {
                     $loginResult.status = "warn"
                     Write-Log "Login $email - HTTP $($resp.StatusCode) but no token in response" -Level WARN
@@ -531,7 +578,13 @@ foreach ($ctrlFile in $controllerFiles) {
     foreach ($m in $httpMethods) {
         $httpMethod = $m.Groups[2].Value.ToUpper()
         $methodRoute = $m.Groups[3].Value
-        $fullRoute = if ($methodRoute) { "/${classRoute}/${methodRoute}" } else { "/${classRoute}" }
+        $fullRoute = if (-not $methodRoute) {
+            "/${classRoute}"
+        } elseif ($methodRoute.StartsWith("/")) {
+            $methodRoute
+        } else {
+            "/${classRoute}/${methodRoute}"
+        }
         $fullRoute = $fullRoute -replace '//', '/' -replace '\{[^}]+\}', '{id}'
 
         # Deduplicate routes (same method + normalized route)
@@ -571,6 +624,7 @@ if ($backendStarted -and $discoveredEndpoints.Count -gt 0) {
             method = $ep.method
             route = $ep.route
             controller = $ep.controller
+            file = $ep.file        # controller file path — used by endpoint fixer
             status = "unknown"
             status_code = 0
             auth_required = $false
@@ -654,42 +708,46 @@ Write-Log "Discovered $($validationResults.route_checks.Count) frontend routes"
 
 Write-Log "--- Phase 8: Stop Services ---" -Level PHASE
 
-if ($script:backendProcess -and -not $script:backendProcess.HasExited) {
+if ($KeepServicesRunning) {
+    Write-Log "Keeping backend/frontend processes running for downstream phases" -Level INFO
+} else {
+    if ($script:backendProcess -and -not $script:backendProcess.HasExited) {
+        try {
+            $script:backendProcess.Kill($true)
+            Write-Log "Backend process stopped" -Level OK
+        } catch {
+            Write-Log "Failed to stop backend: $($_.Exception.Message)" -Level WARN
+        }
+    }
+
+    if ($script:frontendProcess -and -not $script:frontendProcess.HasExited) {
+        try {
+            $script:frontendProcess.Kill($true)
+            Write-Log "Frontend process stopped" -Level OK
+        } catch {
+            Write-Log "Failed to stop frontend: $($_.Exception.Message)" -Level WARN
+        }
+    }
+
+    # Also kill any orphaned processes on our ports
     try {
-        $script:backendProcess.Kill($true)
-        Write-Log "Backend process stopped" -Level OK
-    } catch {
-        Write-Log "Failed to stop backend: $($_.Exception.Message)" -Level WARN
-    }
-}
+        $portProcesses = Get-NetTCPConnection -LocalPort $BackendPort -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+        foreach ($pid in $portProcesses) {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
 
-if ($script:frontendProcess -and -not $script:frontendProcess.HasExited) {
     try {
-        $script:frontendProcess.Kill($true)
-        Write-Log "Frontend process stopped" -Level OK
-    } catch {
-        Write-Log "Failed to stop frontend: $($_.Exception.Message)" -Level WARN
-    }
+        $portProcesses = Get-NetTCPConnection -LocalPort $FrontendPort -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+        foreach ($pid in $portProcesses) {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+
+    Write-Log "All services stopped"
 }
-
-# Also kill any orphaned processes on our ports
-try {
-    $portProcesses = Get-NetTCPConnection -LocalPort $BackendPort -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($pid in $portProcesses) {
-        Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
-    }
-} catch { }
-
-try {
-    $portProcesses = Get-NetTCPConnection -LocalPort $FrontendPort -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($pid in $portProcesses) {
-        Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
-    }
-} catch { }
-
-Write-Log "All services stopped"
 
 # ============================================================
 # GENERATE REPORT
@@ -748,7 +806,8 @@ foreach ($rc in $validationResults.route_checks) {
 
 $summaryMd | Set-Content (Join-Path $outDir "runtime-validation-summary.md") -Encoding UTF8
 
-$overallStatus = if ($validationResults.summary.failed -eq 0) { "PASS" } else { "FAIL" }
+$frontendWasExpected = $packageJsonFiles.Count -gt 0
+$overallStatus = if ($validationResults.summary.failed -eq 0 -and $backendStarted -and ((-not $frontendWasExpected) -or $frontendStarted)) { "PASS" } else { "FAIL" }
 $statusColor = if ($overallStatus -eq "PASS") { "Green" } else { "Red" }
 
 Write-Host "`n============================================" -ForegroundColor $statusColor

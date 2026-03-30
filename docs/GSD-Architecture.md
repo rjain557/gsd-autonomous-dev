@@ -1277,6 +1277,35 @@ Integration points:
 
 Uses the existing `loc_tracking` config block (no new configuration needed).
 
+### Clarification System (v3/lib/modules/clarification-system.ps1)
+
+Collects policy and design questions from generated code and agent output, consolidates them into a single `PIPELINE-CLARIFICATIONS.md` file in the repository root, and pauses the pipeline until answers are provided.
+
+**Purpose**: When agents encounter ambiguous requirements — RBAC policies, auth providers, TODO markers, or incomplete business rules — they emit structured clarification requests instead of guessing. The clarification system aggregates these and presents them to the developer.
+
+**Pipeline integration**: Pass `-ClarificationsFile "PIPELINE-CLARIFICATIONS.md"` to `gsd-full-pipeline.ps1` on the re-run to inject answers back into agent prompts.
+
+**Pause behavior**: The pipeline exits cleanly at the end of the current phase with exit code 2 (distinct from error exit code 1). The `PIPELINE-CLARIFICATIONS.md` file contains all questions grouped by category (RBAC, Auth, Business Logic, Data Model). After editing the file with answers, re-run the pipeline with `-StartFrom {current-phase} -ClarificationsFile PIPELINE-CLARIFICATIONS.md`.
+
+**Parameters** (`gsd-full-pipeline.ps1`):
+- `-ClarificationsFile` — path to answered clarifications file (default: none)
+- `-MaxPostConvIter` — max retry cycles per phase (default: 5)
+
+### Runtime Fix Functions (V4 Auto-Fix Loop)
+
+Phases 6, 7, and 8 of the full pipeline now retry up to `-MaxPostConvIter` times (default 5). Each retry invokes one or more auto-fix functions before re-running the failing phase:
+
+| Function | Trigger | What It Fixes |
+|----------|---------|---------------|
+| `Invoke-RuntimeFix` | Backend fails to start (DI container errors) | Adds/corrects service registrations in `Program.cs` |
+| `Invoke-EndpointFix` | Specific HTTP endpoints return 500 after startup | Fixes route handler implementation, missing SP calls |
+| `Invoke-MiddlewareFix` | Middleware-order errors (e.g., auth before routing) | Reorders middleware pipeline in `Program.cs` to .NET 8 correct order |
+| `Invoke-WireRouteInApp` | New screen components not reachable | Wires component into `App.tsx` router with correct path and lazy import |
+| `Invoke-BackendCreate` | Missing C# module (controller/service/repository missing) | Generates full scaffold from spec for the missing module |
+| `Invoke-SqlCreate` | Missing stored procedures for an endpoint | Generates T-SQL stored procedures from the API contract spec |
+
+All fix functions are dispatched by `gsd-full-pipeline.ps1` automatically. They can also be invoked standalone for targeted repairs.
+
 ### Maintenance Mode (patch-gsd-maintenance-mode.ps1)
 
 Adds post-launch maintenance capabilities for fixing bugs and adding features to already-converged projects.
@@ -1508,13 +1537,51 @@ The deep-extract phase seeds the requirements matrix with a `requirements` array
 
 ## Full Pipeline Orchestrator
 
-The Full Pipeline (`gsd-full-pipeline.ps1`) is the post-convergence quality gate that takes code from "converged" to "production-ready" through 5 sequential phases:
+The Full Pipeline (`gsd-full-pipeline.ps1`) is the post-convergence quality gate that takes code from "converged" to "production-ready." As of V4, it runs 15 sequential phases covering convergence, security, API contracts, runtime validation, test generation, compliance, and deployment preparation.
+
+### Full Pipeline Phases (V4)
+
+The V4 pipeline expands the original 5-phase post-convergence pipeline to 15 phases. The 5 new phases are **securitygate**, **apicontract**, **testgeneration**, **compliancegate**, and **deployprep**.
 
 ```
-WIRE-UP → CODE REVIEW → SMOKE TEST → FINAL REVIEW → HANDOFF
+convergence → databasesetup → buildgate → wireup → codereview
+→ securitygate → buildverify → apicontract → runtime → smoketest
+→ finalreview → testgeneration → compliancegate → deployprep → handoff
 ```
 
-### Phase Architecture
+| # | Phase | Purpose | Output Files |
+|---|-------|---------|-------------|
+| 1 | convergence | Run gsd-converge until 100% health | `.gsd/health/`, requirements matrix |
+| 2 | databasesetup | Apply SQL migrations, seed data, verify FK ordering | `.gsd/db/` |
+| 3 | buildgate | dotnet build + npm run build must pass | `.gsd/build/` |
+| 4 | wireup | Detect mock data, missing DI, unguarded routes | `.gsd/smoke-test/mock-data-scan.json`, `route-role-matrix.json` |
+| 5 | codereview | 3-model consensus review (Claude + Codex + Gemini), auto-fix cycles | `.gsd/code-review/review-report.json`, `review-summary.md` |
+| 6 | **securitygate** | SAST, secrets detection, dependency vulnerability scan, auth/crypto review | `.gsd/security-gate/security-gate-report.json`, `summary.md` |
+| 7 | buildverify | Re-build after code review + security fixes | `.gsd/build/` |
+| 8 | **apicontract** | Extract OpenAPI spec from running backend, detect breaking changes, verify frontend alignment | `.gsd/api-contract/openapi.json`, `api-contract-report.json`, `summary.md` |
+| 9 | runtime | Start app, hit all endpoints, check for HTTP 500s and DI errors | `.gsd/health/final-validation.json` |
+| 10 | smoketest | 9-phase integration validation (build, DB, API, routes, auth, modules, mock data, RBAC, gap report) | `.gsd/smoke-test/smoke-test-report.json`, `gap-report.md` |
+| 11 | finalreview | Post-smoke-test re-review at lower severity threshold | `.gsd/code-review/final-review-report.json` |
+| 12 | **testgeneration** | Generate xUnit, Jest/RTL, and Playwright E2E tests; execute with fix loop | `.gsd/test-generation/test-generation-report.json` |
+| 13 | **compliancegate** | HIPAA, PCI DSS, GDPR, SOC 2 enforcement | `.gsd/compliance-gate/compliance-gate-report.json`, `summary.md` |
+| 14 | **deployprep** | Generate Dockerfile, docker-compose, CI/CD workflows, env configs, nginx | Deployment files in repo root + `.gsd/deploy-prep/deploy-prep-report.json` |
+| 15 | handoff | Generate PIPELINE-HANDOFF.md + developer-handoff.md | `PIPELINE-HANDOFF.md`, `developer-handoff.md` |
+
+Phases 6, 7, 8, 12, 13, and 14 are new in V4. Each can be individually skipped via `-Skip*` parameters. The pipeline is resumable via `-StartFrom` and logs to `~/.gsd-global/logs/{repo}/full-pipeline-{timestamp}.log`.
+
+### Phase Architecture (V4 additions)
+
+New phases in the V4 pipeline:
+
+| Phase | Purpose | Tools |
+|-------|---------|-------|
+| Security Gate | SAST scanning, hardcoded secret detection, NuGet/npm vulnerability audit, auth flow review, crypto review | gsd-security-gate.ps1 |
+| API Contract | OpenAPI spec extraction from running backend (or source code fallback), breaking-change detection, TypeScript client generation | gsd-api-contract.ps1 |
+| Test Generation | xUnit unit test generation, Jest/RTL frontend tests, Playwright E2E tests; execute with 3-cycle fix loop | gsd-test-generation.ps1 |
+| Compliance Gate | HIPAA, PCI DSS, GDPR, SOC 2 rule enforcement; evidence report generation | gsd-compliance-gate.ps1 |
+| Deploy Prep | Dockerfile + Dockerfile.frontend, docker-compose.yml, GitHub Actions CI/CD, nginx.conf, appsettings per-env, .env.example | gsd-deploy-prep.ps1 |
+
+Original phases retained:
 
 | Phase | Purpose | Tools |
 |-------|---------|-------|

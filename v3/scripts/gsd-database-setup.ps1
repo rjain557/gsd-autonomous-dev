@@ -113,8 +113,15 @@ function Invoke-SqlCmd-File {
         $sqlcmdArgs += @("-E")  # Windows auth
     }
 
-    $result = & sqlcmd @sqlcmdArgs 2>&1
-    $exitCode = $LASTEXITCODE
+    # Run from the SQL file's directory so :r relative includes resolve correctly
+    $fileDir = Split-Path $SqlFile -Parent
+    Push-Location $fileDir
+    try {
+        $result = & sqlcmd @sqlcmdArgs 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
     return @{
         Success  = ($exitCode -eq 0)
         Output   = ($result | Out-String)
@@ -197,13 +204,16 @@ $tableCount = 0
 # Try connecting to master to check if database exists
 $checkResult = Invoke-SqlCmd-Query -Query "SELECT COUNT(*) FROM sys.databases WHERE name = '$Database'" -TargetDatabase "master"
 if ($checkResult.Success) {
-    $dbExists = ([int]$checkResult.Output -gt 0)
+    # sqlcmd may include "(N row(s) affected)" in output even with -h -1; extract first numeric line
+    $dbCountLine = ($checkResult.Output -split '\n' | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
+    if ($dbCountLine) { $dbExists = ([int]$dbCountLine.Trim() -gt 0) }
 }
 
 if ($dbExists) {
     $tableCheck = Invoke-SqlCmd-Query -Query "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'"
     if ($tableCheck.Success) {
-        $tableCount = [int]$tableCheck.Output
+        $tableCountLine = ($tableCheck.Output -split '\n' | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
+        if ($tableCountLine) { $tableCount = [int]$tableCountLine.Trim() }
     }
 }
 
@@ -358,7 +368,8 @@ foreach ($category in $sqlCategories.Keys) {
         # Check migration history
         if ($dbExists -and $category -eq "migrations") {
             $alreadyRun = Invoke-SqlCmd-Query -Query "SELECT COUNT(*) FROM __MigrationHistory WHERE MigrationName = '$fileName' AND Status = 'applied'"
-            if ($alreadyRun.Success -and [int]$alreadyRun.Output -gt 0) {
+            $alreadyRunLine = ($alreadyRun.Output -split '\n' | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -First 1)
+            if ($alreadyRun.Success -and $alreadyRunLine -and ([int]$alreadyRunLine.Trim() -gt 0)) {
                 Write-Host " [SKIP - already applied]" -ForegroundColor DarkGray
                 $results.skipped += $relativePath
                 $executionLog += @{ file = $relativePath; category = $category; status = "skipped"; reason = "already applied" }

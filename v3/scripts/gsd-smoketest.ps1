@@ -52,7 +52,8 @@ param(
     [string]$AzureAdConfig = "",
     [switch]$SkipBuild,
     [switch]$SkipDbValidation,
-    [bool]$CostOptimize = $true
+    [bool]$CostOptimize = $true,
+    [string]$ClarificationsContext = ""   # JSON-encoded hashtable of answered clarifications
 )
 
 $ErrorActionPreference = "Continue"
@@ -100,6 +101,43 @@ Write-Host "  Cost Optimize: $(if ($CostOptimize) { 'ON (tiered models)' } else 
 Write-Host "  Log: $logFile" -ForegroundColor DarkGray
 Write-Host "============================================" -ForegroundColor Cyan
 
+function Get-PreferredSmokeBackendProject {
+    $preferredPaths = @(
+        (Join-Path $RepoRoot "src\\Server\\Technijian.Api\\Technijian.Api.csproj"),
+        (Join-Path $RepoRoot "src\\backend\\Technijian.Api\\Technijian.Api.csproj")
+    )
+
+    foreach ($candidate in $preferredPaths) {
+        if (Test-Path $candidate) {
+            return Get-Item $candidate
+        }
+    }
+
+    return Get-ChildItem -Path $RepoRoot -Filter "*.csproj" -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '(bin|obj|node_modules|design|generated|\.gsd|\.git)[/\\]' } |
+        Sort-Object FullName |
+        Select-Object -First 1
+}
+
+function Get-PreferredSmokePackageJson {
+    $preferredPaths = @(
+        (Join-Path $RepoRoot "package.json"),
+        (Join-Path $RepoRoot "src\\web\\package.json"),
+        (Join-Path $RepoRoot "src\\Client\\technijian-spa\\package.json")
+    )
+
+    foreach ($candidate in $preferredPaths) {
+        if (Test-Path $candidate) {
+            return Get-Item $candidate
+        }
+    }
+
+    return Get-ChildItem -Path $RepoRoot -Filter "package.json" -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '(node_modules|design|generated)[/\\]' } |
+        Sort-Object FullName |
+        Select-Object -First 1
+}
+
 # Load modules
 $modulesDir = Join-Path $v3Dir "lib/modules"
 $apiClientPath = Join-Path $modulesDir "api-client.ps1"
@@ -120,6 +158,20 @@ if (Test-Path $mockDataDetectorPath) { . $mockDataDetectorPath }
 
 $routeRoleMatrixPath = Join-Path $modulesDir "route-role-matrix.ps1"
 if (Test-Path $routeRoleMatrixPath) { . $routeRoleMatrixPath }
+
+$clarificationSystemPath = Join-Path $modulesDir "clarification-system.ps1"
+if (Test-Path $clarificationSystemPath) { . $clarificationSystemPath }
+
+# Parse ClarificationsContext if provided (JSON hashtable from full-pipeline)
+$script:userAnswers = @{}
+if ($ClarificationsContext) {
+    try { $script:userAnswers = $ClarificationsContext | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { }
+}
+$script:clarificationsCtxString = if ($script:userAnswers.Count -gt 0) {
+    if (Get-Command Get-ClarificationsContext -ErrorAction SilentlyContinue) {
+        Get-ClarificationsContext -Answers $script:userAnswers
+    } else { "" }
+} else { "" }
 
 # Load config
 $configPath = Join-Path $v3Dir "config/global-config.json"
@@ -407,6 +459,119 @@ function Invoke-SmokePhase {
 # HELPER: Fix a file using the fix model
 # ============================================================
 
+# ============================================================
+# HELPER: Create a missing screen component
+# ============================================================
+
+function Invoke-SmokeCreate {
+    param(
+        [string]$FilePath,   # Full absolute path to create
+        [string]$RelPath,    # Relative path (for prompt context)
+        [array]$Issues,      # Issues that reference this missing file
+        [string]$Model,
+        [string]$Root        # Repo root for context gathering
+    )
+
+    if (Test-Path $FilePath) {
+        Write-Log "SmokeCreate skipped - file already exists: $RelPath" "SKIP"
+        return $false
+    }
+
+    # Determine file type from extension
+    $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
+    $isTs  = $ext -in @('.ts', '.tsx')
+    $isCss = $ext -in @('.css', '.scss', '.module.css', '.module.scss')
+    $componentName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath) -replace '\.module$', ''
+
+    # Gather lightweight project context (existing screens for pattern reference)
+    $contextFiles = @()
+    if ($isTs) {
+        $existingScreens = Get-ChildItem -Path (Join-Path $Root "src") -Filter "*.tsx" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\(node_modules|__tests__|\.test\.)' } |
+            Select-Object -First 3
+        foreach ($sf in $existingScreens) {
+            $sc = Get-Content $sf.FullName -Raw -ErrorAction SilentlyContinue
+            if ($sc -and $sc.Length -gt 100) {
+                $truncated = if ($sc.Length -gt 2000) { $sc.Substring(0, 2000) + "\n// ... truncated" } else { $sc }
+                $contextFiles += "### $($sf.Name)`n$truncated"
+            }
+        }
+    }
+
+    $issueList = ($Issues | ForEach-Object { "- [$($_.severity)] $($_.description)" }) -join "`n"
+    $contextSection = if ($contextFiles.Count -gt 0) { "## Existing Screen Examples (follow this pattern)`n" + ($contextFiles -join "`n`n") } else { "" }
+
+    $createPrompt = @"
+## Task
+Create a new $(if ($isTs) { 'React TypeScript screen component' } elseif ($isCss) { 'CSS stylesheet' } else { 'source file' }) at: $RelPath
+
+## Issues Requiring This File
+$issueList
+
+$contextSection
+
+## Requirements
+$(if ($isTs) {
+@"
+- Export a default React functional component named $componentName
+- Include basic layout with a page title and placeholder content for each section implied by the component name
+- Use TypeScript (no implicit any)
+- Import React from 'react'
+- Add any obviously needed state (useState) or data fetching hooks (useEffect)
+- Do NOT import files that may not exist - keep imports minimal
+"@
+} elseif ($isCss) {
+"- Create a basic CSS stylesheet with sensible default styles for the component"
+} else {
+"- Create a minimal working implementation appropriate for the file type and path"
+})
+
+Return ONLY the complete file contents. No markdown fences. No explanation.
+"@
+
+    $systemPrompt = "You are a React TypeScript developer. Create the requested missing screen component. Return ONLY the complete file. No markdown fences."
+
+    try {
+        $result = $null
+        switch ($Model) {
+            "codex"  { $result = Invoke-CodexMiniApi -SystemPrompt $systemPrompt -UserMessage $createPrompt -MaxTokens 8192  -Phase "smoke-create" }
+            "claude" { $result = Invoke-SonnetApi    -SystemPrompt $systemPrompt -UserMessage $createPrompt -MaxTokens 8192  -Phase "smoke-create" }
+        }
+
+        if ($result -and $result.Success -and $result.Text) {
+            $newContent = $result.Text.Trim() -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+
+            if ($newContent.Length -lt 50) {
+                Write-Log "SmokeCreate rejected - output too short for: $RelPath" "WARN"
+                return $false
+            }
+
+            # Ensure parent directory exists
+            $parentDir = Split-Path $FilePath -Parent
+            if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
+
+            $newContent | Set-Content $FilePath -Encoding UTF8 -NoNewline
+            Write-Log "Created missing screen: $RelPath ($($newContent.Length) chars)" "FIX"
+
+            # Wire the new component into App.tsx / router
+            if ($isTs) {
+                Invoke-WireRouteInApp -Root $Root -ComponentPath $RelPath -Model $Model | Out-Null
+            }
+            return $true
+        } else {
+            Write-Log "SmokeCreate API error for $RelPath : $($result.Error)" "ERROR"
+            return $false
+        }
+    } catch {
+        Write-Log "SmokeCreate exception for $RelPath : $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+# ============================================================
+# HELPER: Fix a file using the fix model
+# ============================================================
+
 function Invoke-SmokeFix {
     param(
         [string]$FilePath,
@@ -502,6 +667,327 @@ Fix ALL issues listed above. Return the COMPLETE corrected file. No markdown fen
 }
 
 # ============================================================
+# HELPER: Wire a new screen component into App.tsx / router
+# ============================================================
+
+function Invoke-WireRouteInApp {
+    param(
+        [string]$Root,
+        [string]$ComponentPath,  # relative path of the newly created component
+        [string]$Model
+    )
+
+    # Derive component name and suggested route path from file path
+    $componentName = [System.IO.Path]::GetFileNameWithoutExtension($ComponentPath)
+    $routePath = "/" + ($componentName -replace '([A-Z])', '-$1' -replace '^-', '' -replace 'Page$','').ToLower().TrimEnd('-')
+
+    # Find App.tsx / router file
+    $routerFile = $null
+    foreach ($name in @("App.tsx", "router.tsx", "routes.tsx", "AppRoutes.tsx", "Router.tsx")) {
+        $candidates = Get-ChildItem -Path $Root -Filter $name -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\(node_modules|dist|build)\\' } | Select-Object -First 1
+        if ($candidates) { $routerFile = $candidates; break }
+    }
+    if (-not $routerFile) {
+        Write-Log "WireRouteInApp: no router file found - skipping wire-up for $componentName" "WARN"
+        return $false
+    }
+
+    $routerContent = Get-Content $routerFile.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    if (-not $routerContent) { return $false }
+
+    # Check if component is already imported / routed
+    if ($routerContent -match [regex]::Escape($componentName)) {
+        Write-Log "WireRouteInApp: $componentName already referenced in $($routerFile.Name) - skipping" "SKIP"
+        return $false
+    }
+
+    $relRouterPath = $routerFile.FullName.Replace($Root, '').TrimStart('\', '/')
+    $relComponentPath = $ComponentPath -replace '\\', '/' -replace '^/', ''
+
+    # Compute relative import path from router file to component
+    $routerDir = (Split-Path $routerFile.FullName -Parent).Replace('\', '/') + "/"
+    $componentFullPath = (Join-Path $Root $relComponentPath).Replace('\', '/')
+    $componentDir = Split-Path $componentFullPath -Parent
+
+    # Simplified: use absolute-style import (src/...) which works with most TS configs
+    $importPath = "./" + ($relComponentPath -replace '^src/', '' -replace '\.tsx$', '')
+    if ($relRouterPath -notmatch '^src[/\\]') {
+        $importPath = "./src/" + ($relComponentPath -replace '^src/', '' -replace '\.tsx$', '')
+    }
+
+    $wirePrompt = @"
+## Task
+Add a new route to the React router file so users can navigate to the newly created $componentName component.
+
+## Router File ($relRouterPath)
+$routerContent
+
+## New Component
+- Component name: $componentName
+- File path: $relComponentPath
+- Suggested route path: $routePath
+- Import: import $componentName from '$importPath'
+
+## Instructions
+1. Add an import statement for $componentName at the top of the file (with other imports)
+2. Add a <Route path="$routePath" element={<$componentName />} /> (or equivalent for the router pattern in use)
+3. If the route needs auth protection based on the existing pattern, apply it consistently
+4. Return the COMPLETE corrected file. No markdown fences. No explanation.
+"@
+
+    $sysPrompt = "You are a React router expert. Add the new route to the router file. Return ONLY the complete corrected file."
+
+    try {
+        $result = switch ($Model) {
+            "codex"  { Invoke-CodexMiniApi -SystemPrompt $sysPrompt -UserMessage $wirePrompt -MaxTokens 16384 -Phase "wire-route" }
+            default  { Invoke-SonnetApi    -SystemPrompt $sysPrompt -UserMessage $wirePrompt -MaxTokens 16384 -Phase "wire-route" }
+        }
+
+        if ($result -and $result.Success -and $result.Text) {
+            $fixed = $result.Text.Trim() -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+            if ($fixed.Length -gt ($routerContent.Length * 0.8)) {
+                $fixed | Set-Content $routerFile.FullName -Encoding UTF8 -NoNewline
+                Write-Log "WireRouteInApp: added route for $componentName ($routePath) in $($routerFile.Name)" "FIX"
+                return $true
+            } else {
+                Write-Log "WireRouteInApp: output too short - rejected" "WARN"
+            }
+        }
+    } catch {
+        Write-Log "WireRouteInApp exception: $($_.Exception.Message)" "ERROR"
+    }
+    return $false
+}
+
+# ============================================================
+# HELPER: Create missing C# backend scaffold (controller + service)
+# ============================================================
+
+function Invoke-BackendCreate {
+    param(
+        [string]$Root,
+        [string]$ModuleName,     # e.g. "Users", "Orders"
+        [string]$IssueContext,   # description of what's missing
+        [string]$Model,
+        [string]$ClarificationsContext = ""
+    )
+
+    # Gather context: existing controller pattern, existing service pattern, DI registrations
+    $existingControllerSample = Get-ChildItem -Path $Root -Filter "*Controller.cs" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj|test|Test)\\' } | Select-Object -First 1
+    $controllerPattern = if ($existingControllerSample) {
+        $c = Get-Content $existingControllerSample.FullName -Raw -ErrorAction SilentlyContinue
+        if ($c -and $c.Length -gt 8000) { $c.Substring(0, 8000) + "`n// ... truncated" } else { $c }
+    } else { "" }
+
+    $programCs = Get-ChildItem -Path $Root -Filter "Program.cs" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj|test|Test)\\' } | Select-Object -First 1
+    $programContent = if ($programCs) { Get-Content $programCs.FullName -Raw -ErrorAction SilentlyContinue } else { "" }
+
+    # Find target directory for controllers
+    $controllerDir = $null
+    if ($existingControllerSample) {
+        $controllerDir = Split-Path $existingControllerSample.FullName -Parent
+    } else {
+        $ctrlDirCandidates = @("Controllers", "Api/Controllers", "src/Controllers")
+        foreach ($d in $ctrlDirCandidates) {
+            $fullD = Join-Path $Root $d
+            if (Test-Path $fullD) { $controllerDir = $fullD; break }
+        }
+        if (-not $controllerDir) { $controllerDir = Join-Path $Root "Controllers" }
+    }
+
+    $scaffoldPrompt = @"
+## Task
+Generate a complete C# CRUD controller and service scaffold for the $ModuleName module.
+
+## Missing Module Context
+$IssueContext
+
+$ClarificationsContext
+
+## Existing Controller Pattern (follow this exactly for consistency)
+$controllerPattern
+
+## Current Program.cs (for DI registration context)
+$(if ($programContent) { $programContent.Substring(0, [Math]::Min($programContent.Length, 4000)) } else { "(not found)" })
+
+## Generate The Following Files
+Return a JSON object with this structure:
+{
+  "files": [
+    { "path": "Controllers/${ModuleName}Controller.cs", "content": "..." },
+    { "path": "Services/I${ModuleName}Service.cs",      "content": "..." },
+    { "path": "Services/${ModuleName}Service.cs",        "content": "..." }
+  ],
+  "di_registrations": [
+    "builder.Services.AddScoped<I${ModuleName}Service, ${ModuleName}Service>();"
+  ]
+}
+
+Rules:
+- Follow the EXACT namespace, using directives, and pattern of the existing controller
+- Controller must have [ApiController], [Route("api/[controller]")], [Authorize]
+- Include GET (list + by-id), POST, PUT, DELETE actions with proper HTTP attributes
+- Service interface defines CRUD methods, implementation has TODO bodies
+- Use Dapper + stored procedure pattern if existing code uses it
+- Return ONLY the JSON object. No markdown fences.
+"@
+
+    $sysPrompt = "You are a .NET backend scaffolding generator. Return only the JSON object with files array and di_registrations array."
+
+    try {
+        $result = Invoke-SonnetApi -SystemPrompt $sysPrompt -UserMessage $scaffoldPrompt -MaxTokens 16384 -Phase "backend-create"
+        if (-not ($result -and $result.Success -and $result.Text)) {
+            Write-Log "BackendCreate: API call failed for $ModuleName" "ERROR"
+            return $false
+        }
+
+        $json = $result.Text.Trim() -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+        $scaffold = $json | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if (-not $scaffold -or -not $scaffold.files) {
+            Write-Log "BackendCreate: could not parse scaffold JSON for $ModuleName" "WARN"
+            return $false
+        }
+
+        $created = 0
+        foreach ($fileSpec in $scaffold.files) {
+            $fullPath = Join-Path $Root $fileSpec.path
+            $parentDir = Split-Path $fullPath -Parent
+            if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
+            if (-not (Test-Path $fullPath)) {
+                $fileSpec.content | Set-Content $fullPath -Encoding UTF8 -NoNewline
+                Write-Log "BackendCreate: created $($fileSpec.path)" "FIX"
+                $created++
+            } else {
+                Write-Log "BackendCreate: skipped existing file $($fileSpec.path)" "SKIP"
+            }
+        }
+
+        # Patch DI registrations into Program.cs
+        if ($programCs -and $scaffold.di_registrations -and $scaffold.di_registrations.Count -gt 0) {
+            $prog = Get-Content $programCs.FullName -Raw -ErrorAction SilentlyContinue
+            foreach ($reg in $scaffold.di_registrations) {
+                if ($prog -notmatch [regex]::Escape($reg)) {
+                    # Insert before var app = builder.Build()
+                    $prog = $prog -replace '(var app = builder\.Build\(\))', "$reg`n`$1"
+                    Write-Log "BackendCreate: added DI registration: $reg" "FIX"
+                }
+            }
+            $prog | Set-Content $programCs.FullName -Encoding UTF8 -NoNewline
+        }
+
+        return $created -gt 0
+    } catch {
+        Write-Log "BackendCreate exception for $ModuleName : $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+# ============================================================
+# HELPER: Create missing SQL stored procedures
+# ============================================================
+
+function Invoke-SqlCreate {
+    param(
+        [string]$Root,
+        [string]$ModuleName,     # e.g. "Users"
+        [string]$IssueContext,   # what SQL objects are missing
+        [string]$Model,
+        [string]$ClarificationsContext = ""
+    )
+
+    # Find existing SQL files for pattern reference
+    $existingSql = Get-ChildItem -Path $Root -Filter "*.sql" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj|node_modules)\\' } | Select-Object -First 2
+    $sqlPattern = ($existingSql | ForEach-Object {
+        $c = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+        if ($c -and $c.Length -gt 4000) { $c.Substring(0, 4000) } else { $c }
+    }) -join "`n`n--- next file ---`n`n"
+
+    # Find SQL output directory
+    $sqlDir = $null
+    $sqlDirCandidates = @("Database/StoredProcedures", "sql/procedures", "Database/Procedures", "Scripts/StoredProcedures", "Database/Scripts")
+    foreach ($d in $sqlDirCandidates) {
+        if (Test-Path (Join-Path $Root $d)) { $sqlDir = Join-Path $Root $d; break }
+    }
+    if (-not $sqlDir) {
+        $sqlDir = if ($existingSql) { Split-Path $existingSql[0].FullName -Parent } else { Join-Path $Root "Database/StoredProcedures" }
+    }
+
+    $sqlPrompt = @"
+## Task
+Generate T-SQL stored procedures for the $ModuleName module.
+
+## Missing SQL Context
+$IssueContext
+
+$ClarificationsContext
+
+## Existing SQL Pattern (follow this for consistency)
+$(if ($sqlPattern) { $sqlPattern } else { "(no existing SQL files found - use standard T-SQL pattern)" })
+
+## Generate
+Return a JSON object:
+{
+  "files": [
+    { "path": "Database/StoredProcedures/${ModuleName}_GetAll.sql",    "content": "..." },
+    { "path": "Database/StoredProcedures/${ModuleName}_GetById.sql",   "content": "..." },
+    { "path": "Database/StoredProcedures/${ModuleName}_Create.sql",    "content": "..." },
+    { "path": "Database/StoredProcedures/${ModuleName}_Update.sql",    "content": "..." },
+    { "path": "Database/StoredProcedures/${ModuleName}_Delete.sql",    "content": "..." }
+  ]
+}
+
+Rules:
+- Use CREATE OR ALTER PROCEDURE pattern
+- Include proper parameter types with reasonable sizes
+- Use BEGIN TRY / BEGIN CATCH with THROW for error handling
+- Use SET NOCOUNT ON
+- For GetAll: support optional @Skip INT = 0, @Take INT = 50 pagination
+- Match table/column naming conventions from existing SQL
+- Return ONLY the JSON. No markdown fences.
+"@
+
+    $sysPrompt = "You are a T-SQL stored procedure generator. Return only the JSON object with files array."
+
+    try {
+        $result = Invoke-SonnetApi -SystemPrompt $sysPrompt -UserMessage $sqlPrompt -MaxTokens 16384 -Phase "sql-create"
+        if (-not ($result -and $result.Success -and $result.Text)) {
+            Write-Log "SqlCreate: API call failed for $ModuleName" "ERROR"
+            return $false
+        }
+
+        $json = $result.Text.Trim() -replace '(?s)^```[a-z]*\s*\n', '' -replace '\n```\s*$', ''
+        $scaffold = $json | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if (-not $scaffold -or -not $scaffold.files) {
+            Write-Log "SqlCreate: could not parse scaffold JSON for $ModuleName" "WARN"
+            return $false
+        }
+
+        $created = 0
+        foreach ($fileSpec in $scaffold.files) {
+            $fullPath = Join-Path $Root $fileSpec.path
+            $parentDir = Split-Path $fullPath -Parent
+            if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
+            if (-not (Test-Path $fullPath)) {
+                $fileSpec.content | Set-Content $fullPath -Encoding UTF8 -NoNewline
+                Write-Log "SqlCreate: created $($fileSpec.path)" "FIX"
+                $created++
+            } else {
+                Write-Log "SqlCreate: skipped existing file $($fileSpec.path)" "SKIP"
+            }
+        }
+
+        return $created -gt 0
+    } catch {
+        Write-Log "SqlCreate exception for $ModuleName : $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+# ============================================================
 # HELPER: Gather project context for prompts
 # ============================================================
 
@@ -549,7 +1035,7 @@ function Read-ProjectFiles {
         [string[]]$Patterns,
         [int]$MaxFiles = 10,
         [int]$MaxSizePerFile = 16000,
-        [string[]]$ExcludePatterns = @('bin', 'obj', 'node_modules', 'dist', '.gsd')
+        [string[]]$ExcludePatterns = @('bin', 'obj', 'node_modules', 'dist', '.gsd', 'design', 'generated', '.planning')
     )
 
     $content = ""
@@ -613,16 +1099,14 @@ function Invoke-BuildValidation {
     }
 
     # Backend build
-    $slnFiles = Get-ChildItem -Path $Root -Filter "*.sln" -ErrorAction SilentlyContinue
-    $csprojFiles = Get-ChildItem -Path $Root -Filter "*.csproj" -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -notmatch '(bin|obj|node_modules)[/\\]' }
+    $backendProject = Get-PreferredSmokeBackendProject
 
-    if ($slnFiles -or $csprojFiles) {
+    if ($backendProject) {
         Write-Log "Running dotnet build..." "INFO"
-        $buildTarget = if ($slnFiles) { $slnFiles[0].FullName } else { $csprojFiles[0].FullName }
+        $buildTarget = $backendProject.FullName
 
         try {
-            $buildOutput = & dotnet build $buildTarget --no-restore 2>&1 | Out-String
+            $buildOutput = & dotnet build $buildTarget 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
                 $result.status = "fail"
                 # Extract error lines
@@ -656,17 +1140,25 @@ function Invoke-BuildValidation {
     }
 
     # Frontend build
-    $packageJson = Join-Path $Root "package.json"
-    if (Test-Path $packageJson) {
+    $packageJson = Get-PreferredSmokePackageJson
+    if ($packageJson) {
         Write-Log "Running npm run build..." "INFO"
         try {
-            Push-Location $Root
+            $npmDir = Split-Path $packageJson.FullName -Parent
+            $previousCi = $env:CI
+            $previousBrowser = $env:BROWSER
+            Push-Location $npmDir
+            $env:CI = "1"
+            $env:BROWSER = "none"
             $npmOutput = & npm run build 2>&1 | Out-String
+            $npmExitCode = $LASTEXITCODE
             Pop-Location
+            $env:CI = $previousCi
+            $env:BROWSER = $previousBrowser
 
-            if ($LASTEXITCODE -ne 0) {
+            if ($npmExitCode -ne 0) {
                 if ($result.status -ne "fail") { $result.status = "fail" }
-                $errorLines = ($npmOutput -split "`n") | Where-Object { $_ -match '(ERROR|Error|error|TS\d{4}|Cannot find)' } | Select-Object -First 20
+                $errorLines = ($npmOutput -split "`n") | Where-Object { $_ -match '(error TS|error during build:|ELIFECYCLE|Build failed|Failed to compile|Cannot find)' } | Select-Object -First 20
                 foreach ($err in $errorLines) {
                     $result.issues += @{
                         severity = "critical"
@@ -920,7 +1412,7 @@ function Invoke-FrontendRouteValidation {
     if (Get-Command Build-RouteRoleMatrix -ErrorAction SilentlyContinue) {
         try {
             $matrix = Build-RouteRoleMatrix -RepoRoot $Root
-            if ($matrix -and $matrix.Gaps) {
+            if ($matrix) {
                 foreach ($gap in $matrix.Gaps) {
                     $result.issues += @{
                         severity = $gap.Severity
@@ -1115,11 +1607,11 @@ function Invoke-ModuleCompletenessCheck {
     }
 
     # Gather docs for module definitions
-    $docsContent = Read-ProjectFiles -Root $Root -Patterns @("*.md") -MaxFiles 5 -MaxSizePerFile 6000 -ExcludePatterns @('bin', 'obj', 'node_modules', 'dist', '.gsd', 'README')
+    $docsContent = Read-ProjectFiles -Root $Root -Patterns @("*.md") -MaxFiles 5 -MaxSizePerFile 6000 -ExcludePatterns @('bin', 'obj', 'node_modules', 'dist', '.gsd', 'README', 'design', 'generated', '.planning')
 
     # Controller listing
     $controllers = Get-ChildItem -Path $Root -Filter "*Controller.cs" -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -notmatch '(bin|obj|node_modules)[/\\]' }
+        Where-Object { $_.FullName -notmatch '(bin|obj|node_modules|design|generated|\.planning)[/\\]' }
     $controllerList = if ($controllers) { ($controllers | ForEach-Object { $_.FullName.Replace($Root, '').TrimStart('\', '/') }) -join "`n" } else { "(none)" }
 
     # Frontend page listing
@@ -1128,7 +1620,7 @@ function Invoke-ModuleCompletenessCheck {
         $dir = Join-Path $Root $srcDir
         if (Test-Path $dir) {
             $pages = Get-ChildItem -Path $dir -Filter "*.tsx" -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match '(pages|screens|views)[/\\]' -and $_.FullName -notmatch '(node_modules|dist)[/\\]' }
+                Where-Object { $_.FullName -match '(pages|screens|views)[/\\]' -and $_.FullName -notmatch '(node_modules|dist|design|generated|\.planning)[/\\]' }
             foreach ($p in $pages) { $pageList += $p.FullName.Replace($Root, '').TrimStart('\', '/') }
         }
     }
@@ -1136,7 +1628,7 @@ function Invoke-ModuleCompletenessCheck {
 
     # SQL file listing
     $sqlFiles = Get-ChildItem -Path $Root -Filter "*.sql" -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -notmatch '(bin|obj|node_modules)[/\\]' }
+        Where-Object { $_.FullName -notmatch '(bin|obj|node_modules|design|generated|\.planning)[/\\]' }
     $sqlListStr = if ($sqlFiles) { ($sqlFiles | ForEach-Object { $_.FullName.Replace($Root, '').TrimStart('\', '/') }) -join "`n" } else { "(none)" }
 
     $prompt = @"
@@ -1283,6 +1775,12 @@ function Invoke-MockDataDetection {
     # Tier: LOCAL — use mock-data-detector module (pure regex, no LLM)
     $script:tasksByTier["local"]++
     Write-Log "Mock data: using local tier (regex scanning)" "INFO"
+
+    if ($suspiciousFiles.Count -eq 0) {
+        $result.summary = "No mock data or placeholder patterns detected"
+        Write-Log "No mock data found" "OK"
+        return $result
+    }
 
     # Use the local mock-data-detector module if available (with 180s timeout)
     if (Get-Command Find-MockDataPatterns -ErrorAction SilentlyContinue) {
@@ -1700,11 +2198,22 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
 
     # ---- CHECK EXIT CONDITIONS ----
 
-    # Clean: no fixable issues
-    if ($fixableIssues.Count -eq 0) {
-        Write-Host "`n  ** ALL CLEAR - No fixable issues remaining! **" -ForegroundColor Green
-        Write-Log "Cycle ${cycle}: Clean - no fixable issues" "OK"
+    # Structural checks: frontend routes and module completeness must not be fail
+    $fePhase  = $phaseResults | Where-Object { $_.phase -eq "frontend_route_validation" } | Select-Object -Last 1
+    $modPhase = $phaseResults | Where-Object { $_.phase -eq "module_completeness" }       | Select-Object -Last 1
+    $structuralFail = ($fePhase  -and $fePhase.status  -eq "fail") -or
+                      ($modPhase -and $modPhase.status -eq "fail")
+
+    # Clean: no fixable issues AND structural gates pass
+    if ($fixableIssues.Count -eq 0 -and -not $structuralFail) {
+        Write-Host "`n  ** ALL CLEAR - No fixable issues, structural checks passed! **" -ForegroundColor Green
+        Write-Log "Cycle ${cycle}: Clean - no fixable issues and structural gates passed" "OK"
         break
+    }
+    if ($fixableIssues.Count -eq 0 -and $structuralFail) {
+        Write-Host "`n  ** Fixable issues clear but structural gaps remain (missing screens/modules) - continuing **" -ForegroundColor Yellow
+        Write-Log "Cycle ${cycle}: No fixable issues but structural fail - fe=$($fePhase.status) mod=$($modPhase.status)" "WARN"
+        # Don't break - fall through to fix phase to create missing screens
     }
 
     # Last cycle: just report
@@ -1730,22 +2239,49 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
     }
 
     # ---- FIX PHASE ----
-    Write-Host "`n--- Fixing $($fixableIssues.Count) issue(s) with $FixModel ---" -ForegroundColor Magenta
+    # Combine fixable issues with any structural issues from frontend/module phases
+    $structuralIssues = @()
+    if ($fePhase  -and $fePhase.status  -eq "fail") { $structuralIssues += @($fePhase.issues) }
+    if ($modPhase -and $modPhase.status -eq "fail") { $structuralIssues += @($modPhase.issues) }
+    $allFixableIssues = @($fixableIssues) + @($structuralIssues | Where-Object { $_ -and $_.severity -in @("critical","high","medium") })
 
-    # Group fixable issues by file
+    Write-Host "`n--- Fixing $($allFixableIssues.Count) issue(s) with $FixModel (including structural gaps) ---" -ForegroundColor Magenta
+
+    # Separate missing-file issues (need SmokeCreate) from existing-file issues (need SmokeFix)
+    $missingFileIssues = @{}
     $issuesByFile = @{}
-    foreach ($issue in $fixableIssues) {
+
+    foreach ($issue in $allFixableIssues) {
         $key = $issue.file
         if (-not $key -or $key -eq "") { continue }
-        # Resolve to full path
+        # Skip route-pattern keys (e.g. 'chat/:threadId', '/dashboard') — routes not file paths
+        if ($key -match ':[a-zA-Z]' -or ($key -match '^/' -and $key -notmatch '\\') -or $key -match '^\*') { continue }
         $fullPath = if ([System.IO.Path]::IsPathRooted($key)) { $key } else { Join-Path $RepoRoot $key }
-        if (-not (Test-Path $fullPath)) { continue }
-        if (-not $issuesByFile.ContainsKey($fullPath)) { $issuesByFile[$fullPath] = @() }
-        $issuesByFile[$fullPath] += $issue
+
+        if (-not (Test-Path $fullPath)) {
+            # File doesn't exist - candidate for SmokeCreate
+            if (-not $missingFileIssues.ContainsKey($fullPath)) { $missingFileIssues[$fullPath] = @() }
+            $missingFileIssues[$fullPath] += $issue
+        } else {
+            # File exists - fix in place
+            if (-not $issuesByFile.ContainsKey($fullPath)) { $issuesByFile[$fullPath] = @() }
+            $issuesByFile[$fullPath] += $issue
+        }
     }
 
     $fixedCount = 0
     $fixFailCount = 0
+
+    # Create missing screen files
+    foreach ($filePath in $missingFileIssues.Keys) {
+        $fileIssues = $missingFileIssues[$filePath]
+        $relPath = $filePath.Replace($RepoRoot, '').TrimStart('\', '/')
+        Write-Host "  Creating missing file: $relPath ($($fileIssues.Count) issue(s))" -ForegroundColor Cyan
+        $created = Invoke-SmokeCreate -FilePath $filePath -RelPath $relPath -Issues $fileIssues -Model $FixModel -Root $RepoRoot
+        if ($created) { $fixedCount++ } else { $fixFailCount++ }
+    }
+
+    # Fix existing files
     foreach ($filePath in $issuesByFile.Keys) {
         $fileIssues = $issuesByFile[$filePath]
         $relPath = $filePath.Replace($RepoRoot, '').TrimStart('\', '/')
@@ -1769,6 +2305,87 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
 
     Write-Log "Cycle ${cycle} fix results: ${fixedCount} files fixed, ${fixFailCount} failed" $(if ($fixedCount -gt 0) { "FIX" } else { "WARN" })
 
+    # ---- MODULE GAP: Create missing C# backend + SQL scaffolding ----
+    $moduleGapIssues = @($allFixableIssues | Where-Object { $_.category -in @("module_gap","module_completeness") -and $_.severity -in @("critical","high") })
+    if ($moduleGapIssues.Count -gt 0) {
+        Write-Host "`n--- Module gap scaffolding: $($moduleGapIssues.Count) gap(s) ---" -ForegroundColor Cyan
+
+        # Group issues by module name (derive from description / file path)
+        $moduleGroups = @{}
+        foreach ($gap in $moduleGapIssues) {
+            # Skip documentation files — they are not modules
+            if ($gap.file -match '\.(md|txt|pdf|docx?)$') { continue }
+            # Try to extract module name from file path or description
+            $mn = if ($gap.file) {
+                [System.IO.Path]::GetFileNameWithoutExtension($gap.file) -replace '(Controller|Service|Repository|Page|Screen|View)$', ''
+            } elseif ($gap.description -match '(\w+)\s+(controller|service|module|page)') {
+                $Matches[1]
+            } else { $null }
+            if (-not $mn -or $mn.Length -lt 2) { continue }
+            if (-not $moduleGroups.ContainsKey($mn)) { $moduleGroups[$mn] = @() }
+            $moduleGroups[$mn] += $gap
+        }
+
+        foreach ($mn in $moduleGroups.Keys) {
+            $gapCtx = ($moduleGroups[$mn] | ForEach-Object { "- $($_.description)" }) -join "`n"
+            $needsBackend = @($moduleGroups[$mn] | Where-Object { $_.description -match '(?i)controller|service|endpoint|API' -or $_.fix_suggestion -match '\.cs' }).Count -gt 0
+            $needsSql     = @($moduleGroups[$mn] | Where-Object { $_.description -match '(?i)stored proc|sproc|SQL|database' -or $_.fix_suggestion -match '\.sql' }).Count -gt 0
+
+            if ($needsBackend) {
+                Write-Host "  BackendCreate: $mn" -ForegroundColor Cyan
+                $ok = Invoke-BackendCreate -Root $RepoRoot -ModuleName $mn -IssueContext $gapCtx -Model $FixModel -ClarificationsContext $script:clarificationsCtxString
+                if ($ok) { $fixedCount++ }
+            }
+            if ($needsSql) {
+                Write-Host "  SqlCreate: $mn" -ForegroundColor Cyan
+                $ok = Invoke-SqlCreate -Root $RepoRoot -ModuleName $mn -IssueContext $gapCtx -Model $FixModel -ClarificationsContext $script:clarificationsCtxString
+                if ($ok) { $fixedCount++ }
+            }
+        }
+    }
+
+    # ---- DB GAP: Create missing SQL SPs for database validation failures ----
+    $dbGapIssues = @($allFixableIssues | Where-Object { $_.category -in @("db_gap","database_gap") -and $_.severity -in @("critical","high") })
+    if ($dbGapIssues.Count -gt 0) {
+        $dbModuleGroups = @{}
+        foreach ($gap in $dbGapIssues) {
+            $mn = if ($gap.file) { [System.IO.Path]::GetFileNameWithoutExtension($gap.file) -replace '_.*', '' } else { "Database" }
+            if (-not $dbModuleGroups.ContainsKey($mn)) { $dbModuleGroups[$mn] = @() }
+            $dbModuleGroups[$mn] += $gap
+        }
+        foreach ($mn in $dbModuleGroups.Keys) {
+            $gapCtx = ($dbModuleGroups[$mn] | ForEach-Object { "- $($_.description)" }) -join "`n"
+            Write-Host "  SqlCreate (db gap): $mn" -ForegroundColor Cyan
+            $ok = Invoke-SqlCreate -Root $RepoRoot -ModuleName $mn -IssueContext $gapCtx -Model $FixModel -ClarificationsContext $script:clarificationsCtxString
+            if ($ok) { $fixedCount++ }
+        }
+    }
+
+    # ---- CLARIFICATION COLLECTION: Policy issues that need human input ----
+    if (Get-Command Add-Clarification -ErrorAction SilentlyContinue) {
+        $policyIssues = @($allIssues | Where-Object { $_.category -in @("rbac_gap","auth_gap","todo_stub","dup_route") })
+        foreach ($issue in $policyIssues | Select-Object -First 30) {
+            $qId = "sm_" + $issue.category + "_" + ([System.Math]::Abs(($issue.description + $issue.file).GetHashCode()).ToString())
+            $cat = switch ($issue.category) {
+                "rbac_gap"  { "rbac" }
+                "auth_gap"  { "auth_flow" }
+                "todo_stub" { "todo_stub" }
+                "dup_route" { "dup_route" }
+                default     { "other" }
+            }
+            $q = switch ($issue.category) {
+                "rbac_gap"  { "Should this endpoint/route require authentication? If yes, which roles? (Options: Admin only | All authenticated users | Specific roles e.g. 'Manager,Viewer' | Leave public)" }
+                "auth_gap"  { "What is the intended auth behavior here? (Describe expected behavior or choose from standard patterns)" }
+                "todo_stub" { "What should this unimplemented stub do? Describe the expected behavior so the pipeline can implement it." }
+                "dup_route" { "This route is defined more than once. Which definition should be kept? (Describe the correct one)" }
+                default     { "How should this issue be resolved? $($issue.fix_suggestion)" }
+            }
+            Add-Clarification -Id $qId -Category $cat -Phase "SMOKE-TEST" `
+                -Context $issue.description -Question $q -File $issue.file `
+                -Default $(if ($cat -eq "rbac") { "All authenticated users" } else { "" })
+        }
+    }
+
     if ($fixedCount -eq 0) {
         Write-Host "  No files were fixed - stopping to prevent infinite loop." -ForegroundColor Yellow
         Write-Log "No fixes applied in cycle $cycle - stopping" "WARN"
@@ -1783,6 +2400,25 @@ for ($cycle = 1; $cycle -le $MaxCycles; $cycle++) {
 
     Write-Host "  Proceeding to re-run smoke tests..." -ForegroundColor Cyan
     Start-Sleep -Seconds 2
+}
+
+# ============================================================
+# WRITE PENDING CLARIFICATIONS (read by full-pipeline to stop/report)
+# ============================================================
+
+$clarificationsFile = Join-Path $smokeDir "clarifications-needed.json"
+if (Get-Command Get-PendingClarifications -ErrorAction SilentlyContinue) {
+    $pending = Get-PendingClarifications
+    if ($pending.Count -gt 0) {
+        @{
+            generated_at   = (Get-Date -Format "o")
+            question_count = $pending.Count
+            questions      = $pending
+        } | ConvertTo-Json -Depth 10 | Set-Content $clarificationsFile -Encoding UTF8
+        Write-Log "Written $($pending.Count) pending clarification(s) to $clarificationsFile" "WARN"
+    } elseif (Test-Path $clarificationsFile) {
+        Remove-Item $clarificationsFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ============================================================
