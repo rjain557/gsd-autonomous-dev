@@ -21,6 +21,7 @@
 | 2.1.0 | March 2026 | Runtime smoke tests (Script 32: DI validation, API endpoint checks, seed FK order). Partitioned code review (Script 33: 3-way parallel with agent rotation). LOC-cost integration (Script 34: baseline tracking, grand totals, cost-per-line in every notification). Maintenance mode (Script 35): `gsd-fix` (text/file/directory with screenshots), `gsd-update`, `--Scope`, `--Incremental`, `-BugDir`. Added Chapters 17.7-17.8, expanded Chapter 19, added Chapter 20. |
 | 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-phase parallel pipeline -- partitioned extract (each agent processes 1/3 of specs in chunks via `Start-Job`), cross-verification (different agent checks each extraction), Claude synthesis. Live progress monitoring (disk polling every 15s + heartbeat). Ntfy push notifications at every phase with token cost breakdown. `gsd-verify-requirements` standalone command with `-SkipAgent`, `-SkipVerify`, `-ChunkSize`. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
 | 2.3.0 | March 2026 | Model version pinning: `--model` flag enforced on all CLI invocations (claude-sonnet-4-6, gpt-5.4, gemini-3.0-pro). `agent_models` config block in global-config.json for zero-reinstall model upgrades. `$script:CLAUDE_MODEL` / `$script:GEMINI_MODEL` / `$script:CODEX_MODEL` script-scope constants in resilience.ps1. `--allowed-tools` kebab-case fix across all scripts. `disabled:` and `connection_failed:` error prefixes in Get-FailureDiagnosis (triggers immediate fallback). ImageMagick three-tier visual diff (SHA256 → pixel diff → file-size fallback). HSL/oklch/hwb design token detection. Incremental file map threshold (≤20 files prunes cache; >20 full rebuild). SEC-NET-05/SEC-FE-01 `[AllowAnonymous]` exclusion. Binary file skip logging in LOC tracking. `gsd-update` matrix existence guard. `Initialize-ProjectInterfaces` guard in gsd-assess. Set-Content error handling in convergence fix. Per-project supervisor pattern memory. |
+| 3.0.1 | March 2026 | Added SEC-FE-17–SEC-FE-21 (DB-driven navigation + auth guard pattern). Section 15.9.2 added. `security-standards.md` updated globally. |
 | 3.0.0 | March 2026 | **V3 Pipeline — API-only architecture.** Replaced 7-agent CLI+REST system with 2-model API-only pipeline (Sonnet 4.6 + Codex Mini), ~85% cheaper, ~10x faster. 7-model weighted round-robin execute pool. Anti-plateau protection (graduated escalation). Spec alignment guard (drift detection). Decomposition budget (20/iter max, depth ≤4). Confidence-gated review. Speculative execution (+40% speed). Checkpoint and recovery. Centralized logging with per-repo iteration tracking. **New: Full Pipeline Orchestrator** (gsd-full-pipeline.ps1) — 5-phase end-to-end quality gate (wire-up → code-review → smoke-test → final-review → handoff). **New: Smoke Testing** (gsd-smoketest.ps1) — 9-phase integration validation with tiered LLM cost optimization (~85% cheaper). **New: Wire-Up Phase** — mock data detection, route-role matrix, integration gap prevention. **New: 3-Model Code Review** (gsd-codereview.ps1) — Claude+Codex+Gemini consensus with auto-fix cycles. **New: Tiered LLM Cost Optimization** — 4-tier model routing (local/cheap/mid/premium) for smoke testing. **New: LLM Pre-Validate Fix Phase** — proactive error fixing before local build. **New: Existing Codebase Mode** (gsd-existing.ps1) — deep extraction, code inventory, satisfaction verification. **New: Supervision Insights** — cross-session learning for pipeline improvement. Added Chapters 22-27. |
 
 ---
@@ -4205,6 +4206,28 @@ Hard failures reset health to 99% and inject the failure details into agent prom
 | SEC-FE-14 | `npm audit` in CI/CD — fix high/critical vulnerabilities |
 | SEC-FE-15 | Exact version pinning in package.json |
 | SEC-FE-16 | Subresource Integrity (SRI) hashes for CDN-hosted libraries |
+
+### 15.9.2 Role-Based Navigation & Auth Guards
+
+All projects MUST implement dynamic, DB-driven navigation with URL-level auth guards. Hardcoded role checks in JSX are prohibited after the first release — permissions must be configurable in the database without code changes.
+
+**Pattern: `NavigationModules` + `RoleNavigationModules` tables**
+```
+NavigationModules:    ModuleKey | Label | Icon | Href | ParentKey | SortOrder
+RoleNavigationModules: RoleName | ModuleKey | IsEnabled
+```
+
+**Backend**: `GET /api/navigation/my-modules` — reads role from JWT, queries `usp_Navigation_GetModulesByRole`, returns ordered hierarchy. Never accepts role as a client parameter.
+
+**Frontend**: `NavigationProvider` wraps the app and exposes `isModuleAllowed(moduleKey)`. `ProtectedRoute` accepts `requiredModule?: string` — if the user's role doesn't have the module, renders `ForbiddenFallback`. Check is optimistic during initial load. `AppShell` rebuilds its menu from DB data with hardcoded fallback while loading.
+
+| ID | Rule |
+|----|------|
+| SEC-FE-17 | Navigation menu MUST be generated dynamically from DB — never hardcoded role checks in JSX |
+| SEC-FE-18 | `ProtectedRoute` MUST accept `requiredModule?: string`; deny access if role lacks the module |
+| SEC-FE-19 | Module check MUST be optimistic during initial load to prevent flash of forbidden |
+| SEC-FE-20 | Backend navigation endpoint MUST read role from JWT — never accept role as client parameter |
+| SEC-FE-21 | Sensitive routes (revenue, subscription-plans, user-assignments, admin-only logs) MUST have `requiredModule` guard in addition to `allowedRoles` |
 
 ## 15.10 HIPAA Compliance (Health Data)
 
