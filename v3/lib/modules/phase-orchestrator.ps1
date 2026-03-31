@@ -1216,6 +1216,31 @@ function Start-V3Pipeline {
         Save-Checkpoint -GsdDir $GsdDir -Iteration $iter -Phase "iteration-complete" `
             -Health $currentHealth -BatchSize $batchSizeMax -Mode $Mode
 
+        # ── Obsidian Vault Write (post-iteration) ──────────────────────────
+        $vaultRoot   = "D:\obsidian\gsd-autonomous-dev\gsd-autonomous-dev"
+        $vaultScript = Join-Path $PSScriptRoot "../../../scripts/write-vault-note.ps1"
+        if ((Test-Path $vaultRoot) -and (Test-Path $vaultScript)) {
+            try {
+                $projectSlug  = ($repoName -replace '[^a-zA-Z0-9]', '-').ToLower()
+                $healthBefore = [math]::Round($currentHealth - $healthDelta, 1)
+                & pwsh -NonInteractive -File $vaultScript `
+                    -VaultRoot      $vaultRoot `
+                    -Project        $projectSlug `
+                    -Iteration      $globalIter `
+                    -HealthBefore   $healthBefore `
+                    -HealthAfter    $currentHealth `
+                    -CostIter       ([math]::Round(($iterLogData.cost_usd ?? 0), 2)) `
+                    -CostCumulative ([math]::Round($script:CostState.TotalUsd, 2)) `
+                    -Decompositions ($iterLogData.decomp_added ?? 0) `
+                    -Notes          "Iteration $globalIter | batch=$($iterLogData.batch_size ?? 0) | zero-delta=$($iterLogData.consecutive_zero_delta ?? 0)" `
+                    2>&1 | Out-Null
+                Write-Host "  [VAULT] Iteration $globalIter note written" -ForegroundColor DarkGray
+            } catch {
+                Write-Host "  [VAULT] Warn: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+        # ───────────────────────────────────────────────────────────────────
+
         } catch {
             Write-Host "`n  [CRASH] Iteration $iter crashed: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "  Stack: $($_.ScriptStackTrace)" -ForegroundColor DarkRed
@@ -1279,6 +1304,37 @@ function Start-V3Pipeline {
         Send-GsdNotification -Title "GSD CONVERGED!" `
             -Message "Health: 100% | Cost: `$$([math]::Round($script:CostState.TotalUsd, 2)) | Mode: $Mode$smokeMsg" `
             -Tags "white_check_mark" -Priority "high"
+
+        # ── Obsidian Vault Write (convergence) ─────────────────────────────
+        $vaultRoot   = "D:\obsidian\gsd-autonomous-dev\gsd-autonomous-dev"
+        $vaultScript = Join-Path $PSScriptRoot "../../../scripts/write-vault-note.ps1"
+        if ((Test-Path $vaultRoot) -and (Test-Path $vaultScript)) {
+            try {
+                $projectSlug = ($repoName -replace '[^a-zA-Z0-9]', '-').ToLower()
+                & pwsh -NonInteractive -File $vaultScript `
+                    -VaultRoot      $vaultRoot `
+                    -Project        $projectSlug `
+                    -Iteration      $globalIter `
+                    -HealthBefore   $prevHealth `
+                    -HealthAfter    100 `
+                    -CostIter       0 `
+                    -CostCumulative ([math]::Round($script:CostState.TotalUsd, 2)) `
+                    -Notes          "CONVERGED at iteration $globalIter. Total cost: `$$([math]::Round($script:CostState.TotalUsd, 2)). Duration: $([math]::Round(((Get-Date) - $pipelineStart).TotalMinutes, 1))m" `
+                    2>&1 | Out-Null
+                Write-Host "  [VAULT] Convergence note written" -ForegroundColor Green
+
+                # Mark project as converged in vault project index
+                $projectIndex = Join-Path $vaultRoot "02-Projects\$projectSlug\index.md"
+                if (Test-Path $projectIndex) {
+                    $content = Get-Content $projectIndex -Raw
+                    $content = $content -replace '(?m)^status:.*$', "status: converged"
+                    Set-Content $projectIndex -Value $content -Encoding UTF8
+                }
+            } catch {
+                Write-Host "  [VAULT] Warn: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
+        # ───────────────────────────────────────────────────────────────────
     }
 
     $elapsed = [math]::Round(((Get-Date) - $pipelineStart).TotalMinutes, 1)
