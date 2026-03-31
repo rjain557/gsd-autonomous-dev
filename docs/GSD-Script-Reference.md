@@ -1534,6 +1534,92 @@ $model = Select-ModelForTask -Tier "cheap"  # Returns model from tier with fallb
 # Tiers: local, cheap, mid, premium
 ```
 
+## Verify Gate Functions
+
+The following functions implement the three mandatory pre-handoff gates. Run these after the pipeline converges and before accepting any handoff as complete.
+
+### Test-CssResponsiveUtilities
+
+```powershell
+function Test-CssResponsiveUtilities {
+  param([string]$CssFile = "src/Client/technijian-spa/src/index.css")
+  $count = (Select-String -Path $CssFile -Pattern "md:flex" -AllMatches).Matches.Count
+  if ($count -eq 0) {
+    Write-Host "FAIL: md:flex not found in $CssFile — Tailwind responsive utilities missing" -ForegroundColor Red
+    Write-Host "Fix: npx @tailwindcss/cli@4.1.3 -i src/tailwind-input.css -o src/index.css"
+    return $false
+  }
+  Write-Host "PASS: CSS responsive utilities present ($count matches)" -ForegroundColor Green
+  return $true
+}
+```
+
+**When to run**: Any time `index.css` is committed, generated, or modified. Failing this gate means the sidebar is invisible at runtime for all roles.
+
+### Test-MigrationCompleteness
+
+```powershell
+function Test-MigrationCompleteness {
+  param(
+    [string]$MigrationsDir = "Database/Migrations",
+    [string]$ProcsDir = "Database/StoredProcedures"
+  )
+  $allPassed = $true
+  # Extract all table references from stored procedures
+  $procFiles = Get-ChildItem $ProcsDir -Filter "*.sql"
+  foreach ($proc in $procFiles) {
+    $content = Get-Content $proc.FullName -Raw
+    $tables = [regex]::Matches($content, 'FROM\s+(\w+)|JOIN\s+(\w+)|INTO\s+(\w+)|UPDATE\s+(\w+)') |
+              ForEach-Object { $_.Groups[1..4] | Where-Object { $_.Value } | Select-Object -First 1 -ExpandProperty Value } |
+              Sort-Object -Unique
+    foreach ($table in $tables) {
+      $found = Get-ChildItem $MigrationsDir -Filter "*.sql" |
+               Where-Object { (Get-Content $_.FullName -Raw) -match "CREATE TABLE $table" }
+      if (-not $found) {
+        Write-Host "FAIL: Table '$table' (used in $($proc.Name)) has no CREATE TABLE migration" -ForegroundColor Red
+        $allPassed = $false
+      }
+    }
+  }
+  if ($allPassed) { Write-Host "PASS: All stored procedure tables have migrations" -ForegroundColor Green }
+  return $allPassed
+}
+```
+
+**When to run**: After any stored procedure is written or modified. If this fails, mark the requirement as `BLOCKED` — do not accept as `satisfied`.
+
+### Invoke-E2ESmokeTest
+
+```powershell
+function Invoke-E2ESmokeTest {
+  param([string]$RepoRoot, [string]$Suite = "navigation,screens")
+  Push-Location "$RepoRoot/src/Client/technijian-spa"
+  try {
+    # Kill any stale Vite process on port 3001
+    Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue |
+      ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
+
+    $suites = $Suite -split "," | ForEach-Object { "e2e/$_.spec.ts" }
+    $result = & npx playwright test --config=playwright.e2e.config.ts @suites --reporter=list 2>&1
+    $exitCode = $LASTEXITCODE
+    $result | Write-Host
+    if ($exitCode -ne 0) {
+      Write-Host "FAIL: E2E tests failed — handoff blocked" -ForegroundColor Red
+      return $false
+    }
+    Write-Host "PASS: All E2E tests passed" -ForegroundColor Green
+    return $true
+  } finally {
+    Pop-Location
+  }
+}
+```
+
+**When to run**: Final step before developer handoff. All three gates must pass.
+
+---
+
 ## VS Code Integration
 
 After installation, two tasks are available via Ctrl+Shift+P -> "Run Task":

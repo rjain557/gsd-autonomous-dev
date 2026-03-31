@@ -1664,3 +1664,169 @@ All pipeline runs write to `~/.gsd-global/logs/{repo-name}/`:
 - **Persistent iteration counter**: `iteration-counter.json` survives pipeline restarts
 - **Tool-specific logs**: `smoketest-{ts}.log`, `codereview-{ts}.log`, `full-pipeline-{ts}.log`
 - **Supervision insights**: `~/.gsd-global/logs/supervision-insights.md` for cross-session learning
+
+---
+
+## Verification Gates (Post-Delivery Checklist)
+
+Three classes of defect escape code review because they are runtime-only, not statically detectable. These gates must be applied before any developer handoff is accepted as complete.
+
+### Gate 1 — CSS Responsive Utility Verification
+
+**What it catches**: Tailwind v4 pre-built `index.css` files can be generated or committed without `@media` blocks for responsive utilities. The desktop sidebar uses `md:flex` to become visible at ≥768px — if that class is absent the sidebar remains `display:none` for all roles. Code review cannot detect this because TypeScript compiles fine regardless of what is in the CSS file.
+
+**Check**:
+```bash
+grep -c "md:flex" src/Client/technijian-spa/src/index.css
+# Must be > 0. Rebuilt files are typically 4800+ lines with 170+ @media blocks.
+```
+
+**Fix if failing** (Tailwind v4 rebuild):
+```bash
+npm install -D @tailwindcss/cli@4.1.3 tailwindcss@4.1.3
+echo '@import "tailwindcss";' > src/tailwind-input.css
+npx @tailwindcss/cli@4.1.3 -i src/tailwind-input.css -o src/index.css
+```
+
+Commit both `tailwind-input.css` and the rebuilt `index.css`.
+
+### Gate 2 — Database Migration Completeness
+
+**What it catches**: The pipeline writes stored procedures and C# code that reference tables by name, but if no migration creates those tables the runtime throws SQL errors while TypeScript and dotnet build both succeed. This is a silent gap — requirements are marked satisfied when code compiles, but the feature fails when executed.
+
+**Check**: For every stored procedure, every table it references must have a `CREATE TABLE` in a migration file:
+```bash
+grep -r "CREATE TABLE Modules" Database/Migrations/    # must return a result
+grep -r "CREATE TABLE Roles"   Database/Migrations/
+grep -r "CREATE TABLE RoleModules" Database/Migrations/
+```
+
+If any table has no migration: mark requirement `BLOCKED`, reason `"missing migration for {table}"`. Do not promote to `satisfied` until migration is written and verified.
+
+**Add to code-review checklist**: "For every stored procedure in this diff: does a migration CREATE every table it references?"
+
+### Gate 3 — Headless UI Smoke Test (E2E render gate)
+
+**What it catches**: The first two gates are static checks. This gate runs the actual browser to confirm the app renders for each role. It catches runtime issues — missing providers, context errors, invisible sidebars, auth redirects — that no amount of static analysis finds.
+
+**Run before any handoff**:
+```bash
+cd src/Client/technijian-spa
+npx playwright test --config=playwright.e2e.config.ts e2e/navigation.spec.ts e2e/screens.spec.ts
+```
+
+A passing run (0 failures, all roles render sidebar with correct links) is the handoff gate. If any test fails, treat it as a P1 bug, not a test issue.
+
+**Minimum smoke spec** (if full E2E suite doesn't exist yet):
+```typescript
+// e2e/smoke.spec.ts
+for (const role of ['technijian_admin', 'technijian_employee', 'client_admin', 'client_user']) {
+  test(`${role} sees sidebar`, async ({ page, context }) => {
+    await setupRole(context, role);
+    await page.goto('/chat');
+    await waitForAppReady(page);
+    const sidebar = page.locator('aside[aria-label="Main navigation"]');
+    await expect(sidebar).toBeVisible({ timeout: 8000 });
+  });
+}
+```
+
+---
+
+## E2E Test Infrastructure
+
+### Auth Bypass Pattern
+
+MSAL/Azure AD authentication cannot run in headless Playwright tests. The bypass pattern skips the auth provider entirely and reads the test role from `sessionStorage`.
+
+**Environment flag**: `VITE_E2E_BYPASS_AUTH=true` (set in `.env.test` and in `playwright.e2e.config.ts` `webServer.env`)
+
+**Implementation**:
+- `main.tsx`: when flag is true, render without `MsalProvider` and skip `initializeMsal()`
+- `AuthContext.tsx`: in `useEffect`, if flag is true read `sessionStorage.getItem('e2e_test_role')` and set all auth state synchronously, then `setIsLoading(false)`
+
+**Test setup** (`e2e/helpers.ts`):
+```typescript
+await context.addInitScript((role) => {
+  sessionStorage.setItem('e2e_test_role', role);
+  sessionStorage.setItem('tcai.tenantId', 'test-tenant-id');
+}, role);
+```
+
+This pattern keeps E2E auth bypass 100% isolated from production — the flag is never true in non-test Vite modes.
+
+### Playwright Route Mock Ordering (Critical)
+
+**Playwright uses LIFO order** — the last-registered `context.route()` handler has the highest priority and is tried first.
+
+**The bug**: If a catch-all `${origin}/api/**` route is registered _after_ specific routes (e.g. `/navigation/my-modules`), the catch-all intercepts every request first and returns `[]` before the specific handler can run. The result is HTTP 200 with empty data — silent failure. In practice this caused `modules = []` → `isModuleUrlAllowed()` always false → "Access Forbidden" on every module-guarded route for all roles.
+
+**The rule**: Always register catch-all routes **first** (lowest priority), specific routes **last** (highest priority):
+```typescript
+// helpers.ts — CORRECT order
+// Step 1: catch-all (lowest priority — registered first)
+for (const origin of apiOrigins) {
+  await context.route(`${origin}/api/**`, (route) => {
+    route.fulfill({ status: 200, body: method === 'GET' ? '[]' : '{}' });
+  });
+}
+// Step 2: specific routes (highest priority — registered last)
+for (const pattern of routeApiPattern('/navigation/my-modules')) {
+  await context.route(pattern, (route) => {
+    route.fulfill({ status: 200, body: JSON.stringify(modules) });
+  });
+}
+```
+
+### Standard E2E File Structure
+
+```
+e2e/
+├── helpers.ts          # setupRole(), waitForAppReady(), getVisibleNavItems()
+├── mock-data.ts        # MODULES_BY_ROLE for all roles, MOCK_TENANT, mockProfile()
+├── navigation.spec.ts  # Sidebar visibility, nav links, role-specific access (22 tests)
+├── screens.spec.ts     # Screen render + access control for all roles (50 tests)
+└── debug.spec.ts       # Screenshot + state capture utility (not in CI)
+```
+
+```
+playwright.e2e.config.ts  # Port 3001, mode=test, reuseExistingServer=false
+.env.test                 # VITE_E2E_BYPASS_AUTH=true, VITE_API_BASE_URL=http://localhost:60112/api
+```
+
+### Navigation Module Mock Data
+
+Mock data must mirror the database seed exactly (same IDs, same URLs, same parentIds):
+
+| Role | Modules |
+|------|---------|
+| technijian_admin | All modules |
+| technijian_employee | All except Revenue, Subscription Plans, User Assignments |
+| client_admin | Chat, Assistants, MyGPTs, Projects, Files, Council, subset of Admin, Settings, Help |
+| client_user | Chat, Assistants, Projects, Files, Help, Settings, Settings/Billing |
+
+---
+
+## Memory System — Learned Patterns
+
+The GSD engine maintains a persistent memory of cross-session learnings in `~/.claude/projects/{project}/memory/`. These are facts that are non-obvious, painful to rediscover, and worth front-loading into every session.
+
+### Saved Patterns (as of 2026-03-31)
+
+| Memory File | What It Records |
+|-------------|----------------|
+| `feedback_playwright_lifo_routing.md` | Playwright LIFO route priority — catch-all must be registered first |
+| `feedback_tailwind_v4_css_verification.md` | Tailwind v4 pre-built CSS can be missing responsive utilities — always verify `md:flex` |
+| `feedback_db_migration_completeness.md` | Tables referenced in stored procs must have CREATE TABLE migrations — verify before marking satisfied |
+| `feedback_proactive_monitoring.md` | Stop passive monitoring — actively fix root causes every tick |
+| `feedback_spec_alignment_guard.md` | Always verify requirements match specs before pipeline runs |
+| `feedback_codereview_optimizations.md` | Claude fixer (not Codex), parallel review, early-stop, skip clean reqs |
+| `pipeline-patterns.md` | 10 recurring disease patterns: truncation, decomp spiral, validation waste, etc. |
+
+### How Memories Are Applied
+
+1. On session start, Claude Code reads `MEMORY.md` index (always in context)
+2. Relevant memory files are fetched on-demand when topics match
+3. Before any Playwright test setup — check `feedback_playwright_lifo_routing.md`
+4. Before accepting any CSS change — check `feedback_tailwind_v4_css_verification.md`
+5. Before marking DB requirements satisfied — check `feedback_db_migration_completeness.md`

@@ -762,3 +762,112 @@ Persistent across pipeline restarts:
   "batch_info": { "size": 10, "satisfied": 3, "partial": 5, "not_started": 2 }
 }
 ```
+
+---
+
+## Verify Phase Checklist
+
+The verify phase (Phase 9) runs a binary check on each requirement. In addition to the requirement-level checks, the following project-wide gates must pass before a handoff is accepted.
+
+### Mandatory Pre-Handoff Gates
+
+| Gate | Command | Pass Condition |
+|------|---------|----------------|
+| CSS responsive utilities | `grep -c "md:flex" src/Client/technijian-spa/src/index.css` | Count > 0 |
+| DB migration completeness | `grep -r "CREATE TABLE {TableName}" Database/Migrations/` | Result found for every table in every stored proc |
+| E2E navigation tests | `npx playwright test e2e/navigation.spec.ts` | 0 failures |
+| E2E screen render tests | `npx playwright test e2e/screens.spec.ts` | 0 failures |
+| TypeScript compilation | `npx tsc --noEmit` | 0 errors |
+| .NET build | `dotnet build` | 0 errors |
+
+### When a Gate Fails
+
+**CSS gate fails** → Rebuild with `@tailwindcss/cli@4.1.3`:
+```bash
+echo '@import "tailwindcss";' > src/tailwind-input.css
+npx @tailwindcss/cli@4.1.3 -i src/tailwind-input.css -o src/index.css
+```
+
+**DB migration gate fails** → Write the missing migration before proceeding. Do not mark the requirement satisfied until `grep CREATE TABLE` returns a result for every table the stored proc references. A requirement that references a non-existent table is `BLOCKED`, not `PARTIAL`.
+
+**E2E tests fail** → Treat as P1. Do not ship. Debug with:
+```bash
+npx playwright test --headed --debug e2e/navigation.spec.ts
+```
+Common causes: Playwright route ordering wrong (see Architecture doc), auth bypass not applied, mock data not matching DB seed.
+
+---
+
+## E2E Test Infrastructure
+
+### Running Tests
+
+```bash
+cd src/Client/technijian-spa
+
+# Kill any process holding port 3001 first
+Get-NetTCPConnection -LocalPort 3001 | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+
+# Run all E2E tests
+npx playwright test --config=playwright.e2e.config.ts
+
+# Run specific suites
+npx playwright test --config=playwright.e2e.config.ts e2e/navigation.spec.ts
+npx playwright test --config=playwright.e2e.config.ts e2e/screens.spec.ts
+
+# Debug a failing test (headed browser)
+npx playwright test --config=playwright.e2e.config.ts --headed --debug e2e/navigation.spec.ts
+```
+
+### How the Auth Bypass Works
+
+Tests cannot use real Azure AD (MSAL). The bypass:
+
+1. `.env.test` sets `VITE_E2E_BYPASS_AUTH=true`
+2. `main.tsx` detects the flag and skips `MsalProvider` + `initializeMsal()`
+3. `AuthContext.tsx` detects the flag and reads the role from `sessionStorage.getItem('e2e_test_role')`
+4. `helpers.ts` sets `sessionStorage` via `context.addInitScript()` before page load
+5. All API calls are intercepted by Playwright route mocks — no real backend needed
+
+The auth bypass flag is **never** true in production or development mode — only in Vite's `test` mode.
+
+### Critical: Route Registration Order
+
+Playwright route matching uses **LIFO** (Last In, First Out). The last-registered route has the highest priority.
+
+**Always** register catch-all routes first and specific routes last:
+```typescript
+// CORRECT — specific routes win
+context.route(`${origin}/api/**`, catchAll);                   // lowest priority
+context.route(`${origin}/api/navigation/my-modules`, specific); // highest priority
+
+// WRONG — catch-all intercepts everything, specific route never fires
+context.route(`${origin}/api/navigation/my-modules`, specific); // registered first
+context.route(`${origin}/api/**`, catchAll);                   // registered last = wins
+```
+
+Getting this wrong causes the navigation query to return `[]` (empty array), which makes `isModuleUrlAllowed()` return false for all routes, showing "Access Forbidden" on every module-guarded screen despite correct mock data being provided.
+
+### Adding New Tests
+
+When a new `ProtectedRoute` with `requiredModule` is added in the router, add a corresponding test in `screens.spec.ts`:
+```typescript
+test('Admin NewFeature renders', async ({ page }) => {
+  await page.goto('/admin/new-feature');
+  await waitForAppReady(page);
+  const body = await page.locator('body').textContent() ?? '';
+  expect(body).not.toContain('Access Forbidden');
+  expect(page.url()).not.toContain('/login');
+});
+```
+
+And a forbidden test for roles that should not have access:
+```typescript
+test('client_user cannot access NewFeature', async ({ page }) => {
+  await page.goto('/admin/new-feature');
+  await waitForAppReady(page);
+  const hasForbidden = await page.locator('text=Access Forbidden').count();
+  const redirected = !page.url().includes('/admin/new-feature');
+  expect(hasForbidden > 0 || redirected).toBe(true);
+});
+```

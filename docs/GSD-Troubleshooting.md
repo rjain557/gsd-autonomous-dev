@@ -1610,3 +1610,127 @@ Fix:
 2. Common causes: blocked files, circular dependencies, spec ambiguity
 3. Fix blocked files directly, then re-run with `-StartIteration N`
 4. Consider running `gsd-existing.ps1` to re-verify satisfaction
+
+---
+
+## E2E Test Issues
+
+### Playwright — All roles show "Access Forbidden" on module-guarded routes
+
+**Symptom**: Navigation test passes for basic routes (`/chat`, `/help`) but fails for `requiredModule` routes (`/admin/revenue`, `/admin/user-assignments`). Body shows "Access Forbidden" even though the mock returns 200 with the correct modules array.
+
+**Root cause**: Playwright route LIFO ordering. The catch-all `${origin}/api/**` was registered _after_ specific routes, so it has higher priority and intercepts `/navigation/my-modules` before the specific mock can run. Returns `[]` (empty array) — request logs show HTTP 200 which masks the problem.
+
+**Diagnosis**: In `helpers.ts`, check the order of `context.route()` calls. If the catch-all is last, it wins.
+
+**Fix**: Register catch-all **first**, specific routes **last**:
+```typescript
+// Step 1: catch-all first (lowest priority)
+for (const origin of apiOrigins) {
+  await context.route(`${origin}/api/**`, (route) => { ... });
+}
+// Step 2: specific routes last (highest priority)
+for (const pattern of routeApiPattern('/navigation/my-modules')) {
+  await context.route(pattern, (route) => { ... });
+}
+```
+
+### Playwright — Sidebar is not visible (`display:none`)
+
+**Symptom**: `await expect(sidebar).toBeVisible()` fails. Computed style shows `display: none`. The sidebar element exists but is hidden.
+
+**Root cause**: The desktop sidebar uses `md:flex` to become visible. If `index.css` was generated from a pre-built Tailwind v4 file that's missing responsive utilities, `md:flex` has no effect and the sidebar stays hidden for all screen widths.
+
+**Check**:
+```bash
+grep -c "md:flex" src/Client/technijian-spa/src/index.css
+# Should be > 0. If 0, the CSS needs rebuilding.
+```
+
+**Fix**: Rebuild the CSS with `@tailwindcss/cli@4.1.3`:
+```bash
+cd src/Client/technijian-spa
+echo '@import "tailwindcss";' > src/tailwind-input.css
+npx @tailwindcss/cli@4.1.3 -i src/tailwind-input.css -o src/index.css
+# Verify result: rebuilt file should be 4800+ lines
+wc -l src/index.css
+```
+
+### Playwright — Navigation returns empty modules despite 200 response
+
+**Symptom**: Request log shows `GET /api/navigation/my-modules` → 200. But `isModuleUrlAllowed()` returns false, Access Forbidden appears. `console.log(modules)` shows `[]`.
+
+**Root cause**: See LIFO ordering issue above. The mock returned `[]` (catch-all response) not the actual modules array. The 200 status in logs is from the catch-all fulfillment, not the specific mock.
+
+**Also check**: `VITE_API_BASE_URL` in `.env.test` must match the intercepted origin in `apiOrigins`. If the URL is `https://` but `apiOrigins` only has `http://`, the request is not intercepted.
+
+### Playwright — Port 3001 already in use
+
+**Symptom**: `Error: listen EADDRINUSE: address already in use :::3001`
+
+**Fix**: Kill the existing Vite process before each test run:
+```powershell
+Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+```
+
+The config sets `reuseExistingServer: false` to prevent stale servers from serving old code.
+
+---
+
+## CSS / Tailwind Issues
+
+### Sidebar or responsive layout invisible after CSS change
+
+See "Playwright — Sidebar is not visible" above.
+
+**Quick verification** without running tests:
+```bash
+grep -c "md:flex" src/index.css          # responsive sidebar show
+grep -c "md:hidden" src/index.css        # mobile nav hide
+grep -c "@media" src/index.css           # should be 170+ for full Tailwind v4
+```
+
+If any count is 0, the CSS was committed from a partial Tailwind build. Rebuild from source.
+
+---
+
+## Database Migration Issues
+
+### Runtime SQL error: "Invalid object name '{TableName}'"
+
+**Symptom**: App runs, API returns 500, SQL Server logs show `Invalid object name 'Modules'` (or `Roles`, `RoleModules`, or any table).
+
+**Root cause**: The stored procedure references a table that has no CREATE TABLE migration. The TypeScript and .NET code compiled fine — this is a runtime-only failure.
+
+**Check**: For each table in the error:
+```bash
+grep -r "CREATE TABLE Modules" Database/Migrations/
+# If no output: the migration is missing
+```
+
+**Fix**: Write a migration that creates the missing table:
+```sql
+-- Database/Migrations/016_missing_table.sql
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Modules')
+BEGIN
+  CREATE TABLE Modules (
+    ModuleId INT IDENTITY PRIMARY KEY,
+    ModuleName NVARCHAR(100) NOT NULL,
+    Url NVARCHAR(200) NOT NULL,
+    ...
+  );
+END
+```
+
+**Prevention**: Before marking any DB-backed requirement satisfied, verify with `grep -r "CREATE TABLE {TableName}" Database/Migrations/`. If missing, block the requirement — code that compiles but fails at runtime is not satisfied.
+
+### Navigation API returns empty array at runtime (tables exist but are empty)
+
+**Symptom**: Tables exist, stored procedure runs, but returns 0 rows. Sidebar shows no navigation items.
+
+**Root cause**: Seed data was not included in the migration (or in a separate seed migration that hasn't run).
+
+**Check**: Verify the migration includes `INSERT INTO Modules` / `INSERT INTO Roles` / `INSERT INTO RoleModules` statements after the `CREATE TABLE`.
+
+**Fix**: Add seed data to the migration, or create a new seed migration (e.g. `016b_seed_modules.sql`) and run it.
