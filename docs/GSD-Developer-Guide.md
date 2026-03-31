@@ -1,6 +1,6 @@
 # GSD Autonomous Development Engine - Developer Guide
 
-**Version:** 3.0.0
+**Version:** 3.1.0
 **Date:** March 2026
 **Classification:** Confidential - Internal Use Only
 
@@ -21,6 +21,7 @@
 | 2.1.0 | March 2026 | Runtime smoke tests (Script 32: DI validation, API endpoint checks, seed FK order). Partitioned code review (Script 33: 3-way parallel with agent rotation). LOC-cost integration (Script 34: baseline tracking, grand totals, cost-per-line in every notification). Maintenance mode (Script 35): `gsd-fix` (text/file/directory with screenshots), `gsd-update`, `--Scope`, `--Incremental`, `-BugDir`. Added Chapters 17.7-17.8, expanded Chapter 19, added Chapter 20. |
 | 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-phase parallel pipeline -- partitioned extract (each agent processes 1/3 of specs in chunks via `Start-Job`), cross-verification (different agent checks each extraction), Claude synthesis. Live progress monitoring (disk polling every 15s + heartbeat). Ntfy push notifications at every phase with token cost breakdown. `gsd-verify-requirements` standalone command with `-SkipAgent`, `-SkipVerify`, `-ChunkSize`. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
 | 2.3.0 | March 2026 | Model version pinning: `--model` flag enforced on all CLI invocations (claude-sonnet-4-6, gpt-5.4, gemini-3.0-pro). `agent_models` config block in global-config.json for zero-reinstall model upgrades. `$script:CLAUDE_MODEL` / `$script:GEMINI_MODEL` / `$script:CODEX_MODEL` script-scope constants in resilience.ps1. `--allowed-tools` kebab-case fix across all scripts. `disabled:` and `connection_failed:` error prefixes in Get-FailureDiagnosis (triggers immediate fallback). ImageMagick three-tier visual diff (SHA256 → pixel diff → file-size fallback). HSL/oklch/hwb design token detection. Incremental file map threshold (≤20 files prunes cache; >20 full rebuild). SEC-NET-05/SEC-FE-01 `[AllowAnonymous]` exclusion. Binary file skip logging in LOC tracking. `gsd-update` matrix existence guard. `Initialize-ProjectInterfaces` guard in gsd-assess. Set-Content error handling in convergence fix. Per-project supervisor pattern memory. |
+| 3.1.0 | March 2026 | **Verification Gates + E2E Infrastructure + Memory System.** Three mandatory post-convergence gates: CSS responsive-utility check (Tailwind v4 rebuild guard), DB migration completeness check (cross-reference stored procs → CREATE TABLE migrations), headless E2E smoke test. Full E2E test infrastructure: VITE_E2E_BYPASS_AUTH pattern, Playwright LIFO route-ordering rule (catch-all first, specific routes last), module mock data per role, standard file structure. Three PowerShell gate functions (`Test-CssResponsiveUtilities`, `Test-MigrationCompleteness`, `Invoke-E2ESmokeTest`). Persistent memory system: learned patterns automatically applied by Claude Code to catch recurrences. Added Chapter 30. |
 | 3.0.1 | March 2026 | Added SEC-FE-17–SEC-FE-21 (DB-driven navigation + auth guard pattern). Section 15.9.2 added. `security-standards.md` updated globally. |
 | 3.0.0 | March 2026 | **V3 Pipeline — API-only architecture.** Replaced 7-agent CLI+REST system with 2-model API-only pipeline (Sonnet 4.6 + Codex Mini), ~85% cheaper, ~10x faster. 7-model weighted round-robin execute pool. Anti-plateau protection (graduated escalation). Spec alignment guard (drift detection). Decomposition budget (20/iter max, depth ≤4). Confidence-gated review. Speculative execution (+40% speed). Checkpoint and recovery. Centralized logging with per-repo iteration tracking. **New: Full Pipeline Orchestrator** (gsd-full-pipeline.ps1) — 5-phase end-to-end quality gate (wire-up → code-review → smoke-test → final-review → handoff). **New: Smoke Testing** (gsd-smoketest.ps1) — 9-phase integration validation with tiered LLM cost optimization (~85% cheaper). **New: Wire-Up Phase** — mock data detection, route-role matrix, integration gap prevention. **New: 3-Model Code Review** (gsd-codereview.ps1) — Claude+Codex+Gemini consensus with auto-fix cycles. **New: Tiered LLM Cost Optimization** — 4-tier model routing (local/cheap/mid/premium) for smoke testing. **New: LLM Pre-Validate Fix Phase** — proactive error fixing before local build. **New: Existing Codebase Mode** (gsd-existing.ps1) — deep extraction, code inventory, satisfaction verification. **New: Supervision Insights** — cross-session learning for pipeline improvement. Added Chapters 22-27. |
 
@@ -6246,4 +6247,682 @@ The monitoring system reads insights at session start, records observations duri
 *Generated from GSD Engine v3.0.0 source documentation, scripts, and standards prompt templates.*
 *V3 scripts: gsd-full-pipeline.ps1, gsd-smoketest.ps1, gsd-codereview.ps1, gsd-existing.ps1, gsd-validation-fixer.ps1, mock-data-detector.ps1, route-role-matrix.ps1, cost-tracker.ps1, phase-orchestrator.ps1, api-client.ps1*
 *V2 scripts: 42 (1 master installer + 1 pre-flight + 36 installer scripts + 4 standalone utilities)*
-*Chapters: 29 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 14 + 9 smoke test phases*
+*Chapters: 30 + 6 Appendices | Security rules: 88+ | Compliance frameworks: 4 (HIPAA, SOC 2, PCI DSS, GDPR) | Validation gates: 17 + 9 smoke test phases*
+
+---
+
+# Chapter 30: Verification Gates, E2E Infrastructure & Memory System
+
+This chapter documents three mandatory verification gates added in v3.1.0, the E2E test infrastructure pattern, and the persistent memory system that ensures learned patterns automatically apply to future projects. These capabilities were extracted from a real post-convergence incident where a codebase that compiled and passed unit tests had three invisible failures only catchable at runtime: a missing CSS responsive class, missing database migrations, and a Playwright LIFO routing bug that silently suppressed all navigation data.
+
+---
+
+## 30.1 Why Three Extra Gates
+
+The standard V3 pipeline (code review → smoke test → wire-up) catches logic errors and integration gaps, but misses a class of silent failures that only surface at runtime in a real browser:
+
+| Failure Mode | Why Standard Checks Miss It | Runtime Symptom |
+|---|---|---|
+| Tailwind v4 responsive class missing from pre-built `index.css` | TypeScript compiles, CSS file exists, no build error | Sidebar invisible on all screen sizes (`display:none`) |
+| DB migration references table that was never created | C# compiles against DTOs/interfaces, not live schema | API returns empty; stored procedure fails at SQL execution time |
+| Playwright catch-all route registered in wrong order | Unit tests use different mock layer; E2E mock returns HTTP 200 with `[]` | Every auth-guarded route shows "Access Forbidden" despite correct mock data |
+
+Gate order matters: run CSS first (fastest), then DB migrations (medium), then E2E (slowest). If a gate fails, stop — subsequent gates will produce false results.
+
+---
+
+## 30.2 Gate 1 — CSS Responsive Utilities
+
+### The Problem
+
+Tailwind v4 uses a JIT compiler that produces an `index.css` from source code. In some project configurations (CDN mode, pre-built assets, Docker layer caching) the `index.css` in the output directory is a pre-built file that does not include responsive utility classes like `md:flex`, `lg:hidden`, `sm:grid-cols-2`. The code references them; the file does not contain them; the browser sees `display:none` on desktop.
+
+This failure is invisible to:
+- TypeScript compiler (class names are strings in JSX)
+- Linting (Tailwind lint does not cross-reference built output)
+- Unit tests (JSDOM does not evaluate CSS)
+- Smoke test (headless without CSS rendering check)
+
+### Detection Command
+
+```powershell
+function Test-CssResponsiveUtilities {
+    param(
+        [string]$ProjectRoot,
+        [string]$CssPath = "src/Client/technijian-spa/dist/assets/index.css"
+    )
+
+    $fullPath = Join-Path $ProjectRoot $CssPath
+
+    if (-not (Test-Path $fullPath)) {
+        Write-Warning "CSS file not found: $fullPath"
+        return $false
+    }
+
+    $content = Get-Content $fullPath -Raw
+    $responsivePatterns = @('md:flex', 'lg:hidden', 'sm:grid', 'md:block', 'lg:flex')
+    $missing = $responsivePatterns | Where-Object { $content -notmatch [regex]::Escape($_) }
+
+    if ($missing.Count -gt 0) {
+        Write-Error "CSS GATE FAILED: Missing responsive utilities: $($missing -join ', ')"
+        Write-Error "Fix: Rebuild CSS with Tailwind CLI (see 30.2 Fix)"
+        return $false
+    }
+
+    Write-Host "CSS gate passed: responsive utilities present" -ForegroundColor Green
+    return $true
+}
+```
+
+### Fix Procedure
+
+```powershell
+# Navigate to SPA root
+cd src/Client/technijian-spa
+
+# Install Tailwind CLI v4 (must match installed version)
+npm install -D @tailwindcss/cli@4.1.3
+
+# Rebuild CSS
+npx @tailwindcss/cli -i ./src/index.css -o ./src/index.css --minify
+
+# Rebuild SPA (picks up fresh CSS)
+npm run build
+
+# Verify fix
+$content = Get-Content dist/assets/index.css -Raw
+if ($content -match "md:flex") { Write-Host "Fixed" } else { Write-Host "Still broken" }
+```
+
+### Integration with Full Pipeline
+
+Add this call immediately after the wire-up phase in `gsd-full-pipeline.ps1`:
+
+```powershell
+$cssOk = Test-CssResponsiveUtilities -ProjectRoot $ProjectRoot
+if (-not $cssOk) {
+    Send-Notification -Title "CSS Gate Failed" -Body "Responsive utilities missing from index.css. Rebuilding..."
+    # trigger Tailwind rebuild
+    # re-run gate
+}
+```
+
+---
+
+## 30.3 Gate 2 — Database Migration Completeness
+
+### The Problem
+
+C# code references SQL tables through DTOs, Entity Framework models, or Dapper queries. The compiler does not validate that the tables actually exist in the database. SQL Server stored procedures also reference tables by name — SQL Server only validates the reference at execution time, not at `CREATE PROCEDURE` time. A stored procedure that references a non-existent table is created without error and fails silently when called.
+
+Pattern where this appears:
+
+```sql
+-- Created successfully at migration time:
+CREATE PROCEDURE usp_Navigation_GetModulesByRole
+    @RoleId INT
+AS
+BEGIN
+    SELECT m.ModuleId, m.ModuleName, m.ModuleUrl
+    FROM Modules m                    -- does this table exist?
+    JOIN RoleModules rm ON ...        -- does this table exist?
+    WHERE rm.RoleId = @RoleId
+END
+```
+
+If no migration runs `CREATE TABLE Modules`, the stored procedure exists, the API endpoint exists, the C# controller compiles — but every call returns nothing or throws an exception that gets swallowed as an empty result.
+
+### Detection Command
+
+```powershell
+function Test-MigrationCompleteness {
+    param(
+        [string]$ProjectRoot,
+        [string]$MigrationPath = "Database/Migrations",
+        [string]$StoredProcPath = "Database/StoredProcedures"
+    )
+
+    $migDir = Join-Path $ProjectRoot $MigrationPath
+    $spDir  = Join-Path $ProjectRoot $StoredProcPath
+
+    if (-not (Test-Path $spDir)) {
+        Write-Host "No stored procedure directory found, skipping DB gate" -ForegroundColor Yellow
+        return $true
+    }
+
+    # Collect all table names referenced in stored procedures
+    $spFiles = Get-ChildItem $spDir -Filter "*.sql" -Recurse
+    $referencedTables = @{}
+
+    foreach ($spFile in $spFiles) {
+        $content = Get-Content $spFile.FullName -Raw
+        # Match FROM TableName, JOIN TableName, INTO TableName, UPDATE TableName
+        $matches = [regex]::Matches($content, '(?:FROM|JOIN|INTO|UPDATE)\s+\[?(\w+)\]?', 'IgnoreCase')
+        foreach ($match in $matches) {
+            $tableName = $match.Groups[1].Value
+            # Exclude common non-table tokens
+            if ($tableName -notmatch '^(SELECT|WHERE|SET|WITH|CTE|dbo|sys)$') {
+                $referencedTables[$tableName] = $spFile.Name
+            }
+        }
+    }
+
+    # Check each referenced table has a CREATE TABLE in migrations
+    $migFiles = Get-ChildItem $migDir -Filter "*.sql" -Recurse
+    $migContent = ($migFiles | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+
+    $missing = @()
+    foreach ($table in $referencedTables.Keys) {
+        if ($migContent -notmatch "CREATE\s+TABLE\s+\[?$table\]?") {
+            $missing += "  Table '$table' (referenced in $($referencedTables[$table]))"
+        }
+    }
+
+    if ($missing.Count -gt 0) {
+        Write-Error "DB MIGRATION GATE FAILED: Missing CREATE TABLE migrations:"
+        $missing | ForEach-Object { Write-Error $_ }
+        Write-Error "Fix: Create migration SQL files for each missing table."
+        return $false
+    }
+
+    Write-Host "DB migration gate passed: all referenced tables have migrations" -ForegroundColor Green
+    return $true
+}
+```
+
+### Migration File Naming Convention
+
+Migrations must be sequentially numbered. The runner executes them in alphabetical/numeric order:
+
+```
+Database/Migrations/
+  001_initial_schema.sql
+  002_users_table.sql
+  ...
+  016_role_module_refactor.sql     ← new tables go here
+```
+
+A migration creating the missing tables from the navigation example:
+
+```sql
+-- 016_role_module_refactor.sql
+-- Creates Roles, Modules, RoleModules tables for DB-driven navigation
+
+IF NOT EXISTS (SELECT * FROM sys.objects WHERE name = 'Roles' AND type = 'U')
+BEGIN
+    CREATE TABLE Roles (
+        RoleId    INT IDENTITY(1,1) PRIMARY KEY,
+        RoleName  NVARCHAR(100) NOT NULL,
+        RoleCode  NVARCHAR(50)  NOT NULL UNIQUE
+    );
+END
+
+IF NOT EXISTS (SELECT * FROM sys.objects WHERE name = 'Modules' AND type = 'U')
+BEGIN
+    CREATE TABLE Modules (
+        ModuleId    INT IDENTITY(1,1) PRIMARY KEY,
+        ModuleName  NVARCHAR(100) NOT NULL,
+        ModuleUrl   NVARCHAR(255) NOT NULL,
+        IconName    NVARCHAR(50)  NULL,
+        SortOrder   INT           NOT NULL DEFAULT 0,
+        IsActive    BIT           NOT NULL DEFAULT 1
+    );
+END
+
+IF NOT EXISTS (SELECT * FROM sys.objects WHERE name = 'RoleModules' AND type = 'U')
+BEGIN
+    CREATE TABLE RoleModules (
+        RoleModuleId INT IDENTITY(1,1) PRIMARY KEY,
+        RoleId       INT NOT NULL REFERENCES Roles(RoleId),
+        ModuleId     INT NOT NULL REFERENCES Modules(ModuleId),
+        UNIQUE(RoleId, ModuleId)
+    );
+END
+```
+
+### Code Review Checklist Addition
+
+Add to the code review prompt used by `gsd-codereview.ps1`:
+
+```
+DB Migration Completeness Check:
+For every stored procedure in Database/StoredProcedures/:
+  1. List every table name referenced (FROM, JOIN, INTO, UPDATE clauses)
+  2. Confirm Database/Migrations/ contains a CREATE TABLE for each
+  3. If any table has no migration: flag as BLOCKER severity
+  4. Never mark DB-backed requirements as satisfied without this check
+```
+
+---
+
+## 30.4 Gate 3 — Headless E2E Smoke Test
+
+### Purpose
+
+The headless E2E smoke test verifies the application behaves correctly in a real browser (Chromium, headless) with network requests mocked to eliminate backend dependency. It catches:
+
+- Auth guard routing failures (module-guarded screens showing "Access Forbidden")
+- Navigation sidebar visibility issues (CSS, context, loading state)
+- Role-based access control gaps (role X can reach screen Y when it shouldn't)
+- React context failures (auth context not populated, nav context returning empty)
+
+### Prerequisites
+
+```powershell
+# Install Playwright
+cd src/Client/technijian-spa
+npm install -D @playwright/test
+npx playwright install chromium
+
+# Start dev server (must be running before tests)
+npm run dev -- --port 3001 &
+```
+
+### Running the Smoke Test
+
+```powershell
+function Invoke-E2ESmokeTest {
+    param(
+        [string]$SpaRoot,
+        [string]$BaseUrl = "http://localhost:3001",
+        [int]$TimeoutMs = 120000
+    )
+
+    # Kill any existing process on port 3001
+    $proc = Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+    if ($proc) { Stop-Process -Id $proc -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
+
+    # Start dev server
+    $devServer = Start-Process npm -ArgumentList "run dev -- --port 3001" `
+        -WorkingDirectory $SpaRoot -PassThru -WindowStyle Hidden
+    Start-Sleep -Seconds 8   # wait for Vite to be ready
+
+    try {
+        # Run Playwright
+        $result = & npx playwright test --reporter=list 2>&1
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -ne 0) {
+            Write-Error "E2E GATE FAILED:`n$result"
+            return $false
+        }
+
+        Write-Host "E2E gate passed: all tests green" -ForegroundColor Green
+        return $true
+    }
+    finally {
+        Stop-Process -Id $devServer.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+```
+
+---
+
+## 30.5 E2E Test Infrastructure
+
+This section documents the full E2E testing pattern used in GSD projects. All projects using DB-driven navigation and role-based access control should implement this pattern.
+
+### Auth Bypass Pattern (VITE_E2E_BYPASS_AUTH)
+
+The standard auth bypass eliminates MSAL / Azure AD from E2E tests by injecting role identity via `sessionStorage`. This removes the need for real Azure AD credentials, browser popups, or OAuth flows in CI/CD.
+
+**`main.tsx` — skip MsalProvider in E2E mode:**
+
+```tsx
+const isE2E = import.meta.env.VITE_E2E_BYPASS_AUTH === 'true';
+
+if (isE2E) {
+  // E2E mode: render directly, no MSAL
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+} else {
+  // Production: wrap with MsalProvider
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <MsalProvider instance={msalInstance}>
+        <App />
+      </MsalProvider>
+    </React.StrictMode>
+  );
+}
+```
+
+**`AuthContext.tsx` — read role from sessionStorage in E2E mode:**
+
+```tsx
+const isE2E = import.meta.env.VITE_E2E_BYPASS_AUTH === 'true';
+
+if (isE2E) {
+  const role = sessionStorage.getItem('e2e_test_role') || 'technijian_admin';
+  // Build mock user profile from role, set as authenticated
+  setUser({ role, name: 'E2E Test User', email: 'e2e@test.com' });
+  setIsAuthenticated(true);
+}
+```
+
+**`.env.test`:**
+
+```
+VITE_E2E_BYPASS_AUTH=true
+VITE_API_BASE_URL=http://localhost:60112
+```
+
+**`playwright.config.ts`:**
+
+```typescript
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  use: {
+    baseURL: 'http://localhost:3001',
+    // .env.test is loaded by Vite when NODE_ENV=test
+  },
+  webServer: {
+    command: 'npm run dev -- --port 3001',
+    port: 3001,
+    reuseExistingServer: false,
+    env: { VITE_E2E_BYPASS_AUTH: 'true' },
+  },
+});
+```
+
+### Standard E2E File Structure
+
+```
+e2e/
+  helpers.ts          ← auth setup, route mocking (shared by all tests)
+  mock-data.ts        ← mock API responses per role
+  navigation.spec.ts  ← sidebar visibility, link correctness per role
+  screens.spec.ts     ← each screen renders without crash per role
+  rbac.spec.ts        ← role X cannot access screen Y
+```
+
+### The LIFO Route Ordering Rule (Critical)
+
+**Rule: In Playwright, routes registered later have higher priority. Register catch-all routes FIRST (lowest priority) and specific routes LAST (highest priority).**
+
+This is the opposite of most web routing systems (Express, React Router) where more-specific patterns win. Playwright uses a stack (LIFO — Last In, First Out). A catch-all `/api/**` registered after specific routes intercepts all API traffic before the specific mocks can run.
+
+**Wrong (catch-all last = highest priority, specific routes never reached):**
+
+```typescript
+// WRONG — specific routes registered first get lowest priority
+await context.route('**/api/navigation/my-modules', handler);  // LOWER priority
+await context.route('**/api/auth/me', handler);               // LOWER priority
+await context.route('**/api/**', catchAllHandler);            // HIGHER priority — intercepts everything!
+```
+
+**Correct (catch-all first = lowest priority, specific routes last = highest priority):**
+
+```typescript
+// CORRECT — catch-all first, specific routes last
+for (const origin of apiOrigins) {
+  // Step 1: catch-all registered FIRST = lowest priority
+  await context.route(`${origin}/api/**`, (route) => {
+    route.fulfill({ status: 200, body: '[]' });
+  });
+}
+
+// Step 2: specific routes registered LAST = highest priority
+for (const pattern of routeApiPattern('/auth/me')) {
+  await context.route(pattern, (route) => {
+    route.fulfill({ status: 200, body: JSON.stringify(mockProfile(role)) });
+  });
+}
+for (const pattern of routeApiPattern('/navigation/my-modules')) {
+  await context.route(pattern, (route) => {
+    route.fulfill({ status: 200, body: JSON.stringify(modules) });
+  });
+}
+```
+
+**Why this matters for auth-guarded screens:**
+
+The `NavigationContext` fetches modules via `/navigation/my-modules`. `ProtectedRoute` evaluates `!navLoading && !isModuleUrlAllowed(requiredModule)`. If `my-modules` returns `[]` (because the catch-all intercepted it), `isModuleUrlAllowed` always returns `false`, and every role-guarded screen displays "Access Forbidden" — with HTTP 200 status, making it completely invisible in network logs.
+
+**Diagnosis checklist when E2E shows "Access Forbidden" unexpectedly:**
+
+1. Add `console.log` in NavigationContext: what does `modules` contain after fetch?
+2. Add network logging: what body does `/navigation/my-modules` actually return?
+3. Check route registration order in `helpers.ts`: is the catch-all registered last?
+4. Check `apiOrigins`: is the origin in the mock list matching the URL the SPA calls?
+
+### Module Mock Data Per Role
+
+Define a `getMockModules(role)` function in `mock-data.ts` that returns exactly the modules each role should see. This drives both the navigation sidebar test and the RBAC test:
+
+```typescript
+export function getMockModules(role: string) {
+  const allModules = [
+    { moduleId: 1, moduleName: 'Dashboard',      moduleUrl: '/dashboard',       iconName: 'home',     sortOrder: 1 },
+    { moduleId: 2, moduleName: 'Customers',       moduleUrl: '/admin/customers', iconName: 'users',    sortOrder: 2 },
+    { moduleId: 3, moduleName: 'Revenue',         moduleUrl: '/admin/revenue',   iconName: 'dollar',   sortOrder: 3 },
+    { moduleId: 4, moduleName: 'Settings',        moduleUrl: '/settings',        iconName: 'gear',     sortOrder: 4 },
+  ];
+
+  const roleModuleMap: Record<string, number[]> = {
+    'technijian_admin':    [1, 2, 3, 4],    // full access
+    'customer_admin':      [1, 2, 4],        // no revenue
+    'customer_user':       [1],              // dashboard only
+    'read_only':           [1],
+  };
+
+  const allowed = roleModuleMap[role] ?? [1];
+  return allModules.filter(m => allowed.includes(m.moduleId));
+}
+```
+
+### Adding a New Screen Test
+
+To add E2E coverage for a new screen:
+
+1. **Add module** to `getMockModules` in `mock-data.ts` for the correct roles
+2. **Add screen test** to `screens.spec.ts`:
+
+```typescript
+test(`${role} can access NewScreen`, async ({ page }) => {
+  await loginAs(page, role);
+  await page.goto('/admin/new-screen');
+  await expect(page.locator('[data-testid="new-screen-title"]')).toBeVisible();
+});
+```
+
+3. **Add RBAC test** to `rbac.spec.ts` for roles that should NOT have access:
+
+```typescript
+test(`customer_user cannot access NewScreen`, async ({ page }) => {
+  await loginAs(page, 'customer_user');
+  await page.goto('/admin/new-screen');
+  await expect(page.locator('[data-testid="forbidden"]')).toBeVisible();
+});
+```
+
+4. **Update module map** to exclude the new module for restricted roles.
+
+---
+
+## 30.6 Memory System — Learned Patterns
+
+The GSD Claude Code integration maintains a persistent memory system at `~/.claude/projects/{project-id}/memory/`. Feedback memories are loaded at the start of every new Claude Code session and automatically applied.
+
+### How It Works
+
+When Claude Code encounters and fixes a non-obvious bug, the fix is saved as a feedback memory with three components:
+
+- **Rule** — what to do or not do
+- **Why** — the root cause or incident that established the rule (specific enough to recognize recurrence)
+- **How to apply** — which trigger conditions activate the rule
+
+In subsequent sessions, the memory is loaded and the rule is applied during code review, gate execution, and requirement validation without the user needing to re-explain the issue.
+
+### Currently Saved Patterns
+
+| Memory File | Pattern | Trigger |
+|---|---|---|
+| `feedback_playwright_lifo_routing.md` | Register catch-all routes first; specific routes last | Any E2E test showing unexpected "Access Forbidden" or auth-guarded screens failing despite correct mock data |
+| `feedback_tailwind_v4_css_verification.md` | Verify `md:flex` exists in built `index.css` before handoff | Any project using Tailwind v4; any sidebar or layout invisibility report |
+| `feedback_db_migration_completeness.md` | Cross-reference stored proc table references against `CREATE TABLE` migrations | Any requirement touching DB-backed APIs; any empty API response that shouldn't be empty |
+| `feedback_proactive_monitoring.md` | Fix root causes every tick; don't just observe | All monitoring sessions |
+| `feedback_autonomous_behavior.md` | Detect, diagnose, fix, restart without user prompting | All autonomous pipeline sessions |
+| `feedback_no_pipeline_start.md` | Never start/restart pipeline — only manage notifications | All sessions where pipeline may be running |
+| `feedback_mark_reqs_complete.md` | Mark fixed reqs as satisfied + update health score immediately | After any direct fix |
+| `feedback_spec_alignment_guard.md` | Verify reqs match specs before pipeline runs | Session start with active pipeline |
+
+### Adding a New Learned Pattern
+
+When a non-obvious bug is fixed:
+
+```powershell
+# 1. Write the memory file
+$memoryDir = "$env:USERPROFILE\.claude\projects\{project-id}\memory"
+$content = @"
+---
+name: {Short descriptive name}
+description: {One-line description — used to assess relevance in future sessions}
+type: feedback
+---
+
+{The rule itself, stated clearly.}
+
+**Why:** {The specific incident — what broke, where, what the symptom was, why it was non-obvious.}
+
+**How to apply:** {When this rule activates — what conditions trigger it.}
+"@
+$content | Set-Content "$memoryDir\feedback_{name}.md"
+
+# 2. Add pointer to MEMORY.md
+Add-Content "$memoryDir\MEMORY.md" "- [Name](feedback_{name}.md) — one-line hook"
+```
+
+### Memory vs. Documentation
+
+- **Memory** — rules and patterns that are non-obvious from reading the code. Applied automatically by Claude Code.
+- **Documentation** (this guide) — architectural decisions, procedures, commands. Read by humans.
+- **Code** — the canonical source of truth. Memory and docs are derived.
+
+When a memory conflicts with current code, trust the code and update the memory.
+
+---
+
+## 30.7 Verify Phase Checklist (v3.1.0)
+
+The complete list of gates that must pass before `developer-handoff.md` is generated:
+
+| # | Gate | Tool | Pass Condition | Fail Action |
+|---|---|---|---|---|
+| 1 | TypeScript compile | `npx tsc --noEmit` | Exit code 0 | Fix TS errors, re-run |
+| 2 | .NET build | `dotnet build` | Exit code 0 | Fix C# errors, re-run |
+| 3 | CSS responsive utilities | `Test-CssResponsiveUtilities` | `md:flex` found in index.css | Rebuild Tailwind, re-run |
+| 4 | DB migration completeness | `Test-MigrationCompleteness` | All SP table refs have CREATE TABLE | Add migration, re-run |
+| 5 | E2E headless smoke | `Invoke-E2ESmokeTest` | All Playwright tests green | Fix LIFO routing / mock data, re-run |
+| 6 | Code review consensus | `gsd-codereview` | Claude + Codex + Gemini all pass | Auto-fix cycle, re-run |
+| 7 | Wire-up validation | `route-role-matrix.ps1` | All routes have matching mock data | Add missing mocks, re-run |
+| 8 | Spec alignment | `spec-alignment-guard.ps1` | Drift < 5% | Review drifted requirements |
+| 9 | 9-phase smoke test | `gsd-smoketest` | All 9 phases green | Fix failing phase, re-run |
+
+Gates 1-2 are prerequisites (the rest are meaningless if the project doesn't compile). Gates 3-5 are the new additions from v3.1.0. Gates 6-9 were present in v3.0.0.
+
+---
+
+## 30.8 Troubleshooting — Gate Failures
+
+### CSS Gate Fails: `md:flex` Not Found
+
+```
+CSS GATE FAILED: Missing responsive utilities: md:flex, lg:hidden
+```
+
+**Cause**: `index.css` is a pre-built file or CDN copy, not generated by the local Tailwind JIT compiler.
+
+**Fix**:
+```powershell
+cd src/Client/technijian-spa
+npm install -D @tailwindcss/cli@4.1.3
+npx @tailwindcss/cli -i ./src/index.css -o ./src/index.css --minify
+npm run build
+```
+
+**If `@tailwindcss/cli` is already installed but still fails**: check `tailwind.config.js` content array includes all component paths. Missing paths mean classes are not detected.
+
+### DB Migration Gate Fails: Missing Table
+
+```
+DB MIGRATION GATE FAILED: Missing CREATE TABLE migrations:
+  Table 'Modules' (referenced in usp_Navigation_GetModulesByRole.sql)
+```
+
+**Fix**: Create the migration file with the highest sequence number:
+
+```sql
+-- Database/Migrations/016_missing_tables.sql
+IF NOT EXISTS (SELECT * FROM sys.objects WHERE name = 'Modules' AND type = 'U')
+BEGIN
+    CREATE TABLE Modules ( ... );
+END
+```
+
+Apply it: `sqlcmd -S localhost -d YourDb -i Database/Migrations/016_missing_tables.sql`
+
+### E2E Gate Fails: "Access Forbidden" on Guarded Screen
+
+```
+Error: expect(locator).toBeVisible() - Locator: [data-testid="revenue-title"]
+Received element is not visible
+```
+
+**Step 1**: Check what `/navigation/my-modules` is actually returning. Add to the test:
+
+```typescript
+const navResponse = await page.evaluate(() =>
+  fetch('/api/navigation/my-modules').then(r => r.json())
+);
+console.log('Nav modules:', navResponse);
+```
+
+**Step 2**: If it returns `[]`, check route registration order in `helpers.ts`. Is the catch-all registered after specific routes? If yes, reverse the order (catch-all first).
+
+**Step 3**: Check `apiOrigins`. The URL the SPA calls must match exactly — protocol, host, and port. `http://localhost:60112` ≠ `https://localhost:60112`.
+
+**Step 4**: Check `NavigationContext`: does it use `staleTime`? React Query may be returning cached `[]` from a previous test. Add `cache: 'no-store'` to the fetch or clear React Query cache between tests.
+
+### E2E Gate Fails: Port 3001 Already in Use
+
+```
+Error: EADDRINUSE :::3001
+```
+
+**Fix**:
+```powershell
+$proc = Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique
+if ($proc) { Stop-Process -Id $proc -Force }
+Start-Sleep 2
+# Then re-run tests
+```
+
+### E2E Gate Fails: Sidebar Not Visible
+
+Playwright cannot evaluate CSS `display` from `@media` queries in the same way a browser does. If the sidebar is hidden at the default viewport, set the viewport:
+
+```typescript
+// playwright.config.ts
+use: {
+  viewport: { width: 1280, height: 720 },  // desktop viewport
+}
+```
+
+Or in the test:
+
+```typescript
+await page.setViewportSize({ width: 1280, height: 720 });
+```
+
+---
+
+*End of Chapter 30 — Verification Gates, E2E Infrastructure & Memory System*
