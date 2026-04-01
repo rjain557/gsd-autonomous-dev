@@ -1634,3 +1634,81 @@ Keyboard shortcuts (if install-gsd-keybindings.ps1 was run):
 | Ctrl+Shift+G, C | Run convergence loop |
 | Ctrl+Shift+G, B | Run blueprint pipeline |
 | Ctrl+Shift+G, S | Show status dashboard |
+
+---
+
+## Obsidian Knowledge Scripts
+
+### read-vault-context.ps1
+
+Reads the Obsidian vault and returns formatted Markdown for injection into LLM prompts as `{{VAULT_KNOWLEDGE}}`. Called automatically by `phase-orchestrator.ps1` at the start of each phase.
+
+```powershell
+& scripts/read-vault-context.ps1 `
+  -VaultRoot "D:\obsidian\gsd-autonomous-dev\gsd-autonomous-dev" `
+  -Project "chatai-v8" `
+  -Phase "plan" `
+  -MaxTokens 2000
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| -VaultRoot | Yes | Path to Obsidian vault root |
+| -Project | Yes | Project slug (matches `02-Projects/{project}/`) |
+| -Phase | Yes | Current phase: `plan`, `review`, `verify`, `spec-gate` |
+| -MaxTokens | No (default 2000) | Max token budget for vault context |
+
+**Output**: Formatted Markdown block with diseases, solutions, schema notes, and feedback rules relevant to the current phase.
+
+### write-vault-lesson.ps1
+
+Writes a lesson, disease, or solution note to the Obsidian vault mid-pipeline. Called automatically on critical findings; can also be called manually to record discoveries.
+
+```powershell
+& scripts/write-vault-lesson.ps1 `
+  -Type lesson `
+  -Project chatai-v8 `
+  -Phase review `
+  -Title "Auth context lost after root component replacement" `
+  -Body "When pipeline replaces TCAIApp.tsx, it removes useAuth() import..." `
+  -Severity high
+```
+
+| Parameter | Required | Values |
+|-----------|----------|--------|
+| -Type | Yes | `lesson`, `disease`, `solution`, `schema`, `feedback`, `mistake` |
+| -Project | Yes | Project slug |
+| -Phase | Yes | Pipeline phase where discovered |
+| -Title | Yes | Short descriptive title (becomes filename) |
+| -Body | Yes | Full lesson content (Markdown) |
+| -Severity | No | `critical`, `high`, `medium`, `low` |
+
+**Output locations by type**:
+- `lesson`, `feedback`, `mistake` → `07-Feedback/{title}.md`
+- `disease` → `03-Patterns/diseases/{title}.md`
+- `solution` → `03-Patterns/solutions/{title}.md`
+- `schema` → appended to `02-Projects/{project}/index.md`
+
+### detect-mock-to-db-gaps.ps1
+
+Audits the frontend for mock data patterns that haven't been wired to the real database. Generates requirement templates for any gaps found. Run this before starting a `feature_update` pipeline to surface wiring gaps automatically.
+
+```powershell
+& scripts/detect-mock-to-db-gaps.ps1 `
+  -RepoRoot "D:\vscode\myapp\myapp" `
+  -ProjectSlug "myapp"
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| -RepoRoot | Yes | Repository root path |
+| -ProjectSlug | Yes | Project slug (used for .gsd/ output path) |
+
+**What it detects**:
+- `useState([{id: 1, ...}])` — hardcoded state arrays
+- Variables named `mockX`, `fakeX`, `testX`, `dummyX`
+- `Promise.resolve(staticData)` instead of real HTTP calls
+- `useEffect` that sets state from hardcoded data without an API call
+- Imports from mock data files (`import { mockUsers } from './mock'`)
+
+**Output**: `.gsd/mock-gap-report.json` with gap details and `AUTO-MOCK-NNN` requirement templates ready for injection into the requirements matrix.

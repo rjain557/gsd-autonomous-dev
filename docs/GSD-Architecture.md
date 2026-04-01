@@ -1830,3 +1830,131 @@ The GSD engine maintains a persistent memory of cross-session learnings in `~/.c
 3. Before any Playwright test setup — check `feedback_playwright_lifo_routing.md`
 4. Before accepting any CSS change — check `feedback_tailwind_v4_css_verification.md`
 5. Before marking DB requirements satisfied — check `feedback_db_migration_completeness.md`
+
+---
+
+## Obsidian Knowledge System (Bidirectional Vault Integration)
+
+The pipeline maintains a persistent knowledge base in an Obsidian vault at `D:\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\`. This is a **bidirectional** system — the pipeline both reads from and writes to the vault, so it learns from past mistakes and applies that knowledge on every iteration.
+
+### Vault Structure
+
+```
+02-Projects/{project}/index.md   — health history, schema notes, session logs per project
+03-Patterns/diseases/            — recurring failure patterns with status + first_seen
+03-Patterns/solutions/           — validated fixes with reproduction steps
+05-Architecture/                 — ADRs, system design diagrams
+06-Sessions/                     — per-iteration notes written automatically by write-vault-note.ps1
+07-Feedback/                     — standing rules from mistakes (requirements-source, code-review, etc.)
+Welcome.md                       — Dataview dashboard: active projects, open diseases, recent feedback
+```
+
+### Knowledge Flow
+
+```
+Pipeline Phase → read-vault-context.ps1 → {{VAULT_KNOWLEDGE}} → LLM Prompt
+                                                                      ↓
+                                                             Phase Output (JSON)
+                                                                      ↓
+                                                    Issue found? → write-vault-lesson.ps1
+                                                                      ↓
+                                                             Obsidian Vault Updated
+```
+
+### Reading: `read-vault-context.ps1`
+
+Called at the start of each phase. Reads phase-relevant vault content and injects it as `{{VAULT_KNOWLEDGE}}` into the LLM prompt.
+
+```powershell
+& read-vault-context.ps1 -VaultRoot "D:\obsidian\..." -Project "chatai-v8" -Phase "plan" -MaxTokens 2000
+```
+
+**What it reads per phase**:
+- **plan**: All open diseases + solutions relevant to current interface + project schema notes + feedback rules
+- **review**: Auth-wiring solutions, mock-data diseases, SP-existence rules
+- **verify**: DB verification rules, TypeScript noise classification, integration completeness patterns
+- **spec-gate**: Spec drift incidents, requirements-source rules
+
+### Writing: `write-vault-lesson.ps1`
+
+Called automatically when the pipeline detects a noteworthy event. Creates or updates Obsidian notes mid-pipeline.
+
+```powershell
+& write-vault-lesson.ps1 -Type lesson -Project chatai-v8 -Phase review `
+  -Title "Auth context lost after TCAIApp.tsx replacement" `
+  -Body "..." -Severity high
+```
+
+**Automatically triggered by**:
+- Review phase: `critical_issue` findings → `07-Feedback/{project}-{title}.md`
+- Verify phase: SP referenced in code but not confirmed in DB → disease note
+- Spec-gate: conflicts detected with blocking severity → spec-drift incident note
+- Full pipeline: mock-data scan finds >5 gaps → `03-Patterns/diseases/mock-data-not-wired.md`
+
+**Types written**:
+
+| Type | Vault Location | Purpose |
+|------|---------------|---------|
+| `lesson` | `07-Feedback/` | Standing rules from mistakes |
+| `disease` | `03-Patterns/diseases/` | Recurring failure patterns |
+| `solution` | `03-Patterns/solutions/` | Validated fixes |
+| `schema` | `02-Projects/{project}/index.md` | DB schema surprises |
+| `feedback` | `07-Feedback/` | Positive confirmations |
+| `mistake` | `07-Feedback/` | Critical errors to avoid |
+
+### Phases with Vault Integration
+
+| Phase | Prompt File | Vault Injected | Auto-Writes |
+|-------|-------------|----------------|-------------|
+| Spec Gate | `01-spec-gate-incremental.md` | Yes | Spec drift incidents |
+| Plan | `03-plan.md` | Yes | — |
+| Review | `06-review.md` | Yes | Critical issues as lessons |
+| Verify | `07-verify.md` | Yes | SP existence gaps as diseases |
+
+### Key Rules Encoded in Prompts (from Vault)
+
+**DB Verification Rule** (in verify prompt):
+- SP referenced in C# but not confirmed in DB → `partial`, not `satisfied`
+- SP file in repo = written, not necessarily deployed
+
+**TypeScript Noise Classification** (in verify prompt):
+- TS6133/TS6196/TS6192/TS6198 (unused vars) = **noise** — do NOT block satisfaction
+- TS2307/TS2339/TS2345/TS2304 = **real errors** — block satisfaction
+
+**Design Source Detection** (in plan prompt):
+- Before planning ANY frontend screen: check if `design/web/v{N}/src/` exists
+- If yes: plan is "copy + wire to real API" — never regenerate from scratch
+
+**Auth Wiring Check** (in review prompt):
+- Any modification to `App.tsx`, `TCAIApp.tsx`, or root/layout components must preserve AuthContext imports
+- `useState('admin')` hardcoded in root = critical auth bypass
+
+### Mock-to-DB Gap Detection
+
+`scripts/detect-mock-to-db-gaps.ps1` audits the frontend for mock data that hasn't been wired to the database. Run before starting a feature_update pipeline to surface gaps automatically.
+
+```powershell
+& detect-mock-to-db-gaps.ps1 -RepoRoot "D:\vscode\myapp\myapp" -ProjectSlug "myapp"
+```
+
+**What it does**:
+1. Scans all `.ts`/`.tsx` files for mock data patterns (`mockX`, `fakeX`, hardcoded arrays, `Promise.resolve(staticData)`)
+2. Derives entity names (e.g., `mockUsers` → entity `User`)
+3. Checks if a matching DB table, stored procedure, controller, and service exist
+4. Generates `AUTO-MOCK-NNN` requirement templates for gaps
+5. Saves report to `.gsd/mock-gap-report.json`
+
+**Output format**:
+```json
+{
+  "gaps": [
+    {
+      "id": "AUTO-MOCK-001",
+      "entity": "Notification",
+      "mock_file": "src/hooks/useNotifications.ts",
+      "missing": ["db_table", "stored_procedure", "controller"],
+      "requirement_template": "Wire useNotifications hook to real DB: seed data → SP → controller → hook"
+    }
+  ]
+}
+```
