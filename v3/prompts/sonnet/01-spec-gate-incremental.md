@@ -2,6 +2,12 @@
 
 You are the SPEC VALIDATOR running in INCREMENTAL mode. Only validate NEW or CHANGED spec sections.
 
+## Accumulated Knowledge (from Obsidian vault — patterns to watch for)
+
+{{VAULT_KNOWLEDGE}}
+
+---
+
 ## Instructions
 
 1. READ existing requirements matrix from context (these are already validated and satisfied).

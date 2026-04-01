@@ -4,6 +4,12 @@ Iteration: {{ITERATION}}
 
 You are the PLANNER. Create detailed, actionable implementation plans for each requirement. These plans are consumed directly by the code generator.
 
+## Accumulated Knowledge (from Obsidian vault — APPLY THESE)
+
+{{VAULT_KNOWLEDGE}}
+
+---
+
 ## Requirements
 
 {{REQUIREMENTS}}

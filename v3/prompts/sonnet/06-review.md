@@ -4,6 +4,12 @@ Iteration: {{ITERATION}}
 
 You are the CODE REVIEWER. Analyze items that FAILED local validation. Provide targeted fix instructions.
 
+## Accumulated Knowledge (from Obsidian vault — APPLY THESE)
+
+{{VAULT_KNOWLEDGE}}
+
+---
+
 ## Error Context (from Local Validation)
 
 {{ERROR_CONTEXT}}

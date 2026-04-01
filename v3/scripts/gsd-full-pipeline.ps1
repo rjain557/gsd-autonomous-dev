@@ -667,6 +667,23 @@ if ($startIndex -le 3 -and -not $SkipWireUp) {
         $outDir = Join-Path $GsdDir "smoke-test"
         if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
         $mockResults | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $outDir "mock-data-scan.json") -Encoding UTF8
+
+        # Write vault lesson if significant mock data found
+        if ($mockCount -gt 5) {
+            $writeScript = Join-Path $PSScriptRoot "../../scripts/write-vault-lesson.ps1"
+            $vaultRoot   = "D:\obsidian\gsd-autonomous-dev\gsd-autonomous-dev"
+            if ((Test-Path $writeScript) -and (Test-Path $vaultRoot)) {
+                $topPatterns = ($mockResults.patterns | Select-Object -First 5 | ForEach-Object { "- $($_.File): $($_.Pattern)" }) -join "`n"
+                & pwsh -NonInteractive -File $writeScript `
+                    -VaultRoot $vaultRoot `
+                    -Type      "feedback" `
+                    -Project   (Split-Path $RepoRoot -Leaf) `
+                    -Phase     "smoke-test" `
+                    -Title     "Mock data found: $mockCount instances in $(Split-Path $RepoRoot -Leaf)" `
+                    -Body      "Top patterns:`n$topPatterns`n`nFull scan: .gsd/smoke-test/mock-data-scan.json`n`nAction needed: convert mock data to real DB seed + SPs + controllers." `
+                    -Severity  "high" | Out-Null
+            }
+        }
     }
 
     # Route-role matrix (local, free)

@@ -25,6 +25,69 @@ $script:DecompBudget = @{
     MaxDepth           = 4
 }
 
+# Vault paths
+$script:VaultRoot   = "D:\obsidian\gsd-autonomous-dev\gsd-autonomous-dev"
+$script:ScriptsRoot = Join-Path $PSScriptRoot "../../../scripts"
+
+# ============================================================
+# VAULT KNOWLEDGE HELPERS
+# ============================================================
+
+function Get-VaultContext {
+    <#
+    .SYNOPSIS
+        Read relevant Obsidian vault knowledge for injection into a phase prompt.
+        Returns empty string if vault unavailable (non-fatal).
+    #>
+    param(
+        [string]$Phase   = "plan",
+        [string]$Project = ""
+    )
+    $readScript = Join-Path $script:ScriptsRoot "read-vault-context.ps1"
+    if (-not (Test-Path $readScript)) { return "" }
+    if (-not (Test-Path $script:VaultRoot)) { return "" }
+    try {
+        $ctx = & pwsh -NonInteractive -File $readScript `
+            -VaultRoot $script:VaultRoot `
+            -Phase     $Phase `
+            -Project   $Project `
+            -MaxTokens 2000 2>&1
+        if ($LASTEXITCODE -ne 0) { return "" }
+        return ($ctx | Out-String).Trim()
+    } catch { return "" }
+}
+
+function Write-VaultLesson {
+    <#
+    .SYNOPSIS
+        Write a lesson, mistake, solution, or schema note to the Obsidian vault.
+        Non-fatal — pipeline continues even if vault write fails.
+    #>
+    param(
+        [ValidateSet("lesson","disease","solution","schema","feedback","mistake")]
+        [string]$Type     = "lesson",
+        [string]$Project  = "",
+        [string]$Phase    = "",
+        [string]$Title    = "",
+        [string]$Body     = "",
+        [string]$Severity = "medium"
+    )
+    if (-not $Title) { return }
+    $writeScript = Join-Path $script:ScriptsRoot "write-vault-lesson.ps1"
+    if (-not (Test-Path $writeScript)) { return }
+    if (-not (Test-Path $script:VaultRoot)) { return }
+    try {
+        & pwsh -NonInteractive -File $writeScript `
+            -VaultRoot $script:VaultRoot `
+            -Type      $Type `
+            -Project   $Project `
+            -Phase     $Phase `
+            -Title     $Title `
+            -Body      $Body `
+            -Severity  $Severity | Out-Null
+    } catch { <# non-fatal #> }
+}
+
 # ============================================================
 # MAIN ORCHESTRATOR
 # ============================================================
@@ -1881,6 +1944,18 @@ function Invoke-SpecGatePhase {
         $report = $result.Parsed
         $blocked = ($report.overall_status -eq "block")
 
+        # Write vault lesson if spec-gate is blocked (spec quality issue)
+        if ($blocked -and $report.conflicts) {
+            $conflictText = ($report.conflicts | ForEach-Object { "- $_" }) -join "`n"
+            Write-VaultLesson `
+                -Type     "feedback" `
+                -Project  (Split-Path $RepoRoot -Leaf) `
+                -Phase    "spec-gate" `
+                -Title    "Spec-gate BLOCKED: $(($report.conflicts | Select-Object -First 1))" `
+                -Body     "Conflicts detected:`n$conflictText`n`nAmbiguities: $(($report.ambiguities | Out-String).Trim())" `
+                -Severity "high"
+        }
+
         $reportPath = Join-Path $GsdDir "specs/spec-quality-report.json"
         $result.Text | Set-Content $reportPath -Encoding UTF8
 
@@ -1986,10 +2061,16 @@ function Invoke-PlanPhase {
         }
     }
 
+    # Inject vault knowledge before planning — past schema surprises, solutions, diseases
+    $projectSlug = Split-Path $RepoRoot -Leaf
+    $vaultCtx    = Get-VaultContext -Phase "plan" -Project $projectSlug
+    Write-Host "    [PLAN] Vault context: $($vaultCtx.Length) chars injected" -ForegroundColor DarkCyan
+
     $prompt = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
     $prompt = $prompt.Replace("{{REQUIREMENTS}}", $reqSummary)
     $prompt = $prompt.Replace("{{RESEARCH}}", $researchSummary)
     $prompt = $prompt.Replace("{{FILE_INVENTORY}}", ($Inventory.source_files | Select-Object -First 100) -join "`n")
+    $prompt = $prompt.Replace("{{VAULT_KNOWLEDGE}}", $vaultCtx)
 
     # Plan output scales with batch size: ~2K tokens per requirement
     $planMaxTokens = [math]::Min(4096 + ($Requirements.Count * 4000), 65536)
@@ -2239,9 +2320,15 @@ function Invoke-ReviewPhase {
     try { $gitDiff = git -C $RepoRoot diff 2>&1 | Out-String } catch {}
     if ($gitDiff.Length -gt 8000) { $gitDiff = $gitDiff.Substring(0, 8000) + "`n... (truncated, $($gitDiff.Length) chars total)" }
 
+    # Inject vault knowledge — past review patterns, diseases to watch for
+    $projectSlug = Split-Path $RepoRoot -Leaf
+    $vaultCtx    = Get-VaultContext -Phase "review" -Project $projectSlug
+    Write-Host "    [REVIEW] Vault context: $($vaultCtx.Length) chars injected" -ForegroundColor DarkCyan
+
     $prompt = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
     $prompt = $prompt.Replace("{{ERROR_CONTEXT}}", $errorContext)
     $prompt = $prompt.Replace("{{GIT_DIFF}}", $gitDiff)
+    $prompt = $prompt.Replace("{{VAULT_KNOWLEDGE}}", $vaultCtx)
 
     # Scale review tokens: 1200 per failed item, min 4000, max 24000
     $reviewMaxTokens = [math]::Max(4000, [math]::Min(24000, $FailedItems.Count * 1200))
@@ -2255,6 +2342,21 @@ function Invoke-ReviewPhase {
     if ($result.Text) {
         $reviewsDir = Join-Path $GsdDir "iterations/reviews"
         Set-Content (Join-Path $reviewsDir "iteration-$Iteration.json") -Value $result.Text -Encoding UTF8
+    }
+
+    # ── Auto-write vault lessons from critical review findings ─────────────
+    if ($result.Parsed -and $result.Parsed.reviews) {
+        $criticals = @($result.Parsed.reviews | Where-Object { $_.status -eq "critical_issue" })
+        foreach ($rev in $criticals) {
+            $issueText = ($rev.issues | ForEach-Object { "- [$($_.severity)] $($_.file): $($_.issue)" }) -join "`n"
+            Write-VaultLesson `
+                -Type     "feedback" `
+                -Project  (Split-Path $RepoRoot -Leaf) `
+                -Phase    "review" `
+                -Title    "Critical issue in $($rev.req_id): $(($rev.issues | Select-Object -First 1).issue)" `
+                -Body     $issueText `
+                -Severity "high"
+        }
     }
 
     return $result.Parsed
@@ -2316,9 +2418,15 @@ function Invoke-VerifyPhase {
         }
     }
 
+    # Inject vault knowledge — past verify failures and auto-promote patterns
+    $projectSlug = Split-Path $RepoRoot -Leaf
+    $vaultCtx    = Get-VaultContext -Phase "verify" -Project $projectSlug
+    Write-Host "    [VERIFY] Vault context: $($vaultCtx.Length) chars injected" -ForegroundColor DarkCyan
+
     $prompt = $promptTemplate.Replace("{{ITERATION}}", "$Iteration")
     $prompt = $prompt.Replace("{{REQUIREMENTS_MATRIX}}", $matrixContent)
     $prompt = $prompt.Replace("{{MODE}}", $Mode)
+    $prompt = $prompt.Replace("{{VAULT_KNOWLEDGE}}", $vaultCtx)
 
     # Build evidence block from prior phases (execute, local-validate, review)
     $evidenceBlock = Build-VerifyEvidence -ExecuteResults $ExecuteResults `

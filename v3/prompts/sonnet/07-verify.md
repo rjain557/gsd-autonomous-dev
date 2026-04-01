@@ -5,6 +5,12 @@ Mode: {{MODE}}
 
 You are the VERIFIER. Update requirement statuses, calculate health, detect drift, and gate the next iteration.
 
+## Accumulated Knowledge (from Obsidian vault — APPLY THESE)
+
+{{VAULT_KNOWLEDGE}}
+
+---
+
 ## Current Requirements Matrix
 
 {{REQUIREMENTS_MATRIX}}
