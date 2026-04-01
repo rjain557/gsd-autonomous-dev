@@ -89,6 +89,12 @@ When reviewing code, also verify these integration points:
    - Flag: API calls without auth headers (missing Bearer token)
    - Flag: Hardcoded role assignments (`role: "admin"`) instead of token claims
 
+5. **Auth Wiring Check** (critical for root components): If `App.tsx`, `TCAIApp.tsx`, or any root/layout component was modified:
+   - Does it import from `AuthContext` or equivalent real auth hook?
+   - Does it sync auth state (userRole, isAuthenticated, tenants) from the real auth hook, not mock state?
+   - If a state machine router is used: does it have a `useEffect` that reads from real auth?
+   - Flag: Root component with `const [role, setRole] = useState('admin')` hardcoded = critical auth bypass
+
 Include integration issues in the `issues` array with severity "high" or "critical".
 A file that exists but uses mock data should be flagged as `needs_rework`, not `pass`.
 

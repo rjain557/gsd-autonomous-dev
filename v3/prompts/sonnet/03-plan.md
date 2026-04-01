@@ -24,6 +24,14 @@ You are the PLANNER. Create detailed, actionable implementation plans for each r
 
 ## Instructions
 
+### Step 0b: Check for Existing Design Source
+
+Before planning ANY frontend screen or component requirement:
+1. Check if `design/web/v{N}/src/` exists in the repo (where N is the highest version number)
+2. If YES: the plan for that screen MUST be "Copy from design/web/v{N}/src/{ScreenName}.tsx and wire to real API" — NOT generate from scratch
+3. Never plan to regenerate a screen that already exists in the design/ directory
+4. The plan steps should be: (a) copy file, (b) update imports to use real hooks not mock data, (c) verify auth context is connected
+
 ### Step 0: Decompose Large Requirements
 
 Before planning, evaluate each requirement for size. A requirement is TOO LARGE if it:

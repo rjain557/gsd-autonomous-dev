@@ -516,6 +516,26 @@ function Invoke-FigmaCompletenessCheck {
 
     Write-Host "  [FIGMA-CHECK] Starting Figma completeness check..." -ForegroundColor Cyan
 
+    # ── Check if design source exists (screens should be COPIED not generated) ──
+    $designSrc = $null
+    $hasDesignSrc = $false
+    $designWebDir = Join-Path $RepoRoot "design" | Join-Path -ChildPath "web"
+    if (Test-Path $designWebDir) {
+        $latestVersion = Get-ChildItem -Path $designWebDir -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -First 1
+        if ($latestVersion) {
+            $candidateSrc = Join-Path $latestVersion.FullName "src"
+            if (Test-Path $candidateSrc) {
+                $designSrc = $candidateSrc
+                $hasDesignSrc = $true
+            }
+        }
+    }
+    if ($hasDesignSrc) {
+        Write-Host "    [FIGMA] Design source detected: $designSrc" -ForegroundColor Cyan
+        Write-Host "    [FIGMA] Screens should be COPIED from design/, not generated" -ForegroundColor Cyan
+    }
+
     # ── Load requirements matrix ──
     $matrixPath = Join-Path $GsdDir "requirements/requirements-matrix.json"
     if (-not (Test-Path $matrixPath)) {
@@ -653,12 +673,14 @@ function Invoke-FigmaCompletenessCheck {
     }
 
     $report = @{
-        timestamp      = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-        total_checked  = $total
-        satisfied      = $satisfiedCount
-        partial        = $partialCount
-        not_satisfied  = $notSatisfiedCount
-        completeness   = $pct
+        timestamp           = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        total_checked       = $total
+        satisfied           = $satisfiedCount
+        partial             = $partialCount
+        not_satisfied       = $notSatisfiedCount
+        completeness        = $pct
+        design_source_path  = if ($hasDesignSrc) { $designSrc } else { $null }
+        design_source_found = $hasDesignSrc
         by_category    = @{
             screens       = @{
                 total     = @($results | Where-Object { $_.category -eq 'figma-screen' }).Count
@@ -689,12 +711,14 @@ function Invoke-FigmaCompletenessCheck {
     Write-Host "  [FIGMA-CHECK] Report saved to: $reportPath" -ForegroundColor DarkGray
 
     return @{
-        Checked       = $total
-        Satisfied     = $satisfiedCount
-        Partial       = $partialCount
-        NotSatisfied  = $notSatisfiedCount
-        Completeness  = $pct
-        Skipped       = $false
-        Report        = $report
+        Checked           = $total
+        Satisfied         = $satisfiedCount
+        Partial           = $partialCount
+        NotSatisfied      = $notSatisfiedCount
+        Completeness      = $pct
+        Skipped           = $false
+        HasDesignSrc      = $hasDesignSrc
+        DesignSourcePath  = $designSrc
+        Report            = $report
     }
 }

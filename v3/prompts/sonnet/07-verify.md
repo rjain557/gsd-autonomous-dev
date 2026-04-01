@@ -17,6 +17,19 @@ You are the VERIFIER. Update requirement statuses, calculate health, detect drif
 
 ## Instructions
 
+### DB Verification Rule (CRITICAL)
+For any requirement involving a stored procedure (any C# file calling `commandType: CommandType.StoredProcedure`):
+- Do NOT mark as `satisfied` if the SP name referenced in C# is not confirmed to exist in the database
+- Mark as `partial` with note "SP referenced in code but existence not confirmed"
+- The SP filename in the repository is evidence it was WRITTEN but not necessarily DEPLOYED
+- A requirement is only `satisfied` when: code file exists AND SP file exists AND SP is known to be deployed
+
+### TypeScript Error Classification
+When evaluating TypeScript compilation results:
+- **Real errors** (block satisfaction): TS2307 (missing module), TS2339 (property missing), TS2345 (type mismatch), TS2304 (name not found)
+- **Noise** (do NOT block): TS6133 (unused variable), TS6196 (unused type), TS6192 (unused import), TS6198 (unused destructure)
+A file that compiles with only TS6133/TS6196 errors is ACCEPTABLE. Only real errors block satisfaction.
+
 1. For each requirement in the matrix above, determine its current status based on the evidence provided below.
 2. **CRITICAL: Be AGGRESSIVE about promoting statuses.** The evidence block below shows what happened THIS iteration:
    - If files were written for a requirement → promote to at least "partial"

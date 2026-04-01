@@ -1734,3 +1734,73 @@ END
 **Check**: Verify the migration includes `INSERT INTO Modules` / `INSERT INTO Roles` / `INSERT INTO RoleModules` statements after the `CREATE TABLE`.
 
 **Fix**: Add seed data to the migration, or create a new seed migration (e.g. `016b_seed_modules.sql`) and run it.
+
+---
+
+## Integration Issues (Learned from ChatAI v8, 2026-03-31)
+
+### TypeScript Build Gate — noUnusedLocals false positives
+
+**Symptom**: Pipeline TypeScript check reports 200+ errors after Figma design import, all TS6133 (declared but never read).
+
+**Root cause**: Figma design files import Lucide icons/components as named imports — design system pattern. tsconfig `noUnusedLocals: true` treats these as errors.
+
+**Fix**: Set `noUnusedLocals: false` and `noUnusedParameters: false` in tsconfig.json. These are not real errors — only TS2307/TS2339/TS2345/TS2304 are real.
+
+**Prevention**: Build gate now filters TS6133/TS6196 from error count automatically. The local-validator post-processes typecheck output and suppresses noise-only errors so they do not block requirement satisfaction.
+
+---
+
+### Auth context lost after frontend replacement
+
+**Symptom**: All screens render but auth is broken — role shows as undefined, tenant missing, login loops.
+
+**Root cause**: Pipeline replaced root component (App.tsx / TCAIApp.tsx) but the new version uses internal mock auth state instead of real MSAL/AuthContext.
+
+**Fix**: In the root component, import useAuth() from AuthContext and sync state via useEffect:
+
+```tsx
+const authCtx = useAuth();
+useEffect(() => {
+  setAppState(prev => ({ ...prev, userRole: authCtx.userRole, isAuthenticated: authCtx.isAuthenticated }));
+}, [authCtx.isAuthenticated, authCtx.userRole]);
+```
+
+**Prevention**: Code review now explicitly checks root component auth wiring (Auth Wiring Check — item 5 in Integration Verification). A root component with `const [role, setRole] = useState('admin')` hardcoded is flagged as critical auth bypass.
+
+---
+
+### Stored procedure missing from database (SP-exists-in-code only)
+
+**Symptom**: API returns 500 / SqlException "Could not find stored procedure 'usp_X'". Code compiled fine.
+
+**Root cause**: C# repository references an SP that was never deployed to the database. The .sql file may exist in the repo but was never run.
+
+**Fix**: Run the SP file against the database:
+
+```powershell
+sqlcmd -S localhost -d {DbName} -i {spFile} -E
+```
+
+**Verification**: The following must return 1:
+
+```powershell
+sqlcmd -S localhost -d {DbName} -Q "SELECT COUNT(*) FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_NAME='usp_X'" -E
+```
+
+**Prevention**: Verify phase now requires SP existence confirmation before marking DB-backed requirements as satisfied. If the SP is referenced in C# but not confirmed deployed, the requirement is marked `partial` not `satisfied`.
+
+---
+
+### Pipeline rebuilds Figma screens (losing design work)
+
+**Symptom**: Pipeline regenerates all screens from scratch, losing the Figma v8 design. Only one module works after the run.
+
+**Root cause**: Plan phase didn't detect the existing `design/web/v{N}/src/` directory and planned to generate screens instead of copy them.
+
+**Fix**:
+1. Restore from design: `cp -r design/web/v8/src/* src/Client/{spa}/src/`
+2. Keep only: main.tsx, AuthContext.tsx, auth/ directory from the original
+3. Wire auth: import useAuth() in root component, sync state via useEffect
+
+**Prevention**: Plan phase (Step 0b) now checks for `design/web/v{N}/src/` before planning any frontend screen. If the directory exists, the plan must be "Copy from design/ and wire to real API" — not generate from scratch. The figma-completeness-checker also detects and reports the design source path in its output.
