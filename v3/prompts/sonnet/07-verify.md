@@ -30,6 +30,18 @@ When evaluating TypeScript compilation results:
 - **Noise** (do NOT block): TS6133 (unused variable), TS6196 (unused type), TS6192 (unused import), TS6198 (unused destructure)
 A file that compiles with only TS6133/TS6196 errors is ACCEPTABLE. Only real errors block satisfaction.
 
+### Static Data Fallback Detection (CRITICAL)
+When reviewing frontend screen files, flag as `partial` (not `satisfied`) if the file:
+- Imports from `src/data/` or any mock data module (e.g. `import { ... } from '../../../data/tenants'`)
+- Contains `const mock` arrays defined inline inside the component
+- Has `Array.isArray(x) ? x : staticFallback` patterns — this silently uses mock data when API returns paginated wrapper `{Items:[...]}`
+- Uses `useNavigate()` from react-router-dom (crashes in state-machine router apps without BrowserRouter)
+
+The correct pattern for list APIs returning paginated wrappers:
+```ts
+list: () => request<any>('/resource').then((r: any) => Array.isArray(r) ? r : (r?.Items ?? []))
+```
+
 1. For each requirement in the matrix above, determine its current status based on the evidence provided below.
 2. **CRITICAL: Be AGGRESSIVE about promoting statuses.** The evidence block below shows what happened THIS iteration:
    - If files were written for a requirement → promote to at least "partial"

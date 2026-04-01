@@ -1804,3 +1804,54 @@ sqlcmd -S localhost -d {DbName} -Q "SELECT COUNT(*) FROM INFORMATION_SCHEMA.ROUT
 3. Wire auth: import useAuth() in root component, sync state via useEffect
 
 **Prevention**: Plan phase (Step 0b) now checks for `design/web/v{N}/src/` before planning any frontend screen. If the directory exists, the plan must be "Copy from design/ and wire to real API" — not generate from scratch. The figma-completeness-checker also detects and reports the design source path in its output.
+
+## Frontend Static Data / API Wiring Issues (Learned from ChatAI v8, 2026-04-01)
+
+### Screen silently shows static/mock data instead of live API data
+
+**Symptom**: Screen renders with data, but data never updates. Create/edit operations appear to succeed but nothing changes. New records don't appear after creation.
+
+**Root cause — Paginated API wrapper not unwrapped**:
+Backend returns `{ Items: [...], TotalCount: N, Page: N, PageSize: N }`. Frontend does `Array.isArray(apiData)` → returns `false` → falls back to static import. The static fallback silently masks the real API.
+
+**Fix**: Unwrap at the API service layer in `api.ts`, not in the component:
+```ts
+list: () => request<any>('/resource').then((r: any) => Array.isArray(r) ? r : (r?.Items ?? []))
+```
+
+**Detection**: Grep for `from '../../../data/'` in screen components — any import from the data/ folder is a mock data import that should be replaced with a real API call.
+
+### API returns 404 but screen shows data
+
+**Symptom**: Network tab shows 404 for API calls, but screen shows hardcoded data.
+
+**Root cause**: URL mismatch. Frontend calls `/tenant` or `/user`, backend exposes `/tenants` or `/users` (plural). 404 → static fallback fires silently.
+
+**Fix**: Match controller routes exactly. ASP.NET controllers use plural resource names by convention.
+
+**Prevention**: The verify phase now checks for `import { ... } from '.../data/'` in screen components and flags as `partial` (not `satisfied`).
+
+### "My GPT / Assistants / Tenants" screen not opening when clicked
+
+**Symptom**: Clicking a nav item does nothing, or browser URL changes but screen doesn't render.
+
+**Root cause — `useNavigate()` in state-machine router**: The app uses `currentPage` state + switch statement (not React Router with `<BrowserRouter>`). Any component that calls `useNavigate()` from react-router-dom will fail silently or throw at runtime.
+
+**Fix**:
+1. Remove `import { useNavigate } from 'react-router-dom'`
+2. Add `onNavigate?: (page: string) => void` prop to component
+3. Add route case to TCAIApp switch statement for the new page
+4. Pass `onNavigate={handleNavigation}` when rendering the component
+
+### E2E tests pass but data shown is static
+
+**Symptom**: Playwright screens.spec tests all pass (green), but screen renders static/mock data during test runs, masking the real behavior.
+
+**Root cause**: Tests only checked `bodyText.length > 20` — any content (including mock data) passes.
+
+**Fix**: CRUD tests (crud.spec.ts) now verify:
+1. Specific data items from the mocked API appear (not just "body has text")
+2. After create, the new item appears in the list
+3. No `Failed to load` / `Error loading` banners appear
+
+Use the `overrideRoute()` helper in E2E tests to inject specific test data and verify it appears in the correct UI location.
