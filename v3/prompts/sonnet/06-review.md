@@ -70,14 +70,24 @@ When reviewing code, also verify these integration points:
    - Flag: `useState` with hardcoded arrays of objects (e.g., `useState([{id: 1, name: "..."}])`)
    - Flag: Mock service methods that don't call `fetch`/`axios`
    - Flag: `useQuery`/`useSWR` with mock fetcher functions that return static data
-   - Flag: Variables named `mockData`, `mockUsers`, `fakeResponse`, etc.
+   - Flag: Variables named `mockData`, `mockUsers`, `fakeResponse`, `mockConnectors`, `mockAuditLogs`, `mockPlans`, `mockSpendData`, etc.
    - Flag: `Promise.resolve(staticData)` instead of real HTTP calls
+   - Flag: `const [items, setItems] = useState(mockXxx)` — initial state from mock array
+   - Flag: `const filteredX = mockXxx.filter(...)` — filtering directly against mock array (mock never updates)
+   - Flag: List endpoints in api.ts missing `.then((r: any) => Array.isArray(r) ? r : (r?.Items ?? []))` — will return empty when backend paginates
+   - Flag: KPI cards or metric values hardcoded as strings like `"$12,450"` or `"87.3%"` — should come from API
+   - Flag: `setTimeout(() => setLoading(false), 1000)` with no actual data fetch — fake loading state hiding mock data
 
 2. **API Wiring Check**: Is the frontend actually calling the backend?
    - Flag: API base URL is `localhost:0000` or `example.com` or placeholder
    - Flag: Service functions that return `Promise.resolve(mockData)` instead of calling fetch
    - Flag: `useEffect` that sets state from hardcoded data without API call
-   - Flag: Import of mock data files (`import { mockUsers } from './mock'`)
+   - Flag: Import of mock data files (`import { mockUsers } from './mock'`, `import { mockInstances } from './mockData'`)
+   - Flag: TODO comments on handler functions (`// TODO: Implement actual file upload`) — these are stubs, not wired
+   - Flag: Handler functions that only call `console.log(...)` — no API call made
+   - Flag: `useProjectFiles`, `useProjectConversations` or similar hooks returning `{ data: [] }` stub — not calling API
+   - Flag: File operations (upload/download/delete) using `console.log` instead of `api.files.*`
+   - Flag: Project-assistant linking using only `setLinkedAssistantIds` without calling `api.projects.update`
 
 3. **DB Wiring Check**: Is the backend actually calling the database?
    - Flag: Repository methods that return `new List<T> { ... }` with hardcoded objects

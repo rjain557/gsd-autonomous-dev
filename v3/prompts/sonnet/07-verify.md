@@ -51,6 +51,37 @@ export function MyScreen({ userRole, userId }: Props) {
   const currentUserId = userId || '';
 ```
 
+### Stub Handler Detection (CRITICAL)
+Flag as `partial` if handler functions use `console.log` with no API call and contain `// TODO` comments:
+```tsx
+// WRONG — stub, not wired:
+const handleUpload = (e) => { console.log('Uploading', e.target.files); };
+const handleDelete = (id) => { console.log('Deleting', id); };
+
+// CORRECT — wired to API:
+const handleUpload = (e) => { api.files.upload(formData).catch(() => {}); };
+const handleDelete = (id) => { api.files.delete(id).catch(() => {}); };
+```
+
+### Fake Loading State Detection
+Flag as `partial` if a component shows a loading spinner via `setTimeout` with no actual data fetch:
+```tsx
+// WRONG — fake loading, data is always static:
+useEffect(() => { setTimeout(() => setLoading(false), 1000); }, []);
+
+// CORRECT — real loading from API:
+useEffect(() => { api.resource.list().then(setData).finally(() => setLoading(false)); }, []);
+```
+
+### KPI Hardcoded Values
+Flag as `partial` if dashboard or metric cards show hardcoded string values that should be dynamic:
+```tsx
+// WRONG:
+<KPICard value="$12,450" />
+// CORRECT:
+<KPICard value={usageSummary?.totalRetailCost != null ? `$${...}` : '—'} loading={loading} />
+```
+
 1. For each requirement in the matrix above, determine its current status based on the evidence provided below.
 2. **CRITICAL: Be AGGRESSIVE about promoting statuses.** The evidence block below shows what happened THIS iteration:
    - If files were written for a requirement → promote to at least "partial"
