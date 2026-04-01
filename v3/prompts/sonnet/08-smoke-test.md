@@ -118,6 +118,25 @@ Scan for development artifacts that should not be in production code.
 - Hardcoded localhost URLs or port numbers
 - Hardcoded API keys or secrets
 
+### Phase: e2e_smoke_test
+Validate that all screens render and CRUD operations work end-to-end using Playwright E2E tests.
+
+**Checklist:**
+- All screen components render without "Application Error" (React ErrorBoundary not triggered)
+- Navigation links work for each role (technijian_admin, client_admin, client_user)
+- CRUD flows: Create form opens, required fields fill, submit completes without validation error
+- Real API data appears in lists (not static mock data)
+- Role-based guards: forbidden screens show 403, not crash
+- No hardcoded user IDs in screen components (grep: `const currentUserId = '`)
+- No module-scope state references in router functions (grep: `appState` inside module-level function)
+- Playwright test: `npx playwright test` → all pass, 0 failures
+
+**Key patterns that break E2E but pass code review:**
+1. `Array.isArray(apiData) ? apiData : staticFallback` — paginated wrapper returns object, static always used
+2. `const currentUserId = 'hardcoded-value'` — real API items filtered out silently
+3. `appState.user?.id` referenced inside module-scope router function — ReferenceError at runtime
+4. `useNavigate()` inside state-machine app — throws because no BrowserRouter context
+
 ### Phase: rbac_matrix
 Build and validate the role-based access control matrix.
 

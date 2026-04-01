@@ -36,10 +36,19 @@ When reviewing frontend screen files, flag as `partial` (not `satisfied`) if the
 - Contains `const mock` arrays defined inline inside the component
 - Has `Array.isArray(x) ? x : staticFallback` patterns — this silently uses mock data when API returns paginated wrapper `{Items:[...]}`
 - Uses `useNavigate()` from react-router-dom (crashes in state-machine router apps without BrowserRouter)
+- Contains `const currentUserId = 'hardcoded-string'` — silently filters out all real API data on "My Items" tabs
+- References `appState` or React state inside a module-scope function (outside the component) — causes ReferenceError at runtime
 
 The correct pattern for list APIs returning paginated wrappers:
 ```ts
 list: () => request<any>('/resource').then((r: any) => Array.isArray(r) ? r : (r?.Items ?? []))
+```
+
+The correct pattern for user-filtered components (accept userId as prop, never hardcode):
+```tsx
+interface Props { userRole: string; userId?: string }
+export function MyScreen({ userRole, userId }: Props) {
+  const currentUserId = userId || '';
 ```
 
 1. For each requirement in the matrix above, determine its current status based on the evidence provided below.
