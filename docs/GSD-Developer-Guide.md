@@ -6926,3 +6926,130 @@ await page.setViewportSize({ width: 1280, height: 720 });
 ---
 
 *End of Chapter 30 — Verification Gates, E2E Infrastructure & Memory System*
+
+---
+
+# Chapter 31: Claude Code Skills
+
+**Version 3.2.0** | March 2026
+
+This chapter documents the five Claude Code skills installed in `.claude/skills/` and how to use them when developing the GSD engine or working on GSD-generated projects.
+
+## 31.1 What Are Claude Code Skills?
+
+Skills are Markdown files with YAML frontmatter placed in `.claude/skills/<name>/SKILL.md`. Claude Code reads the skill index in `CLAUDE.md` and activates the matching skill automatically when a task description fits, or when invoked explicitly via a `/skill-name` slash command.
+
+Skills encode expert patterns, coding conventions, and decision frameworks — they give Claude specialized knowledge without repeating instructions every session.
+
+## 31.2 Installed Skills Summary
+
+| Skill | Command | Domain |
+|---|---|---|
+| SQL Expert | `/sql-expert` | Schema design, stored procedures, CTEs, migrations, normalization |
+| SQL Performance Optimizer | `/sql-performance-optimizer` | Execution plans, indexes, query rewrites, blocking diagnosis |
+| React UI Design Patterns | `/react-ui-design-patterns` | Five-state pattern, loading skeletons, error states, optimistic updates |
+| Composition Patterns | `/composition-patterns` | Compound components, context, boolean prop avoidance |
+| Web Design Guidelines | `/web-design-guidelines` | Accessibility audit, WAI-ARIA compliance, UX review |
+
+Full reference: `docs/GSD-Claude-Code-Skills.md`
+
+## 31.3 Skill Descriptions
+
+### SQL Expert (`/sql-expert`)
+
+Enforces the SP-only pattern used across all GSD-generated projects. Covers:
+- Table and column naming conventions (`PascalCase`, `usp_{Entity}_{Action}` for SPs)
+- Mandatory audit columns (`CreatedAt`, `CreatedBy`, `UpdatedAt`, `UpdatedBy`, `IsDeleted`)
+- Multi-tenant isolation (`TenantId NVARCHAR(50) NOT NULL` + `WHERE TenantId = @TenantId AND IsDeleted = 0`)
+- SP template with `SET NOCOUNT ON`, `BEGIN TRY / THROW / END CATCH`, `GRANT EXECUTE`
+- CTEs (recursive), window functions, MERGE (upsert), JSON in SQL Server
+- Idempotent migration script pattern (`IF NOT EXISTS` wrappers)
+
+**Activate for**: any DB schema, SP, or migration work in a GSD project.
+
+### SQL Performance Optimizer (`/sql-performance-optimizer`)
+
+Systematic diagnosis workflow: read the query → identify costly operators → prescribe fix → validate. Covers:
+- Execution plan operator guide (Table Scan, Key Lookup, Hash Match, Sort, Nested Loops)
+- Covering index design (equality → range → INCLUDE; filtered for soft-delete)
+- Query rewrites: correlated subquery → aggregated JOIN; `COUNT(*)` → `EXISTS`
+- Parameter sniffing fix (local variable pattern)
+- Statistics management (`UPDATE STATISTICS ... WITH FULLSCAN`)
+- Blocking chain analysis (`sys.dm_exec_requests`)
+- SP performance checklist (explicit types, no `SELECT *`, temp tables for large sets)
+
+**Activate for**: any slow SP, index tuning request, or execution plan question.
+
+### React UI Design Patterns (`/react-ui-design-patterns`)
+
+The Five States Rule — every data-driven screen in every GSD project must handle:
+
+| State | Trigger | Implementation |
+|---|---|---|
+| Loading | `isLoading === true` | `<Skeleton>` matching final layout |
+| Error | `isError === true` | `<MessageBar intent="error">` + retry |
+| Empty | data is `[]` or `null` | Centered EmptyState + CTA button |
+| Populated | data has items | Normal render |
+| Optimistic | mutation pending | Disabled UI + `onMutate` cache update |
+
+Also covers: React Query optimistic updates with rollback, Fluent v9 confirmation dialogs, error boundaries at route level, pagination with `keepPreviousData`.
+
+**Activate for**: any frontend screen review, adding async states, optimistic mutations.
+
+### Composition Patterns (`/composition-patterns`)
+
+Prevents boolean prop proliferation in generated and hand-written components:
+- `architecture-avoid-boolean-props`: use explicit variants not boolean switches
+- `architecture-compound-components`: `Card.Header`, `Card.Body`, `Card.Footer` pattern
+- `state-context-interface`: typed `{ state, actions, meta }` on every context
+- `patterns-explicit-variants`: named components (`AlertError`, `AlertWarning`) over `<Alert type="..." />`
+- `patterns-children-over-render-props`: children composition over `renderHeader` props
+- Fluent v9 alignment: slot-based composition, `makeStyles` for overrides
+
+**Activate for**: component refactoring, new reusable components, context design.
+
+### Web Design Guidelines (`/web-design-guidelines`)
+
+Fetches live rules from `vercel-labs/web-interface-guidelines` and checks specified files. Additionally runs the built-in Fluent UI v9 ARIA checklist (10 rules: ARIA-01 through ARIA-10) covering labels, roles, focus order, contrast, keyboard navigation, and dialog accessibility.
+
+**Activate for**: accessibility audits on any generated or hand-written frontend screen.
+
+## 31.4 Usage Patterns
+
+### Auto-Activation
+
+Simply describe the task — Claude detects and applies the matching skill:
+
+> "Write a stored procedure for the notification settings table"
+> → SQL Expert activates automatically
+
+> "This SP is running slowly on large tenants"
+> → SQL Performance Optimizer activates automatically
+
+### Explicit Invocation
+
+```
+/sql-expert [task]
+/sql-performance-optimizer [task]
+/react-ui-design-patterns [task]
+/composition-patterns [task]
+/web-design-guidelines [file-or-pattern]
+```
+
+### Chaining for End-to-End Work
+
+For a new feature spanning DB → backend → frontend:
+
+1. `/sql-expert` — design the table + stored procedure
+2. `/sql-performance-optimizer` — validate index strategy before migration runs
+3. `/react-ui-design-patterns` — implement the screen with all five states
+4. `/web-design-guidelines` — accessibility audit before PR
+
+## 31.5 Adding New Skills
+
+1. Create `.claude/skills/<name>/SKILL.md` with YAML frontmatter
+2. Add activation criteria and code examples in the body
+3. Add a reference in `CLAUDE.md` under `## Installed Skills`
+4. Add a row to the table in `docs/GSD-Claude-Code-Skills.md`
+
+*End of Chapter 31 — Claude Code Skills*
