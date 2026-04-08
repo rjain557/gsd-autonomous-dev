@@ -1,16 +1,105 @@
 # GSD Autonomous Dev — Claude Code Project Configuration
 
-## Role in the GSD Engine
+## What this project is
 
-Claude Code handles 3 phases of the GSD convergence loop (token-efficient, judgment-heavy):
+A multi-agent autonomous development pipeline that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through code review, remediation, quality gates, and alpha deployment — without human intervention at each step. It wraps an existing PowerShell convergence engine (7 LLM agents) in a TypeScript harness with typed agent contracts, Obsidian vault memory, and coordinated orchestration.
+
+## Agent System Overview
+
+Eight agents coordinated by an Orchestrator that routes work through a 7-stage dependency graph: BlueprintAnalysisAgent detects drift, CodeReviewAgent validates, RemediationAgent fixes, QualityGateAgent gates, E2EValidationAgent tests against Figma storyboards, DeployAgent deploys with rollback, PostDeployValidationAgent validates the live environment. All system prompts live in `memory/agents/` vault notes, all configs in `memory/knowledge/`, all decisions logged to `memory/decisions/`.
+
+## Agent Roster
+
+| Agent | File | Vault Note | Job |
+|---|---|---|---|
+| Orchestrator | `src/harness/orchestrator.ts` | `memory/agents/orchestrator.md` | Route work, decide retry/escalate/halt |
+| BlueprintAnalysisAgent | `src/agents/blueprint-analysis-agent.ts` | `memory/agents/blueprint-analysis-agent.md` | Read specs, detect drift |
+| CodeReviewAgent | `src/agents/code-review-agent.ts` | `memory/agents/code-review-agent.md` | Review code, check quality |
+| RemediationAgent | `src/agents/remediation-agent.ts` | `memory/agents/remediation-agent.md` | Fix failed issues |
+| QualityGateAgent | `src/agents/quality-gate-agent.ts` | `memory/agents/quality-gate-agent.md` | Run tests + npm audit + dotnet vuln check |
+| E2EValidationAgent | `src/agents/e2e-validation-agent.ts` | `memory/agents/e2e-validation-agent.md` | Test API contracts, SPs, mock data, auth |
+| DeployAgent | `src/agents/deploy-agent.ts` | `memory/agents/deploy-agent.md` | Deploy with rollback |
+| PostDeployValidationAgent | `src/agents/post-deploy-validation-agent.ts` | `memory/agents/post-deploy-validation-agent.md` | Validate live env: SPA cache, DI, no 500s |
+
+## Vault Memory Structure
+
+```
+memory/
+  agents/           - Agent system prompts and configs (frontmatter + body)
+  knowledge/        - Pipeline configs, quality gates, deploy targets, rollback procedures
+  architecture/     - System design docs, state schema, hook registry
+  sessions/         - Append-only run logs (auto-created per run)
+  decisions/        - Orchestrator decision records with rationale
+  evals/            - Test cases and results
+```
+
+## How to Start a Pipeline Run
+
+```bash
+npx ts-node src/index.ts pipeline run --trigger manual
+```
+
+## How to Resume a Failed Run
+
+```bash
+npx ts-node src/index.ts pipeline run --from-stage gate
+```
+
+## How to Run Evals
+
+```bash
+npx ts-node src/evals/runner.ts
+```
+
+## How to Run in Dry-Run Mode (No Deploy)
+
+```bash
+npx ts-node src/index.ts pipeline run --trigger manual --dry-run
+```
+
+## Memory Rules — ALWAYS Follow These
+
+1. Read the relevant `memory/agents/*.md` note before modifying any agent
+2. All agent system prompts live in the vault — edit there, not in code
+3. Every session must append a summary to `memory/sessions/`
+4. Never hardcode thresholds, configs, or deploy targets in code — they live in `memory/knowledge/`
+5. Before adding a new agent: design its vault note first, then build the class
+6. The task graph lives in `memory/architecture/agent-system-design.md` — update it there when the pipeline changes
+7. The orchestrator must log a Decision for every routing choice it makes
+8. DeployAgent MUST NOT execute unless GateResult.passed === true (runtime assertion)
+9. Rollback logic must exist before deploy logic — never implement deploy without rollback
+10. All vault log writes use append() — never overwrite session/decision files
+
+## Current Pipeline Stage Map
+
+| Step | Agent | Depends On | On Success | On Failure |
+|---|---|---|---|---|
+| 1 | BlueprintAnalysisAgent | (trigger) | Step 2 | Retry 3x then HALT |
+| 2 | CodeReviewAgent | Step 1 | If passed: Step 4; If failed: Step 3 | Retry 3x then HALT |
+| 3 | RemediationAgent | Step 2 (failed) | Step 4 | Retry 2x then HALT |
+| 4 | QualityGateAgent | Step 2 or 3 | If passed: Step 5; If failed: Step 3 (loop, max 3) | Retry 2x then HALT |
+| 5 | E2EValidationAgent | Step 4 | If passed: Step 6; If failed: Step 3 | Retry 2x then HALT |
+| 6 | DeployAgent | Step 5 (passed=true ONLY) | Step 7 | Rollback then HALT |
+| 7 | PostDeployValidationAgent | Step 6 | COMPLETE | Log failures, recommend rollback |
+
+## Known Failure Modes
+
+| Failure | Agent | Handling |
+|---|---|---|
+| Quota exhaustion | Any LLM agent | Pipeline pauses, resume with --from-stage |
+| Spec conflicts | BlueprintAnalysisAgent | Reports high risk, orchestrator decides |
+| Build failures | QualityGateAgent | Fails gate, routes to remediation loop |
+| Deploy target unreachable | DeployAgent | Immediate rollback |
+| Blocked file writes (D-05) | RemediationAgent | Skip after 1 retry per file |
+
+## Legacy Engine Role
+
+Claude Code also handles 3 phases of the legacy PowerShell convergence loop:
 1. **code-review** — Score repo health, update requirement statuses
 2. **create-phases** — Extract requirements from specs + Figma (one-time)
 3. **plan** — Prioritize next batch, write generation instructions
 
-Read source code but **never modify it**. Write only to:
-- `.gsd/health/`, `.gsd/code-review/`, `.gsd/generation-queue/`, `.gsd/agent-handoff/current-assignment.md`
-
-Never write to: `.gsd/research/`, or source code files.
+Legacy write paths: `.gsd/health/`, `.gsd/code-review/`, `.gsd/generation-queue/`, `.gsd/agent-handoff/current-assignment.md`
 
 ---
 

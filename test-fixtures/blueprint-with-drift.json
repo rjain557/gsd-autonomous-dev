@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "total_requirements": 5,
+    "satisfied": 2,
+    "health_score": 40,
+    "iteration": 0
+  },
+  "requirements": [
+    { "id": "REQ-001", "description": "User authentication with JWT", "status": "satisfied" },
+    { "id": "REQ-002", "description": "Dashboard with KPI cards", "status": "satisfied" },
+    { "id": "REQ-003", "description": "JWT refresh token flow", "status": "not_started", "expected": "JWT auth with refresh tokens", "actual": "Session-based auth only" },
+    { "id": "REQ-004", "description": "Role-based access control", "status": "not_started" },
+    { "id": "REQ-005", "description": "Audit logging for all mutations", "status": "partial", "expected": "Full audit trail", "actual": "Only login events logged" }
+  ]
+}

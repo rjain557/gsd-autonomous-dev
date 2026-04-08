@@ -1,6 +1,6 @@
 ﻿{
-    "version":  "2.0.0",
-    "description":  "Central registry for all LLM agents with rate limit specs. CLI agents use native CLIs; openai-compat agents use REST API.",
+    "version":  "4.1.0",
+    "description":  "Central registry for all LLM agents. 3 subscription CLIs (Claude Max + ChatGPT Max + Gemini Ultra = $0 marginal cost) + 2 cheap API fallbacks.",
     "agents":  {
                    "claude":  {
                                   "type":  "cli",
@@ -11,13 +11,14 @@
                                                "synthesize",
                                                "execute"
                                            ],
+                                  "subscription": "Claude Max ($100-200/mo)",
                                   "rate_limits":  {
                                       "rpm":  10,
                                       "tpm":  80000,
-                                      "daily_requests":  1000,
+                                      "daily_requests":  5000,
                                       "context_window":  200000,
-                                      "cooldown_minutes":  30,
-                                      "notes":  "Pro plan. Opus/Sonnet shared quota. Heavy token usage per call (~3K-5K output)."
+                                      "cooldown_minutes":  5,
+                                      "notes":  "Max plan. 5-20x Pro limits. Rolling 5-hour window. Degrades to Sonnet on exhaustion."
                                   }
                               },
                    "codex":  {
@@ -27,13 +28,14 @@
                                               "execute",
                                               "review"
                                           ],
+                                 "subscription": "ChatGPT Max ($200/mo)",
                                  "rate_limits":  {
                                      "rpm":  10,
                                      "tpm":  100000,
-                                     "daily_requests":  1000,
+                                     "daily_requests":  5000,
                                      "context_window":  200000,
-                                     "cooldown_minutes":  30,
-                                     "notes":  "Pro plan. Full-auto mode for execute. Shares OpenAI quota pool."
+                                     "cooldown_minutes":  5,
+                                     "notes":  "Max plan. Full-auto mode for execute. Effectively unlimited for GPT-4o. Soft throttle on o1-pro/o3."
                                  }
                              },
                    "gemini":  {
@@ -44,13 +46,14 @@
                                                "spec-fix",
                                                "review"
                                            ],
+                                  "subscription": "Gemini Ultra ($20/mo via Google One AI Premium)",
                                   "rate_limits":  {
                                       "rpm":  15,
                                       "tpm":  1000000,
                                       "daily_requests":  1500,
                                       "context_window":  1000000,
-                                      "cooldown_minutes":  15,
-                                      "notes":  "Ultra plan. High RPM and TPM. Best for bulk review chunks."
+                                      "cooldown_minutes":  5,
+                                      "notes":  "Ultra plan. 1M context window. Highest throughput of all 3 subscription models. Best for bulk review and research."
                                   }
                               },
                    "kimi":  {
@@ -63,7 +66,8 @@
                                              "research",
                                              "requirements"
                                          ],
-                                "enabled":  true,
+                                "enabled":  false,
+                                "disabled_reason": "v4.0: Redundant with DeepSeek/MiniMax. Higher cost ($0.60/$2.50/M). Re-enable for council voting if needed.",
                                 "thinking_flag":  "--thinking",
                                 "no_thinking_flag":  "--no-thinking",
                                 "note":  "Kimi Code CLI v1.17+. Install: pip install kimi-cli. Auth: KIMI_API_KEY env var.",
@@ -112,7 +116,8 @@
                                              "research"
                                          ],
                                 "supports_tools":  true,
-                                "enabled":  true,
+                                "enabled":  false,
+                                "disabled_reason": "v4.0: Corporate firewall blocks 128.14.69.x. Highest API cost ($1.00/$3.20/M). Use DeepSeek/MiniMax instead.",
                                 "endpoint_note":  "International endpoint (api.z.ai). Get API key from z.ai. Requires firewall whitelist for 128.14.69.x",
                                 "rate_limits":  {
                                     "rpm":  30,
@@ -151,9 +156,17 @@
                                   "claude",
                                   "codex",
                                   "gemini",
-                                  "kimi",
                                   "deepseek",
-                                  "glm5",
                                   "minimax"
-                              ]
+                              ],
+    "disabled_agents": ["kimi", "glm5"],
+    "v4_model_strategy": {
+        "description": "5-model: 3 subscription CLI (Claude/Codex/Gemini=$60/mo fixed) + 2 cheap API (DeepSeek/MiniMax=variable)",
+        "subscription_models": ["claude", "codex", "gemini"],
+        "api_models": ["deepseek", "minimax"],
+        "removed": {
+            "kimi": "Redundant — higher cost than DeepSeek/MiniMax, no unique capability",
+            "glm5": "Corporate firewall blocks endpoint, highest API cost"
+        }
+    }
 }

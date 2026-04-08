@@ -1,6 +1,6 @@
 # GSD Engine - Goal-Spec-Done Autonomous Development System
 
-**Version:** 2.1.0 | **Platform:** Windows + PowerShell 5.1+ | **Agents:** 7 configured models (Claude, Codex, Gemini, Kimi, DeepSeek, GLM-5, MiniMax)
+**Version:** 4.0.0 | **Platform:** Windows + PowerShell 5.1+ / Node.js 20+ | **Agents:** 7 configured models (Claude, Codex, Gemini, Kimi, DeepSeek, GLM-5, MiniMax)
 
 The GSD Engine is a PowerShell-based autonomous development framework that orchestrates seven configured models across CLI and REST providers to drive codebases from specification to 100% implementation through iterative convergence loops. It runs unattended with comprehensive self-healing for network failures, quota limits, agent crashes, and stalls.
 
@@ -80,6 +80,29 @@ Each provider draws from an independent quota pool, maximizing throughput. Gemin
 | [GSD-Installation-Guide.md](docs/GSD-Installation-Guide.md) | Prerequisites, quick start, first project setup, mobile monitoring |
 | [GSD-Configuration.md](docs/GSD-Configuration.md) | JSON schemas, pricing cache, per-project configs, environment variables |
 | [GSD-Troubleshooting.md](docs/GSD-Troubleshooting.md) | Installation, runtime, supervisor, cost tracking, common workflows |
+
+## V4 TypeScript Agent Harness (New)
+
+In addition to the PowerShell engine, V4 adds a TypeScript harness (`src/`) with typed agent contracts, vault-integrated memory, and orchestrated deployment with rollback.
+
+```bash
+npm install
+npx ts-node src/index.ts pipeline run --trigger manual --dry-run
+```
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Type system | Complete | All agent I/O contracts typed |
+| Vault adapter | Complete | OS-level file locking via proper-lockfile |
+| Hook system | Complete | 7 events, 7 default handlers |
+| Orchestrator | Complete | Stage routing, decision logging, state save/restore, task graph from vault |
+| Deploy + rollback | Complete | Cross-platform (Node fs.cp, http); rollback stops on first failure |
+| State restoration | Complete | Saves after each stage, restores on `--from-stage` |
+| LLM integration | Complete | Anthropic SDK with tool_use for structured output; CLI fallback |
+| JSON parsing | Complete | 3-strategy extractor; throws on failure so retry engages |
+| Eval framework | Complete | 6/6 test cases; vault markdown parser for dynamic loading |
+
+Full status: [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md)
 
 ## Scripts
 

@@ -168,3 +168,45 @@ Phase 7: SMOKE TEST ──> Phase 8: FINAL REVIEW ──> Phase 9: DEV HANDOFF
 9. **Auth token propagation**: Runtime validation discovers endpoints that return 401, then retries with real auth tokens from login tests. This distinguishes "broken endpoint" from "needs authentication".
 
 10. **Handoff documentation**: Every phase writes structured JSON reports. The final handoff phase aggregates them into a single PIPELINE-HANDOFF.md that developers can use as a status dashboard.
+
+---
+
+## V4 TypeScript Agent Harness (2026-04-08)
+
+### Overview
+
+A TypeScript layer (`src/`) that wraps the PowerShell pipeline above with typed agent contracts, vault-integrated memory, hook-based lifecycle, and orchestrator decision logging. Adds automated deployment with mandatory rollback (new capability not in phases 1-9).
+
+### Relationship to PowerShell Pipeline
+
+The harness runs **alongside** the PowerShell pipeline — it does not replace it. Both share the `memory/` vault for configuration. The harness is currently a standalone orchestrator; integration with the PowerShell scripts (calling `gsd-build-gate.ps1`, `gsd-smoketest.ps1`, etc. from TypeScript) is planned but not built.
+
+### Agent Roster
+
+| Agent | Responsibility | Maps to PowerShell |
+|-------|---------------|-------------------|
+| BlueprintAnalysisAgent | Read specs, detect drift | convergence-loop.ps1 code-review phase |
+| CodeReviewAgent | Review code, run linters | gsd-codereview.ps1 |
+| RemediationAgent | Apply targeted fixes | gsd-fix.ps1, gsd-validation-fixer.ps1 |
+| QualityGateAgent | Build/test/security gate | gsd-build-gate.ps1 + gsd-smoketest.ps1 |
+| DeployAgent | Deploy + rollback | gsd-deploy-prep.ps1 (new: actual deploy) |
+| Orchestrator | Route work, log decisions | convergence-loop.ps1 main loop |
+
+### Harness Task Flow
+
+```
+BlueprintAnalysis → CodeReview → [if failed] Remediation → QualityGate → [if passed] Deploy
+                                      ↑                        |
+                                      └── loop max 3x ─────────┘ (if gate fails)
+```
+
+### Implementation Status
+
+**Working:** Type system, vault adapter, hook system, orchestrator routing, deploy gate assertion, CLI.
+
+**Stubbed:** Task graph from vault (hardcoded), state restoration (empty), eval test loading (1/6 cases).
+
+**Fragile:** LLM output JSON parsing (regex), cross-platform commands (Windows deploy, Unix security scan).
+
+Full status: `docs/GSD-V4-Implementation-Status.md`
+ADR: `05-Architecture/ADR-006-v4-agent-harness.md` (Obsidian vault)
