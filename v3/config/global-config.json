@@ -1,0 +1,624 @@
+{
+    "version": "3.0.0",
+    "max_iterations": 50,
+    "stall_threshold": 3,
+    "target_health": 100,
+    "batch_size_min": 3,
+    "batch_size_max": 15,
+    "project_gsd_dir": ".gsd",
+
+    "phase_order": [
+        "cache-warm",
+        "spec-gate",
+        "spec-align",
+        "research",
+        "plan",
+        "execute-skeleton",
+        "execute-fill",
+        "local-validate",
+        "design-system-gate",
+        "review",
+        "verify",
+        "spec-fix"
+    ],
+
+    "sdlc_docs": {
+        "path": "docs",
+        "phases": ["Phase-A", "Phase-B", "Phase-C", "Phase-D", "Phase-E"]
+    },
+
+    "interfaces": {
+        "types": ["web", "mcp-admin", "browser", "mobile", "agent"],
+        "auto_detect_latest": true,
+        "version_pattern": "^v(\\d+)$",
+        "base_path": "design",
+        "figma_make_analysis_dir": "_analysis",
+        "figma_make_stubs_dir": "_stubs",
+        "figma_make_deliverables": [
+            "01-screen-inventory.md",
+            "02-component-inventory.md",
+            "03-design-system.md",
+            "04-navigation-routing.md",
+            "05-data-types.md",
+            "06-api-contracts.md",
+            "07-hooks-state.md",
+            "08-mock-data-catalog.md",
+            "09-storyboards.md",
+            "10-screen-state-matrix.md",
+            "11-api-to-sp-map.md",
+            "12-implementation-guide.md"
+        ],
+        "interface_map_file": ".gsd/blueprint/interface-map.json",
+        "cross_interface_checks": {
+            "shared_api_contracts": true,
+            "shared_data_types": true,
+            "shared_design_tokens": true,
+            "auth_consistency": true
+        }
+    },
+
+    "interface_conventions": {
+        "web": {
+            "frontend_stack": "React 18 + TypeScript + Vite",
+            "routing": "React Router v7",
+            "state": "React Query + Zustand",
+            "styling": "Tailwind CSS with Figma design tokens",
+            "testing": "Vitest + React Testing Library",
+            "build_cmd": "vite build",
+            "type_check_cmd": "npx tsc --noEmit",
+            "test_cmd": "npx vitest run",
+            "output_dir": "src/web/"
+        },
+        "mcp-admin": {
+            "frontend_stack": "React 18 + TypeScript + Vite",
+            "routing": "React Router v7",
+            "state": "React Query + Zustand",
+            "styling": "Tailwind CSS (admin design system)",
+            "mcp_sdk": "@anthropic-ai/mcp-sdk",
+            "features": ["server-config", "tool-management", "log-viewer", "metrics-dashboard"],
+            "testing": "Vitest + React Testing Library",
+            "build_cmd": "vite build",
+            "type_check_cmd": "npx tsc --noEmit",
+            "test_cmd": "npx vitest run",
+            "output_dir": "src/mcp-admin/"
+        },
+        "browser": {
+            "manifest_version": 3,
+            "frontend_stack": "React 18 + TypeScript (popup, options, sidepanel)",
+            "background": "Service Worker",
+            "content_scripts": "Vanilla TypeScript",
+            "storage": "chrome.storage.sync + chrome.storage.local",
+            "messaging": "chrome.runtime.sendMessage + chrome.runtime.onMessage",
+            "testing": "Vitest + JSDOM",
+            "build_cmd": "vite build",
+            "type_check_cmd": "npx tsc --noEmit",
+            "test_cmd": "npx vitest run",
+            "output_dir": "src/browser/",
+            "structure": {
+                "manifest": "manifest.json",
+                "background": "background/service-worker.ts",
+                "content": "content/content-script.ts",
+                "popup": "popup/App.tsx",
+                "options": "options/App.tsx",
+                "sidepanel": "sidepanel/App.tsx",
+                "shared": "shared/storage.ts, shared/messaging.ts"
+            }
+        },
+        "mobile": {
+            "option_a": {
+                "name": "React Native",
+                "framework": "React Native 0.76+ with Expo",
+                "navigation": "React Navigation v7",
+                "state": "React Query + Zustand",
+                "styling": "NativeWind (Tailwind for React Native)",
+                "testing": "Jest + React Native Testing Library",
+                "build_cmd": "expo prebuild --check",
+                "type_check_cmd": "npx tsc --noEmit",
+                "test_cmd": "npx jest",
+                "output_dir": "src/mobile/"
+            },
+            "option_b": {
+                "name": ".NET MAUI",
+                "framework": ".NET 8 MAUI",
+                "navigation": "Shell navigation",
+                "state": "MVVM with CommunityToolkit.Mvvm",
+                "styling": "XAML resources + design tokens",
+                "testing": "xUnit + MAUI test framework",
+                "build_cmd": "dotnet build",
+                "test_cmd": "dotnet test",
+                "output_dir": "src/mobile-maui/"
+            },
+            "platform_specific": ["offline-first-sync", "push-notifications", "biometric-auth", "deep-linking"]
+        },
+        "agent": {
+            "runtime_options": ["node22", "python312"],
+            "protocol": "MCP client",
+            "communication": ["stdio", "sse", "websocket"],
+            "auth": "API key + OAuth2 service-to-service",
+            "scheduling": ["cron", "webhook-triggered"],
+            "testing_node": "Vitest",
+            "testing_python": "pytest",
+            "build": "Docker container",
+            "output_dir": "src/agent/",
+            "has_figma": false,
+            "design_source": "spec-only"
+        },
+        "shared": {
+            "description": "Pure TypeScript shared across all frontends. No platform-specific imports.",
+            "output_dir": "src/shared/",
+            "structure": {
+                "types": "src/shared/types/",
+                "hooks": "src/shared/hooks/",
+                "utils": "src/shared/utils/",
+                "api": "src/shared/api/",
+                "constants": "src/shared/constants/"
+            },
+            "rules": [
+                "No react-native imports",
+                "No chrome.* imports",
+                "No expo-* imports",
+                "No Node.js-specific imports",
+                "Use fetch for HTTP (available in all runtimes)",
+                "Types dir is single source of truth for all TypeScript interfaces"
+            ]
+        },
+        "backend": {
+            "stack": ".NET 8 with Dapper",
+            "database": "SQL Server stored procedures only",
+            "api_style": "Contract-first, API-first",
+            "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"],
+            "output_dir": "backend/",
+            "shared_across_interfaces": true
+        }
+    },
+
+    "pipeline_modes": {
+        "greenfield": {
+            "command": "gsd-blueprint",
+            "description": "Full pipeline for building a new project from spec (pre-1.0)",
+            "max_iterations": 25,
+            "batch_size_min": 3,
+            "batch_size_max": 15,
+            "phases_active": ["cache-warm", "spec-gate", "research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify", "spec-fix"],
+            "research": "full",
+            "spec_gate": "full",
+            "speculative_execution": true,
+            "two_stage_execute": true,
+            "budget_cap_usd": 50.00
+        },
+        "bug_fix": {
+            "command": "gsd-fix",
+            "description": "Post-launch bug fix. Scoped to specific bugs. Minimal iterations.",
+            "max_iterations": 5,
+            "batch_size_min": 1,
+            "batch_size_max": 3,
+            "phases_active": ["plan", "execute-fill", "local-validate", "review", "verify"],
+            "phases_skipped": ["cache-warm", "spec-gate", "research", "execute-skeleton", "spec-fix"],
+            "research": "skip",
+            "spec_gate": "skip",
+            "speculative_execution": false,
+            "two_stage_execute": false,
+            "two_stage_execute_override": "Enable for multi-file bugs (>3 files affected)",
+            "budget_cap_usd": 5.00,
+            "scope_filter_default": "source:bug_report",
+            "requirement_prefix": "BUG",
+            "requirement_defaults": {
+                "source": "bug_report",
+                "priority": "critical",
+                "spec_version": "fix",
+                "status": "not_started"
+            },
+            "artifact_storage": ".gsd/supervisor/bug-artifacts/{bug_id}/",
+            "error_context_file": ".gsd/supervisor/error-context.md",
+            "regression_test_required": true,
+            "input_modes": {
+                "cli_description": "gsd-fix \"description\"",
+                "file": "gsd-fix -File bugs.md",
+                "directory": "gsd-fix -BugDir ./bugs/issue-name/",
+                "interface_scoped": "gsd-fix -Interface web \"description\""
+            },
+            "artifact_handling": {
+                "screenshots": [".png", ".jpg", ".gif", ".bmp", ".webp"],
+                "logs": [".log", ".txt"],
+                "log_inline_lines": 20,
+                "copy_to": ".gsd/supervisor/bug-artifacts/{bug_id}/"
+            }
+        },
+        "feature_update": {
+            "command": "gsd-update",
+            "description": "Post-launch feature additions from updated specs. Preserves existing satisfied requirements.",
+            "max_iterations": 50,
+            "batch_size_min": 3,
+            "batch_size_max": 15,
+            "phases_active": ["cache-warm", "spec-gate", "research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify", "spec-fix"],
+            "research": "full-scoped",
+            "spec_gate": "incremental",
+            "speculative_execution": true,
+            "two_stage_execute": true,
+            "budget_cap_usd": 400.00,
+            "scope_filter_default": "source:v{N}_spec",
+            "preservation_rules": {
+                "preserve_satisfied": true,
+                "add_spec_version_tag": true,
+                "detect_regression": true,
+                "halt_on_regression": false,
+                "regression_detection": "If Verify finds previously-satisfied requirement regressed to partial/not_started"
+            },
+            "incremental_spec_gate": {
+                "validate_new_sections_only": true,
+                "cross_reference_existing": true,
+                "detect_conflicts_with_existing_code": true
+            },
+            "incremental_create_phases": {
+                "read_existing_matrix": true,
+                "preserve_all_entries": true,
+                "append_new_requirements": true,
+                "tag_spec_version": true,
+                "recalculate_health": true
+            },
+            "input_modes": {
+                "all_new": "gsd-update",
+                "scoped": "gsd-update -Scope \"source:v02_spec\"",
+                "specific": "gsd-update -Scope \"id:REQ-201,REQ-202\""
+            }
+        }
+    },
+
+    "database": {
+        "default_server": "localhost",
+        "default_user": "sa",
+        "default_password": "Support911",
+        "default_port": 1433,
+        "connection_template": "Data Source={server};Initial Catalog={database};User ID={user};Password={password};Encrypt=True;TrustServerCertificate=True"
+    },
+
+    "patterns": {
+        "backend": ".NET 8 with Dapper",
+        "database": "SQL Server stored procedures only",
+        "frontend": "React 18",
+        "api": "Contract-first, API-first",
+        "compliance": ["HIPAA", "SOC 2", "PCI", "GDPR"]
+    },
+
+    "prompt_caching": {
+        "enabled": true,
+        "ttl": "5-minute",
+        "cache_blocks": [
+            { "name": "system_prompt", "source": "v3/prompts/shared/system-prompt.md", "estimated_tokens": 2000 },
+            { "name": "spec_documents", "source": "dynamic", "estimated_tokens": 8000 },
+            { "name": "blueprint_manifest", "source": "dynamic", "estimated_tokens": 5000 }
+        ],
+        "total_prefix_tokens": 15000,
+        "invalidation_tracking": true,
+        "version_counter_file": ".gsd/cache/cache-version.json"
+    },
+
+    "batch_api": {
+        "enabled": true,
+        "eligible_phases": ["spec-gate", "research", "plan", "review", "spec-fix"],
+        "poll_interval_seconds": 30,
+        "max_wait_minutes": 60,
+        "combine_with_caching": true,
+        "notes": "50% discount on all batch-eligible phases. Combined with caching for up to 95% input savings."
+    },
+
+    "local_validation": {
+        "enabled": true,
+        "validators": {
+            "file_exists": { "enabled": true },
+            "dotnet_build": { "enabled": true, "command": "dotnet build --no-restore", "timeout_seconds": 60 },
+            "typescript_check": { "enabled": true, "command": "npx tsc --noEmit", "timeout_seconds": 30 },
+            "sql_syntax": { "enabled": true, "command": "sqlcmd -i {file} -b", "timeout_seconds": 10 },
+            "pattern_match": { "enabled": true },
+            "dotnet_test": { "enabled": true, "command": "dotnet test --filter Category={req_id}", "timeout_seconds": 60 },
+            "npm_test": { "enabled": true, "command": "npm test -- --testPathPattern={test_pattern}", "timeout_seconds": 30 }
+        },
+        "pass_action": "skip-review",
+        "fail_action": "send-to-review-with-context"
+    },
+
+    "confidence_gated_review": {
+        "enabled": true,
+        "skip_threshold": 0.9,
+        "always_review_threshold": 0.7,
+        "trivial_categories": ["crud", "config", "dto", "seed_data", "utility", "sql_view"],
+        "notes": "Items with plan confidence >= 0.9 AND local validation PASS skip Review entirely."
+    },
+
+    "speculative_execution": {
+        "enabled": true,
+        "max_lookahead": 1,
+        "enable_condition": "health_delta > 0",
+        "disable_on_stall": true,
+        "waste_budget_per_iteration": 0.02,
+        "notes": "Start next iteration's Research+Plan while current Review is in-flight. 15% waste risk for 40% speed gain."
+    },
+
+    "diff_based_review": {
+        "enabled": true,
+        "max_diff_tokens": 12000,
+        "include_error_context": true,
+        "include_acceptance_criteria": true,
+        "notes": "Send diffs + error output to Review instead of full files. ~75% token reduction, better review accuracy."
+    },
+
+    "two_stage_execute": {
+        "enabled": true,
+        "skeleton_output_ratio": 0.30,
+        "fill_output_ratio": 0.70,
+        "validate_skeleton": true,
+        "notes": "Pass 1: types/interfaces/stubs. Pass 2: implementations. Catches structural errors between passes."
+    },
+
+    "structured_output": {
+        "enabled": true,
+        "enforce_json_mode": true,
+        "schema_validation": true,
+        "retry_on_schema_failure": true,
+        "max_schema_retries": 1,
+        "notes": "All Sonnet calls use response_format: json_object. Eliminates parsing failures."
+    },
+
+    "quality_gates": {
+        "database_completeness": {
+            "enabled": true,
+            "min_coverage_pct": 90,
+            "require_seed_data": true
+        },
+        "security_compliance": {
+            "enabled": true,
+            "block_on_critical": true,
+            "warn_on_high": true
+        },
+        "spec_quality": {
+            "enabled": true,
+            "min_clarity_score": 70,
+            "check_cross_artifact": true
+        }
+    },
+
+    "api_contract_validation": {
+        "enabled": true,
+        "block_on_missing": true,
+        "warn_on_undocumented": true,
+        "scan_patterns": ["*Controller*.cs", "*controller*.ts", "*routes*.ts"]
+    },
+
+    "visual_validation": {
+        "enabled": true,
+        "max_diff_pct": 15,
+        "screenshot_dir": "design/screenshots",
+        "viewport_width": 1280,
+        "viewport_height": 720,
+        "block_on_high_diff": false,
+        "playwright_timeout_ms": 30000
+    },
+
+    "design_token_enforcement": {
+        "enabled": true,
+        "block_on_violation": false,
+        "scan_extensions": [".css", ".scss", ".tsx", ".jsx", ".ts"],
+        "ignore_files": ["*.min.css", "*.bundle.*", "node_modules/*"],
+        "allowed_raw_colors": ["#000000", "#ffffff", "#000", "#fff", "transparent", "inherit", "currentColor"]
+    },
+
+    "design_system_gate": {
+        "enabled": true,
+        "block_on_violations": false,
+        "min_css_variable_ratio": 0.8,
+        "allowed_hardcoded_colors": ["#000", "#fff", "#000000", "#ffffff", "transparent", "inherit", "currentColor"],
+        "checks": {
+            "hardcoded_colors": true,
+            "theme_provider": true,
+            "design_token_completeness": true,
+            "css_variable_ratio": true,
+            "responsive_design": true,
+            "dark_mode": true
+        }
+    },
+
+    "compliance_engine": {
+        "per_iteration_audit": { "enabled": true, "block_on_critical": true },
+        "db_migration": {
+            "enabled": true,
+            "check_foreign_keys": true,
+            "check_index_coverage": true,
+            "check_seed_integrity": true
+        },
+        "pii_tracking": {
+            "enabled": true,
+            "pii_fields": [
+                "email", "ssn", "social_security", "date_of_birth", "dob",
+                "phone", "address", "name", "first_name", "last_name",
+                "credit_card", "card_number", "cvv", "password", "secret", "token"
+            ],
+            "check_logging": true,
+            "check_encryption": true,
+            "check_ui_masking": true
+        }
+    },
+
+    "acceptance_tests": {
+        "enabled": true,
+        "block_on_failure": true,
+        "block_types": ["file_exists", "pattern_match", "build_check"],
+        "test_types": ["file_exists", "pattern_match", "build_check", "dotnet_test", "npm_test"],
+        "max_test_time_seconds": 60
+    },
+
+    "runtime_smoke_test": {
+        "enabled": true,
+        "startup_timeout_seconds": 30,
+        "request_timeout_seconds": 10,
+        "max_endpoints_to_test": 50,
+        "health_endpoint": "/api/health",
+        "fail_on_any_500": true,
+        "kill_after_test": true,
+        "dotnet_launch_profile": "",
+        "port_override": 0,
+        "seed_fk_check_enabled": true
+    },
+
+    "loc_tracking": {
+        "enabled": true,
+        "include_extensions": [
+            ".cs", ".ts", ".tsx", ".js", ".jsx", ".css", ".scss",
+            ".html", ".sql", ".json", ".md", ".ps1", ".py", ".yaml", ".yml"
+        ],
+        "exclude_paths": [
+            ".gsd/", "node_modules/", "bin/", "obj/", "dist/",
+            "build/", ".vs/", ".idea/", "*.min.*", "*.bundle.*",
+            "package-lock.json", "yarn.lock"
+        ],
+        "track_per_file": true,
+        "cost_per_line": true
+    },
+
+    "notifications": {
+        "notify_on": [
+            "iteration_complete",
+            "converged",
+            "stalled",
+            "budget_threshold",
+            "error",
+            "cache_invalidated",
+            "opus_escalation",
+            "batch_completed",
+            "speculative_waste"
+        ],
+        "ntfy_topic": "auto",
+        "budget_alert_threshold_pct": 80
+    },
+
+    "escape_hatches": {
+        "opus_escalation": {
+            "enabled": true,
+            "trigger": "item fails verify 3+ times",
+            "phases_affected": ["plan", "review"],
+            "max_escalations_per_project": 10
+        },
+        "codex_full_escalation": {
+            "enabled": true,
+            "trigger": "codex-mini output incomplete (>10K expected, <3K generated)",
+            "phases_affected": ["execute-fill"],
+            "max_escalations_per_project": 5
+        },
+        "budget_cap": {
+            "enabled": true,
+            "max_usd": 50.00,
+            "action_at_cap": "halt",
+            "warn_at_pct": 80
+        }
+    },
+
+    "cost_tracking": {
+        "enabled": true,
+        "track_per_phase": true,
+        "track_per_model": true,
+        "track_per_requirement": true,
+        "track_per_interface": true,
+        "track_per_mode": true,
+        "track_cache_hits": true,
+        "track_batch_savings": true,
+        "summary_file": ".gsd/costs/cost-summary.json",
+        "loc_baseline_file": ".gsd/costs/loc-baseline.json",
+        "mode_summaries": {
+            "greenfield": ".gsd/costs/greenfield-summary.json",
+            "bug_fix": ".gsd/costs/bugfix-summary.json",
+            "feature_update": ".gsd/costs/update-summary.json"
+        }
+    },
+
+    "checkpoint_recovery": {
+        "enabled": true,
+        "checkpoint_file": ".gsd/.gsd-checkpoint.json",
+        "save_after_each_phase": true,
+        "include_cache_state": true
+    },
+
+    "execute_model_pool": {
+        "enabled": true,
+        "strategy": "round-robin-weighted",
+        "models": [
+            { "name": "codex-mini", "provider": "openai", "weight": 3 },
+            { "name": "deepseek", "provider": "deepseek", "weight": 2 },
+            { "name": "kimi", "provider": "kimi", "weight": 1 },
+            { "name": "minimax", "provider": "minimax", "weight": 1 },
+            { "name": "claude-sonnet", "provider": "anthropic", "weight": 1 },
+            { "name": "gemini-flash", "provider": "google", "weight": 1 },
+            { "name": "glm5", "provider": "glm", "weight": 1 }
+        ]
+    },
+
+    "anti_plateau": {
+        "enabled": true,
+        "warn_at_zero_delta": 3,
+        "escalate_at_zero_delta": 4,
+        "skip_at_zero_delta": 5,
+        "max_zero_delta": 5,
+        "deferred_recheck_every": 10
+    },
+
+    "spec_alignment": {
+        "enabled": true,
+        "block_on_critical_drift_pct": 20,
+        "warn_on_moderate_drift_pct": 5,
+        "check_every_n_iterations": 10
+    },
+
+    "decomposition_budget": {
+        "max_new_subreqs_per_iteration": 20,
+        "max_depth": 4,
+        "defer_excess": true
+    },
+
+    "phase_model_overrides": {
+        "research": "sonnet",
+        "verify": "sonnet",
+        "review": "sonnet",
+        "spec-align": "sonnet"
+    },
+
+    "multi_pipeline": {
+        "enabled": false,
+        "strategy": "per-interface",
+        "max_parallel": 3,
+        "shared_phases": ["cache-warm", "spec-gate", "spec-align"]
+    },
+
+    "cost_alerts": {
+        "per_requirement_warn_usd": 2.00,
+        "per_requirement_escalate_usd": 5.00,
+        "per_requirement_hard_cap_usd": 10.00,
+        "action_at_hard_cap": "defer"
+    },
+
+    "git_commits": {
+        "per_iteration": true,
+        "include_health_in_message": true,
+        "timeout_seconds": 60
+    },
+
+    "existing_codebase_mode": {
+        "enabled": false,
+        "deep_extraction": true,
+        "deep_extraction_max_tokens": 32000,
+        "code_inventory_on_start": true,
+        "verify_by_reading_code": true,
+        "skip_satisfied_in_execute": true,
+        "parallel_verification_agents": 5,
+        "extraction_model": "sonnet",
+        "extraction_budget_usd": 5.00,
+        "stub_detection_patterns": ["// TODO", "// FILL", "throw NotImplementedException", "throw new NotImplementedException"],
+        "skip_patterns_in_execute": ["satisfied"]
+    },
+
+    "removed_v2_features": {
+        "council_requirements": { "enabled": false, "reason": "Replaced by 2-model deterministic routing" },
+        "partitioned_code_review": { "enabled": false, "reason": "Replaced by diff-based single-model review" },
+        "parallel_research": { "enabled": false, "reason": "Single Sonnet model with batch API" },
+        "complexity_routing": { "enabled": false, "reason": "All reasoning → Sonnet, all code → Codex Mini" },
+        "review_chunked": { "enabled": false, "reason": "Batch API handles throughput" },
+        "differential_review": { "enabled": false, "reason": "Superseded by diff_based_review" }
+    }
+}

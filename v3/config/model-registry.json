@@ -1,0 +1,222 @@
+{
+    "version": "3.0.0",
+    "description": "Two-model API registry. All billing via API pay-per-token. No CLI subscriptions.",
+    "billing_mode": "api-only",
+    "agents": {
+        "sonnet": {
+            "type": "api",
+            "provider": "anthropic",
+            "model_id": "claude-sonnet-4-6",
+            "display_name": "Claude Sonnet 4.6",
+            "role": ["spec-gate", "research", "plan", "review", "verify", "spec-fix"],
+            "api_config": {
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "base_url": "https://api.anthropic.com",
+                "api_version": "2024-01-01",
+                "timeout_seconds": 120,
+                "max_retries": 3,
+                "retry_backoff_seconds": [2, 4, 8]
+            },
+            "pricing": {
+                "input_per_m": 3.00,
+                "output_per_m": 15.00,
+                "cache_write_per_m": 3.75,
+                "cache_read_per_m": 0.30,
+                "batch_discount": 0.50,
+                "effective_batch_input_per_m": 1.50,
+                "effective_batch_output_per_m": 7.50,
+                "effective_batch_cache_read_per_m": 0.15,
+                "long_context_threshold": 200000,
+                "long_context_multiplier": 2.0
+            },
+            "rate_limits": {
+                "tier": 2,
+                "rpm": 1000,
+                "tpm": 160000,
+                "max_concurrent": 50,
+                "context_window": 200000,
+                "notes": "Tier 2 limits. Achievable at $100+ spend. Tier 3 (2K RPM, 320K TPM) at $500+ spend."
+            },
+            "prompt_caching": {
+                "enabled": true,
+                "min_cacheable_tokens": 1024,
+                "default_ttl": "5-minute",
+                "cache_block_structure": [
+                    {
+                        "name": "system_prompt",
+                        "estimated_tokens": 2000,
+                        "stability": "static",
+                        "invalidation": "never during pipeline run"
+                    },
+                    {
+                        "name": "spec_documents",
+                        "estimated_tokens": 8000,
+                        "stability": "changes on spec-fix",
+                        "invalidation": "after spec-fix phase"
+                    },
+                    {
+                        "name": "blueprint_manifest",
+                        "estimated_tokens": 5000,
+                        "stability": "rarely changes",
+                        "invalidation": "after major architectural revision"
+                    }
+                ],
+                "total_cached_prefix_tokens": 15000,
+                "cache_write_cost": 0.056,
+                "cache_read_cost_per_call": 0.0045
+            },
+            "batch_api": {
+                "enabled": true,
+                "endpoint": "/v1/messages/batches",
+                "poll_interval_seconds": 30,
+                "max_wait_minutes": 60,
+                "typical_latency_minutes": "5-30",
+                "eligible_phases": ["spec-gate", "research", "plan", "review", "spec-fix"],
+                "ineligible_phases": ["verify"]
+            },
+            "capabilities": {
+                "json_mode": true,
+                "structured_output": true,
+                "tool_use": true,
+                "vision": true,
+                "streaming": true,
+                "extended_thinking": true
+            }
+        },
+        "codex-mini": {
+            "type": "api",
+            "provider": "openai",
+            "model_id": "gpt-5.1-codex-mini",
+            "display_name": "GPT-5.1 Codex Mini",
+            "role": ["execute-skeleton", "execute-fill"],
+            "api_config": {
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.openai.com/v1",
+                "timeout_seconds": 120,
+                "max_retries": 1,
+                "retry_backoff_seconds": [3]
+            },
+            "pricing": {
+                "input_per_m": 0.25,
+                "output_per_m": 2.00,
+                "cache_write_per_m": null,
+                "cache_read_per_m": null,
+                "batch_discount": null,
+                "notes": "No prompt caching or batch API. At $0.25/M input, caching savings would be negligible."
+            },
+            "rate_limits": {
+                "tier": 2,
+                "rpm": 3500,
+                "tpm": 10000000,
+                "max_concurrent": 100,
+                "context_window": 200000,
+                "notes": "Very high throughput. Effectively unlimited for our usage pattern."
+            },
+            "capabilities": {
+                "json_mode": true,
+                "structured_output": true,
+                "tool_use": true,
+                "vision": false,
+                "streaming": true,
+                "extended_thinking": false
+            }
+        }
+    },
+    "escape_hatches": {
+        "opus": {
+            "type": "api",
+            "provider": "anthropic",
+            "model_id": "claude-opus-4-6",
+            "display_name": "Claude Opus 4.6",
+            "role": ["plan-escalation", "review-escalation", "stall-analysis"],
+            "trigger": "Item fails Verify 3+ times OR stall detected",
+            "pricing": {
+                "input_per_m": 5.00,
+                "output_per_m": 25.00,
+                "cache_read_per_m": 0.50
+            },
+            "notes": "Per-item override only. Never used as default for any phase."
+        },
+        "codex-full": {
+            "type": "api",
+            "provider": "openai",
+            "model_id": "gpt-5.3-codex",
+            "display_name": "GPT-5.3 Codex",
+            "role": ["execute-escalation"],
+            "trigger": "Codex Mini output incomplete (>10K expected, <3K generated)",
+            "pricing": {
+                "input_per_m": 1.75,
+                "output_per_m": 14.00
+            },
+            "notes": "Per-item override for complex multi-file refactoring."
+        }
+    },
+    "fallback_agents": {
+        "deepseek": {
+            "type": "api",
+            "provider": "openai-compatible",
+            "model_id": "deepseek-chat",
+            "display_name": "DeepSeek Chat",
+            "role": ["execute-fallback"],
+            "api_config": {
+                "api_key_env": "DEEPSEEK_API_KEY",
+                "base_url": "https://api.deepseek.com/v1",
+                "endpoint": "/chat/completions",
+                "timeout_seconds": 300,
+                "max_retries": 3,
+                "retry_backoff_seconds": [2, 5, 10]
+            },
+            "pricing": {
+                "input_per_m": 0.28,
+                "output_per_m": 0.28
+            },
+            "status": "working"
+        },
+        "kimi": {
+            "type": "api",
+            "provider": "openai-compatible",
+            "model_id": "moonshot-v1-8k",
+            "display_name": "Kimi (Moonshot)",
+            "role": ["execute-fallback"],
+            "api_config": {
+                "api_key_env": "KIMI_API_KEY",
+                "base_url": "https://api.moonshot.ai/v1",
+                "endpoint": "/chat/completions",
+                "timeout_seconds": 300,
+                "max_retries": 2,
+                "retry_backoff_seconds": [3, 8]
+            },
+            "pricing": {
+                "input_per_m": 0.20,
+                "output_per_m": 2.00
+            },
+            "status": "working",
+            "notes": "Use api.moonshot.ai (NOT api.moonshot.cn which times out)"
+        },
+        "minimax": {
+            "type": "api",
+            "provider": "openai-compatible",
+            "model_id": "MiniMax-Text-01",
+            "display_name": "MiniMax Text 01",
+            "role": ["execute-fallback"],
+            "api_config": {
+                "api_key_env": "MINIMAX_API_KEY",
+                "base_url": "https://api.minimax.io/v1",
+                "endpoint": "/chat/completions",
+                "timeout_seconds": 300,
+                "max_retries": 2,
+                "retry_backoff_seconds": [3, 8]
+            },
+            "pricing": {
+                "input_per_m": 0.20,
+                "output_per_m": 1.10
+            },
+            "status": "working",
+            "notes": "Use api.minimax.io (NOT api.minimax.chat which times out). Model is MiniMax-Text-01 (NOT abab6.5s-chat)"
+        }
+    },
+    "removed_agents": {
+        "gemini": "Replaced by Sonnet (batched). Research + spec-fix consolidated.",
+        "glm5": "Unreachable from corporate network (China endpoint times out without VPN)"
+    }
+}

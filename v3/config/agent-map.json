@@ -1,0 +1,323 @@
+{
+    "version": "3.0.0",
+    "strategy": "two-model-api-optimized",
+    "description": "Sonnet reasons. Codex Mini generates code. Prompt caching + Batch API + model routing for 85%+ cost reduction.",
+    "phases": {
+        "cache-warm": {
+            "agent": "sonnet",
+            "mode": "realtime",
+            "purpose": "Populate prompt cache before first iteration",
+            "estimated_input_tokens": 15000,
+            "estimated_output_tokens": 10,
+            "cache_action": "write",
+            "frequency": "once"
+        },
+        "spec-gate": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Validate spec quality, detect contradictions/ambiguities",
+            "estimated_input_tokens": 50000,
+            "estimated_output_tokens": 3000,
+            "cache_action": "read",
+            "frequency": "once",
+            "gate_rules": {
+                "block_if_critical_conflicts": true,
+                "block_if_clarity_below": 70,
+                "warn_if_clarity_below": 85
+            },
+            "output_schema": "gsd-v3/spec-gate-output",
+            "prompt": "sonnet/01-spec-gate.md"
+        },
+        "research": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Analyze patterns, discover dependencies, identify tech decisions",
+            "estimated_input_tokens": 25000,
+            "estimated_output_tokens": 6000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 10000,
+            "frequency": "per-iteration",
+            "output_schema": "gsd-v3/research-output",
+            "prompt": "sonnet/02-research.md"
+        },
+        "plan": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Create detailed generation plans with confidence scores",
+            "estimated_input_tokens": 23000,
+            "estimated_output_tokens": 4000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 8000,
+            "frequency": "per-iteration",
+            "output_schema": "gsd-v3/plan-output",
+            "prompt": "sonnet/03-plan.md",
+            "confidence_scoring": {
+                "enabled": true,
+                "criteria": {
+                    "complexity_small": 0.3,
+                    "complexity_medium": 0.1,
+                    "complexity_large": -0.1,
+                    "category_trivial": 0.3,
+                    "zero_dependencies": 0.2,
+                    "few_dependencies": 0.1,
+                    "many_dependencies": -0.1,
+                    "no_prior_rework": 0.1,
+                    "has_prior_rework": -0.2
+                },
+                "trivial_categories": ["crud", "config", "dto", "seed_data", "utility", "sql_view"]
+            }
+        },
+        "execute-skeleton": {
+            "agent": "codex-mini",
+            "mode": "realtime",
+            "purpose": "Generate type signatures, interfaces, function stubs",
+            "estimated_input_tokens": 20000,
+            "estimated_output_tokens": 15750,
+            "frequency": "per-iteration",
+            "parallel": {
+                "enabled": true,
+                "max_concurrent": 15,
+                "per_item_input_tokens": 1333,
+                "per_item_output_tokens": 1050
+            },
+            "prompt": "codex-mini/04a-execute-skeleton.md"
+        },
+        "execute-fill": {
+            "agent": "codex-mini",
+            "mode": "realtime",
+            "purpose": "Fill implementations from skeleton + plan",
+            "estimated_input_tokens": 42500,
+            "estimated_output_tokens": 52500,
+            "frequency": "per-iteration",
+            "parallel": {
+                "enabled": true,
+                "max_concurrent": 15,
+                "per_item_input_tokens": 2833,
+                "per_item_output_tokens": 3500
+            },
+            "prompt": "codex-mini/04b-execute-fill.md"
+        },
+        "local-validate": {
+            "agent": "none",
+            "mode": "local",
+            "purpose": "Lint + typecheck + test (free quality gate)",
+            "estimated_input_tokens": 0,
+            "estimated_output_tokens": 0,
+            "frequency": "per-item",
+            "validators": [
+                { "type": "file_exists", "description": "Check all planned files were created" },
+                { "type": "dotnet_build", "command": "dotnet build --no-restore", "description": "C# compilation check" },
+                { "type": "typescript_check", "command": "npx tsc --noEmit", "description": "TypeScript type check" },
+                { "type": "sql_syntax", "command": "sqlcmd -i {file} -b", "description": "SQL syntax validation" },
+                { "type": "pattern_match", "description": "Acceptance criteria from plan" },
+                { "type": "dotnet_test", "command": "dotnet test --filter Category={req_id}", "description": "Unit tests" },
+                { "type": "npm_test", "command": "npm test -- --testPathPattern={test_pattern}", "description": "Frontend tests" }
+            ],
+            "output_classification": {
+                "pass": "Skip Review, proceed to Verify",
+                "fail": "Send to Review with error context"
+            }
+        },
+        "review": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Analyze failed items, provide targeted fix instructions",
+            "estimated_input_tokens": 27000,
+            "estimated_output_tokens": 3000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 12000,
+            "frequency": "conditional-per-iteration",
+            "condition": "Only items that FAIL local-validate or have plan confidence < 0.9",
+            "expected_skip_rate": 0.6,
+            "diff_based": true,
+            "output_schema": "gsd-v3/review-output",
+            "prompt": "sonnet/06-review.md"
+        },
+        "verify": {
+            "agent": "sonnet",
+            "mode": "realtime",
+            "purpose": "Health scoring, requirement tracking, drift detection, iteration gating",
+            "estimated_input_tokens": 45000,
+            "estimated_output_tokens": 2500,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 30000,
+            "frequency": "per-iteration",
+            "gates_next_iteration": true,
+            "output_schema": "gsd-v3/verify-output",
+            "prompt": "sonnet/07-verify.md"
+        },
+        "spec-fix": {
+            "agent": "sonnet",
+            "mode": "batch",
+            "purpose": "Resolve spec conflicts discovered during execution",
+            "estimated_input_tokens": 27000,
+            "estimated_output_tokens": 4000,
+            "cache_action": "read",
+            "cached_prefix_tokens": 15000,
+            "new_input_tokens": 12000,
+            "frequency": "occasional",
+            "expected_frequency_pct": 22,
+            "cache_invalidation": true,
+            "output_schema": "gsd-v3/spec-fix-output",
+            "prompt": "sonnet/08-spec-fix.md"
+        }
+    },
+    "phase_order": [
+        "cache-warm",
+        "spec-gate",
+        "research",
+        "plan",
+        "execute-skeleton",
+        "execute-fill",
+        "local-validate",
+        "review",
+        "verify",
+        "spec-fix"
+    ],
+    "iteration_phases": [
+        "research",
+        "plan",
+        "execute-skeleton",
+        "execute-fill",
+        "local-validate",
+        "review",
+        "verify"
+    ],
+    "token_budget_summary": {
+        "sonnet_per_iteration": "~120K input (75K cached) + ~15.5K output",
+        "codex_mini_per_iteration": "~62.5K input + ~68.25K output",
+        "sonnet_per_project_estimate": "~2.2M input + ~350K output",
+        "codex_mini_per_project_estimate": "~1.4M input + ~1.6M output",
+        "total_per_project_estimate": "~5.55M tokens",
+        "cost_per_project_estimate": "$7.30"
+    },
+
+    "mode_overrides": {
+        "greenfield": {
+            "description": "Full pipeline. All phases active. Default configuration.",
+            "phase_overrides": {},
+            "notes": "Uses all defaults from phases section above."
+        },
+        "bug_fix": {
+            "description": "Minimal pipeline for post-launch bug fixes.",
+            "phases_disabled": ["cache-warm", "spec-gate", "research", "execute-skeleton", "spec-fix"],
+            "phase_overrides": {
+                "plan": {
+                    "estimated_input_tokens": 18000,
+                    "estimated_output_tokens": 2000,
+                    "new_input_tokens": 3000,
+                    "prompt": "sonnet/03-plan-bugfix.md",
+                    "scope_filter": "source:bug_report",
+                    "inject_error_context": true,
+                    "inject_bug_artifacts": true
+                },
+                "execute-fill": {
+                    "parallel": {
+                        "enabled": false,
+                        "max_concurrent": 3,
+                        "per_item_input_tokens": 3000,
+                        "per_item_output_tokens": 4000
+                    },
+                    "prompt": "codex-mini/04b-execute-fill-bugfix.md",
+                    "require_regression_test": true
+                },
+                "local-validate": {
+                    "validators_extra": [
+                        { "type": "regression_test", "command": "dotnet test --no-build", "description": "Full regression suite" }
+                    ]
+                },
+                "review": {
+                    "estimated_input_tokens": 20000,
+                    "estimated_output_tokens": 2000,
+                    "new_input_tokens": 5000,
+                    "prompt": "sonnet/06-review-bugfix.md",
+                    "focus": ["regression_risk", "root_cause_addressed", "side_effects"]
+                },
+                "verify": {
+                    "estimated_input_tokens": 25000,
+                    "estimated_output_tokens": 1500,
+                    "new_input_tokens": 10000,
+                    "prompt": "sonnet/07-verify.md",
+                    "check_side_effects": true
+                }
+            },
+            "iteration_phases": ["plan", "execute-fill", "local-validate", "review", "verify"],
+            "token_budget_summary": {
+                "sonnet_per_iteration": "~63K input (45K cached) + ~5.5K output",
+                "codex_mini_per_iteration": "~9K input + ~12K output",
+                "cost_per_bug_estimate": "$0.32"
+            }
+        },
+        "feature_update": {
+            "description": "Incremental pipeline for post-launch feature additions.",
+            "phases_disabled": [],
+            "phase_overrides": {
+                "spec-gate": {
+                    "mode": "incremental",
+                    "purpose": "Validate only new/changed spec sections against existing spec",
+                    "prompt": "sonnet/01-spec-gate-incremental.md",
+                    "validate_new_only": true,
+                    "cross_reference_existing": true
+                },
+                "research": {
+                    "scope_filter": "Only new requirements",
+                    "prompt": "sonnet/02-research.md"
+                },
+                "plan": {
+                    "scope_filter": "Only new requirements",
+                    "respect_existing_dependency_graph": true,
+                    "prompt": "sonnet/03-plan.md"
+                },
+                "verify": {
+                    "regression_detection": true,
+                    "halt_on_satisfied_regression": true,
+                    "prompt": "sonnet/07-verify-update.md"
+                }
+            },
+            "pre_iteration_phases": ["incremental-create-phases"],
+            "incremental_create_phases": {
+                "agent": "sonnet",
+                "mode": "batch",
+                "purpose": "Discover new requirements from updated specs, append to existing matrix",
+                "prompt": "sonnet/02b-create-phases-incremental.md",
+                "rules": [
+                    "READ existing requirements-matrix.json completely",
+                    "PRESERVE all existing entries regardless of status",
+                    "APPEND new requirements discovered in updated specs",
+                    "TAG new requirements with spec_version field",
+                    "RECALCULATE health score with new total",
+                    "WRITE drift-report.md noting what was added"
+                ]
+            },
+            "iteration_phases": ["research", "plan", "execute-skeleton", "execute-fill", "local-validate", "review", "verify"],
+            "token_budget_summary": {
+                "sonnet_per_iteration": "~100K input (60K cached) + ~13K output",
+                "codex_mini_per_iteration": "~40K input + ~45K output",
+                "cost_per_50_reqs_estimate": "$2.30"
+            }
+        }
+    },
+
+    "interface_context_injection": {
+        "description": "Interface-specific conventions injected into Execute prompts based on target file's interface",
+        "routing_rules": [
+            { "file_pattern": "src/web/**", "interface": "web", "conventions": "interface_conventions.web" },
+            { "file_pattern": "src/mcp-admin/**", "interface": "mcp-admin", "conventions": "interface_conventions.mcp-admin" },
+            { "file_pattern": "src/browser/**", "interface": "browser", "conventions": "interface_conventions.browser" },
+            { "file_pattern": "src/mobile/**", "interface": "mobile", "conventions": "interface_conventions.mobile" },
+            { "file_pattern": "src/agent/**", "interface": "agent", "conventions": "interface_conventions.agent" },
+            { "file_pattern": "src/shared/**", "interface": "shared", "conventions": "interface_conventions.shared" },
+            { "file_pattern": "backend/**", "interface": "backend", "conventions": "interface_conventions.backend" },
+            { "file_pattern": "database/**", "interface": "backend", "conventions": "interface_conventions.backend" }
+        ],
+        "cross_interface_parallelism": {
+            "enabled": true,
+            "description": "When a requirement targets multiple interfaces, Execute calls for different interfaces run in parallel",
+            "shared_dependencies_first": true
+        }
+    }
+}

@@ -35,10 +35,12 @@
 #>
 
 param(
-    [string]$UserHome = $env:USERPROFILE
+    [string]$UserHome = $env:USERPROFILE,
+    [switch]$SkipPathUpdate
 )
 
 $ErrorActionPreference = "Stop"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 
 $GsdGlobalDir = Join-Path $UserHome ".gsd-global"
 $BlueprintDir = Join-Path $GsdGlobalDir "blueprint"
@@ -67,6 +69,13 @@ $directories = @(
     "$BlueprintDir\scripts",
     "$BlueprintDir\templates"
 )
+
+# Pre-flight: verify install-gsd-global.ps1 ran first (resilience.ps1 must exist)
+if (-not (Test-Path "$GsdGlobalDir\lib\modules\resilience.ps1")) {
+    Write-Host "[XX] install-gsd-global.ps1 has not been run yet." -ForegroundColor Red
+    Write-Host "     Run install-gsd-global.ps1 first, then re-run this script." -ForegroundColor Yellow
+    exit 1
+}
 
 # Ensure parent dirs exist too
 if (-not (Test-Path $GsdGlobalDir)) {
@@ -139,7 +148,7 @@ $bpConfig = @{
         target_health = 100
     }
     project_structure = @{
-        figma_path = "design\figma"
+        figma_path = "design"
         figma_version_pattern = "^v(\d+)$"
         sdlc_docs_path = "docs"
         blueprint_file = ".gsd\blueprint\blueprint.json"
@@ -538,19 +547,27 @@ if (-not (Test-Path $BpGlobalDir)) {
 }
 
 # -- Detect latest Figma version --
-$figmaBase = Join-Path $RepoRoot "design\figma"
+$designBase = Join-Path $RepoRoot "design"
 $FigmaVersion = "none"
 $FigmaPath = "none"
 
-if (Test-Path $figmaBase) {
-    $latest = Get-ChildItem -Path $figmaBase -Directory |
-        Where-Object { $_.Name -match '^v(\d+)$' } |
-        Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-        Select-Object -First 1
+if (Test-Path $designBase) {
+    $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+        $ifaceDir = $_
+        Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+)$' } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Interface = $ifaceDir.Name
+                    Version = $_.Name
+                    VersionNumber = [int]($_.Name -replace '^v', '')
+                }
+            }
+    } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
 
     if ($latest) {
-        $FigmaVersion = $latest.Name
-        $FigmaPath = "design\figma\$FigmaVersion"
+        $FigmaVersion = $latest.Version
+        $FigmaPath = "design\$($latest.Interface)\$FigmaVersion"
     }
 }
 
@@ -636,6 +653,17 @@ if ($VerifyOnly) { Write-Host "  MODE:       VERIFY ONLY" -ForegroundColor Yello
 Write-Host "=========================================================" -ForegroundColor Blue
 Write-Host ""
 
+# -- Agent model versions (read from global-config.json) --
+$claudeModel = "claude-sonnet-4-6"
+$codexModel  = "gpt-5.4"
+try {
+    $_bpcfg = Get-Content "$BpGlobalDir\config\global-config.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ($_bpcfg.agent_models) {
+        if ($_bpcfg.agent_models.claude) { $claudeModel = $_bpcfg.agent_models.claude }
+        if ($_bpcfg.agent_models.codex)  { $codexModel  = $_bpcfg.agent_models.codex }
+    }
+} catch { }
+
 # ========================================================
 # PHASE 1: BLUEPRINT (Claude Code - one time)
 # ========================================================
@@ -651,7 +679,7 @@ if ($needsBlueprint) {
 
     if (-not $DryRun) {
         $startTime = Get-Date
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-phase1-generate.log"
         $elapsed = (Get-Date) - $startTime
 
@@ -709,7 +737,7 @@ if ($VerifyOnly) {
     $prompt = Resolve-Prompt "$BpGlobalDir\prompts\claude\verify.md" 0 $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-verify-only.log"
         $Health = Get-Health
         Write-Host "  [CHART] Health: ${Health}%" -ForegroundColor Yellow
@@ -740,7 +768,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
     $prompt = Resolve-Prompt "$BpGlobalDir\prompts\claude\verify.md" $Iteration $Health
 
     if (-not $DryRun) {
-        claude -p $prompt --allowedTools "Read,Write,Bash" 2>&1 |
+        claude -p $prompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-iter${Iteration}-1-verify.log"
     } else {
         Write-Host "    [DRY RUN] claude -> verify" -ForegroundColor DarkYellow
@@ -782,7 +810,7 @@ while ($Health -lt $TargetHealth -and $Iteration -lt $MaxIterations -and $StallC
 
     if (-not $DryRun) {
         $buildStart = Get-Date
-        $prompt | codex exec --full-auto - 2>&1 |
+        $prompt | codex exec --full-auto --model $codexModel - 2>&1 |
             Tee-Object "$GsdDir\logs\blueprint-iter${Iteration}-2-build.log"
         $buildElapsed = (Get-Date) - $buildStart
 
@@ -818,7 +846,7 @@ Diagnose why items aren't being completed. Common causes:
 - Spec ambiguity in acceptance criteria
 Write diagnosis to $BpDir\stall-diagnosis.md with specific fixes.
 "@
-                claude -p $stallPrompt --allowedTools "Read,Write,Bash" 2>&1 |
+                claude -p $stallPrompt --model $claudeModel --allowed-tools "Read,Write,Bash" 2>&1 |
                     Tee-Object "$GsdDir\logs\blueprint-stall-diagnosis-$Iteration.log"
             }
             break
@@ -956,14 +984,22 @@ function gsd-status {
     }
 
     # Detect Figma version
-    $figmaBase = Join-Path $repoRoot "design\figma"
-    if (Test-Path $figmaBase) {
-        $latest = Get-ChildItem -Path $figmaBase -Directory |
-            Where-Object { $_.Name -match '^v(\d+)$' } |
-            Sort-Object { [int]($_.Name -replace '^v', '') } -Descending |
-            Select-Object -First 1
+    $designBase = Join-Path $repoRoot "design"
+    if (Test-Path $designBase) {
+        $latest = Get-ChildItem -Path $designBase -Directory | ForEach-Object {
+            $ifaceDir = $_
+            Get-ChildItem -Path $ifaceDir.FullName -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^v(\d+)$' } |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Interface = $ifaceDir.Name
+                        Version = $_.Name
+                        VersionNumber = [int]($_.Name -replace '^v', '')
+                    }
+                }
+        } | Sort-Object -Property @{ Expression = "VersionNumber"; Descending = $true }, @{ Expression = "Interface"; Descending = $false } | Select-Object -First 1
         if ($latest) {
-            Write-Host "  Figma:      $($latest.Name)" -ForegroundColor DarkGray
+            Write-Host "  Design:     $($latest.Interface)\$($latest.Version)" -ForegroundColor DarkGray
         }
     }
 
@@ -1023,9 +1059,15 @@ Write-Host "   [>>]  GSD functions registered in all PowerShell profiles" -Foreg
 
 # Ensure bin in PATH
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-if ($currentPath -notlike "*$binDir*") {
-    [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$binDir", "User")
-    Write-Host "   [OK] Added bin\ to PATH" -ForegroundColor DarkGreen
+if ($SkipPathUpdate) {
+    Write-Host "   [>>]  Skipping user PATH update (--SkipPathUpdate)" -ForegroundColor DarkGray
+} elseif ($currentPath -notlike "*$binDir*") {
+    try {
+        [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$binDir", "User")
+        Write-Host "   [OK] Added bin\ to PATH" -ForegroundColor DarkGreen
+    } catch {
+        Write-Host "   [!!]  Could not update user PATH: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
 }
 
 Write-Host ""
@@ -1183,6 +1225,40 @@ if (Test-Path $vscodeUserDir) {
     Write-Host "      Merge into your tasks.json manually" -ForegroundColor DarkGray
 } else {
     Write-Host "   [!!]  VS Code user dir not found" -ForegroundColor DarkYellow
+}
+
+Write-Host ""
+
+# ========================================================
+# STEP 9: Sync canonical repo sources
+# ========================================================
+
+Write-Host "[SYNC] Applying canonical blueprint sources..." -ForegroundColor Yellow
+
+$canonicalPairs = @(
+    @{ Source = Join-Path $RepoRoot "blueprint\config\blueprint-config.json";   Target = Join-Path $BlueprintDir "config\blueprint-config.json" },
+    @{ Source = Join-Path $RepoRoot "blueprint\scripts\blueprint-pipeline.ps1"; Target = Join-Path $BlueprintDir "scripts\blueprint-pipeline.ps1" }
+)
+
+foreach ($pair in $canonicalPairs) {
+    if (Test-Path $pair.Source) {
+        $targetDir = Split-Path -Parent $pair.Target
+        if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+        Copy-Item -Path $pair.Source -Destination $pair.Target -Force
+        Write-Host "   [OK] $(Split-Path $pair.Target -Leaf)" -ForegroundColor DarkGreen
+    }
+}
+
+$promptDirs = @(
+    @{ Source = Join-Path $RepoRoot "blueprint\prompts\claude"; Target = Join-Path $BlueprintDir "prompts\claude" },
+    @{ Source = Join-Path $RepoRoot "blueprint\prompts\codex";  Target = Join-Path $BlueprintDir "prompts\codex" }
+)
+
+foreach ($dirPair in $promptDirs) {
+    if (Test-Path $dirPair.Source) {
+        Copy-Item -Path (Join-Path $dirPair.Source "*") -Destination $dirPair.Target -Recurse -Force
+        Write-Host "   [OK] $(Split-Path $dirPair.Target -Leaf) prompts synced" -ForegroundColor DarkGreen
+    }
 }
 
 Write-Host ""

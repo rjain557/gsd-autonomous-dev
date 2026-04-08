@@ -126,7 +126,25 @@
       "Bash(powershell -NoProfile -Command ':*)",
       "Bash(powershell -NoProfile -Command '$tokens = $null; $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile\\(\"\"d:\\\\vscode\\\\gsd-autonomous-dev\\\\gsd-autonomous-dev\\\\scripts\\\\patch-gsd-hardening.ps1\"\", [ref]$tokens, [ref]$errors\\) | Out-Null; if \\($errors.Count -eq 0\\) { Write-Host \"\"Parse OK - no errors\"\" } else { $errors | ForEach-Object { Write-Host \"\"ERROR: $_\"\" } }')",
       "Bash(powershell -NoProfile -Command '$tokens = $null; $errors = $null; [System.Management.Automation.Language.Parser]::ParseFile\\(\"\"C:\\\\Users\\\\rjain\\\\.gsd-global\\\\lib\\\\modules\\\\resilience.ps1\"\", [ref]$tokens, [ref]$errors\\) | Out-Null; if \\($errors.Count -eq 0\\) { Write-Host \"\"Parse OK - no errors\"\" } else { $errors | ForEach-Object { Write-Host \"\"ERROR: $_\"\" } }')",
-      "WebFetch(domain:www.epam.com)"
+      "WebFetch(domain:www.epam.com)",
+      "Bash(grep:*)",
+      "Bash(powershell:*)",
+      "Bash(pwsh:*)",
+      "Bash(gemini:*)",
+      "Bash(ls:*)",
+      "Bash(claude:*)",
+      "Bash(sed:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Read(//d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/$USERPROFILE/.gsd-global/lib/**)",
+      "Read(//d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/$USERPROFILE/.gsd-global/lib/modules/**)",
+      "Bash(RESIL=\"$USERPROFILE/.gsd-global/lib/modules/resilience.ps1\")",
+      "Read(//d/vscode/gsd-autonomous-dev/gsd-autonomous-dev/**)",
+      "Bash(echo USERPROFILE=$USERPROFILE:*)",
+      "Bash(RESIL=\"/c/Users/rjain/.gsd-global/lib/modules/resilience.ps1\")",
+      "Bash(awk:*)",
+      "Bash(powershell.exe:*)",
+      "Bash(\"D:/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Developer-Guide.md\":*)"
     ]
   }
 }

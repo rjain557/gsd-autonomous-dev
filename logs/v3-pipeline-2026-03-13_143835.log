@@ -1,0 +1,140 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20260313143835
+Username: TECHNIJIAN\rjain
+RunAs User: TECHNIJIAN\rjain
+Configuration Name: 
+Machine: TE-DC-VDITEC-03 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoExit -NoProfile -File D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\scripts\gsd-update.ps1 -RepoRoot D:\vscode\tech-web-chatai.v8\tech-web-chatai.v8 -StartIteration 14
+Process ID: 17412
+PSVersion: 5.1.26100.7920
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.7920
+BuildVersion: 10.0.26100.7920
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+  [LOCK] Cleared stale lock file
+
+============================================
+  GSD V3 - Feature Update
+  Scope: all new
+============================================
+  Current: 1748/2073 satisfied (84%)
+
+============================================
+  GSD V3 Pipeline - feature_update
+============================================
+  Max iterations: 50 | Batch size: 10 | Budget: $200.00
+  Phases: cache-warm -> spec-gate -> research -> plan -> execute-skeleton -> execute-fill -> local-validate -> review -> verify -> spec-fix
+  [COST] Resumed from checkpoint: $52.2384 spent
+  Notifications: ntfy.sh topic =
+  Subscribe: https://ntfy.sh/
+
+--- Pre-flight ---
+    [OK] npx (npx for running local tools)
+    [OK] node (Node.js for TypeScript/React projects)
+    [OK] dotnet (.NET build/test)
+    [OK] npm (npm for package management)
+  [OK] Pre-flight passed (8 checks)
+
+--- File Inventory ---
+  [INVENTORY] Scanning repository...
+  [INVENTORY] Found 8860 files across 15 directories
+     : 1739 files
+    .bat : 6 files
+    .cs : 886 files
+    .csproj : 9 files
+    .css : 15 files
+    .dotnetuserlevelcache : 6 files
+    .example : 6 files
+    .html : 266 files
+    .js : 9 files
+    .json : 95 files
+    .jsonl : 6 files
+    .log : 628 files
+    .md : 1781 files
+    .meta : 8 files
+    .mjs : 8 files
+    .png : 7 files
+    .prompt : 35 files
+    .ps1 : 92 files
+    .sh : 24 files
+    .sql : 527 files
+    .stderr : 608 files
+    .stdout : 35 files
+    .trn : 9 files
+    .ts : 491 files
+    .tsx : 893 files
+    .txt : 622 files
+
+--- Building Cache Prefix ---
+  [DEBUG] Building spec context...
+  [DEBUG] Spec context: 36131 chars
+  [DEBUG] Building blueprint context...
+  [DEBUG] Blueprint context: 3763 chars
+  [BASELINE] Snapshot: 2073 requirements
+
+--- Phase 0: Cache Warm ---
+  [CACHE] Writing cache prefix...
+    [DEBUG] cache-warm: Starting ConvertTo-Json...
+    [DEBUG] cache-warm: ConvertTo-Json done in 0.1s, body size: 68501 chars
+    [DEBUG] cache-warm: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] cache-warm: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 1/3, waiting 2s...
+    [DEBUG] cache-warm: Attempt 2/4 - Starting API job (timeout: 300s)...
+    [DEBUG] cache-warm: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 2/3, waiting 4s...
+    [DEBUG] cache-warm: Attempt 3/4 - Starting API job (timeout: 300s)...
+    [DEBUG] cache-warm: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 3/3, waiting 8s...
+    [DEBUG] cache-warm: Attempt 4/4 - Starting API job (timeout: 300s)...
+    [DEBUG] cache-warm: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+  [CACHE] Warm-up FAILED: Sonnet API failed after 3 retries: The remote server returned an error: (400) Bad Request.
+
+--- Phase 1: Spec Gate ---
+    [DEBUG] spec-gate: Starting ConvertTo-Json...
+    [DEBUG] spec-gate: ConvertTo-Json done in 0.0s, body size: 69737 chars
+    [DEBUG] spec-gate: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] spec-gate: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 1/3, waiting 2s...
+    [DEBUG] spec-gate: Attempt 2/4 - Starting API job (timeout: 300s)...
+    [DEBUG] spec-gate: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 2/3, waiting 4s...
+    [DEBUG] spec-gate: Attempt 3/4 - Starting API job (timeout: 300s)...
+    [DEBUG] spec-gate: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 3/3, waiting 8s...
+    [DEBUG] spec-gate: Attempt 4/4 - Starting API job (timeout: 300s)...
+    [DEBUG] spec-gate: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+
+========================================
+  ITERATION 14 / 50
+========================================
+  Batch: 10 requirements
+
+  --- Research ---
+    [RESEARCH] MaxTokens: 15000 for 10 requirements
+    [DEBUG] research: Starting ConvertTo-Json...
+    [DEBUG] research: ConvertTo-Json done in 0.0s, body size: 81837 chars
+    [DEBUG] research: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] research: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 1/3, waiting 2s...
+    [DEBUG] research: Attempt 2/4 - Starting API job (timeout: 300s)...
+    [DEBUG] research: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 2/3, waiting 4s...
+    [DEBUG] research: Attempt 3/4 - Starting API job (timeout: 300s)...
+    [DEBUG] research: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The remote server returned an error: (400) Bad Request."
+    [RETRY] Sonnet API error (The remote server returned an error: (400) Bad Request.), attempt 3/3, waiting 8s...

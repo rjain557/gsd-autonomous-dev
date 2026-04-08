@@ -1,0 +1,156 @@
+**********************
+PowerShell transcript start
+Start time: 20260318093504
+Username: TECHNIJIAN\rjain
+RunAs User: TECHNIJIAN\rjain
+Configuration Name: 
+Machine: TE-DC-VDITEC-03 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -File D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\scripts\gsd-existing.ps1 -RepoRoot D:\vscode\tech-web-myhr\tech-web-myhr -SkipSpecGate -StartIteration 1
+Process ID: 16268
+PSVersion: 7.5.4
+PSEdition: Core
+GitCommitId: 7.5.4
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+  [LOG] Central: C:\Users\rjain\.gsd-global\logs\tech-web-myhr
+  [LOG] Run: run-2026-03-18_093504 | Global iteration: 3
+
+============================================
+  GSD V3 - Existing Codebase Verification
+  Repo: D:\vscode\tech-web-myhr\tech-web-myhr
+  Log: D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\..\logs\v3-pipeline-2026-03-18_093504.log
+  DeepVerify: True | SkipSpecGate: True
+  Global iter: 3
+============================================
+
+--- Pre-flight ---
+    [OK] npx (npx for running local tools)
+    [OK] dotnet (.NET build/test)
+    [OK] node (Node.js for TypeScript/React projects)
+    [OK] npm (npm for package management)
+  [OK] Pre-flight passed (8 checks)
+
+--- File Inventory ---
+  [INVENTORY] Scanning repository...
+  [INVENTORY] Found 1676 files across 10 directories
+    .cs : 248 files
+    .csproj : 8 files
+    .css : 9 files
+    .csv : 8 files
+    .html : 6 files
+    .js : 6 files
+    .json : 47 files
+    .md : 392 files
+    .mermaid : 9 files
+    .ps1 : 10 files
+    .sh : 6 files
+    .sql : 208 files
+    .ts : 146 files
+    .tsx : 555 files
+
+--- Building Cache Prefix ---
+  Spec context: 64019 chars
+  Blueprint context: 3423 chars
+  [COST] Resumed from checkpoint: $1.7594 spent
+
+--- Cache Warm ---
+  [CACHE] Writing cache prefix...
+    [DEBUG] cache-warm: Starting JSON serialization...
+    [DEBUG] cache-warm: JSON done in 1.6s, body size: 71861 chars
+    [DEBUG] cache-warm: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] cache-warm: Job completed (state: Completed). Receiving output...
+    [DEBUG] cache-warm: API response received.
+  [CACHE] Warm-up complete (v1)
+
+--- Spec Gate: SKIPPED (user override) ---
+
+--- Spec Alignment ---
+
+--- Spec Alignment ---
+    [DEBUG] spec-align: Starting JSON serialization...
+    [DEBUG] spec-align: JSON done in 0.0s, body size: 113800 chars
+    [DEBUG] spec-align: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] spec-align: Job completed (state: Completed). Receiving output...
+    [DEBUG] spec-align: API response received.
+  Drift: 3% | Status: pass
+  Requirements matrix is 100% satisfied with minimal drift (3%); primary gaps are future/external integrations (DocuSign, PI Assessment, MyTest) not yet implemented and a small number of infrastructure-level files (tenant context, theme toggle, compliance service) that exceed the Phase A functional scope.
+  Missing in code: 9 items
+  Orphaned code: 6 files
+
+============================================
+  DEEP REQUIREMENTS EXTRACTION
+============================================
+  Existing matrix found: 741 requirements
+  Spec files found: 387
+  [WARN] Spec content truncated to 100K chars
+  Calling Sonnet for deep extraction (32K max tokens)...
+    [DEBUG] unknown: Starting JSON serialization...
+    [DEBUG] unknown: JSON done in 0.0s, body size: 71688 chars
+    [DEBUG] unknown: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 1/3, waiting 2s...
+    [DEBUG] unknown: Attempt 2/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 2/3, waiting 4s...
+    [DEBUG] unknown: Attempt 3/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 3/3, waiting 8s...
+    [DEBUG] unknown: Attempt 4/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+  [ERR] Sonnet API call failed: api_error
+  [WARN] Using existing matrix as fallback
+
+============================================
+  CODE INVENTORY
+============================================
+  Source files found: 1259
+  Total lines: 275108 | Stubs detected: 24
+  [OK] Code inventory saved to D:\vscode\tech-web-myhr\tech-web-myhr\.gsd\code-inventory.json
+
+============================================
+  SATISFACTION VERIFICATION
+============================================
+  Verifying 741 requirements against codebase...
+  [DEEP] Reading source files for content verification...
+  [DEEP] Loaded 80KB of source code
+  Calling Sonnet for satisfaction verification...
+    [DEBUG] unknown: Starting JSON serialization...
+    [DEBUG] unknown: JSON done in 0.0s, body size: 71688 chars
+    [DEBUG] unknown: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 1/3, waiting 2s...
+    [DEBUG] unknown: Attempt 2/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 2/3, waiting 4s...
+    [DEBUG] unknown: Attempt 3/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 3/3, waiting 8s...
+    [DEBUG] unknown: Attempt 4/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+  [ERR] Verification API call failed: api_error
+  Continuing with unverified matrix...
+
+  [CONVERGED] All requirements satisfied! No pipeline run needed.
+PS>TerminatingError(gsd-existing.ps1): "The term 'Get-TotalCost' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again."
+The term 'Get-TotalCost' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+gsd-existing.ps1: The term 'Get-TotalCost' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+**********************
+PowerShell transcript end
+End time: 20260318093730
+**********************

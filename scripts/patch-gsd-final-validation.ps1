@@ -814,6 +814,37 @@ function New-DeveloperHandoff {
         }
     }
 
+    # ===== LOC METRICS =====
+    $locPath = Join-Path $GsdDir "costs\loc-metrics.json"
+    if (Test-Path $locPath) {
+        try {
+            $locData = Get-Content $locPath -Raw | ConvertFrom-Json
+            $md += "## Lines of Code (AI-Generated)"
+            $md += ""
+            $md += "| Metric | Value |"
+            $md += "|--------|-------|"
+            $md += "| Lines Added | $($locData.cumulative.lines_added) |"
+            $md += "| Lines Deleted | $($locData.cumulative.lines_deleted) |"
+            $md += "| Net Lines | $($locData.cumulative.lines_net) |"
+            $md += "| Files Changed | $($locData.cumulative.files_changed) |"
+            $md += "| Iterations | $($locData.cumulative.iterations) |"
+            if ($locData.cost_per_line -and [double]$locData.cost_per_line.cost_per_added_line -gt 0) {
+                $md += "| Cost per Added Line | `$$($locData.cost_per_line.cost_per_added_line) |"
+                $md += "| Cost per Net Line | `$$($locData.cost_per_line.cost_per_net_line) |"
+                $md += "| Total API Cost | `$$($locData.cost_per_line.total_cost_usd) |"
+            }
+            $md += ""
+            $md += "### Per-Iteration LOC Breakdown"
+            $md += ""
+            $md += "| Iter | Added | Deleted | Net | Files |"
+            $md += "|------|-------|---------|-----|-------|"
+            foreach ($locIter in $locData.iterations) {
+                $md += "| $($locIter.iteration) | +$($locIter.lines_added) | -$($locIter.lines_deleted) | $($locIter.lines_net) | $($locIter.files_changed) |"
+            }
+            $md += ""
+        } catch {}
+    }
+
     # ===== COST SUMMARY =====
     $costPath = Join-Path $GsdDir "costs\cost-summary.json"
     if (Test-Path $costPath) {

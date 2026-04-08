@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    GSD Master Installer - Runs ALL 18 scripts in correct order.
+    GSD Master Installer - Runs ALL 36 scripts in correct order.
 .USAGE
     powershell -ExecutionPolicy Bypass -File install-gsd-all.ps1
 
@@ -16,8 +16,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GSD_VERSION = "1.5.0"
-$GSD_DATE = "2026-03-04"
+$GSD_VERSION = "2.1.0"
+$GSD_DATE = "2026-03-05"
 
 # Run prerequisites check first if the script exists
 $prereqScript = Join-Path $scriptDir "install-gsd-prerequisites.ps1"
@@ -87,12 +87,29 @@ $scripts = @(
     @{ File="patch-gsd-parallel-execute.ps1";     Desc="Parallel Sub-Task Execution (split batch, round-robin agents)" }
     @{ File="patch-gsd-resilience-hardening.ps1"; Desc="Resilience Hardening (token tracking, auth fix, quota cap, agent rotation)" }
     @{ File="patch-gsd-quality-gates.ps1";       Desc="Quality Gates (DB completeness, security standards, spec validation)" }
+    @{ File="patch-gsd-multi-model.ps1";        Desc="Multi-Model LLM Integration (Kimi K2.5, DeepSeek, GLM-5, MiniMax via REST API)" }
+    @{ File="patch-gsd-differential-review.ps1"; Desc="Differential Code Review (review only changed files, cache state)" }
+    @{ File="patch-gsd-pre-execute-gate.ps1";    Desc="Pre-Execute Compile Gate (build validation before commit)" }
+    @{ File="patch-gsd-acceptance-tests.ps1";    Desc="Per-Requirement Acceptance Tests (auto-generate + run per req)" }
+    @{ File="patch-gsd-api-contract-validation.ps1"; Desc="Contract-First API Validation (controller vs OpenAPI spec)" }
+    @{ File="patch-gsd-visual-validation.ps1";   Desc="Visual Validation (Figma screenshot diff via Playwright)" }
+    @{ File="patch-gsd-design-token-enforcement.ps1"; Desc="Design Token Enforcement (CSS/style hardcoded value scan)" }
+    @{ File="patch-gsd-compliance-engine.ps1";   Desc="Compliance Engine (per-iteration audit, DB migration, PII tracking)" }
+    @{ File="patch-gsd-speed-optimizations.ps1"; Desc="Speed Optimizations (research skip, smart batch, prompt dedup)" }
+    @{ File="patch-gsd-agent-intelligence.ps1";  Desc="Agent Intelligence (performance scoring, warm-start patterns)" }
+    @{ File="patch-gsd-loc-tracking.ps1";        Desc="LOC Tracking (lines of code metrics, cost-per-line, ntfy integration)" }
+    @{ File="patch-gsd-runtime-smoke-test.ps1"; Desc="Runtime Smoke Test (DI validation, API endpoint 500 check, FK seed order)" }
+    @{ File="patch-gsd-partitioned-code-review.ps1"; Desc="Partitioned Code Review (3-way parallel, agent rotation, spec+Figma validation)" }
+    @{ File="patch-gsd-loc-cost-integration.ps1"; Desc="LOC-Cost Integration (running cost-per-line, code review LOC awareness, enhanced ntfy)" }
+    @{ File="patch-gsd-maintenance-mode.ps1";    Desc="Maintenance Mode (incremental create-phases, scoped convergence, post-launch fixes)" }
+    @{ File="patch-gsd-council-requirements.ps1"; Desc="Council Requirements Verification (3-agent extraction, dedup, confidence scoring)" }
+    @{ File="patch-gsd-partial-decompose.ps1";    Desc="Partial Decompose (auto-split stuck partials into atomic sub-requirements each iteration)" }
 )
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  GSD Master Installer" -ForegroundColor Cyan
-Write-Host "  Installs all 20 components in correct dependency order" -ForegroundColor Cyan
+Write-Host "  Installs all 36 components in correct dependency order" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
 

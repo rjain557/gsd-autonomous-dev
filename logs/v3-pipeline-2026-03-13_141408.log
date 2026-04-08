@@ -1,0 +1,180 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20260313141408
+Username: TECHNIJIAN\rjain
+RunAs User: TECHNIJIAN\rjain
+Configuration Name: 
+Machine: TE-DC-VDITEC-03 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoExit -NoProfile -File D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\scripts\gsd-update.ps1 -RepoRoot D:\vscode\tech-web-chatai.v8\tech-web-chatai.v8 -StartIteration 14
+Process ID: 13004
+PSVersion: 5.1.26100.7920
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.7920
+BuildVersion: 10.0.26100.7920
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+
+============================================
+  GSD V3 - Feature Update
+  Scope: all new
+============================================
+PS>TerminatingError(gsd-update.ps1): "At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:468 char:91
++ ... $fileList = ($groups[$layer] | ForEach-Object { $_.path }) -join ", "
++                                                                       ~
+Missing argument in parameter list.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:493 char:14
++             }
++              ~
+The Try statement is missing its Catch or Finally block.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:639 char:44
++             if ($highFailReqs.Count -gt 0) {
++                                            ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:566 char:57
++                     if ($req -and -not $req.decomposed) {
++                                                         ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:564 char:53
++                 foreach ($tReqId in $truncatedReqs) {
++                                                     ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:559 char:45
++             if ($truncatedReqs.Count -gt 0) {
++                                             ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:551 char:59
++         if ($executeResults -and $executeResults.Results) {
++                                                           ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:21 char:27
++ function Start-V3Pipeline {
++                           ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:799 char:91
++ ... ents matrix SUMMARY (not full content â€” matrix can be 200K+ tokens)
++                                                                         ~
+Unexpected token ')' in expression or statement.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:831 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+
+Not all parse errors were reported.  Correct the reported errors and try again."
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:468 char:91
++ ... $fileList = ($groups[$layer] | ForEach-Object { $_.path }) -join ", "
++                                                                       ~
+Missing argument in parameter list.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:493 char:14
++             }
++              ~
+The Try statement is missing its Catch or Finally block.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:639 char:44
++             if ($highFailReqs.Count -gt 0) {
++                                            ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:566 char:57
++                     if ($req -and -not $req.decomposed) {
++                                                         ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:564 char:53
++                 foreach ($tReqId in $truncatedReqs) {
++                                                     ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:559 char:45
++             if ($truncatedReqs.Count -gt 0) {
++                                             ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:551 char:59
++         if ($executeResults -and $executeResults.Results) {
++                                                           ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:21 char:27
++ function Start-V3Pipeline {
++                           ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:799 char:91
++ ... ents matrix SUMMARY (not full content â€” matrix can be 200K+ tokens)
++                                                                         ~
+Unexpected token ')' in expression or statement.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:831 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+
+Not all parse errors were reported.  Correct the reported errors and try again.
+D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\scripts\gsd-update.ps1 : At
+D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:468 char:91
++ ... $fileList = ($groups[$layer] | ForEach-Object { $_.path }) -join ", "
++                                                                       ~
+Missing argument in parameter list.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:493 char:14
++             }
++              ~
+The Try statement is missing its Catch or Finally block.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:639 char:44
++             if ($highFailReqs.Count -gt 0) {
++                                            ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:566 char:57
++                     if ($req -and -not $req.decomposed) {
++                                                         ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:564 char:53
++                 foreach ($tReqId in $truncatedReqs) {
++                                                     ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:559 char:45
++             if ($truncatedReqs.Count -gt 0) {
++                                             ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:551 char:59
++         if ($executeResults -and $executeResults.Results) {
++                                                           ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:21 char:27
++ function Start-V3Pipeline {
++                           ~
+Missing closing '}' in statement block or type definition.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:799 char:91
++ ... ents matrix SUMMARY (not full content â€” matrix can be 200K+ tokens)
++                                                                         ~
+Unexpected token ')' in expression or statement.
+
+At D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\lib\modules\phase-orchestrator.ps1:831 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+
+Not all parse errors were reported.  Correct the reported errors and try again.
+    + CategoryInfo          : ParserError: (:) [gsd-update.ps1], ParseException
+    + FullyQualifiedErrorId : MissingArgument,gsd-update.ps1
+

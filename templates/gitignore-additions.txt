@@ -1,0 +1,9 @@
+﻿
+# GSD Resilience - transient state
+.gsd/.gsd-lock
+.gsd/.gsd-checkpoint.json
+.gsd/logs/errors.jsonl
+
+# GSD - do NOT ignore _analysis/ and _stubs/ (they are source-of-truth specs)
+# design\*\_analysis\ -> KEEP IN GIT
+# design\*\_stubs\ -> KEEP IN GIT

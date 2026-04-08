@@ -89,13 +89,90 @@ Or pass keys directly for non-interactive update:
 
 ### Removing API keys
 
-To remove all API key environment variables and revert to interactive auth:
+To remove all CLI API key environment variables and revert to interactive auth:
 
 ```powershell
 .\scripts\setup-gsd-api-keys.ps1 -Clear
 ```
 
 Restart your terminal for the removal to take effect in new processes.
+
+## REST Agent Issues
+
+### REST agent keys show "not set" in preflight
+
+If you set REST agent API keys but preflight shows `[--] KIMI_API_KEY not set`:
+
+1. **Keys set in a different scope**: The engine checks Process → User → Machine scopes. Verify which scope your key is in:
+
+```powershell
+# Check User scope
+[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "User")
+
+# Check Machine scope (requires admin to set, but readable by all)
+[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "Machine")
+```
+
+2. **Keys were set after the patch was applied**: If you installed the multi-model patch before setting keys, everything is fine — just set the keys and run the pipeline again. The preflight auto-loads keys from User/Machine scope.
+
+3. **Re-run the patch script**: If preflight still doesn't detect keys, re-run the installer to ensure the latest preflight code is deployed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
+```
+
+### REST agent returns "unauthorized" during rotation
+
+The API key is set but the provider rejects it. Common causes:
+
+1. **Expired or revoked key**: Log into the provider's dashboard and verify the key is active
+2. **Wrong key for wrong provider**: Ensure KIMI_API_KEY is a Moonshot key (not DeepSeek, etc.)
+3. **Account has no credit**: Some providers require prepaid credit balance
+
+The engine treats "unauthorized" as a non-retryable error and moves to the next agent in the pool.
+
+### REST agent returns "rate_limit" errors
+
+REST API providers have their own rate limits independent of CLI agents. The engine handles these the same way as CLI quota errors:
+
+1. The agent enters cooldown (recorded in `.gsd/supervisor/agent-cooldowns.json`)
+2. The engine rotates to the next available agent
+3. The cooldown agent is re-tried after the cooldown period expires
+
+### "Unknown agent 'kimi' exit code 1" (or glm5, deepseek, minimax)
+
+This means `Get-FailureDiagnosis` doesn't recognize the REST agent. The multi-model patch steps 13B/13C were not applied.
+
+**Fix**: Re-run `install-gsd-all.ps1` or manually run `patch-gsd-multi-model.ps1`. Steps 13B/13C patch both the original and enhanced `Get-FailureDiagnosis` functions to handle REST agent HTTP errors (429→rate limit, 402→quota exhausted, 401→auth failure, 5xx→server error, timeout).
+
+### REST agent not appearing in rotation pool
+
+Check:
+
+1. **API key is set**: `[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "User")` returns a value
+2. **Agent is enabled in model-registry.json**: The agent entry has `"enabled": true` (default)
+3. **Agent is in rotation_pool_default**: Check `%USERPROFILE%\.gsd-global\config\model-registry.json`
+
+### Disabling a specific REST agent
+
+Set `"enabled": false` in model-registry.json, or remove/unset its environment variable:
+
+```powershell
+# Disable by removing key
+[System.Environment]::SetEnvironmentVariable("KIMI_API_KEY", $null, "User")
+
+# Or disable in registry (keeps key for later re-enabling)
+# Edit %USERPROFILE%\.gsd-global\config\model-registry.json
+# Set agents.kimi.enabled = false
+```
+
+### MINIMAX_API_KEY not showing in preflight
+
+If only 3 of 4 REST agents appear in preflight output, verify the key name is exactly `MINIMAX_API_KEY` (all uppercase, underscores). Check:
+
+```powershell
+[System.Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "User")
+```
 
 ## Runtime Issues
 
@@ -115,19 +192,27 @@ Get-Process | Where-Object { $_.CommandLine -match "convergence-loop|blueprint-p
 
 ### "Quota exhausted on claude" / "Sleeping 60 minutes"
 
-Your API quota (or OAuth session limit) is exhausted. The engine sleeps and retries automatically with adaptive backoff (5 min -> 10 min -> 20 min -> 40 min -> 60 min cap). Max retry: 24 hours.
+Your API quota (or OAuth session limit) is exhausted. With 7 agents configured, the engine immediately rotates to the next available agent on first quota failure. If all 7 agents are exhausted, adaptive backoff starts (5 min -> 10 min -> 20 min -> 40 min -> 60 min cap). Cumulative wait capped at 2 hours.
 
 If using OAuth, close other Claude sessions to free quota. Check usage at console.anthropic.com/settings/usage.
 
 To reduce quota consumption:
+- **Add REST agent API keys** (KIMI_API_KEY, DEEPSEEK_API_KEY, GLM_API_KEY, MINIMAX_API_KEY) to expand the rotation pool from 3 to 7 agents across 7 independent providers
 - Use -SkipResearch to skip the Gemini/Codex research phase
 - Increase -ThrottleSeconds (e.g., 60 or 120) to slow down agent calls
 - Reduce -MaxIterations to limit total runs
 - Ensure Gemini CLI is installed (`npm install -g @google/gemini-cli`) -- Gemini uses a separate quota pool, reducing load on Claude/Codex
 
-### "Network unavailable. Polling every 30s..."
+Check current agent cooldowns:
 
-Network connectivity lost. The engine polls until back online (max 1 hour). Check your internet connection. If you are behind a firewall, ensure claude, codex, and gemini CLIs can reach their respective APIs.
+```powershell
+# View which agents are in cooldown
+Get-Content .gsd\supervisor\agent-cooldowns.json | ConvertFrom-Json
+```
+
+### "Network unavailable. Polling every 10s..."
+
+Network connectivity lost. The engine polls using a fast HTTP HEAD check (max 60 seconds, 6 polls x 10s), then skips and moves on. Check your internet connection. If you are behind a firewall, ensure claude, codex, and gemini CLIs can reach their respective APIs. The network check uses `api.anthropic.com` as the probe target (any HTTP response, including 4xx, confirms connectivity).
 
 ### Codex "exit code 2" with batch reduction to minimum
 
@@ -435,6 +520,156 @@ The validation gate sets `CI=true` to prevent interactive watch mode (Jest, Vite
 2. **Test timeout**: Individual tests may be slow. The gate has a 5-minute overall timeout per check.
 3. **Database dependencies**: Tests requiring a running database will fail in the pipeline context.
 
+## Runtime Smoke Test Issues
+
+### "Runtime smoke test skipped: no .NET project detected"
+
+Normal behavior for non-.NET projects. The smoke test requires a .csproj file to start the application via `dotnet run`. For Node.js-only projects, runtime testing is skipped automatically.
+
+### API endpoints returning 500 but tests pass
+
+The runtime smoke test catches issues that unit tests miss:
+
+1. **DI container errors** (`Cannot resolve scoped service`): A service registered as `Scoped` is being injected into a `Singleton`. Fix: Change the lifetime registration or use `IServiceScopeFactory`.
+
+2. **FK constraint violations** (`SqlException: FK constraint`): Seed data INSERT order doesn't respect foreign key dependencies. Fix: Reorder INSERT statements so parent tables are populated before child tables.
+
+3. **General 500 errors**: The endpoint crashes at runtime despite compiling and passing tests. Check the error detail in `.gsd/health/final-validation.json` → `checks.runtime_smoke_test.failures`.
+
+### Runtime smoke test times out
+
+The app failed to start within the configured timeout (default 30s). Common causes:
+- Missing connection string or environment variable
+- Database not accessible
+- Port already in use
+
+Increase timeout: set `runtime_smoke_test.startup_timeout_seconds` in `global-config.json`.
+
+### "Too many endpoints, limiting to N"
+
+The discovered endpoint count exceeds `max_endpoints` (default 50). This is a safety limit. Increase via `runtime_smoke_test.max_endpoints` if needed.
+
+### Disabling runtime smoke test
+
+```json
+// In global-config.json
+"runtime_smoke_test": { "enabled": false }
+```
+
+## Partitioned Code Review Issues
+
+### "Partitioned review failed, falling back to single-agent"
+
+One or more partition review jobs failed (agent error, timeout, etc.). The engine automatically falls back to the original single-agent Claude review. Check `.gsd/logs/errors.jsonl` for the specific failure.
+
+Common causes:
+
+- **Gemini `--approval-mode plan` rejected**: Gemini CLI requires `experimental.plan: true` in its settings. Run `gemini` interactively, open Settings, and enable the experimental plan flag. Alternatively, re-run `patch-gsd-partitioned-code-review.ps1` to re-apply the resilience.ps1 gemini dispatch patch.
+- **API key leaked/revoked**: If Gemini returns "API key was reported as leaked", generate a new key at [Google AI Studio](https://aistudio.google.com/apikey) and update via `setup-gsd-api-keys.ps1 -GoogleKey "new-key"`.
+- **Long prompts truncated**: Prompts exceeding 8KB are automatically written to a temp file and piped via stdin. If an agent receives a malformed prompt, check `.gsd/logs/` for errors and ensure the temp directory has write access.
+
+### Coverage matrix shows gaps
+
+The coverage matrix (`.gsd/code-review/coverage-matrix.json`) tracks which agent reviewed each requirement. Gaps occur when iterations are interrupted before all 3 rotation slots complete. The engine auto-fills gaps in subsequent iterations.
+
+### Disabling partitioned review
+
+```json
+// In global-config.json
+"partitioned_code_review": { "enabled": false }
+```
+
+## LOC-Cost Integration Issues
+
+### Cost-per-line not showing in notifications
+
+The per-iteration notification shows LOC but no cost-per-line. Causes:
+1. **No cost data yet**: Cost-per-line requires at least one completed iteration with token tracking. The first iteration may not have cost data.
+2. **`cost-summary.json` missing**: Check that `.gsd/costs/cost-summary.json` exists. If missing, cost tracking may not be initialized.
+
+### LOC counts seem wrong or missing
+
+1. **Baseline missing**: `Save-LocBaseline` must run at pipeline start. If the pipeline was interrupted before this function ran, grand totals will be unavailable. Re-running the pipeline will create the baseline.
+2. **Files filtered out**: Check `loc_tracking.include_extensions` in global-config.json. Only files matching these extensions are counted.
+3. **`loc-metrics.json` empty**: The file is created after the first execute phase. If no execute phases have run, it won't exist.
+
+### LOC context not appearing in code review prompts
+
+The code review agent should see a LOC history table. If missing:
+1. **`Get-LocContextForReview` not available**: Re-run `patch-gsd-loc-cost-integration.ps1` (Script 34).
+2. **No LOC data yet**: LOC context is only injected after at least one iteration has LOC metrics.
+
+## Maintenance Mode Issues
+
+### gsd-fix "No .gsd directory found"
+
+Run `gsd-init` first to create the `.gsd/` directory structure before using `gsd-fix`.
+
+### gsd-fix -BugDir not finding bugs
+
+The `-BugDir` parameter looks for `.md` files first, then `.txt` files as fallback. The first `# heading` in the markdown file becomes the bug description. Ensure:
+1. The directory contains at least one `.md` or `.txt` file
+2. The file has a heading or first line longer than 5 characters
+
+### Artifacts not being copied
+
+When using `-BugDir`, artifacts are copied to `.gsd/supervisor/bug-artifacts/BUG-xxx/`. If the copy fails:
+1. Check that the source directory is readable
+2. Check disk space
+3. Verify `.gsd/supervisor/` directory exists (created automatically)
+
+### --Scope not filtering requirements
+
+The scope filter only affects the plan and execute phases. Code review always sees ALL requirements (by design, for regression detection). Scope syntax:
+- `source:bug_report` — filter by source field
+- `id:BUG-001,BUG-002` — filter by specific requirement IDs
+
+### --Incremental not preserving satisfied items
+
+The incremental Phase 0 uses `create-phases-incremental.md` which instructs Claude to preserve all existing requirements. If satisfied items are lost:
+1. **Matrix was empty**: Incremental mode requires a non-empty matrix. If the matrix is empty, standard Phase 0 runs instead.
+2. **Claude overwrote the matrix**: Check `.gsd/logs/phase0-incremental.log` for the Claude output. The prompt explicitly says "DO NOT remove or modify any requirement with status satisfied".
+
+### gsd-update not detecting new specs
+
+`gsd-update` calls `gsd-converge --Incremental` which triggers the incremental Phase 0. Claude reads the design directory for the latest version. Ensure:
+1. New specs are in the correct directory (e.g., `design/web/v02/_analysis/`)
+2. Each version contains the COMPLETE spec set, not just deltas
+
+## Council Requirements Issues
+
+### gsd-verify-requirements not sending ntfy notifications
+
+The council function initializes the ntfy topic on first run. If you don't see notifications:
+1. Check the terminal output for `ntfy topic (auto):` or `ntfy topic (config):` at startup
+2. If no topic line appears, the function failed to call `Initialize-GsdNotifications`. Reload your profile: `. "$env:USERPROFILE\.gsd-global\scripts\gsd-profile-functions.ps1"`
+3. Verify manually: open `https://ntfy.sh/gsd-{username}-{reponame}` in a browser to check for messages
+
+### Gemini fails with CLI help text in log
+
+Gemini was invoked with `--approval-mode full` which is not a valid option. Valid choices are: `default`, `auto_edit`, `yolo`, `plan`. The council uses `--approval-mode yolo` (auto-approve all tool calls). If you see CLI help text in `council-requirements-gemini-chunk1.log`, re-run the installer or reload your profile to get the fix.
+
+Also check `~/.gemini/settings.json` -- if `model` is a string instead of an object, Gemini CLI will error. It should be: `"model": { "default": "gemini-3.1-pro-preview" }`.
+
+### No progress updates during parallel extraction
+
+Background jobs (`Start-Job`) don't print to the parent terminal. The main process polls for new chunk output files on disk every 15 seconds and prints `[PROGRESS]` lines. If you see only `[HEARTBEAT]` messages, agents are still working but haven't completed a chunk yet. Each chunk (10 files) may take 1-5 minutes depending on file sizes.
+
+### Agent job shows "Running" after timeout
+
+The polling loop waits up to `(timeout_seconds × chunks_per_agent) + 120` seconds. If a job exceeds this, it's stopped and partial results are recovered from disk. Increase `timeout_seconds` in `global-config.json` → `council_requirements` if agents consistently time out.
+
+### Only 1 agent produced output (min_agents_for_merge = 2)
+
+The pipeline requires at least `min_agents_for_merge` agents (default: 2) to produce valid output. If only 1 succeeds:
+1. Use `-SkipAgent` to exclude the problematic agent and run with the remaining 2
+2. Lower `min_agents_for_merge` to 1 in `global-config.json` (single-agent extraction, no cross-verify)
+3. Check agent-specific logs in `.gsd/logs/council-requirements-{agent}-chunk*.log`
+
+### Cross-verification adds too many false requirements
+
+The verifier is instructed to add only clearly missed requirements. If it's too aggressive, use `-SkipVerify` to extract without cross-verification. The synthesis phase will still merge and deduplicate, just without verification confidence scores.
+
 ## Developer Handoff Issues
 
 ### developer-handoff.md is empty or missing sections
@@ -736,10 +971,27 @@ gemini
 .\scripts\setup-gsd-api-keys.ps1 -GoogleKey "AIza..."
 
 # Verify it works
-"Say READY" | gemini --approval-mode plan 2>&1
+"Say READY" | gemini -p - 2>&1
 ```
 
 If Gemini is down or unresponsive, the engine automatically falls back to Codex for research and spec-fix phases. No manual intervention required.
+
+### Gemini `--approval-mode plan` rejected
+
+Gemini CLI requires the experimental plan feature to be enabled. If you see `"Approval mode plan is only available when experimental.plan is enabled"`:
+
+1. Run `gemini` interactively
+2. Open Settings (or edit `~/.gemini/settings.json`)
+3. Set `experimental.plan: true`
+4. Re-test: `"Say READY" | gemini -p - --approval-mode plan 2>&1`
+
+### Gemini "API key was reported as leaked"
+
+Google has flagged/revoked the API key. Generate a new one:
+
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
+2. Create a new API key
+3. Update: `.\scripts\setup-gsd-api-keys.ps1 -GoogleKey "new-key"`
 
 ### Gemini exit code 44 (sandbox/Docker error)
 
@@ -962,3 +1214,644 @@ gsd-blueprint -ThrottleSeconds 60
 ```
 
 Each project auto-subscribes to its own ntfy topic. Subscribe to all three in the ntfy app to monitor them simultaneously.
+
+---
+
+## V4 Full Pipeline Issues
+
+### Security Gate (gsd-security-gate.ps1)
+
+#### Security gate fails with false positives
+
+The SAST patterns use regex and may flag code that is not actually vulnerable. For example, a test file that contains `eval(` in a string literal or a stored procedure that uses string concatenation for legitimate metadata queries.
+
+**Tune the severity threshold** so that only higher-severity findings block the pipeline:
+
+```powershell
+# Allow the pipeline to continue if only medium/low issues exist
+pwsh -File gsd-security-gate.ps1 -RepoRoot "C:\repo" -FailOnSeverity critical
+```
+
+**Skip specific checks** if they are not applicable to your project:
+
+```powershell
+# Skip dependency scan (e.g., offline environment or known-safe packages)
+pwsh -File gsd-security-gate.ps1 -RepoRoot "C:\repo" -SkipDependencyScan
+
+# Skip SAST (run only secrets and dependency checks)
+pwsh -File gsd-security-gate.ps1 -RepoRoot "C:\repo" -SkipSast
+```
+
+**Skip the entire phase** in `gsd-full-pipeline.ps1`:
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -SkipSecurityGate
+```
+
+Review the detailed findings to determine whether each finding is a true positive:
+
+```powershell
+Get-Content ".gsd\security-gate\security-gate-report.json" | ConvertFrom-Json | Select-Object -ExpandProperty findings | Format-Table severity, file, description
+```
+
+#### Security gate reports "NuGet/npm audit unavailable"
+
+The dependency scan requires `dotnet` and `npm` to be in PATH. If they are not found:
+1. Verify `dotnet --version` returns 8.x
+2. Verify `npm --version` returns 9+
+3. Use `-SkipDependencyScan` if you are running in a CI environment without these tools
+
+### Test Generation (gsd-test-generation.ps1)
+
+#### Test generation fails to create test project
+
+If `dotnet new xunit` fails during test generation:
+
+1. **Check .NET SDK version**: xUnit 3 requires .NET SDK 8 or later. Verify: `dotnet --version`
+2. **Missing SDK workload**: Run `dotnet workload update` to ensure all workloads are current
+3. **Conflicting project name**: If a `*.Tests.csproj` already exists but targets a different .NET version, the script may fail to create a compatible project. Manually create the test project and re-run with `-SkipUnitTests $false`
+4. **Skip unit tests temporarily**: Use `-SkipUnitTests` to generate only Jest/RTL and Playwright tests
+
+```powershell
+# Create test project manually and retry
+dotnet new xunit -n "MyApp.Tests" --framework net8.0
+dotnet sln add MyApp.Tests/MyApp.Tests.csproj
+pwsh -File gsd-test-generation.ps1 -RepoRoot "C:\repo" -SkipUnitTests
+```
+
+#### Playwright not installing
+
+`gsd-test-generation.ps1` runs `npm install -D @playwright/test` and `npx playwright install --with-deps chromium` automatically. If this fails:
+
+1. **Node.js version**: Playwright requires Node.js 18+. Verify: `node --version`
+2. **Disk space**: Browser installation requires ~400 MB. Check free space.
+3. **Corporate proxy**: Set `HTTPS_PROXY` environment variable before running
+4. **Offline environment**: Pre-install Playwright in a connected environment and copy the browser cache to the target machine. Set `PLAYWRIGHT_BROWSERS_PATH` to the cache location.
+5. **Skip E2E tests**: Use `-SkipE2E` if Playwright cannot be installed in your environment
+
+```powershell
+# Skip E2E, generate unit + frontend tests only
+pwsh -File gsd-test-generation.ps1 -RepoRoot "C:\repo" -SkipE2E
+```
+
+#### Generated tests are failing (fix loop exhausted)
+
+If tests fail after all fix cycles (`MaxFixCycles` exhausted):
+
+1. Review `.gsd/test-generation/test-generation-report.json` for the specific failure messages
+2. Common causes: test code references a namespace that doesn't exist yet, or the test exercises a flow that requires a database connection
+3. Use `-SkipExecution` to generate test files without running them, then fix manually
+4. Reduce `-MaxTestFilesPerType` to generate fewer, simpler tests that are more likely to pass immediately
+
+### Compliance Gate (gsd-compliance-gate.ps1)
+
+#### Compliance gate flags issues that don't apply to your project
+
+If you are building a project that is not in healthcare, you do not need HIPAA enforcement. Remove inapplicable frameworks from the `-Frameworks` parameter:
+
+```powershell
+# Only enforce SOC 2 (skip HIPAA, PCI, GDPR)
+pwsh -File gsd-compliance-gate.ps1 -RepoRoot "C:\repo" -Frameworks "SOC2"
+
+# Enforce all four for a healthcare payments application
+pwsh -File gsd-compliance-gate.ps1 -RepoRoot "C:\repo" -Frameworks "HIPAA,PCI,GDPR,SOC2"
+```
+
+In `gsd-full-pipeline.ps1`, use the `-ComplianceFrameworks` parameter:
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -ComplianceFrameworks "SOC2"
+```
+
+**Tune severity** to allow warnings without blocking:
+
+```powershell
+# Only block on critical compliance violations
+pwsh -File gsd-compliance-gate.ps1 -RepoRoot "C:\repo" -FailOnSeverity critical
+```
+
+**Skip entirely**:
+
+```powershell
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -SkipComplianceGate
+```
+
+#### Compliance finding references a file that is excluded
+
+If the compliance gate flags a finding in `appsettings.Development.json` or a test fixture file, those are standard development files that should not be evaluated against production compliance rules. The gate automatically excludes `*.Development.*` config files. If other development-only files are flagged, open a GitHub issue with the false-positive pattern.
+
+### Deploy Prep (gsd-deploy-prep.ps1)
+
+#### Deploy prep creates wrong Dockerfile
+
+The script auto-detects project structure. If detection fails and the Dockerfile has incorrect COPY paths:
+
+1. **Check the detection log**: Review `.gsd/deploy-prep/deploy-prep-report.json` for the `detected_structure` field
+2. **Solution file location**: The script expects `*.sln` at the repository root. If the solution is in a subdirectory, run with the `-RepoRoot` pointing to the subdirectory
+3. **Frontend in subdirectory**: If `package.json` is at `frontend/package.json` (not root), the script should detect this. If it generates COPY commands for root instead, verify that the frontend directory is named `frontend/`, `web/`, or `client/` — these are the standard names the detection checks
+4. **Regenerate after manual fix**: After correcting the Dockerfiles manually, re-run to regenerate the CI/CD and compose files which reference the Dockerfile paths
+
+```powershell
+# Regenerate only the env configs (skip Dockerfiles you fixed manually)
+pwsh -File gsd-deploy-prep.ps1 -RepoRoot "C:\repo" -SkipDocker
+
+# Regenerate only CI/CD
+pwsh -File gsd-deploy-prep.ps1 -RepoRoot "C:\repo" -SkipDocker -SkipEnvConfigs
+```
+
+#### Cloud target-specific CI/CD issues
+
+- **Azure**: The generated workflow references `AZURE_CREDENTIALS` and `ACR_LOGIN_SERVER` secrets. Set these in your GitHub repository secrets.
+- **AWS**: References `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `ECR_REGISTRY`. Set these in GitHub secrets.
+- **GCP**: References `GCP_SA_KEY` (service account JSON), `GCR_HOSTNAME`. Set these in GitHub secrets.
+- **Generic**: References `DOCKER_USERNAME` and `DOCKER_PASSWORD` for Docker Hub.
+
+### API Contract (gsd-api-contract.ps1)
+
+#### API contract extraction fails (backend not running)
+
+The script first attempts to pull the OpenAPI spec from a running backend at `http://localhost:{BackendPort}/swagger/v1/swagger.json`. If the backend is not running, it falls back to parsing `[Http*]` attributes in `.cs` controller files.
+
+**Start the backend before running this phase**:
+
+```powershell
+# Start backend in background, then run API contract
+Start-Process -FilePath "dotnet" -ArgumentList "run --project src/MyApp.Api" -NoNewWindow
+Start-Sleep -Seconds 10
+pwsh -File gsd-api-contract.ps1 -RepoRoot "C:\repo" -BackendPort 5000
+```
+
+When the full pipeline runs this phase (phase 8), it starts the backend as part of the `runtime` phase (phase 9) after API contract. If you are running `gsd-api-contract.ps1` standalone, start the backend manually or accept that the source-code fallback will be used.
+
+**Non-default port**: If your backend listens on a port other than 5000, specify it explicitly:
+
+```powershell
+pwsh -File gsd-api-contract.ps1 -RepoRoot "C:\repo" -BackendPort 7001
+```
+
+**Check Swagger is enabled**: The API contract script requires that `app.UseSwagger()` is configured in `Program.cs` and that the Swagger JSON endpoint is accessible. Verify by opening `http://localhost:5000/swagger/v1/swagger.json` in a browser while the backend is running.
+
+#### Breaking changes detected unexpectedly
+
+If `-FailOnBreakingChange` is set and the script detects breaking changes that you believe are intentional:
+
+1. Review `.gsd/api-contract/api-contract-report.json` → `breaking_changes[]` for the full list
+2. Delete the previous spec to reset the baseline: `Remove-Item ".gsd\api-contract\openapi.json.previous" -Force`
+3. On the next run, the new spec becomes the baseline with no breaking changes
+
+#### TypeScript client generation fails
+
+If `-GenerateTsClient` is set but client generation fails:
+
+1. Verify `npm` is available and internet-connected
+2. The script installs `openapi-typescript` on first use. Check for npm errors in `.gsd/api-contract/api-contract-report.json` → `ts_client.error`
+3. Use `-SkipFrontendAlignment` to skip the frontend check which uses the generated client
+
+### Clarification Pause
+
+#### Pipeline PAUSED — clarifications needed
+
+When the pipeline exits with code 2, it has paused to collect your answers to policy questions. This is not an error.
+
+**What happened**: An agent encountered a decision point that requires human input (RBAC policies, auth configuration, TODO markers, ambiguous business rules). The pipeline wrote all questions to `PIPELINE-CLARIFICATIONS.md` in your repository root.
+
+**How to resolve**:
+
+1. Open `PIPELINE-CLARIFICATIONS.md` in your editor
+2. Fill in the `Answer:` line for each question
+3. Save the file
+4. Re-run the pipeline with `-ClarificationsFile`:
+
+```powershell
+# Resume from the phase that paused (check the console output for the phase name)
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" `
+  -StartFrom codereview `
+  -ClarificationsFile "PIPELINE-CLARIFICATIONS.md"
+```
+
+**Finding which phase paused**: The console output before exit code 2 prints the current phase name. The `PIPELINE-HANDOFF.md` file (if it exists from a previous run) shows the last completed phase.
+
+**Skipping clarification check**: If you want the pipeline to continue without pausing for clarifications, there is no skip flag — clarification pauses are intentional. Instead, fill in the answers with placeholder values (e.g., "TBD — use Admin role") and re-run. The pipeline will use your placeholder answers to proceed and you can update the code afterward.
+
+---
+
+## V3 Pipeline Issues
+
+### Smoke Test Failures
+
+#### Build validation fails
+
+```
+Phase 1 FAILED: dotnet build returned errors
+```
+
+1. Check the smoke test log at `~/.gsd-global/logs/{repo}/smoketest-{timestamp}.log`
+2. Common causes: missing NuGet packages, wrong .NET SDK version, missing project references
+3. Fix: run `dotnet restore` manually, verify SDK version with `dotnet --version`
+4. Skip build validation temporarily: `-SkipBuild`
+
+#### Database validation fails without connection string
+
+```
+Phase 2 SKIPPED: No ConnectionString provided
+```
+
+DB validation requires a live SQL Server connection. Pass `-ConnectionString "Server=.;Database=MyDb;Trusted_Connection=true"` to enable.
+
+#### Mock data detected in generated code
+
+```
+Phase 7: 15 mock data patterns found (3 critical, 5 high, 7 medium)
+```
+
+This is expected for freshly generated code. The fix model (Claude by default) will auto-fix critical/high patterns. For persistent mock data:
+
+1. Check `.gsd/smoke-test/mock-data-scan.json` for specific patterns
+2. Verify that real API endpoints exist for each mock hook
+3. Manual fix: replace `useState([{...}])` with `useQuery` + real API calls
+
+#### Route-role matrix shows unguarded routes
+
+```
+Phase 8: 5 unguarded routes found (HIGH severity)
+```
+
+1. Check `.gsd/smoke-test/route-role-matrix.json` for which routes are unguarded
+2. Verify RBAC config exists at `src/config/rbac.ts` or similar
+3. Add `ProtectedRoute` or `RequireAuth` wrappers to exposed routes
+4. Public routes (login, register, public pages) should be explicitly marked as intentionally unguarded
+
+### Wire-Up Issues
+
+#### Mock data detector false positives
+
+The detector uses pattern matching and may flag intentional test data or example code. Review `.gsd/smoke-test/mock-data-scan.json` and filter by severity.
+
+Exclude directories with `-ExcludeDirs @("node_modules", ".git", "bin", "obj", "__tests__")`.
+
+#### Route-role matrix can't find router file
+
+```
+Missing file: Router file not found
+```
+
+The matrix builder checks standard locations (`src/App.tsx`, `src/router.tsx`, etc.). If your router is in a non-standard location, specify it explicitly:
+
+```powershell
+Build-RouteRoleMatrix -RepoRoot "C:\repo" -RouterFile "src/app/AppRouter.tsx"
+```
+
+### Code Review Issues
+
+#### All 3 models disagree on severity
+
+When Claude, Codex, and Gemini report different severities for the same issue, the review system uses the maximum severity. This is conservative by design.
+
+If too many false positives: use `-MinSeverityToFix high` to only auto-fix high/critical issues.
+
+#### Review cycles not converging
+
+```
+Cycle 5/5: Still 12 issues remaining
+```
+
+1. Check `.gsd/code-review/review-report.json` for recurring issues
+2. Common cause: the fix model generates code that introduces new issues
+3. Try: `-FixModel codex` (switch from Claude to Codex for fixes)
+4. Or: `-ReviewOnly` to just report without attempting fixes
+
+#### Code review budget exceeded
+
+The default budget for code review is $20. For large codebases:
+
+1. Use `-MaxReqs 25` to reduce batch size
+2. Use `-SkipReqs N` to resume from where you left off
+3. Or increase budget in config: `code_review.budget_cap_usd`
+
+### Tiered Model Fallback Issues
+
+#### CHEAP tier models all failing
+
+```
+DeepSeek: rate limited, Kimi: rate limited, MiniMax: rate limited
+Falling back to MID tier (Codex Mini)
+```
+
+All cheap-tier models are rate limited simultaneously. This is rare but possible during heavy usage. The system automatically falls back to Codex Mini (MID tier). Cost will be slightly higher for those tasks.
+
+Verify API keys are set:
+```powershell
+[System.Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
+[System.Environment]::GetEnvironmentVariable("KIMI_API_KEY", "User")
+[System.Environment]::GetEnvironmentVariable("MINIMAX_API_KEY", "User")
+```
+
+#### GLM-5 connection failures (from US)
+
+GLM-5 (Zhipu AI) requires VPN access from the US. If you see connection timeouts, either:
+1. Set up a VPN to China
+2. Remove GLM_API_KEY to exclude GLM-5 from the pool (the pipeline will use the remaining 6 models)
+
+### Full Pipeline Issues
+
+#### Pipeline hangs at wire-up phase
+
+1. Check log at `~/.gsd-global/logs/{repo}/full-pipeline-{timestamp}.log`
+2. Wire-up scans can be slow on large codebases. Wait for completion.
+3. Skip wire-up: `-SkipWireUp` or `-StartFrom codereview`
+
+#### Resuming after partial completion
+
+```powershell
+# Resume from smoke test (skip completed wire-up and code review)
+pwsh -File gsd-full-pipeline.ps1 -RepoRoot "C:\repo" -StartFrom smoketest
+```
+
+### Centralized Logging Issues
+
+#### Logs not appearing
+
+Verify the log directory exists:
+```powershell
+ls "$env:USERPROFILE\.gsd-global\logs\"
+```
+
+If missing, the first pipeline run will create it automatically.
+
+#### Iteration counter reset
+
+The iteration counter at `~/.gsd-global/logs/{repo}/iteration-counter.json` persists across pipeline restarts. If it gets corrupted, delete it and the pipeline will start a new counter.
+
+### Decomposition Spiral
+
+#### Requirement count keeps growing
+
+```
+Iteration 10: 527 reqs → Iteration 15: 890 reqs → Iteration 20: 1400 reqs
+```
+
+This is a decomposition spiral — requirements failing on blocked files get decomposed into sub-requirements that also need the same blocked files.
+
+Fix:
+1. Check `.gsd/requirements/blocked-files-skip.json` for permanently blocked files
+2. Unblock key shared files (App.tsx, Program.cs) by removing them from the skip list
+3. Use direct fixes via Claude Code to update blocked files
+4. The decomposition budget (max 20/iter, depth ≤4) limits the growth rate
+
+### Anti-Plateau Stuck
+
+#### Pipeline force-breaks after 5 zero-delta iterations
+
+```
+[ANTI-PLATEAU] Force break: 5+ consecutive zero-delta
+```
+
+1. Review the deferred requirements in the log
+2. Common causes: blocked files, circular dependencies, spec ambiguity
+3. Fix blocked files directly, then re-run with `-StartIteration N`
+4. Consider running `gsd-existing.ps1` to re-verify satisfaction
+
+---
+
+## E2E Test Issues
+
+### Playwright — All roles show "Access Forbidden" on module-guarded routes
+
+**Symptom**: Navigation test passes for basic routes (`/chat`, `/help`) but fails for `requiredModule` routes (`/admin/revenue`, `/admin/user-assignments`). Body shows "Access Forbidden" even though the mock returns 200 with the correct modules array.
+
+**Root cause**: Playwright route LIFO ordering. The catch-all `${origin}/api/**` was registered _after_ specific routes, so it has higher priority and intercepts `/navigation/my-modules` before the specific mock can run. Returns `[]` (empty array) — request logs show HTTP 200 which masks the problem.
+
+**Diagnosis**: In `helpers.ts`, check the order of `context.route()` calls. If the catch-all is last, it wins.
+
+**Fix**: Register catch-all **first**, specific routes **last**:
+```typescript
+// Step 1: catch-all first (lowest priority)
+for (const origin of apiOrigins) {
+  await context.route(`${origin}/api/**`, (route) => { ... });
+}
+// Step 2: specific routes last (highest priority)
+for (const pattern of routeApiPattern('/navigation/my-modules')) {
+  await context.route(pattern, (route) => { ... });
+}
+```
+
+### Playwright — Sidebar is not visible (`display:none`)
+
+**Symptom**: `await expect(sidebar).toBeVisible()` fails. Computed style shows `display: none`. The sidebar element exists but is hidden.
+
+**Root cause**: The desktop sidebar uses `md:flex` to become visible. If `index.css` was generated from a pre-built Tailwind v4 file that's missing responsive utilities, `md:flex` has no effect and the sidebar stays hidden for all screen widths.
+
+**Check**:
+```bash
+grep -c "md:flex" src/Client/technijian-spa/src/index.css
+# Should be > 0. If 0, the CSS needs rebuilding.
+```
+
+**Fix**: Rebuild the CSS with `@tailwindcss/cli@4.1.3`:
+```bash
+cd src/Client/technijian-spa
+echo '@import "tailwindcss";' > src/tailwind-input.css
+npx @tailwindcss/cli@4.1.3 -i src/tailwind-input.css -o src/index.css
+# Verify result: rebuilt file should be 4800+ lines
+wc -l src/index.css
+```
+
+### Playwright — Navigation returns empty modules despite 200 response
+
+**Symptom**: Request log shows `GET /api/navigation/my-modules` → 200. But `isModuleUrlAllowed()` returns false, Access Forbidden appears. `console.log(modules)` shows `[]`.
+
+**Root cause**: See LIFO ordering issue above. The mock returned `[]` (catch-all response) not the actual modules array. The 200 status in logs is from the catch-all fulfillment, not the specific mock.
+
+**Also check**: `VITE_API_BASE_URL` in `.env.test` must match the intercepted origin in `apiOrigins`. If the URL is `https://` but `apiOrigins` only has `http://`, the request is not intercepted.
+
+### Playwright — Port 3001 already in use
+
+**Symptom**: `Error: listen EADDRINUSE: address already in use :::3001`
+
+**Fix**: Kill the existing Vite process before each test run:
+```powershell
+Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+```
+
+The config sets `reuseExistingServer: false` to prevent stale servers from serving old code.
+
+---
+
+## CSS / Tailwind Issues
+
+### Sidebar or responsive layout invisible after CSS change
+
+See "Playwright — Sidebar is not visible" above.
+
+**Quick verification** without running tests:
+```bash
+grep -c "md:flex" src/index.css          # responsive sidebar show
+grep -c "md:hidden" src/index.css        # mobile nav hide
+grep -c "@media" src/index.css           # should be 170+ for full Tailwind v4
+```
+
+If any count is 0, the CSS was committed from a partial Tailwind build. Rebuild from source.
+
+---
+
+## Database Migration Issues
+
+### Runtime SQL error: "Invalid object name '{TableName}'"
+
+**Symptom**: App runs, API returns 500, SQL Server logs show `Invalid object name 'Modules'` (or `Roles`, `RoleModules`, or any table).
+
+**Root cause**: The stored procedure references a table that has no CREATE TABLE migration. The TypeScript and .NET code compiled fine — this is a runtime-only failure.
+
+**Check**: For each table in the error:
+```bash
+grep -r "CREATE TABLE Modules" Database/Migrations/
+# If no output: the migration is missing
+```
+
+**Fix**: Write a migration that creates the missing table:
+```sql
+-- Database/Migrations/016_missing_table.sql
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Modules')
+BEGIN
+  CREATE TABLE Modules (
+    ModuleId INT IDENTITY PRIMARY KEY,
+    ModuleName NVARCHAR(100) NOT NULL,
+    Url NVARCHAR(200) NOT NULL,
+    ...
+  );
+END
+```
+
+**Prevention**: Before marking any DB-backed requirement satisfied, verify with `grep -r "CREATE TABLE {TableName}" Database/Migrations/`. If missing, block the requirement — code that compiles but fails at runtime is not satisfied.
+
+### Navigation API returns empty array at runtime (tables exist but are empty)
+
+**Symptom**: Tables exist, stored procedure runs, but returns 0 rows. Sidebar shows no navigation items.
+
+**Root cause**: Seed data was not included in the migration (or in a separate seed migration that hasn't run).
+
+**Check**: Verify the migration includes `INSERT INTO Modules` / `INSERT INTO Roles` / `INSERT INTO RoleModules` statements after the `CREATE TABLE`.
+
+**Fix**: Add seed data to the migration, or create a new seed migration (e.g. `016b_seed_modules.sql`) and run it.
+
+---
+
+## Integration Issues (Learned from ChatAI v8, 2026-03-31)
+
+### TypeScript Build Gate — noUnusedLocals false positives
+
+**Symptom**: Pipeline TypeScript check reports 200+ errors after Figma design import, all TS6133 (declared but never read).
+
+**Root cause**: Figma design files import Lucide icons/components as named imports — design system pattern. tsconfig `noUnusedLocals: true` treats these as errors.
+
+**Fix**: Set `noUnusedLocals: false` and `noUnusedParameters: false` in tsconfig.json. These are not real errors — only TS2307/TS2339/TS2345/TS2304 are real.
+
+**Prevention**: Build gate now filters TS6133/TS6196 from error count automatically. The local-validator post-processes typecheck output and suppresses noise-only errors so they do not block requirement satisfaction.
+
+---
+
+### Auth context lost after frontend replacement
+
+**Symptom**: All screens render but auth is broken — role shows as undefined, tenant missing, login loops.
+
+**Root cause**: Pipeline replaced root component (App.tsx / TCAIApp.tsx) but the new version uses internal mock auth state instead of real MSAL/AuthContext.
+
+**Fix**: In the root component, import useAuth() from AuthContext and sync state via useEffect:
+
+```tsx
+const authCtx = useAuth();
+useEffect(() => {
+  setAppState(prev => ({ ...prev, userRole: authCtx.userRole, isAuthenticated: authCtx.isAuthenticated }));
+}, [authCtx.isAuthenticated, authCtx.userRole]);
+```
+
+**Prevention**: Code review now explicitly checks root component auth wiring (Auth Wiring Check — item 5 in Integration Verification). A root component with `const [role, setRole] = useState('admin')` hardcoded is flagged as critical auth bypass.
+
+---
+
+### Stored procedure missing from database (SP-exists-in-code only)
+
+**Symptom**: API returns 500 / SqlException "Could not find stored procedure 'usp_X'". Code compiled fine.
+
+**Root cause**: C# repository references an SP that was never deployed to the database. The .sql file may exist in the repo but was never run.
+
+**Fix**: Run the SP file against the database:
+
+```powershell
+sqlcmd -S localhost -d {DbName} -i {spFile} -E
+```
+
+**Verification**: The following must return 1:
+
+```powershell
+sqlcmd -S localhost -d {DbName} -Q "SELECT COUNT(*) FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_NAME='usp_X'" -E
+```
+
+**Prevention**: Verify phase now requires SP existence confirmation before marking DB-backed requirements as satisfied. If the SP is referenced in C# but not confirmed deployed, the requirement is marked `partial` not `satisfied`.
+
+---
+
+### Pipeline rebuilds Figma screens (losing design work)
+
+**Symptom**: Pipeline regenerates all screens from scratch, losing the Figma v8 design. Only one module works after the run.
+
+**Root cause**: Plan phase didn't detect the existing `design/web/v{N}/src/` directory and planned to generate screens instead of copy them.
+
+**Fix**:
+1. Restore from design: `cp -r design/web/v8/src/* src/Client/{spa}/src/`
+2. Keep only: main.tsx, AuthContext.tsx, auth/ directory from the original
+3. Wire auth: import useAuth() in root component, sync state via useEffect
+
+**Prevention**: Plan phase (Step 0b) now checks for `design/web/v{N}/src/` before planning any frontend screen. If the directory exists, the plan must be "Copy from design/ and wire to real API" — not generate from scratch. The figma-completeness-checker also detects and reports the design source path in its output.
+
+## Frontend Static Data / API Wiring Issues (Learned from ChatAI v8, 2026-04-01)
+
+### Screen silently shows static/mock data instead of live API data
+
+**Symptom**: Screen renders with data, but data never updates. Create/edit operations appear to succeed but nothing changes. New records don't appear after creation.
+
+**Root cause — Paginated API wrapper not unwrapped**:
+Backend returns `{ Items: [...], TotalCount: N, Page: N, PageSize: N }`. Frontend does `Array.isArray(apiData)` → returns `false` → falls back to static import. The static fallback silently masks the real API.
+
+**Fix**: Unwrap at the API service layer in `api.ts`, not in the component:
+```ts
+list: () => request<any>('/resource').then((r: any) => Array.isArray(r) ? r : (r?.Items ?? []))
+```
+
+**Detection**: Grep for `from '../../../data/'` in screen components — any import from the data/ folder is a mock data import that should be replaced with a real API call.
+
+### API returns 404 but screen shows data
+
+**Symptom**: Network tab shows 404 for API calls, but screen shows hardcoded data.
+
+**Root cause**: URL mismatch. Frontend calls `/tenant` or `/user`, backend exposes `/tenants` or `/users` (plural). 404 → static fallback fires silently.
+
+**Fix**: Match controller routes exactly. ASP.NET controllers use plural resource names by convention.
+
+**Prevention**: The verify phase now checks for `import { ... } from '.../data/'` in screen components and flags as `partial` (not `satisfied`).
+
+### "My GPT / Assistants / Tenants" screen not opening when clicked
+
+**Symptom**: Clicking a nav item does nothing, or browser URL changes but screen doesn't render.
+
+**Root cause — `useNavigate()` in state-machine router**: The app uses `currentPage` state + switch statement (not React Router with `<BrowserRouter>`). Any component that calls `useNavigate()` from react-router-dom will fail silently or throw at runtime.
+
+**Fix**:
+1. Remove `import { useNavigate } from 'react-router-dom'`
+2. Add `onNavigate?: (page: string) => void` prop to component
+3. Add route case to TCAIApp switch statement for the new page
+4. Pass `onNavigate={handleNavigation}` when rendering the component
+
+### E2E tests pass but data shown is static
+
+**Symptom**: Playwright screens.spec tests all pass (green), but screen renders static/mock data during test runs, masking the real behavior.
+
+**Root cause**: Tests only checked `bodyText.length > 20` — any content (including mock data) passes.
+
+**Fix**: CRUD tests (crud.spec.ts) now verify:
+1. Specific data items from the mocked API appear (not just "body has text")
+2. After create, the new item appears in the list
+3. No `Failed to load` / `Error loading` banners appear
+
+Use the `overrideRoute()` helper in E2E tests to inject specific test data and verify it appears in the correct UI location.

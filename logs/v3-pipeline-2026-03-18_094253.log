@@ -1,0 +1,46 @@
+**********************
+PowerShell transcript start
+Start time: 20260318094253
+Username: TECHNIJIAN\rjain
+RunAs User: TECHNIJIAN\rjain
+Configuration Name: 
+Machine: TE-DC-VDITEC-03 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -File D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\scripts\gsd-existing.ps1 -RepoRoot D:\vscode\tech-web-myhr\tech-web-myhr -SkipSpecGate -StartIteration 1
+Process ID: 13404
+PSVersion: 7.5.4
+PSEdition: Core
+GitCommitId: 7.5.4
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+  [LOG] Central: C:\Users\rjain\.gsd-global\logs\tech-web-myhr
+  [LOG] Run: run-2026-03-18_094253 | Global iteration: 3
+
+============================================
+  GSD V3 - Existing Codebase Verification
+  Repo: D:\vscode\tech-web-myhr\tech-web-myhr
+  Log: D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\..\logs\v3-pipeline-2026-03-18_094253.log
+  DeepVerify: True | SkipSpecGate: True
+  Global iter: 3
+============================================
+
+--- Pre-flight ---
+    [OK] node (Node.js for TypeScript/React projects)
+    [OK] npx (npx for running local tools)
+    [OK] dotnet (.NET build/test)
+    [OK] npm (npm for package management)
+  [OK] Pre-flight passed (8 checks)
+
+--- File Inventory ---
+  [INVENTORY] Scanning repository...
+PS>TerminatingError(): "The pipeline has been stopped."
+>> TerminatingError(): "The pipeline has been stopped."
+>> TerminatingError(): "The pipeline has been stopped."
+**********************
+PowerShell transcript end
+End time: 20260318094256
+**********************

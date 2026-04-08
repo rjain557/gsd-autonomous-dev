@@ -1,0 +1,127 @@
+**********************
+PowerShell transcript start
+Start time: 20260318094340
+Username: TECHNIJIAN\rjain
+RunAs User: TECHNIJIAN\rjain
+Configuration Name: 
+Machine: TE-DC-VDITEC-03 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -NoExit -File D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\scripts\gsd-existing.ps1 -RepoRoot D:\vscode\tech-web-chatai.v8\tech-web-chatai.v8 -SkipSpecGate -StartIteration 1
+Process ID: 11208
+PSVersion: 7.5.4
+PSEdition: Core
+GitCommitId: 7.5.4
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+  [LOG] Central: C:\Users\rjain\.gsd-global\logs\tech-web-chatai.v8
+  [LOG] Run: run-2026-03-18_094339 | Global iteration: 1
+
+============================================
+  GSD V3 - Existing Codebase Verification
+  Repo: D:\vscode\tech-web-chatai.v8\tech-web-chatai.v8
+  Log: D:\vscode\gsd-autonomous-dev\gsd-autonomous-dev\v3\..\logs\v3-pipeline-2026-03-18_094339.log
+  DeepVerify: True | SkipSpecGate: True
+  Global iter: 1
+============================================
+
+--- Pre-flight ---
+    [OK] dotnet (.NET build/test)
+    [OK] npm (npm for package management)
+    [OK] node (Node.js for TypeScript/React projects)
+    [OK] npx (npx for running local tools)
+    [INFO] No requirements matrix yet — will be generated during deep extraction
+  [OK] Pre-flight passed (8 checks)
+
+--- File Inventory ---
+  [INVENTORY] Scanning repository...
+  [INVENTORY] Found 9934 files across 17 directories
+     : 1738 files
+    .bat : 6 files
+    .cs : 1029 files
+    .csproj : 10 files
+    .css : 16 files
+    .dotnetuserlevelcache : 6 files
+    .example : 9 files
+    .html : 8 files
+    .js : 19 files
+    .json : 126 files
+    .jsonl : 6 files
+    .log : 628 files
+    .md : 1867 files
+    .meta : 8 files
+    .mjs : 11 files
+    .prompt : 35 files
+    .ps1 : 135 files
+    .sh : 28 files
+    .sql : 1102 files
+    .stderr : 608 files
+    .stdout : 35 files
+    .trn : 9 files
+    .ts : 735 files
+    .tsx : 1072 files
+    .txt : 622 files
+
+--- Building Cache Prefix ---
+  Spec context: 53100 chars
+  Blueprint context: 3842 chars
+
+--- Cache Warm ---
+  [CACHE] Writing cache prefix...
+    [DEBUG] cache-warm: Starting JSON serialization...
+    [DEBUG] cache-warm: JSON done in 0.0s, body size: 60480 chars
+    [DEBUG] cache-warm: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] cache-warm: Job completed (state: Completed). Receiving output...
+    [DEBUG] cache-warm: API response received.
+  [CACHE] Warm-up complete (v1)
+
+--- Spec Gate: SKIPPED (user override) ---
+
+--- Spec Alignment ---
+
+--- Spec Alignment ---
+    [DEBUG] spec-align: Starting JSON serialization...
+    [DEBUG] spec-align: JSON done in 0.0s, body size: 96912 chars
+    [DEBUG] spec-align: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] spec-align: Job completed (state: Completed). Receiving output...
+    [DEBUG] spec-align: API response received.
+  Drift: 38% | Status: block
+  38% drift detected: 31 spec items (OpenAPI v1.2 endpoints, search contract, accessibility DTOs, all 19 v1.3 roadmap phases, 31 deferred routes, 3 backlog items) have no visible implementation, while 17 files are orphaned from any traceable requirement.
+  Missing in code: 31 items
+  Orphaned code: 18 files
+  [BLOCKED] Drift 38% exceeds 20% threshold. Fix spec alignment first.
+  [DRIFT] Spec alignment drift detected — convergence pipeline will address gaps.
+  [DRIFT] Pipeline will continue to fix drift through iterations.
+
+============================================
+  DEEP REQUIREMENTS EXTRACTION
+============================================
+  Spec files found: 509
+  [WARN] Spec content truncated to 100K chars
+  Calling Sonnet for deep extraction (32K max tokens)...
+    [DEBUG] unknown: Starting JSON serialization...
+    [DEBUG] unknown: JSON done in 0.0s, body size: 60307 chars
+    [DEBUG] unknown: Attempt 1/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 1/3, waiting 2s...
+    [DEBUG] unknown: Attempt 2/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 2/3, waiting 4s...
+    [DEBUG] unknown: Attempt 3/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+    [RETRY] Sonnet API error (Response status code does not indicate success: 400 (Bad Request). |BODY| ), attempt 3/3, waiting 8s...
+    [DEBUG] unknown: Attempt 4/4 - Starting API job (timeout: 300s)...
+    [DEBUG] unknown: Job completed (state: Failed). Receiving output...
+PS>TerminatingError(): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Response status code does not indicate success: 400 (Bad Request). |BODY| "
+  [ERR] Sonnet API call failed: api_error
+  [FATAL] No existing matrix and extraction failed. Aborting.
+**********************
+PowerShell transcript end
+End time: 20260318094546
+**********************

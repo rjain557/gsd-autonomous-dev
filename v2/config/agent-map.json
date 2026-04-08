@@ -1,0 +1,138 @@
+{
+    "version": "2.0.0",
+    "strategy": "tiered-alternation",
+    "description": "Tier 1 (Quality): CLI agents for reasoning. Tier 2 (Bulk): REST API agents for parallel work. Alternation ensures no agent is used in consecutive steps.",
+
+    "tiers": {
+        "quality": {
+            "agents": ["claude", "codex", "gemini"],
+            "description": "CLI-based agents for reasoning-heavy tasks (review, planning, architecture)"
+        },
+        "bulk": {
+            "agents": ["kimi", "deepseek", "glm5", "minimax"],
+            "description": "REST API agents for parallel throughput (research, execution, bulk code gen)"
+        }
+    },
+
+    "step_assignments": {
+        "01-spec-quality-gate": {
+            "agent": "claude",
+            "tier": "quality",
+            "reason": "Architectural reasoning for contradiction detection"
+        },
+        "02-requirements-derivation": {
+            "agents": ["gemini", "kimi", "deepseek", "glm5", "minimax"],
+            "tier": "both",
+            "strategy": "parallel-per-artifact",
+            "reason": "Parallel extraction from each artifact. Claude rests (used in Step 1)"
+        },
+        "03-requirements-reconciliation": {
+            "agent": "codex",
+            "tier": "quality",
+            "reason": "Dedup/merge logic. Claude rests (Step 1), Gemini rests (Step 2)"
+        },
+        "04-dependency-graph": {
+            "agent": "claude",
+            "tier": "quality",
+            "reason": "Architectural dependency analysis. Rested during Steps 2-3"
+        },
+        "05-token-forecaster": {
+            "agent": "gemini",
+            "tier": "quality",
+            "reason": "Analytical estimation. Claude rests (Step 4)"
+        },
+        "06-requirement-decomposer": {
+            "agent": "codex",
+            "tier": "quality",
+            "reason": "Decomposition logic. Rested during Steps 4-5"
+        },
+        "07a-research": {
+            "agents": ["claude", "codex", "gemini", "kimi", "deepseek", "glm5", "minimax"],
+            "tier": "all",
+            "strategy": "wave-parallel-round-robin",
+            "max_concurrent": 7,
+            "reason": "All 7 agents distributed round-robin within dependency waves"
+        },
+        "07b-plan": {
+            "agents": ["claude", "codex", "gemini"],
+            "tier": "quality",
+            "strategy": "wave-parallel-round-robin",
+            "max_concurrent": 3,
+            "reason": "Planning needs higher reasoning quality. Tier 2 rests (used in 7a)"
+        },
+        "08-iteration-planner": {
+            "agent": "claude",
+            "tier": "quality",
+            "reason": "Architectural bundling of requirements into iterations"
+        },
+        "09a-execute": {
+            "agents": ["codex", "kimi", "deepseek", "glm5", "minimax"],
+            "tier": "bulk+codex",
+            "strategy": "parallel-round-robin",
+            "max_concurrent": 5,
+            "sequential_agent": "codex",
+            "reason": "Bulk code gen. Claude & Gemini rest (used for review in 9c)"
+        },
+        "09c-code-review": {
+            "agents": ["claude", "gemini"],
+            "tier": "quality",
+            "strategy": "dual-review",
+            "reason": "Quality review. Codex & Tier 2 rest (used in 9a)"
+        },
+        "10-final-validation": {
+            "agent": "claude",
+            "tier": "quality",
+            "reason": "Final quality synthesis"
+        }
+    },
+
+    "alternation_timeline": {
+        "description": "No agent is used in consecutive steps. Execute/Review alternate perfectly within iteration loop.",
+        "steps": [
+            { "step": 1,    "active": ["claude"],                              "resting": ["codex", "gemini", "tier2"] },
+            { "step": 2,    "active": ["gemini", "tier2"],                     "resting": ["claude", "codex"] },
+            { "step": 3,    "active": ["codex"],                               "resting": ["claude", "gemini", "tier2"] },
+            { "step": 4,    "active": ["claude"],                              "resting": ["codex", "gemini", "tier2"] },
+            { "step": 5,    "active": ["gemini"],                              "resting": ["claude", "codex", "tier2"] },
+            { "step": 6,    "active": ["codex"],                               "resting": ["claude", "gemini", "tier2"] },
+            { "step": "7a", "active": ["all"],                                 "resting": ["distributed"] },
+            { "step": "7b", "active": ["claude", "codex", "gemini"],           "resting": ["tier2"] },
+            { "step": 8,    "active": ["claude"],                              "resting": ["codex", "gemini", "tier2"] },
+            { "step": "9a", "active": ["codex", "tier2"],                      "resting": ["claude", "gemini"] },
+            { "step": "9c", "active": ["claude", "gemini"],                    "resting": ["codex", "tier2"] }
+        ]
+    },
+
+    "agent_config": {
+        "claude": {
+            "type": "cli",
+            "invoke": "claude -p {prompt} --allowedTools {tools}",
+            "default_tools": "Read,Write,Bash",
+            "context_window": 200000,
+            "max_output_tokens": 64000
+        },
+        "codex": {
+            "type": "cli",
+            "invoke": "codex exec --full-auto -",
+            "context_window": 200000,
+            "max_output_tokens": 64000
+        },
+        "gemini": {
+            "type": "cli",
+            "invoke": "gemini {mode}",
+            "default_mode": "--approval-mode plan",
+            "context_window": 1000000,
+            "max_output_tokens": 64000
+        },
+        "kimi":     { "type": "api", "context_window": 128000, "max_output_tokens": 8192 },
+        "deepseek": { "type": "api", "context_window": 128000, "max_output_tokens": 8192 },
+        "glm5":     { "type": "api", "context_window": 128000, "max_output_tokens": 8192 },
+        "minimax":  { "type": "api", "context_window": 200000, "max_output_tokens": 8192 }
+    },
+
+    "wave_config": {
+        "cooldown_between_waves_seconds": 10,
+        "cooldown_between_calls_seconds": 2,
+        "fallback_to_sequential": true
+    }
+}

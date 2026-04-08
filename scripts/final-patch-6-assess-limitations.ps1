@@ -191,7 +191,7 @@ $limitations = @"
 | 7 | Agent boundary crossing | Test-AgentBoundaries + auto-revert | [OK] |
 | 8 | CLI version changes undetected | Test-CliVersionCompat parses versions, warns on untested | [OK] |
 | 9 | Disk check only in retry | Test-DiskSpace at top of every iteration in both loops | [OK] |
-| 10 | Network failure | Wait-ForNetwork polls 30s for 1h | [OK] |
+| 10 | Network failure | Wait-ForNetwork HTTP HEAD check, 10s x 6 polls (60s max), then skip | [OK] |
 | 11 | Blueprint missing interface detection | Loads interface-wrapper, Initialize-ProjectInterfaces | [OK] |
 | 12 | Figma Make prompts never selected | Select-BlueprintPrompt / Select-BuildPrompt wired in | [OK] |
 | 13 | Convergence not multi-interface aware | Interface context injected into all 5 phase prompts | [OK] |

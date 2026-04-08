@@ -2,9 +2,11 @@
 
 ## Overview
 
-The GSD Engine orchestrates three AI agents (Claude Code, Codex CLI, and Gemini CLI) through PowerShell scripts to autonomously develop, fix, and verify code against specifications. It runs unattended with comprehensive self-healing for network failures, quota limits, disk space, JSON corruption, agent boundary violations, and stalls.
+The GSD Engine orchestrates seven AI agents (3 CLI-based + 4 REST API) through PowerShell scripts to autonomously develop, fix, and verify code against specifications. It runs unattended with comprehensive self-healing for network failures, quota limits, disk space, JSON corruption, agent boundary violations, and stalls.
 
-The three-model strategy distributes work across independent quota pools: Claude handles reasoning (review, plan, verify), Codex handles code generation (execute), and Gemini handles research and spec-fix (saves Claude/Codex quota).
+The multi-model strategy distributes work across independent quota pools: Claude (claude-sonnet-4-6) handles reasoning (review, plan, verify), Codex (gpt-5.4) handles code generation (execute), and Gemini (gemini-3.0-pro) handles research and spec-fix. Four additional REST API agents (Kimi K2.5, DeepSeek V3, GLM-5, MiniMax M2.5) expand the rotation pool — when any CLI agent exhausts its quota, the engine immediately rotates to the next available agent instead of waiting in sleep loops.
+
+Model versions are controlled by `agent_models` in `global-config.json` and passed via `--model` flag to every CLI invocation. Changing model versions requires only a config edit — no reinstall needed.
 
 ## Installed Directory Structure
 
@@ -18,8 +20,12 @@ After running install-gsd-all.ps1, the engine creates:
     gsd-status.cmd              # Health status dashboard
     gsd-remote.cmd              # Remote monitoring launcher
     gsd-costs.cmd               # Token cost calculator
+    gsd-fix.cmd                 # Quick bug fix mode
+    gsd-update.cmd              # Incremental feature update
   config\
     global-config.json          # Global settings (notifications, patterns, phases)
+    agent-map.json              # Agent-to-phase assignments, parallel config, council reviewers
+    model-registry.json         # Multi-model registry (CLI + REST agent metadata, rotation pool)
   lib\modules\
     resilience.ps1              # Retry, checkpoint, lock, rollback, adaptive batch, hardening, final validation
     interfaces.ps1              # Multi-interface detection + auto-discovery
@@ -28,7 +34,7 @@ After running install-gsd-all.ps1, the engine creates:
     claude\                     # Claude Code prompt templates (review, plan, verify)
     codex\                      # Codex prompt templates (execute, research fallback)
     gemini\                     # Gemini prompt templates (research, spec-fix)
-    council\                    # Council prompt templates (14 templates: 6 types x 2 + synthesis variants)
+    council\                    # Council prompt templates (15 templates: 6 types x 2 + synthesis variants + openai-compat-review)
   blueprint\
     scripts\
       blueprint-pipeline.ps1    # Blueprint generation + build loop
@@ -102,7 +108,7 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 
 ### gsd-assess
 
-1. Detect interfaces (recursive scan for design\{type}\v##)
+1. Detect interfaces (recursive scan for design\{type}\v## + auto-detect API from .sln/.csproj + Database from .sql files)
 2. Auto-discover _analysis/ and _stubs/ within each interface
 3. Generate file map (JSON + tree)
 4. Send assessment prompt to Claude with file map + interface context
@@ -134,37 +140,60 @@ developer-handoff.md              # Auto-generated developer handoff report (rep
 6. STALL DIAGNOSIS COUNCIL: 3-agent collaborative diagnosis if health stalls
 7. Repeat until 100% or stalled
 
-## Agent Assignment (Three-Model Strategy)
+## Agent Assignment (Multi-Model Strategy)
+
+### Primary Agents (CLI-based)
 
 | Phase | Agent | Mode | Why |
 |-------|-------|------|-----|
 | Review | Claude | `--allowedTools Read,Write,Bash` | Better at architectural analysis |
-| Research | **Gemini** | `--approval-mode plan` (read-only) | Saves Claude/Codex quota; falls back to Codex |
+| Research | **Gemini** | `--approval-mode plan` (read-only; requires `experimental.plan: true` in gemini settings) | Saves Claude/Codex quota; falls back to Codex |
 | Plan | Claude | `--allowedTools Read,Write,Bash` | Better at strategic planning |
 | Execute | Codex (or parallel pool) | `--full-auto` | Faster at bulk code generation; parallel mode round-robins across agents |
 | Verify | Claude | `--allowedTools Read,Write,Bash` | Better at spec compliance checking |
-| Council Review | Claude + Codex + **Gemini** | Independent parallel reviews | 3-agent cross-validation at 100% health |
-| Council Synthesize | Claude | Reads all 3 reviews | Produces consensus verdict (approve/block) |
+| Council Review | Claude + Codex + **Gemini** + REST agents | Independent parallel reviews | Multi-agent cross-validation at 100% health |
+| Council Synthesize | Claude | Reads all reviews | Produces consensus verdict (approve/block) |
 | Spec-Fix | **Gemini** | `--yolo` (write) | Saves Claude/Codex quota for code gen |
 | Blueprint | Claude | `--allowedTools Read,Write,Bash` | Better at spec-to-manifest generation |
 | Build | Codex | `--full-auto` | Faster at code generation from specs |
 
-Token budgets are optimized across three independent quota pools:
+### REST API Agents (OpenAI-compatible)
+
+| Agent | Provider | Model ID | Input $/M | Output $/M |
+|-------|----------|----------|-----------|------------|
+| kimi | Moonshot AI | kimi-k2.5 | $0.60 | $2.50 |
+| deepseek | DeepSeek | deepseek-chat | $0.28 | $0.42 |
+| glm5 | Zhipu AI | glm-5 | $1.00 | $3.20 |
+| minimax | MiniMax | MiniMax-M2.5 | $0.29 | $1.20 |
+
+REST agents participate in:
+- **Agent rotation**: When a CLI agent hits quota, the engine rotates to the next available REST agent
+- **Parallel execute pool**: Added to the `execute_parallel.agent_pool` for sub-task distribution
+- **Council reviews**: Added to `council.reviewers` for expanded cross-validation
+- **Supervisor fallback**: L2 diagnosis can use a REST agent when Claude is in cooldown
+
+REST agents use the OpenAI-compatible chat completions API (text-in/text-out). They do not support file-system tool use, so they handle text generation sub-tasks only. Full agentic file editing stays with CLI agents.
+
+Token budgets are optimized across seven independent quota pools:
 - Claude Code: 4 reasoning phases (review, create-phases, plan, verify) = ~5K tokens each
 - Codex: 1 execution phase (execute) = ~65K tokens per iteration
 - Gemini: 2 supporting phases (research, spec-fix) = ~10K tokens per iteration
+- Kimi/DeepSeek/GLM-5/MiniMax: rotation fallbacks + parallel sub-tasks + council reviews
 
-### Why Three Models?
+### Why Seven Models?
 
 Each agent draws from an independent API quota pool. This means:
 - Claude quota exhaustion does NOT block Gemini research or Codex execution
-- Codex quota exhaustion does NOT block Claude review or Gemini research
+- Codex quota exhaustion triggers immediate rotation to the next available agent (kimi, deepseek, glm5, or minimax) instead of a 5-minute sleep loop
 - Gemini handles the "unlimited reading" work that previously burned through Codex quota
-- Overall throughput increases because agents can work without competing for the same quota
+- REST agents provide 4 additional fallback pools, dramatically reducing total wait time during quota exhaustion
+- Overall throughput increases because 7 agents across 7 providers virtually eliminates quota-induced stalls
 
 ### API Key Authentication
 
-Each agent CLI supports two authentication methods: interactive login (OAuth) and API key environment variables. API keys bypass interactive rate limits and enable higher throughput for autonomous pipelines.
+Each CLI agent supports two authentication methods: interactive login (OAuth) and API key environment variables. REST API agents require API keys (no CLI to authenticate interactively).
+
+#### CLI Agent Keys
 
 | Environment Variable | CLI | Expected Prefix | Purpose |
 |---------------------|-----|----------------|---------|
@@ -172,13 +201,33 @@ Each agent CLI supports two authentication methods: interactive login (OAuth) an
 | OPENAI_API_KEY | Codex | sk- | Execute, build phases |
 | GOOGLE_API_KEY | Gemini | AIza | Research, spec-fix phases |
 
-API keys are configured during installation (Step 0 of `install-gsd-global.ps1`) or via the standalone `setup-gsd-api-keys.ps1` script. Keys are stored as persistent User-level environment variables (Windows registry), never committed to git.
+CLI agent API keys are configured during installation (Step 0 of `install-gsd-global.ps1`) or via `setup-gsd-api-keys.ps1`. If not set, CLI agents fall back to interactive OAuth (which may have lower rate limits).
 
-If API keys are not set, agents fall back to interactive OAuth authentication (which may have lower rate limits).
+#### REST Agent Keys
+
+| Environment Variable | Provider | Agent Name | Key Source |
+|---------------------|----------|-----------|-----------|
+| KIMI_API_KEY | Moonshot AI | kimi | https://platform.moonshot.ai |
+| DEEPSEEK_API_KEY | DeepSeek | deepseek | https://platform.deepseek.com |
+| GLM_API_KEY | Zhipu AI | glm5 | https://z.ai |
+| MINIMAX_API_KEY | MiniMax | minimax | https://platform.minimaxi.com |
+
+REST agent API keys are optional. Agents without keys are automatically excluded from the rotation pool. Set keys as User-level environment variables:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("KIMI_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("GLM_API_KEY", "your-key-here", "User")
+[System.Environment]::SetEnvironmentVariable("MINIMAX_API_KEY", "your-key-here", "User")
+```
+
+The engine checks environment variables in order: Process → User → Machine. Keys set at User or Machine level are automatically loaded into the current session at preflight time, so you do not need to restart your terminal after setting them.
+
+All API keys are stored as persistent environment variables (Windows registry), never committed to git.
 
 ### Gemini Fallback
 
-If the Gemini CLI (`gemini`) is not installed, the engine automatically falls back to Codex for research and spec-fix phases. Install Gemini CLI to get the full benefit of three-model optimization:
+If the Gemini CLI (`gemini`) is not installed, the engine automatically falls back to Codex for research and spec-fix phases. Install Gemini CLI to get the full benefit of the core 3-model phase routing and the broader 7-model architecture:
 
 ```
 npm install -g @google/gemini-cli
@@ -240,7 +289,7 @@ After each successful phase, state is saved to .gsd-checkpoint.json. On restart,
 
 ### Quota Management
 
-Detects "quota exhausted" or "rate limit" in agent output. Adaptive backoff: starts at 5 minutes, doubles each cycle (5 -> 10 -> 20 -> 40 -> 60 -> 60 min cap). Max 24 hours of retries with hourly quota checks. Differentiates rate_limit (wait 2 min) vs quota_exhausted (wait hours).
+Detects "quota exhausted" or "rate limit" in agent output. On first quota failure, the engine immediately rotates to the next available agent (from a pool of 7) instead of waiting. If all agents are exhausted, adaptive backoff starts: 5 minutes, doubles each cycle (5 -> 10 -> 20 -> 40 -> 60 -> 60 min cap). Cumulative quota wait capped at 2 hours. Differentiates rate_limit (wait 2 min) vs quota_exhausted (rotate immediately, then wait if all exhausted).
 
 ### Proactive Throttling
 
@@ -614,11 +663,27 @@ During blueprint verification, Claude traces data paths end-to-end:
 
 ## Interface Detection
 
+A complete project has three foundational layers:
+
+```
+UI Interfaces (web, mobile, mcp, browser, agent)
+        |
+    REST API / Backend (.NET Controllers -> Services -> Dapper)
+        |
+    Database (SQL Server stored procs -> tables -> seed data)
+```
+
+All UI interfaces communicate with the database through the API. The engine detects each layer as a separate interface.
+
 The engine searches for design folders in this order:
 1. Direct: {repo}\design\{type}\ (e.g., design\web\)
 2. Recursive: searches up to 3 levels deep for any folder named {type} whose parent is "design"
 
-Supported interface types: web, mcp, browser, mobile, agent
+Supported interface types: web, api, database, mcp, browser, mobile, agent
+
+The `api` and `database` types can be detected two ways:
+- **Design-dir based**: `design\api\v##` or `design\database\v##` (same as other types)
+- **Auto-detected from project structure**: `.sln`/`.csproj` files trigger API detection; `database/`/`db/` directories containing `.sql` files trigger Database detection. Auto-detected interfaces are marked accordingly in the output.
 
 Within each interface version folder, it recursively finds:
 - _analysis/ (12 expected deliverable files from Figma Make)
@@ -761,9 +826,10 @@ Pattern checks enforced on every iteration:
 ### CLI Version Validation
 
 Pre-flight checks for required tools:
+
 - claude (required)
 - codex (required)
-- gemini (optional - falls back to codex for research/spec-fix)
+- gemini (required for partitioned review; falls back to codex for research/spec-fix if unavailable)
 - dotnet (8.x)
 - node, npm
 - sqlcmd (optional)
@@ -841,10 +907,15 @@ When health reaches 100%, the engine runs a final validation gate before declari
 | 7 | npm vulnerability audit | `npm audit --audit-level=high` | WARN | Flags high+ severity npm vulnerabilities |
 | 8 | Database completeness | `Test-DatabaseCompleteness` | HARD | Full chain API->SP->Table->Seed verified |
 | 9 | Security compliance | `Test-SecurityCompliance` | HARD/WARN | Critical=hard, High/Medium=warn |
+| 10 | Seed data FK order | `Test-SeedDataFkOrder` | HARD | INSERT statements ordered to satisfy FK constraints |
+| 11 | API endpoint discovery | `Find-ApiEndpoints` | -- | Discovers routes for smoke test (no pass/fail) |
+| 12 | Runtime smoke test | `Invoke-ApiSmokeTest` | HARD | Starts app, hits endpoints, checks for HTTP 500s |
+
+Checks 10-12 are added by the Runtime Smoke Test script (v2.1.0). See [Runtime Smoke Test](#runtime-smoke-test-patch-gsd-runtime-smoke-testps1) for details.
 
 ### Failure Handling
 
-- **Hard failures** (checks 1-4, 8, 9-critical): Set health to 99%, write failures to `.gsd/supervisor/error-context.md` so the next iteration's code review picks them up, loop continues to fix the issues
+- **Hard failures** (checks 1-4, 8, 9-critical, 10, 12): Set health to 99%, write failures to `.gsd/supervisor/error-context.md` so the next iteration's code review picks them up, loop continues to fix the issues
 - **Warnings** (checks 5-7, 9-high/medium): Included in the developer handoff report but do NOT block convergence
 - **Max 3 validation attempts**: If validation fails 3 times, the pipeline exits to avoid infinite loops
 - **Skipped checks**: If no .sln, no package.json, or no test projects exist, those checks are skipped (not a failure)
@@ -1001,9 +1072,11 @@ Pricing is fetched from the [LiteLLM open-source pricing database](https://githu
 | Claude Sonnet 4.6 | $3.00 | $15.00 | Blueprint, verify (default) |
 | Claude Opus 4.6 | $5.00 | $25.00 | Blueprint, verify (premium) |
 | Claude Haiku 4.5 | $1.00 | $5.00 | Blueprint, verify (economy) |
-| GPT 5.3 Codex | $1.75 | $14.00 | Code generation (build/execute) |
+| GPT 5.4 Codex | TBD | TBD | Code generation (build/execute) — default |
+| GPT 5.3 Codex | $1.75 | $14.00 | Code generation (fallback) |
 | GPT-5.1 Codex | $1.25 | $10.00 | Code generation (alternative) |
-| Gemini 3.1 Pro | $2.00 | $12.00 | Research, spec-fix |
+| Gemini 3 Pro | TBD | TBD | Research, spec-fix — default |
+| Gemini 3.1 Pro Preview | $2.00 | $12.00 | Research, spec-fix (fallback) |
 
 ### Pricing Cache
 
@@ -1110,6 +1183,157 @@ Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and ac
 - Summary can be rebuilt from JSONL via `Rebuild-CostSummary` if corrupted
 - Existing error detection (quota, rate limit, auth keywords) works on extracted text content
 
+## v2.1.0 New Capabilities (Scripts 32-35)
+
+### Runtime Smoke Test (patch-gsd-runtime-smoke-test.ps1)
+
+Wraps the existing `Invoke-FinalValidation` to add checks 8-10 after the original 7 checks, closing the gap between "code compiles + tests pass" and "code actually runs without 500 errors."
+
+| Function | Purpose |
+|----------|---------|
+| `Test-SeedDataFkOrder` | Static FK ordering scan of SQL seed files -- detects INSERT statements that would violate foreign key constraints due to ordering |
+| `Find-ApiEndpoints` | Discovers API routes from controller files and OpenAPI specs |
+| `Invoke-ApiSmokeTest` | Starts the application (`dotnet run`), waits for startup, hits discovered endpoints checking for HTTP 500 errors |
+| `Invoke-RuntimeSmokeTest` | Orchestrator that runs all 3 checks |
+
+The API smoke test detects three categories of runtime failure:
+- **DI container errors**: `Cannot resolve scoped service` (lifetime mismatch)
+- **FK constraint violations**: `SqlException: FK constraint` (seed data ordering)
+- **General 500s**: Any HTTP 500 response from discovered endpoints
+
+Prompt templates: `prompts/shared/health-endpoint.md`, `prompts/shared/di-service-lifetime.md`
+
+Configuration in `global-config.json` under `runtime_smoke_test`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | true | Enable/disable runtime smoke testing |
+| `startup_timeout_seconds` | 30 | Max wait for `dotnet run` to become responsive |
+| `max_endpoints` | 50 | Cap on endpoints to probe per run |
+| `block_on_500` | true | Whether 500 errors block convergence (reset health to 99%) |
+
+### Partitioned Code Review (patch-gsd-partitioned-code-review.ps1)
+
+Replaces single-agent Claude code review with 3-partition parallel review. Requirements are divided into three groups (A, B, C) and reviewed concurrently by different agents.
+
+| Function | Purpose |
+|----------|---------|
+| `Split-RequirementsIntoPartitions` | Divides requirements into 3 groups (A, B, C) |
+| `Get-SpecAndFigmaPaths` | Resolves spec documents and Figma deliverables for prompt context |
+| `Invoke-PartitionedCodeReview` | Launches 3 parallel PowerShell jobs (one per partition) |
+| `Merge-PartitionedReviews` | Combines 3 partition results into unified health score and review |
+| `Update-CoverageMatrix` | Tracks which agent has reviewed which requirement across iterations |
+
+**Rotation Matrix** (`iteration % 3` determines agent assignment):
+
+| Iteration | Partition A | Partition B | Partition C |
+|-----------|-------------|-------------|-------------|
+| 1, 4, 7 | Claude | Gemini | Codex |
+| 2, 5, 8 | Gemini | Codex | Claude |
+| 3, 6, 9 | Codex | Claude | Gemini |
+
+This ensures every agent reviews every partition over 3 iterations, eliminating single-agent blind spots.
+
+**Partition Focus Areas** (3 prompt templates):
+- **Partition A**: Implementation & Architecture
+- **Partition B**: Data Flow & Integration
+- **Partition C**: Security, Compliance & UX
+
+Reviews validate against both spec documents and Figma deliverables.
+
+**Agent Dispatch**: `Invoke-WithRetry` handles all three agents (claude, codex, gemini) with the `-GeminiMode` parameter controlling Gemini's approval mode. Prompts exceeding 8KB are automatically written to a temp file and piped via stdin to avoid shell argument-length limits. The patch script auto-patches `resilience.ps1` (step 2b) to add gemini dispatch if missing.
+
+Configuration in `global-config.json` under `partitioned_code_review`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | true | Enable/disable partitioned review |
+| `rotation_strategy` | "round-robin" | Agent rotation strategy |
+| `validate_against_figma` | true | Include Figma deliverables in review context |
+| `validate_against_spec` | true | Include spec documents in review context |
+
+Output files:
+- `.gsd/code-review/rotation-history.jsonl` -- append-only log of which agent reviewed which partition
+- `.gsd/code-review/coverage-matrix.json` -- current coverage state across all requirements
+
+Fallback: if partitioned review fails, falls back to single-agent Claude review.
+
+### LOC-Cost Integration (patch-gsd-loc-cost-integration.ps1)
+
+Connects LOC tracking with cost tracking and code review, providing cost-per-line metrics and injecting LOC context into agent prompts.
+
+| Function | Purpose |
+|----------|---------|
+| `Save-LocBaseline` | Records starting commit hash for LOC delta calculation |
+| `Complete-LocTracking` | Computes grand total LOC delta from baseline to HEAD |
+| `Get-LocCostSummaryText` | Multi-line LOC vs Cost summary for final ntfy notifications |
+| `Get-LocContextForReview` | LOC history table injected into code review prompts |
+| `Get-LocNotificationText` | Enhanced to always include cost-per-line (e.g., "LOC: +250 / -30 net 220 | 12 files | $0.003/line") |
+
+Integration points:
+- **Code review prompts**: LOC context injected into standard, differential, and partitioned (A/B/C) review prompts so reviewers see how much code was generated
+- **Template resolution**: `Local-ResolvePrompt` auto-injects LOC context for code-review phase
+- **Final notifications**: CONVERGED/STALLED/MAX_ITERATIONS ntfy messages include grand total LOC vs cost summary
+
+Uses the existing `loc_tracking` config block (no new configuration needed).
+
+### Clarification System (v3/lib/modules/clarification-system.ps1)
+
+Collects policy and design questions from generated code and agent output, consolidates them into a single `PIPELINE-CLARIFICATIONS.md` file in the repository root, and pauses the pipeline until answers are provided.
+
+**Purpose**: When agents encounter ambiguous requirements — RBAC policies, auth providers, TODO markers, or incomplete business rules — they emit structured clarification requests instead of guessing. The clarification system aggregates these and presents them to the developer.
+
+**Pipeline integration**: Pass `-ClarificationsFile "PIPELINE-CLARIFICATIONS.md"` to `gsd-full-pipeline.ps1` on the re-run to inject answers back into agent prompts.
+
+**Pause behavior**: The pipeline exits cleanly at the end of the current phase with exit code 2 (distinct from error exit code 1). The `PIPELINE-CLARIFICATIONS.md` file contains all questions grouped by category (RBAC, Auth, Business Logic, Data Model). After editing the file with answers, re-run the pipeline with `-StartFrom {current-phase} -ClarificationsFile PIPELINE-CLARIFICATIONS.md`.
+
+**Parameters** (`gsd-full-pipeline.ps1`):
+- `-ClarificationsFile` — path to answered clarifications file (default: none)
+- `-MaxPostConvIter` — max retry cycles per phase (default: 5)
+
+### Runtime Fix Functions (V4 Auto-Fix Loop)
+
+Phases 6, 7, and 8 of the full pipeline now retry up to `-MaxPostConvIter` times (default 5). Each retry invokes one or more auto-fix functions before re-running the failing phase:
+
+| Function | Trigger | What It Fixes |
+|----------|---------|---------------|
+| `Invoke-RuntimeFix` | Backend fails to start (DI container errors) | Adds/corrects service registrations in `Program.cs` |
+| `Invoke-EndpointFix` | Specific HTTP endpoints return 500 after startup | Fixes route handler implementation, missing SP calls |
+| `Invoke-MiddlewareFix` | Middleware-order errors (e.g., auth before routing) | Reorders middleware pipeline in `Program.cs` to .NET 8 correct order |
+| `Invoke-WireRouteInApp` | New screen components not reachable | Wires component into `App.tsx` router with correct path and lazy import |
+| `Invoke-BackendCreate` | Missing C# module (controller/service/repository missing) | Generates full scaffold from spec for the missing module |
+| `Invoke-SqlCreate` | Missing stored procedures for an endpoint | Generates T-SQL stored procedures from the API contract spec |
+
+All fix functions are dispatched by `gsd-full-pipeline.ps1` automatically. They can also be invoked standalone for targeted repairs.
+
+### Maintenance Mode (patch-gsd-maintenance-mode.ps1)
+
+Adds post-launch maintenance capabilities for fixing bugs and adding features to already-converged projects.
+
+**New Commands**:
+
+| Command | Purpose |
+|---------|---------|
+| `gsd-fix` | Quick bug fix mode -- accepts bug descriptions, auto-creates BUG-xxx requirements, runs scoped convergence with reduced iterations |
+| `gsd-update` | Incremental feature addition from updated specs (v02+), preserves satisfied requirements |
+
+**New Parameters**:
+
+| Parameter | Description |
+|-----------|-------------|
+| `--Scope` | Filters plan/execute to specific requirements while code-review still sees all (enables regression detection) |
+| `--Incremental` | Additive Phase 0 that merges new requirements instead of rebuilding the matrix |
+
+Prompt template: `prompts/claude/create-phases-incremental.md`
+
+Configuration in `global-config.json` under `maintenance_mode`:
+
+| Key | Description |
+|-----|-------------|
+| `fix_defaults` | Default settings for gsd-fix (max iterations, batch size) |
+| `scope_filter` | Scope filtering behavior (plan/execute scoped, code-review unscoped) |
+| `incremental_phases` | Settings for incremental requirement merging |
+
 ## Known Automation Boundaries
 
 ### Fully Automated (no human intervention)
@@ -1132,7 +1356,10 @@ Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and ac
 - Pipeline stall/max iterations: supervisor root-causes via Claude, modifies prompts/specs/queue, restarts in new terminal (up to 5 attempts)
 - Compilation errors at 100% health: final validation gate detects, resets to 99%, loop auto-fixes (up to 3 attempts)
 - Test failures at 100% health: same as compilation errors -- auto-fix via validation retry loop
+- Runtime 500 errors at 100% health: smoke test detects DI/FK/endpoint failures, resets to 99%, loop auto-fixes
 - Developer handoff generation: auto-generated `developer-handoff.md` at pipeline exit with build commands, DB setup, requirements, costs
+- Bug fixes via `gsd-fix`: auto-creates BUG-xxx requirements, runs scoped convergence
+- Incremental feature addition via `gsd-update`: merges new requirements from updated specs
 
 ### Requires Human Intervention
 
@@ -1144,3 +1371,590 @@ Run `gsd-costs -ShowActual` to see a side-by-side comparison of estimated and ac
 - Quota exhausted for more than 24 hours (wait for billing cycle)
 - CLI breaking changes (update scripts)
 - Validation fails 3 times (compilation/test issues too complex for auto-fix)
+
+## V3 Architecture Additions
+
+The following sections document V3-specific architectural capabilities that extend the base engine described above.
+
+### Multi-Model Execute Pool
+
+The V3 pipeline distributes code generation across 7 models using a weighted round-robin strategy. This provides resilience against rate limits, cost optimization, and access to independent quota pools.
+
+#### Pool Configuration
+
+| Model | Provider | Weight | Selection Frequency |
+|-------|----------|--------|-------------------|
+| Codex Mini (gpt-5.1-codex-mini) | OpenAI | 3 | ~30% |
+| DeepSeek Chat | DeepSeek | 2 | ~20% |
+| Kimi (moonshot-v1-8k) | Moonshot AI | 1 | ~10% |
+| MiniMax (MiniMax-Text-01) | MiniMax | 1 | ~10% |
+| Claude Sonnet (claude-sonnet-4-6) | Anthropic | 1 | ~10% |
+| Gemini Flash | Google | 1 | ~10% |
+| GLM-5 (glm-4-flash) | Zhipu AI | 1 | ~10% |
+
+#### How Rotation Works
+
+1. Models are ordered by weight (highest first) and cycled through in round-robin fashion
+2. When a model hits a rate limit, it is temporarily removed from the pool and the next model is selected
+3. Models without configured API keys are excluded from the pool at startup
+4. Higher-weight models handle more requests, concentrating work on the fastest and most reliable providers
+5. The pool ensures that rate limits on any single provider never stall the pipeline
+
+#### Cost Optimization
+
+The weighting system naturally routes more work to cost-effective models (Codex Mini at $0.15/M input, DeepSeek at $0.14/M input) while keeping premium models (Claude Sonnet) available for complex requirements or when cheaper models are rate-limited.
+
+### Anti-Plateau Protection
+
+When the pipeline's health score stops improving, anti-plateau protection takes graduated action to break through stalls.
+
+#### Detection Mechanism
+
+The supervisor tracks consecutive zero-delta iterations (iterations where health score did not improve). Each iteration's health delta is recorded in `.gsd/health/health-history.jsonl`.
+
+#### Graduated Escalation
+
+| Zero-Delta Count | Level | Action |
+|-----------------|-------|--------|
+| 3 | Warning | Flag requirements that have failed 3+ times. Log warning to console and notifications. |
+| 4 | Escalate | Recommend upgrading plan and review phases to Claude Opus for the top 3 stuck requirements. Maximum 10 Opus escalations per project. |
+| 5 | Skip | Mark all stuck requirements as "deferred" in the requirements matrix. Remove them from the active pool. Continue pipeline with remaining requirements. |
+
+#### Stuck Requirement Identification
+
+A requirement is considered "stuck" if it appears in `.gsd/requirements/fail-tracker.json` with a fail count of 3 or more. The fail tracker is updated by the Verify phase each time a requirement fails verification.
+
+#### Deferred Requirement Re-Check
+
+Deferred requirements are not permanently abandoned. Every 10 iterations, the pipeline re-evaluates deferred requirements to check if their dependencies have been resolved or if the codebase has changed enough to unblock them.
+
+### Spec Alignment Guard
+
+The spec alignment guard is a mandatory pre-pipeline check that prevents the engine from generating code against outdated or mismatched specifications.
+
+#### How It Works
+
+1. **Pre-pipeline**: Before the first iteration, the guard compares specification documents in `docs/` and `design/` against the requirements matrix and existing codebase
+2. **Periodic re-check**: Every 10 iterations, the guard re-runs to detect drift introduced by code changes
+3. **Drift calculation**: Measures the percentage of requirements whose source specifications have changed or no longer match the codebase
+
+#### Thresholds and Actions
+
+| Drift Percentage | Severity | Action |
+|-----------------|----------|--------|
+| 0-5% | Normal | No action. Pipeline proceeds normally. |
+| 5-20% | Moderate | Warning logged. Notification sent. Pipeline continues with caution. |
+| >20% | Critical | Pipeline blocked. Must update specs or requirements before continuing. |
+
+#### Contamination Prevention
+
+The spec alignment guard was introduced after a contamination incident where the pipeline generated code matching an old spec version while new specs had been added to the repository. The guard ensures that specification documents, requirements, and codebase are all in agreement before any code generation begins.
+
+### Multi-Frontend Parallel Pipelines
+
+For repositories with multiple frontend frameworks (web, admin panel, mobile app, browser extension), the V3 pipeline can run per-interface pipelines in parallel.
+
+#### Execution Order
+
+```
+Sequential: DATABASE --> BACKEND --> SHARED
+Parallel:   WEB | MCP-ADMIN | BROWSER | MOBILE
+```
+
+1. **Sequential phases**: Database, backend, and shared code pipelines run sequentially because each depends on the previous layer
+2. **Parallel phases**: Frontend pipelines run simultaneously (up to `max_parallel` concurrency) because they have no dependencies on each other
+3. **Shared phases**: Cache warm, spec gate, and spec align run once and benefit all pipelines
+
+#### Budget Proportioning
+
+Total budget is split proportionally by requirement count per interface. Each pipeline tracks its own cost independently and halts when its allocation is exhausted without affecting other pipelines.
+
+#### Health Aggregation
+
+Overall project health is the weighted average of all interface health scores, where weights are proportional to requirement counts. Notifications include per-interface health breakdowns.
+
+#### Failure Isolation
+
+- Backend failure pauses all frontend pipelines (dependency)
+- Frontend failure affects only that frontend; others continue
+- Failed pipelines can be restarted independently using scope filters
+
+## Existing Codebase Pipeline
+
+### Architecture Overview
+
+The Existing Codebase Pipeline (`gsd-existing.ps1`) is a specialized mode for repositories that already contain code and need verification against specifications. Unlike the standard convergence loop which assumes code needs to be generated, this pipeline front-loads verification to avoid regenerating existing work.
+
+### Architecture Difference from Standard Pipeline
+
+The standard pipeline follows a generate-then-verify loop:
+
+```
+[spec-gate] → [research] → [plan] → [execute] → [validate] → [review] → [verify] → loop
+```
+
+The existing codebase pipeline inverts this to verify-then-fill:
+
+```
+[spec-align] → [deep-extract] → [code-inventory] → [satisfaction-verify] → [targeted-execute] → [verify]
+```
+
+Key architectural distinctions:
+
+| Component | Standard Pipeline | Existing Codebase Pipeline |
+|-----------|------------------|---------------------------|
+| Requirements source | Specs + existing matrix | Specs only (code is evidence, not source) |
+| Iteration model | Multi-iteration convergence loop | Single pass with targeted execution |
+| Execute scope | All unsatisfied requirements | Only verified gaps |
+| Token budget | 4K-8K per phase | 16K with 32K auto-retry (large spec sets) |
+| Cost profile | $50-400 over many iterations | $5-10 in a single pass |
+
+### Data Flow
+
+```
+Spec Documents ──→ Deep Extract ──→ Requirements Matrix (from specs)
+                                          │
+Codebase ────────→ Code Inventory ──→ File-Capability Map
+                                          │
+                    Satisfaction Verify ◄──┘
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+         [satisfied]          [gaps found]
+              │                     │
+         (no action)        Targeted Execute
+                                    │
+                               Final Verify
+```
+
+### Critical Design Decision: Requirements from Specs, Not Code
+
+The pipeline extracts requirements exclusively from specification documents, never from existing code. Code is used only as evidence of satisfaction. This prevents a common failure mode where scanning code generates "requirements" that describe what was built rather than what should have been built, leading to false 100% satisfaction scores.
+
+### Matrix Initialization
+
+The deep-extract phase seeds the requirements matrix with a `requirements` array plus `total` and `summary` properties. All downstream phases use safe property access (`Add-Member` with existence checks) to prevent crashes on fresh or partially-initialized matrices.
+
+## Full Pipeline Orchestrator
+
+The Full Pipeline (`gsd-full-pipeline.ps1`) is the post-convergence quality gate that takes code from "converged" to "production-ready." As of V4, it runs 15 sequential phases covering convergence, security, API contracts, runtime validation, test generation, compliance, and deployment preparation.
+
+### Full Pipeline Phases (V4)
+
+The V4 pipeline expands the original 5-phase post-convergence pipeline to 15 phases. The 5 new phases are **securitygate**, **apicontract**, **testgeneration**, **compliancegate**, and **deployprep**.
+
+```
+convergence → databasesetup → buildgate → wireup → codereview
+→ securitygate → buildverify → apicontract → runtime → smoketest
+→ finalreview → testgeneration → compliancegate → deployprep → handoff
+```
+
+| # | Phase | Purpose | Output Files |
+|---|-------|---------|-------------|
+| 1 | convergence | Run gsd-converge until 100% health | `.gsd/health/`, requirements matrix |
+| 2 | databasesetup | Apply SQL migrations, seed data, verify FK ordering | `.gsd/db/` |
+| 3 | buildgate | dotnet build + npm run build must pass | `.gsd/build/` |
+| 4 | wireup | Detect mock data, missing DI, unguarded routes | `.gsd/smoke-test/mock-data-scan.json`, `route-role-matrix.json` |
+| 5 | codereview | 3-model consensus review (Claude + Codex + Gemini), auto-fix cycles | `.gsd/code-review/review-report.json`, `review-summary.md` |
+| 6 | **securitygate** | SAST, secrets detection, dependency vulnerability scan, auth/crypto review | `.gsd/security-gate/security-gate-report.json`, `summary.md` |
+| 7 | buildverify | Re-build after code review + security fixes | `.gsd/build/` |
+| 8 | **apicontract** | Extract OpenAPI spec from running backend, detect breaking changes, verify frontend alignment | `.gsd/api-contract/openapi.json`, `api-contract-report.json`, `summary.md` |
+| 9 | runtime | Start app, hit all endpoints, check for HTTP 500s and DI errors | `.gsd/health/final-validation.json` |
+| 10 | smoketest | 9-phase integration validation (build, DB, API, routes, auth, modules, mock data, RBAC, gap report) | `.gsd/smoke-test/smoke-test-report.json`, `gap-report.md` |
+| 11 | finalreview | Post-smoke-test re-review at lower severity threshold | `.gsd/code-review/final-review-report.json` |
+| 12 | **testgeneration** | Generate xUnit, Jest/RTL, and Playwright E2E tests; execute with fix loop | `.gsd/test-generation/test-generation-report.json` |
+| 13 | **compliancegate** | HIPAA, PCI DSS, GDPR, SOC 2 enforcement | `.gsd/compliance-gate/compliance-gate-report.json`, `summary.md` |
+| 14 | **deployprep** | Generate Dockerfile, docker-compose, CI/CD workflows, env configs, nginx | Deployment files in repo root + `.gsd/deploy-prep/deploy-prep-report.json` |
+| 15 | handoff | Generate PIPELINE-HANDOFF.md + developer-handoff.md | `PIPELINE-HANDOFF.md`, `developer-handoff.md` |
+
+Phases 6, 7, 8, 12, 13, and 14 are new in V4. Each can be individually skipped via `-Skip*` parameters. The pipeline is resumable via `-StartFrom` and logs to `~/.gsd-global/logs/{repo}/full-pipeline-{timestamp}.log`.
+
+### Phase Architecture (V4 additions)
+
+New phases in the V4 pipeline:
+
+| Phase | Purpose | Tools |
+|-------|---------|-------|
+| Security Gate | SAST scanning, hardcoded secret detection, NuGet/npm vulnerability audit, auth flow review, crypto review | gsd-security-gate.ps1 |
+| API Contract | OpenAPI spec extraction from running backend (or source code fallback), breaking-change detection, TypeScript client generation | gsd-api-contract.ps1 |
+| Test Generation | xUnit unit test generation, Jest/RTL frontend tests, Playwright E2E tests; execute with 3-cycle fix loop | gsd-test-generation.ps1 |
+| Compliance Gate | HIPAA, PCI DSS, GDPR, SOC 2 rule enforcement; evidence report generation | gsd-compliance-gate.ps1 |
+| Deploy Prep | Dockerfile + Dockerfile.frontend, docker-compose.yml, GitHub Actions CI/CD, nginx.conf, appsettings per-env, .env.example | gsd-deploy-prep.ps1 |
+
+Original phases retained:
+
+| Phase | Purpose | Tools |
+|-------|---------|-------|
+| Wire-Up | Detect integration gaps (mock data, missing DI, unguarded routes) | mock-data-detector.ps1, route-role-matrix.ps1 |
+| Code Review | 3-model consensus review (Claude + Codex + Gemini) with auto-fix | gsd-codereview.ps1 |
+| Smoke Test | 9-phase integration validation with tiered cost optimization | gsd-smoketest.ps1 |
+| Final Review | Post-smoke-test re-review at lower severity threshold | gsd-codereview.ps1 |
+| Handoff | Generate PIPELINE-HANDOFF.md with all results | Built-in |
+
+The pipeline is resumable via `-StartFrom` parameter and logs to `~/.gsd-global/logs/{repo}/full-pipeline-{timestamp}.log`.
+
+## Smoke Testing (9-Phase Integration Validation)
+
+The smoke test (`gsd-smoketest.ps1`) verifies runtime integration through 9 phases:
+
+| Phase | Tier | Cost | Validates |
+|-------|------|------|-----------|
+| Build Validation | LOCAL | $0 | dotnet build + npm run build |
+| Database Validation | CHEAP | ~$0.05 | Tables, SPs, FKs, migrations |
+| API Smoke Test | MID | ~$0.10 | Controllers, middleware, DI, CORS |
+| Frontend Routes | LOCAL | $0 | Route-component mapping, lazy loads |
+| Auth Flow | MID | ~$0.10 | JWT/Azure AD, guards, token refresh |
+| Module Completeness | CHEAP | ~$0.05 | API + frontend + DB per module |
+| Mock Data Detection | LOCAL | $0 | Hardcoded data, TODOs, placeholders |
+| RBAC Matrix | LOCAL | $0 | Route → role → guard mapping |
+| Integration Gap Report | PREMIUM | ~$0.50 | Aggregated analysis + fix recommendations |
+
+Total cost per run: ~$0.50-1.00 with tiered optimization (vs $5-8 without).
+
+### Tiered LLM Cost Optimization
+
+Four tiers route each task to the cheapest suitable model:
+
+| Tier | Models | Cost/1M Tokens | Tasks |
+|------|--------|---------------|-------|
+| LOCAL | None | $0 | Build, route parsing, RBAC matrix, mock data scan |
+| CHEAP | DeepSeek, Kimi, MiniMax | $0.14-0.21 | DB schema, module completeness, config validation |
+| MID | Codex Mini | $1.50 | API wiring, auth flow, DI registration |
+| PREMIUM | Claude Sonnet | $9.00 | Security review, gap report, fix generation |
+
+Fallback chain: CHEAP models fall back to MID tier if all cheap models fail.
+
+## Wire-Up Phase (Integration Gap Prevention)
+
+Detects integration gaps that code review cannot catch:
+
+- **Mock Data Detector**: Scans for 12 patterns (hardcoded useState, mock constants, TODO/FIXME, placeholder URLs, fake credentials, mock imports, Promise.resolve stubs)
+- **Route-Role Matrix**: Maps every route → role → guard. Identifies unguarded routes, orphan navigation, unused roles, missing config files
+- **Backend Wiring**: Controllers discoverable, services in DI, connection strings real, auth middleware ordered, CORS configured
+- **Frontend Wiring**: Pages routed in App.tsx, API base URL from env, auth provider wraps app, protected routes guarded
+- **Database Wiring**: Connection strings match real DB, stored procedures exist, parameter names/types match
+- **Auth Wiring**: Real Azure AD/JWT values, MSAL configured, token refresh exists, logout clears tokens
+
+## 3-Model Code Review
+
+The code review (`gsd-codereview.ps1`) uses 3-model consensus:
+
+1. Claude, Codex, and Gemini review the same requirements independently
+2. Issues found by 2+ models receive higher confidence
+3. Fix model (Claude by default) generates corrections for critical/high issues
+4. Re-review after fixes until clean or MaxCycles (5) reached
+
+Output: `.gsd/code-review/review-report.json` + `review-summary.md`
+
+## LLM Pre-Validate Fix Phase
+
+The validation fixer (`gsd-validation-fixer.ps1`) runs before local build to proactively fix errors:
+
+1. Quick namespace fixes (60+ regex patterns, zero LLM cost)
+2. Sonnet reviews recently generated files in batches of 5
+3. Multi-file grouping for cross-file fixes
+4. Local build runs as confirmation, not discovery
+
+## Centralized Logging
+
+All pipeline runs write to `~/.gsd-global/logs/{repo-name}/`:
+
+- **Per-run logs**: `run-{timestamp}.log` + `.json` metadata
+- **Per-iteration metrics**: `iterations/iter-NNNN.json` with health, cost, duration, batch info
+- **Persistent iteration counter**: `iteration-counter.json` survives pipeline restarts
+- **Tool-specific logs**: `smoketest-{ts}.log`, `codereview-{ts}.log`, `full-pipeline-{ts}.log`
+- **Supervision insights**: `~/.gsd-global/logs/supervision-insights.md` for cross-session learning
+
+---
+
+## Verification Gates (Post-Delivery Checklist)
+
+Three classes of defect escape code review because they are runtime-only, not statically detectable. These gates must be applied before any developer handoff is accepted as complete.
+
+### Gate 1 — CSS Responsive Utility Verification
+
+**What it catches**: Tailwind v4 pre-built `index.css` files can be generated or committed without `@media` blocks for responsive utilities. The desktop sidebar uses `md:flex` to become visible at ≥768px — if that class is absent the sidebar remains `display:none` for all roles. Code review cannot detect this because TypeScript compiles fine regardless of what is in the CSS file.
+
+**Check**:
+```bash
+grep -c "md:flex" src/Client/technijian-spa/src/index.css
+# Must be > 0. Rebuilt files are typically 4800+ lines with 170+ @media blocks.
+```
+
+**Fix if failing** (Tailwind v4 rebuild):
+```bash
+npm install -D @tailwindcss/cli@4.1.3 tailwindcss@4.1.3
+echo '@import "tailwindcss";' > src/tailwind-input.css
+npx @tailwindcss/cli@4.1.3 -i src/tailwind-input.css -o src/index.css
+```
+
+Commit both `tailwind-input.css` and the rebuilt `index.css`.
+
+### Gate 2 — Database Migration Completeness
+
+**What it catches**: The pipeline writes stored procedures and C# code that reference tables by name, but if no migration creates those tables the runtime throws SQL errors while TypeScript and dotnet build both succeed. This is a silent gap — requirements are marked satisfied when code compiles, but the feature fails when executed.
+
+**Check**: For every stored procedure, every table it references must have a `CREATE TABLE` in a migration file:
+```bash
+grep -r "CREATE TABLE Modules" Database/Migrations/    # must return a result
+grep -r "CREATE TABLE Roles"   Database/Migrations/
+grep -r "CREATE TABLE RoleModules" Database/Migrations/
+```
+
+If any table has no migration: mark requirement `BLOCKED`, reason `"missing migration for {table}"`. Do not promote to `satisfied` until migration is written and verified.
+
+**Add to code-review checklist**: "For every stored procedure in this diff: does a migration CREATE every table it references?"
+
+### Gate 3 — Headless UI Smoke Test (E2E render gate)
+
+**What it catches**: The first two gates are static checks. This gate runs the actual browser to confirm the app renders for each role. It catches runtime issues — missing providers, context errors, invisible sidebars, auth redirects — that no amount of static analysis finds.
+
+**Run before any handoff**:
+```bash
+cd src/Client/technijian-spa
+npx playwright test --config=playwright.e2e.config.ts e2e/navigation.spec.ts e2e/screens.spec.ts
+```
+
+A passing run (0 failures, all roles render sidebar with correct links) is the handoff gate. If any test fails, treat it as a P1 bug, not a test issue.
+
+**Minimum smoke spec** (if full E2E suite doesn't exist yet):
+```typescript
+// e2e/smoke.spec.ts
+for (const role of ['technijian_admin', 'technijian_employee', 'client_admin', 'client_user']) {
+  test(`${role} sees sidebar`, async ({ page, context }) => {
+    await setupRole(context, role);
+    await page.goto('/chat');
+    await waitForAppReady(page);
+    const sidebar = page.locator('aside[aria-label="Main navigation"]');
+    await expect(sidebar).toBeVisible({ timeout: 8000 });
+  });
+}
+```
+
+---
+
+## E2E Test Infrastructure
+
+### Auth Bypass Pattern
+
+MSAL/Azure AD authentication cannot run in headless Playwright tests. The bypass pattern skips the auth provider entirely and reads the test role from `sessionStorage`.
+
+**Environment flag**: `VITE_E2E_BYPASS_AUTH=true` (set in `.env.test` and in `playwright.e2e.config.ts` `webServer.env`)
+
+**Implementation**:
+- `main.tsx`: when flag is true, render without `MsalProvider` and skip `initializeMsal()`
+- `AuthContext.tsx`: in `useEffect`, if flag is true read `sessionStorage.getItem('e2e_test_role')` and set all auth state synchronously, then `setIsLoading(false)`
+
+**Test setup** (`e2e/helpers.ts`):
+```typescript
+await context.addInitScript((role) => {
+  sessionStorage.setItem('e2e_test_role', role);
+  sessionStorage.setItem('tcai.tenantId', 'test-tenant-id');
+}, role);
+```
+
+This pattern keeps E2E auth bypass 100% isolated from production — the flag is never true in non-test Vite modes.
+
+### Playwright Route Mock Ordering (Critical)
+
+**Playwright uses LIFO order** — the last-registered `context.route()` handler has the highest priority and is tried first.
+
+**The bug**: If a catch-all `${origin}/api/**` route is registered _after_ specific routes (e.g. `/navigation/my-modules`), the catch-all intercepts every request first and returns `[]` before the specific handler can run. The result is HTTP 200 with empty data — silent failure. In practice this caused `modules = []` → `isModuleUrlAllowed()` always false → "Access Forbidden" on every module-guarded route for all roles.
+
+**The rule**: Always register catch-all routes **first** (lowest priority), specific routes **last** (highest priority):
+```typescript
+// helpers.ts — CORRECT order
+// Step 1: catch-all (lowest priority — registered first)
+for (const origin of apiOrigins) {
+  await context.route(`${origin}/api/**`, (route) => {
+    route.fulfill({ status: 200, body: method === 'GET' ? '[]' : '{}' });
+  });
+}
+// Step 2: specific routes (highest priority — registered last)
+for (const pattern of routeApiPattern('/navigation/my-modules')) {
+  await context.route(pattern, (route) => {
+    route.fulfill({ status: 200, body: JSON.stringify(modules) });
+  });
+}
+```
+
+### Standard E2E File Structure
+
+```
+e2e/
+├── helpers.ts          # setupRole(), waitForAppReady(), getVisibleNavItems()
+├── mock-data.ts        # MODULES_BY_ROLE for all roles, MOCK_TENANT, mockProfile()
+├── navigation.spec.ts  # Sidebar visibility, nav links, role-specific access (22 tests)
+├── screens.spec.ts     # Screen render + access control for all roles (50 tests)
+└── debug.spec.ts       # Screenshot + state capture utility (not in CI)
+```
+
+```
+playwright.e2e.config.ts  # Port 3001, mode=test, reuseExistingServer=false
+.env.test                 # VITE_E2E_BYPASS_AUTH=true, VITE_API_BASE_URL=http://localhost:60112/api
+```
+
+### Navigation Module Mock Data
+
+Mock data must mirror the database seed exactly (same IDs, same URLs, same parentIds):
+
+| Role | Modules |
+|------|---------|
+| technijian_admin | All modules |
+| technijian_employee | All except Revenue, Subscription Plans, User Assignments |
+| client_admin | Chat, Assistants, MyGPTs, Projects, Files, Council, subset of Admin, Settings, Help |
+| client_user | Chat, Assistants, Projects, Files, Help, Settings, Settings/Billing |
+
+---
+
+## Memory System — Learned Patterns
+
+The GSD engine maintains a persistent memory of cross-session learnings in `~/.claude/projects/{project}/memory/`. These are facts that are non-obvious, painful to rediscover, and worth front-loading into every session.
+
+### Saved Patterns (as of 2026-03-31)
+
+| Memory File | What It Records |
+|-------------|----------------|
+| `feedback_playwright_lifo_routing.md` | Playwright LIFO route priority — catch-all must be registered first |
+| `feedback_tailwind_v4_css_verification.md` | Tailwind v4 pre-built CSS can be missing responsive utilities — always verify `md:flex` |
+| `feedback_db_migration_completeness.md` | Tables referenced in stored procs must have CREATE TABLE migrations — verify before marking satisfied |
+| `feedback_proactive_monitoring.md` | Stop passive monitoring — actively fix root causes every tick |
+| `feedback_spec_alignment_guard.md` | Always verify requirements match specs before pipeline runs |
+| `feedback_codereview_optimizations.md` | Claude fixer (not Codex), parallel review, early-stop, skip clean reqs |
+| `pipeline-patterns.md` | 10 recurring disease patterns: truncation, decomp spiral, validation waste, etc. |
+
+### How Memories Are Applied
+
+1. On session start, Claude Code reads `MEMORY.md` index (always in context)
+2. Relevant memory files are fetched on-demand when topics match
+3. Before any Playwright test setup — check `feedback_playwright_lifo_routing.md`
+4. Before accepting any CSS change — check `feedback_tailwind_v4_css_verification.md`
+5. Before marking DB requirements satisfied — check `feedback_db_migration_completeness.md`
+
+---
+
+## Obsidian Knowledge System (Bidirectional Vault Integration)
+
+The pipeline maintains a persistent knowledge base in an Obsidian vault at `D:\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\`. This is a **bidirectional** system — the pipeline both reads from and writes to the vault, so it learns from past mistakes and applies that knowledge on every iteration.
+
+### Vault Structure
+
+```
+02-Projects/{project}/index.md   — health history, schema notes, session logs per project
+03-Patterns/diseases/            — recurring failure patterns with status + first_seen
+03-Patterns/solutions/           — validated fixes with reproduction steps
+05-Architecture/                 — ADRs, system design diagrams
+06-Sessions/                     — per-iteration notes written automatically by write-vault-note.ps1
+07-Feedback/                     — standing rules from mistakes (requirements-source, code-review, etc.)
+Welcome.md                       — Dataview dashboard: active projects, open diseases, recent feedback
+```
+
+### Knowledge Flow
+
+```
+Pipeline Phase → read-vault-context.ps1 → {{VAULT_KNOWLEDGE}} → LLM Prompt
+                                                                      ↓
+                                                             Phase Output (JSON)
+                                                                      ↓
+                                                    Issue found? → write-vault-lesson.ps1
+                                                                      ↓
+                                                             Obsidian Vault Updated
+```
+
+### Reading: `read-vault-context.ps1`
+
+Called at the start of each phase. Reads phase-relevant vault content and injects it as `{{VAULT_KNOWLEDGE}}` into the LLM prompt.
+
+```powershell
+& read-vault-context.ps1 -VaultRoot "D:\obsidian\..." -Project "chatai-v8" -Phase "plan" -MaxTokens 2000
+```
+
+**What it reads per phase**:
+- **plan**: All open diseases + solutions relevant to current interface + project schema notes + feedback rules
+- **review**: Auth-wiring solutions, mock-data diseases, SP-existence rules
+- **verify**: DB verification rules, TypeScript noise classification, integration completeness patterns
+- **spec-gate**: Spec drift incidents, requirements-source rules
+
+### Writing: `write-vault-lesson.ps1`
+
+Called automatically when the pipeline detects a noteworthy event. Creates or updates Obsidian notes mid-pipeline.
+
+```powershell
+& write-vault-lesson.ps1 -Type lesson -Project chatai-v8 -Phase review `
+  -Title "Auth context lost after TCAIApp.tsx replacement" `
+  -Body "..." -Severity high
+```
+
+**Automatically triggered by**:
+- Review phase: `critical_issue` findings → `07-Feedback/{project}-{title}.md`
+- Verify phase: SP referenced in code but not confirmed in DB → disease note
+- Spec-gate: conflicts detected with blocking severity → spec-drift incident note
+- Full pipeline: mock-data scan finds >5 gaps → `03-Patterns/diseases/mock-data-not-wired.md`
+
+**Types written**:
+
+| Type | Vault Location | Purpose |
+|------|---------------|---------|
+| `lesson` | `07-Feedback/` | Standing rules from mistakes |
+| `disease` | `03-Patterns/diseases/` | Recurring failure patterns |
+| `solution` | `03-Patterns/solutions/` | Validated fixes |
+| `schema` | `02-Projects/{project}/index.md` | DB schema surprises |
+| `feedback` | `07-Feedback/` | Positive confirmations |
+| `mistake` | `07-Feedback/` | Critical errors to avoid |
+
+### Phases with Vault Integration
+
+| Phase | Prompt File | Vault Injected | Auto-Writes |
+|-------|-------------|----------------|-------------|
+| Spec Gate | `01-spec-gate-incremental.md` | Yes | Spec drift incidents |
+| Plan | `03-plan.md` | Yes | — |
+| Review | `06-review.md` | Yes | Critical issues as lessons |
+| Verify | `07-verify.md` | Yes | SP existence gaps as diseases |
+
+### Key Rules Encoded in Prompts (from Vault)
+
+**DB Verification Rule** (in verify prompt):
+- SP referenced in C# but not confirmed in DB → `partial`, not `satisfied`
+- SP file in repo = written, not necessarily deployed
+
+**TypeScript Noise Classification** (in verify prompt):
+- TS6133/TS6196/TS6192/TS6198 (unused vars) = **noise** — do NOT block satisfaction
+- TS2307/TS2339/TS2345/TS2304 = **real errors** — block satisfaction
+
+**Design Source Detection** (in plan prompt):
+- Before planning ANY frontend screen: check if `design/web/v{N}/src/` exists
+- If yes: plan is "copy + wire to real API" — never regenerate from scratch
+
+**Auth Wiring Check** (in review prompt):
+- Any modification to `App.tsx`, `TCAIApp.tsx`, or root/layout components must preserve AuthContext imports
+- `useState('admin')` hardcoded in root = critical auth bypass
+
+### Mock-to-DB Gap Detection
+
+`scripts/detect-mock-to-db-gaps.ps1` audits the frontend for mock data that hasn't been wired to the database. Run before starting a feature_update pipeline to surface gaps automatically.
+
+```powershell
+& detect-mock-to-db-gaps.ps1 -RepoRoot "D:\vscode\myapp\myapp" -ProjectSlug "myapp"
+```
+
+**What it does**:
+1. Scans all `.ts`/`.tsx` files for mock data patterns (`mockX`, `fakeX`, hardcoded arrays, `Promise.resolve(staticData)`)
+2. Derives entity names (e.g., `mockUsers` → entity `User`)
+3. Checks if a matching DB table, stored procedure, controller, and service exist
+4. Generates `AUTO-MOCK-NNN` requirement templates for gaps
+5. Saves report to `.gsd/mock-gap-report.json`
+
+**Output format**:
+```json
+{
+  "gaps": [
+    {
+      "id": "AUTO-MOCK-001",
+      "entity": "Notification",
+      "mock_file": "src/hooks/useNotifications.ts",
+      "missing": ["db_table", "stored_procedure", "controller"],
+      "requirement_template": "Wire useNotifications hook to real DB: seed data → SP → controller → hook"
+    }
+  ]
+}
+```
