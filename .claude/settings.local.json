@@ -143,7 +143,8 @@
       "Bash(echo USERPROFILE=$USERPROFILE:*)",
       "Bash(RESIL=\"/c/Users/rjain/.gsd-global/lib/modules/resilience.ps1\")",
       "Bash(awk:*)",
-      "Bash(powershell.exe:*)"
+      "Bash(powershell.exe:*)",
+      "Bash(\"D:/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Developer-Guide.md\":*)"
     ]
   }
 }
