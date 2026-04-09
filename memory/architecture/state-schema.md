@@ -81,7 +81,9 @@ The central state object passed through all stages. Persisted to vault after eac
 | totalFlows | number | Total test flows executed |
 | passedFlows | number | Flows that passed |
 | failedFlows | number | Flows that failed |
-| categories | object | 6 categories: apiContract, screenRender, crudOperations, authFlows, mockDataDetection, errorStates |
+| categories | object | 6 categories, each with `{ tested: number, passed: number, failures: string[] }` |
+
+**Category keys:** `apiContract` (GET endpoint 404/500 checks), `screenRender` (frontend route 200 checks), `crudOperations` (POST/PUT/DELETE controller + test existence), `authFlows` (health + auth endpoint checks), `mockDataDetection` (10 regex patterns for stubs), `errorStates` (ErrorBoundary + no-500 on bad auth)
 
 ## PostDeployValidationResult (PostDeployValidationAgent)
 

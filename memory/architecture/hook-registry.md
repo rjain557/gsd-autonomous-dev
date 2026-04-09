@@ -12,8 +12,8 @@ description: All hooks in the agent system with registration details
 | `onBeforeRun` | Before agent run() | agentId, input, state |
 | `onAfterRun` | After agent run() succeeds | agentId, input, output, state, durationMs |
 | `onError` | Agent run() throws | agentId, input, error, state, attempt |
-| `onRetry` | Before retry attempt | agentId, attempt, maxRetries |
-| `onVaultWrite` | Any vault write | path, content |
+| `onRetry` | Before retry attempt (fired by orchestrator) | agentId, attempt, maxRetries |
+| `onVaultWrite` | Any vault write (event defined, no default handler) | path, content |
 | `onDeployStart` | DeployAgent begins | deployConfig, commitSha |
 | `onDeployComplete` | DeployAgent succeeds | deployRecord |
 | `onDeployRollback` | DeployAgent rolls back | deployRecord, rollbackReason |

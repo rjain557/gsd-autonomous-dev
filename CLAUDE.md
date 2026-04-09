@@ -101,6 +101,8 @@ Claude Code also handles 3 phases of the legacy PowerShell convergence loop:
 
 Legacy write paths: `.gsd/health/`, `.gsd/code-review/`, `.gsd/generation-queue/`, `.gsd/agent-handoff/current-assignment.md`
 
+**Note:** `config/agent-map.json` and `config/global-config.json` are PowerShell-legacy only. The TypeScript harness (v4.1) reads all configuration from `memory/knowledge/` and `memory/agents/` vault notes.
+
 ---
 
 ## Installed Skills

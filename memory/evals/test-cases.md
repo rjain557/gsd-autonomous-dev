@@ -45,7 +45,7 @@ description: Golden input/output test cases for each agent
 {
   "convergenceReport": { "aligned": [], "drifted": [], "missing": [], "riskLevel": "low" },
   "changedFiles": ["test-fixtures/code-with-issues/AuthService.cs", "test-fixtures/code-with-issues/App.tsx"],
-  "qualityGates": { "minCoverage": 80, "blockOnCritical": true, "warnOnHigh": true }
+  "qualityGates": { "minCoverage": 80, "blockOnCritical": true, "securityScanEnabled": true }
 }
 ```
 

@@ -1,9 +1,10 @@
 # GSD Autonomous Dev - Project Memory
 
 ## Project Overview
-- **V3 (current)**: 2-model API-only pipeline (Sonnet 4.6 + Codex Mini), ~85% cheaper, ~10x faster
-- **V2 (legacy)**: 7-agent CLI+REST system (44 install scripts). Still in `scripts/` directory
-- Three modes: Blueprint (greenfield), Bug Fix, Feature Update
+- **V4.1 (current)**: TypeScript harness with 8 typed agents, Obsidian vault memory, CLI-first LLM routing ($0 marginal). 100% complete.
+- **V3 (legacy)**: 2-model API-only pipeline (Sonnet + Codex Mini). Still in `v3/` directory
+- **V2 (legacy)**: 7-agent CLI+REST system (44 install scripts). Still in `v2/` + `scripts/`
+- **Graphify**: Knowledge graph integration — `graphify-out/` has GRAPH_REPORT.md, graph.json, graph.html
 - Backend: .NET 8 + Dapper + SQL Server stored procs | Frontend: React 18 | Compliance: HIPAA, SOC 2, PCI, GDPR
 
 ## Key Directories
@@ -72,3 +73,14 @@ At 100% convergence: Full code review + spec/Figma verification + quality gate -
 - [feedback_close_windows.md](feedback_close_windows.md) - When killing a pipeline, ALSO close its PowerShell window
 - [feedback_partial_promotion.md](feedback_partial_promotion.md) - Every cron tick: promote partial reqs to satisfied when referenced files exist
 - [telegram-bridge.md](telegram-bridge.md) - Telegram bridge setup, config, bot token, startup commands, known issues
+
+## V4.1 Architecture (vault-based)
+- [agents/](agents/) - 8 agent vault notes with frontmatter (model, tools, timeouts)
+- [architecture/agent-system-design.md](architecture/agent-system-design.md) - 7-step task graph, agent roster
+- [architecture/state-schema.md](architecture/state-schema.md) - TypeScript type definitions for all agent I/O
+- [architecture/hook-registry.md](architecture/hook-registry.md) - Lifecycle events and default hook implementations
+- [knowledge/project-paths.md](knowledge/project-paths.md) - Configurable design doc paths for E2E/post-deploy
+- [knowledge/quality-gates.md](knowledge/quality-gates.md) - Build, coverage, security thresholds
+- [knowledge/deploy-config.md](knowledge/deploy-config.md) - Alpha environment deploy targets
+- [knowledge/model-strategy.md](knowledge/model-strategy.md) - 3 CLI subscriptions + 2 API fallbacks
+- [evals/test-cases.md](evals/test-cases.md) - 6 golden test cases for agent validation
