@@ -34,44 +34,25 @@ export class E2EValidationAgent extends BaseAgent {
       errorStates:       { tested: 0, passed: 0, failures: [] },
     };
 
-    // 1. API contract validation — call every GET endpoint
-    const apiResults = await this.validateApiContracts(opts);
-    results.push(...apiResults);
+    // Run all validation categories in parallel for speed
+    const [apiResults, spResults, mockResults, pageResults, authResults, crudResults, errorResults, browserResults] = await Promise.all([
+      this.validateApiContracts(opts),
+      this.validateStoredProcedures(opts),
+      this.detectMockData(opts.repoRoot),
+      this.validatePageRender(opts),
+      this.validateAuthFlow(opts),
+      this.validateCrudOperations(opts),
+      this.validateErrorStates(opts),
+      this.validateWithBrowser(opts),
+    ]);
+
+    results.push(...apiResults, ...spResults, ...mockResults, ...pageResults, ...authResults, ...crudResults, ...errorResults, ...browserResults);
     this.tally(categories.apiContract, apiResults);
-
-    // 2. Stored procedure existence check
-    const spResults = await this.validateStoredProcedures(opts);
-    results.push(...spResults);
-
-    // 3. Mock data detection in source
-    const mockResults = await this.detectMockData(opts.repoRoot);
-    results.push(...mockResults);
     this.tally(categories.mockDataDetection, mockResults);
-
-    // 4. Frontend page render check
-    const pageResults = await this.validatePageRender(opts);
-    results.push(...pageResults);
     this.tally(categories.screenRender, pageResults);
-
-    // 5. Auth flow validation
-    const authResults = await this.validateAuthFlow(opts);
-    results.push(...authResults);
     this.tally(categories.authFlows, authResults);
-
-    // 6. CRUD operations validation — verify non-GET routes have controllers + tests
-    const crudResults = await this.validateCrudOperations(opts);
-    results.push(...crudResults);
     this.tally(categories.crudOperations, crudResults);
-
-    // 7. Error states validation — verify error boundaries + no 500s on bad auth
-    const errorResults = await this.validateErrorStates(opts);
-    results.push(...errorResults);
     this.tally(categories.errorStates, errorResults);
-
-    // 8. Playwright browser validation (if available) — real browser rendering + JS execution
-    const browserResults = await this.validateWithBrowser(opts);
-    results.push(...browserResults);
-    // Browser results enhance screenRender category
     for (const r of browserResults) this.tallyInto(categories.screenRender, r);
 
     const totalFlows = results.length;

@@ -58,6 +58,15 @@ description: Quality gate thresholds for pipeline pass/fail decisions
 | Foreign key integrity | All valid | Yes |
 | Index coverage | All queries covered | No (warn) |
 
+## E2E Validation Gate
+
+| Check | Threshold | Block on Fail |
+|---|---|---|
+| E2E pass rate | >= 95% | Yes |
+| API contract compliance | 100% (all documented endpoints exist) | Yes |
+| Mock data detected | 0 patterns in non-test files | No (warn) |
+| Browser render | Page loads, no console errors | No (warn) |
+
 ## Spec Quality Gate
 
 | Check | Threshold | Block on Fail |

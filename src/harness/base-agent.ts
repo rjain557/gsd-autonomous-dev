@@ -276,6 +276,25 @@ export abstract class BaseAgent {
       } catch { /* continue */ }
     }
 
+    // Strategy 4: find balanced outermost brackets (array response)
+    const arrayStr = this.extractBalancedArray(response);
+    if (arrayStr) {
+      try {
+        return JSON.parse(arrayStr);
+      } catch { /* continue */ }
+    }
+
+    // Strategy 5: attempt to fix common JSON errors (trailing commas, unquoted keys)
+    const cleaned = response
+      .replace(/,\s*([}\]])/g, '$1')           // Remove trailing commas
+      .replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":'); // Quote unquoted keys
+    const cleanedJson = this.extractBalancedJSON(cleaned);
+    if (cleanedJson) {
+      try {
+        return JSON.parse(cleanedJson);
+      } catch { /* continue */ }
+    }
+
     throw new Error(
       `Failed to extract valid JSON from LLM response (${response.length} chars). ` +
       `First 200 chars: ${response.substring(0, 200)}`
@@ -292,6 +311,26 @@ export abstract class BaseAgent {
         if (depth === 0) start = i;
         depth++;
       } else if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          return text.substring(start, i + 1);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /** Find the outermost balanced [ ] in a string. */
+  private extractBalancedArray(text: string): string | null {
+    let start = -1;
+    let depth = 0;
+
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '[') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (text[i] === ']') {
         depth--;
         if (depth === 0 && start !== -1) {
           return text.substring(start, i + 1);

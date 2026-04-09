@@ -32,8 +32,12 @@ export class QualityGateAgent extends BaseAgent {
       evidence.push(`patches applied: ${patchSet.patches.length} (${patchSet.patches.map(p => p.issueId).join(', ')})`);
     }
 
-    // 1. dotnet build
-    const buildResult = await this.runCheck('dotnet build --no-restore 2>&1', 60_000);
+    // 1-2. dotnet build + npm build in parallel (independent)
+    const [buildResult, npmResult] = await Promise.all([
+      this.runCheck('dotnet build --no-restore 2>&1', 60_000),
+      this.runCheck('npm run build 2>&1', 60_000),
+    ]);
+
     if (buildResult.success) {
       evidence.push(`dotnet build: SUCCESS`);
     } else {
@@ -41,8 +45,6 @@ export class QualityGateAgent extends BaseAgent {
       allPassed = false;
     }
 
-    // 2. npm build
-    const npmResult = await this.runCheck('npm run build 2>&1', 60_000);
     if (npmResult.success) {
       evidence.push(`npm run build: SUCCESS`);
     } else {

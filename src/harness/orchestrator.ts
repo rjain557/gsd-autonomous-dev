@@ -92,22 +92,13 @@ export class Orchestrator {
       ['post-deploy-validation-agent', PostDeployValidationAgent],
     ];
 
-    // Map pipeline agent IDs to the CLI model they use
-    const agentToCliModel: Record<string, string> = {
-      'blueprint-analysis-agent': 'claude',
-      'code-review-agent': 'claude',
-      'remediation-agent': 'claude',
-      'quality-gate-agent': 'claude',
-      'e2e-validation-agent': 'claude',
-      'deploy-agent': 'claude',
-      'post-deploy-validation-agent': 'claude',
-    };
-
+    // Agent-to-stage mapping for phase-based model routing
+    // (models are picked dynamically per stage via pickAgentForPhase, not hardcoded)
     for (const [id, AgentClass] of agentDefs) {
       const agent = new AgentClass(id, this.vault, this.hooks, this.state);
       await agent.initialize();
-      // Attach rate limiter so callLLM() enforces RPM limits
-      agent.setRateLimiter(this.rateLimiter, agentToCliModel[id] ?? 'claude');
+      // Initial rate limiter set to claude; overridden per-stage in run()
+      agent.setRateLimiter(this.rateLimiter, 'claude');
       this.agents.set(id, agent);
     }
 

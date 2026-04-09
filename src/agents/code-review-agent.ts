@@ -21,11 +21,11 @@ export class CodeReviewAgent extends BaseAgent {
   protected async run(input: AgentInput): Promise<AgentOutput> {
     const { convergenceReport, changedFiles, qualityGates } = input as CodeReviewInput;
 
-    // Run build checks
-    const buildResult = await this.runBuildChecks();
-
-    // Run lint/test commands (read-only)
-    const testResult = await this.runTests();
+    // Run build checks and tests in parallel (independent operations)
+    const [buildResult, testResult] = await Promise.all([
+      this.runBuildChecks(),
+      this.runTests(),
+    ]);
 
     // Ask LLM to review code against convergence report
     const systemPrompt = await this.buildSystemPrompt();
