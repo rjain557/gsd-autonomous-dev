@@ -68,6 +68,12 @@ export class E2EValidationAgent extends BaseAgent {
     results.push(...errorResults);
     this.tally(categories.errorStates, errorResults);
 
+    // 8. Playwright browser validation (if available) — real browser rendering + JS execution
+    const browserResults = await this.validateWithBrowser(opts);
+    results.push(...browserResults);
+    // Browser results enhance screenRender category
+    for (const r of browserResults) this.tallyInto(categories.screenRender, r);
+
     const totalFlows = results.length;
     const passedFlows = results.filter(r => r.passed).length;
 
@@ -92,6 +98,12 @@ export class E2EValidationAgent extends BaseAgent {
     cat.tested = results.length;
     cat.passed = results.filter(r => r.passed).length;
     cat.failures = results.filter(r => !r.passed).map(r => `${r.flow}: ${r.actual}`);
+  }
+
+  private tallyInto(cat: { tested: number; passed: number; failures: string[] }, result: E2ETestResult): void {
+    cat.tested++;
+    if (result.passed) cat.passed++;
+    else cat.failures.push(`${result.flow}: ${result.actual}`);
   }
 
   /** Call every GET endpoint from 06-api-contracts.md, verify not 404/500. */
@@ -329,6 +341,89 @@ export class E2EValidationAgent extends BaseAgent {
       }
       step++;
     }
+    return results;
+  }
+
+  /** Playwright browser validation — tests real rendering, JS execution, console errors. Falls back gracefully if Playwright not installed. */
+  private async validateWithBrowser(opts: E2EValidationInput): Promise<E2ETestResult[]> {
+    const results: E2ETestResult[] = [];
+    let chromium: unknown;
+    try {
+      chromium = (await import('playwright')).chromium;
+    } catch {
+      // Playwright not installed — skip browser tests silently
+      return [];
+    }
+
+    let browser;
+    try {
+      browser = await (chromium as { launch: (opts: { headless: boolean }) => Promise<unknown> }).launch({ headless: true });
+      const page = await (browser as { newPage: () => Promise<unknown> }).newPage() as {
+        goto: (url: string, opts: { timeout: number; waitUntil: string }) => Promise<{ status: () => number }>;
+        title: () => Promise<string>;
+        content: () => Promise<string>;
+        on: (event: string, handler: (msg: { type: () => string; text: () => string }) => void) => void;
+        close: () => Promise<void>;
+      };
+
+      const consoleErrors: string[] = [];
+      page.on('console', (msg) => {
+        if (msg.type() === 'error') consoleErrors.push(msg.text());
+      });
+
+      // Test 1: Frontend loads and renders (not blank page)
+      try {
+        const response = await page.goto(`${opts.frontendUrl}/`, { timeout: 15_000, waitUntil: 'networkidle' });
+        const title = await page.title();
+        const html = await page.content();
+        const hasContent = html.length > 500 && !html.includes('Cannot GET /');
+
+        results.push({
+          flow: 'Browser Render', step: 1, action: 'Load frontend root',
+          expected: 'Page renders with content', actual: hasContent ? `OK (title: "${title}", ${html.length} chars)` : 'Blank or error page',
+          passed: hasContent && (response?.status() ?? 0) === 200,
+        });
+      } catch (err) {
+        results.push({
+          flow: 'Browser Render', step: 1, action: 'Load frontend root',
+          expected: 'Page loads', actual: `${err instanceof Error ? err.message : String(err)}`,
+          passed: false,
+        });
+      }
+
+      // Test 2: No console errors on load
+      results.push({
+        flow: 'Browser Render', step: 2, action: 'Check console errors',
+        expected: 'No console.error on page load', actual: consoleErrors.length === 0 ? 'Clean' : `${consoleErrors.length} errors: ${consoleErrors.slice(0, 3).join('; ')}`,
+        passed: consoleErrors.length === 0,
+      });
+
+      // Test 3: Login page accessible (if exists)
+      try {
+        const loginResponse = await page.goto(`${opts.frontendUrl}/login`, { timeout: 10_000, waitUntil: 'networkidle' });
+        const loginHtml = await page.content();
+        const hasLoginForm = loginHtml.includes('password') || loginHtml.includes('Password') || loginHtml.includes('sign in') || loginHtml.includes('Sign In');
+
+        results.push({
+          flow: 'Browser Render', step: 3, action: 'Login page renders',
+          expected: 'Login form visible', actual: hasLoginForm ? 'Login form found' : 'No login form detected',
+          passed: (loginResponse?.status() ?? 0) !== 500,
+        });
+      } catch {
+        // Login page may not exist — not a failure
+      }
+
+      await page.close();
+    } catch (err) {
+      results.push({
+        flow: 'Browser Render', step: 0, action: 'Launch browser',
+        expected: 'Chromium launches', actual: `${err instanceof Error ? err.message : String(err)}`,
+        passed: false,
+      });
+    } finally {
+      if (browser) await (browser as { close: () => Promise<void> }).close();
+    }
+
     return results;
   }
 

@@ -257,6 +257,12 @@ const useStyles = makeStyles({
 
 See `C:\Users\rjain\.claude\CLAUDE.md` for full model endpoint reference (Anthropic, OpenAI, DeepSeek, Kimi, MiniMax, GLM5).
 
+## Quality & Automation Tools
+
+- **Semgrep** (`pip install semgrep`): SAST scanner with 2000+ rules. QualityGateAgent runs it automatically. Preflight warns if missing.
+- **Playwright** (`npm install playwright`): Headless Chromium browser testing. E2EValidationAgent uses it for real page rendering, JS console error detection. Falls back to HTTP if not installed.
+- **GitHub MCP** (`@modelcontextprotocol/server-github`): Configured in `.claude/settings.json`. Provides PR creation, issue tracking, review comments.
+
 ## graphify
 
 This project has a graphify knowledge graph at graphify-out/.

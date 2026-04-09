@@ -59,6 +59,19 @@ function preflight(vaultPath: string): PreflightResult {
     }
   }
 
+  // 5. Check recommended tools (non-blocking warnings)
+  const recommendedTools: Array<{ name: string; args: string[]; label: string }> = [
+    { name: 'semgrep', args: ['--version'], label: 'Semgrep SAST (security scanning will use regex-only fallback)' },
+  ];
+
+  for (const tool of recommendedTools) {
+    try {
+      execFileSync(tool.name, tool.args, { timeout: 10_000, stdio: 'pipe' });
+    } catch {
+      warnings.push(`${tool.label} — "${tool.name}" not found on PATH.`);
+    }
+  }
+
   return { ok: errors.length === 0, warnings, errors };
 }
 

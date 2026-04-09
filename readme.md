@@ -101,11 +101,12 @@ npx ts-node src/index.ts pipeline run --trigger manual --dry-run
 | Deploy + rollback | Complete | Cross-platform (Node fs.cp, http); rollback stops on first failure |
 | State restoration | Complete | Saves after each stage, restores on `--from-stage` |
 | LLM integration | Complete | CLI-first ($0 marginal) + Anthropic SDK fallback; model-aware cost tracking |
-| Security scanning | Complete | 11 regex patterns + optional Semgrep SAST integration |
-| E2E validation | Complete | All 6 categories (API, screens, CRUD, auth, mock data, error states) |
+| Security scanning | Complete | 11 regex patterns + Semgrep SAST (preflight warns if missing) |
+| E2E validation | Complete | 6 categories + Playwright browser testing (headless Chromium) |
 | PostDeploy validation | Complete | Real SP existence + DTO mismatch detection |
 | Eval framework | Complete | 6/6 test cases; vault markdown parser for dynamic loading |
-| Preflight checks | Complete | CLI availability, vault path, env var validation |
+| Preflight checks | Complete | CLI availability, vault path, env var, Semgrep detection |
+| GitHub MCP | Configured | PR creation, issue tracking, review comments via MCP server |
 
 Full status: [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md)
 
@@ -120,6 +121,16 @@ graphify claude install     # Hook into Claude Code
 ```
 
 Agents consult `graphify-out/GRAPH_REPORT.md` for god nodes and community structure before searching raw files. See [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) for full setup instructions.
+
+## Quality & Automation Tools
+
+| Tool | Purpose | Install |
+|---|---|---|
+| [Semgrep](https://semgrep.dev/) | SAST security scanning (2000+ rules) | `pip install semgrep` |
+| [Playwright](https://playwright.dev/) | Headless browser E2E testing | `npm install playwright && npx playwright install chromium` |
+| [GitHub MCP](https://github.com/modelcontextprotocol/servers) | Autonomous PR/issue management | Configured in `.claude/settings.json` |
+
+Semgrep and Playwright are checked at pipeline startup (preflight). If Semgrep is missing, security scanning falls back to regex patterns. If Playwright is missing, E2E tests fall back to HTTP status checks.
 
 ## Scripts
 

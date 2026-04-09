@@ -128,6 +128,9 @@ memory/
 | # | Enhancement | Description |
 |---|---|---|
 | 48 | Graphify knowledge graph integration | Installed `graphifyy` + Claude Code PreToolUse hook. Agents consult `GRAPH_REPORT.md` for god nodes and community structure before file scanning. Up to 71x token reduction on codebase navigation. |
+| 49 | Semgrep SAST mandatory | Installed `semgrep` v1.157.0. Preflight warns if missing. QualityGateAgent runs `semgrep --config auto --json` before regex fallback. 2000+ rules for HIPAA/SOC2/PCI compliance evidence. |
+| 50 | Playwright browser E2E testing | Installed `playwright` + Chromium headless. E2EValidationAgent runs real browser rendering, JS execution, console error detection. Falls back to HTTP checks if not installed. |
+| 51 | GitHub MCP server | Configured `@modelcontextprotocol/server-github` in `.claude/settings.json`. Enables autonomous PR creation, issue tracking, and review comments via MCP. |
 
 ### Remaining Gaps
 
