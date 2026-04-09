@@ -34,8 +34,8 @@ export class E2EValidationAgent extends BaseAgent {
       errorStates:       { tested: 0, passed: 0, failures: [] },
     };
 
-    // Run all validation categories in parallel for speed
-    const [apiResults, spResults, mockResults, pageResults, authResults, crudResults, errorResults, browserResults] = await Promise.all([
+    // Run all validation categories in parallel (allSettled = fault-tolerant)
+    const settled = await Promise.allSettled([
       this.validateApiContracts(opts),
       this.validateStoredProcedures(opts),
       this.detectMockData(opts.repoRoot),
@@ -45,6 +45,15 @@ export class E2EValidationAgent extends BaseAgent {
       this.validateErrorStates(opts),
       this.validateWithBrowser(opts),
     ]);
+
+    const extract = (i: number): E2ETestResult[] => {
+      const r = settled[i];
+      if (r.status === 'fulfilled') return r.value;
+      return [{ flow: 'Validation Error', step: 0, action: `Category ${i}`, expected: 'no error', actual: r.reason?.message ?? 'unknown', passed: false }];
+    };
+
+    const [apiResults, spResults, mockResults, pageResults, authResults, crudResults, errorResults, browserResults] =
+      [extract(0), extract(1), extract(2), extract(3), extract(4), extract(5), extract(6), extract(7)];
 
     results.push(...apiResults, ...spResults, ...mockResults, ...pageResults, ...authResults, ...crudResults, ...errorResults, ...browserResults);
     this.tally(categories.apiContract, apiResults);

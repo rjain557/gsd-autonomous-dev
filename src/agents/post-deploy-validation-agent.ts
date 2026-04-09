@@ -84,7 +84,7 @@ export class PostDeployValidationAgent extends BaseAgent {
       if (!scriptMatch) return { name: 'SPA hash', category: 'infrastructure', passed: true, details: 'No hashed JS detected', severity: 'low' };
       const jsUrl = `${frontendUrl}/assets/index-${scriptMatch[1]}.js`;
       const status = await this.httpGetStatus(jsUrl);
-      if (status === 200) return { name: 'SPA hash', category: 'infrastructure', passed: true, details: `Hash ${scriptMatch[1]} accessible`, severity: 'critical' };
+      if (status === 200) return { name: 'SPA hash', category: 'infrastructure', passed: true, details: `Hash ${scriptMatch[1]} accessible`, severity: 'low' };
       return { name: 'SPA hash', category: 'infrastructure', passed: false, details: `Hash ${scriptMatch[1]} returned ${status} - stale cache suspected`, severity: 'critical' };
     } catch (err) {
       return { name: 'SPA hash', category: 'infrastructure', passed: false, details: `${err instanceof Error ? err.message : String(err)}`, severity: 'critical' };

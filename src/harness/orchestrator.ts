@@ -175,10 +175,10 @@ export class Orchestrator {
       // Pick the best available CLI model for this stage (rate-limit aware)
       const cliModel = this.pickAgentForPhase(stage);
       this.rateLimiter.trackModelSwitch(stage, cliModel);
-      // Update the rate limiter routing for agents that will run in this stage
-      for (const agent of this.agents.values()) {
-        agent.setRateLimiter(this.rateLimiter, cliModel);
-      }
+      // Update only the agent that will run in this stage (not all agents)
+      const stageAgentId = this.getAgentIdForStage(stage);
+      const stageAgent = stageAgentId ? this.agents.get(stageAgentId) : undefined;
+      if (stageAgent) stageAgent.setRateLimiter(this.rateLimiter, cliModel);
 
       try {
         await this.executeStage(stage);
@@ -550,6 +550,19 @@ export class Orchestrator {
 
   // ── Helpers ───────────────────────────────────────────────
 
+  private getAgentIdForStage(stage: PipelineStage): AgentId | undefined {
+    const map: Partial<Record<PipelineStage, AgentId>> = {
+      blueprint: 'blueprint-analysis-agent',
+      review: 'code-review-agent',
+      remediate: 'remediation-agent',
+      gate: 'quality-gate-agent',
+      e2e: 'e2e-validation-agent',
+      deploy: 'deploy-agent',
+      'post-deploy': 'post-deploy-validation-agent',
+    };
+    return map[stage];
+  }
+
   private createInitialState(trigger: string): PipelineState {
     return {
       runId: uuidv4().substring(0, 8),
@@ -592,6 +605,7 @@ export class Orchestrator {
       this.state.reviewResult = parsed.reviewResult;
       this.state.patchSet = parsed.patchSet;
       this.state.gateResult = parsed.gateResult;
+      this.state.deployRecord = parsed.deployRecord ?? null;
       this.state.blueprintVersion = parsed.blueprintVersion;
       this.state.decisions = parsed.decisions ?? [];
       this.state.costAccumulator = parsed.costAccumulator ?? [];
