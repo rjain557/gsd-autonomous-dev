@@ -19,6 +19,7 @@ import type {
   GateResult,
   DeployRecord,
   QualityGateThresholds,
+  ProjectPaths,
 } from './types';
 import { QualityGateFailure, EscalationError, HardGateViolation } from './types';
 import { VaultAdapter } from './vault-adapter';
@@ -44,8 +45,6 @@ import { DeployAgent } from '../agents/deploy-agent';
 const PHASE_ROUTING: Record<string, string[]> = {
   blueprint:    ['claude', 'gemini', 'codex'],
   review:       ['claude', 'gemini', 'codex'],
-  plan:         ['claude', 'codex', 'gemini'],
-  execute:      ['codex', 'claude', 'gemini'],
   remediate:    ['claude', 'codex', 'gemini'],
   gate:         ['claude', 'codex'],
   e2e:          ['claude', 'gemini', 'codex'],
@@ -184,6 +183,7 @@ export class Orchestrator {
 
       // Pick the best available CLI model for this stage (rate-limit aware)
       const cliModel = this.pickAgentForPhase(stage);
+      this.rateLimiter.trackModelSwitch(stage, cliModel);
       // Update the rate limiter routing for agents that will run in this stage
       for (const agent of this.agents.values()) {
         agent.setRateLimiter(this.rateLimiter, cliModel);
@@ -352,14 +352,15 @@ export class Orchestrator {
       case 'e2e': {
         const agent = this.agents.get('e2e-validation-agent')!;
         const deployConfig = await this.loadDeployConfig();
+        const projectPaths = await this.loadProjectPaths();
         const result = await this.executeWithRetry(agent, {
           repoRoot: process.cwd(),
           backendUrl: `http://${deployConfig.target}`,
           frontendUrl: `http://${deployConfig.target}`,
-          storyboardsPath: 'design/web/v8/src/_analysis/09-storyboards.md',
-          apiContractsPath: 'design/web/v8/src/_analysis/06-api-contracts.md',
-          screenStatesPath: 'design/web/v8/src/_analysis/10-screen-state-matrix.md',
-          apiSpMapPath: 'design/web/v8/src/_analysis/11-api-to-sp-map.md',
+          storyboardsPath: projectPaths.storyboardsPath,
+          apiContractsPath: projectPaths.apiContractsPath,
+          screenStatesPath: projectPaths.screenStatesPath,
+          apiSpMapPath: projectPaths.apiSpMapPath,
         }) as Record<string, unknown>;
 
         const passed = result.passed as boolean;
@@ -387,12 +388,13 @@ export class Orchestrator {
         const target = deployConfig.target;
         const baseUrl = target.startsWith('http') ? target : `http://${target}`;
 
+        const postDeployPaths = await this.loadProjectPaths();
         const result = await this.executeWithRetry(agent, {
           deployRecord: this.state.deployRecord,
           frontendUrl: baseUrl,
           apiBaseUrl: baseUrl,
-          storyboardsPath: 'design/web/v8/src/_analysis/09-storyboards.md',
-          apiContractsPath: 'design/web/v8/src/_analysis/06-api-contracts.md',
+          storyboardsPath: postDeployPaths.storyboardsPath,
+          apiContractsPath: postDeployPaths.apiContractsPath,
         }) as Record<string, unknown>;
 
         const passed = result.passed as boolean;
@@ -506,17 +508,18 @@ export class Orchestrator {
     // Read task graph from vault architecture note
     try {
       const note = await this.vault.read('architecture/agent-system-design.md');
-      const parsed = this.parseTaskGraphFromMarkdown(note.body);
+      const parsed = parseTaskGraphFromMarkdown(note.body);
       if (parsed.nodes.length > 0) {
         console.log(`[ORCHESTRATOR] Loaded task graph from vault: ${parsed.nodes.length} steps`);
         return parsed;
       }
-    } catch {
-      // Vault note not found or unparseable
+      console.warn(`[ORCHESTRATOR] Task graph table not parseable — using hardcoded fallback. Check memory/architecture/agent-system-design.md format.`);
+    } catch (err) {
+      console.warn(`[ORCHESTRATOR] Could not read task graph from vault: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Fallback: hardcoded default graph
-    console.log(`[ORCHESTRATOR] Using default task graph (vault note not found or empty)`);
+    console.log(`[ORCHESTRATOR] Using default task graph`);
     const nodes: TaskNode[] = [
       { step: 1, agentId: 'blueprint-analysis-agent', dependsOn: [], onSuccess: 2, onFailure: 'retry', maxRetries: 3, escalateAfterRetries: true },
       { step: 2, agentId: 'code-review-agent', dependsOn: [1], onSuccess: 'next', onFailure: 'retry', maxRetries: 3, escalateAfterRetries: true },
@@ -530,46 +533,8 @@ export class Orchestrator {
     return { nodes, description: 'Blueprint → Review → Remediate → Gate → E2E → Deploy → Post-Deploy' };
   }
 
-  /** Parse task graph from the markdown table in the architecture note. */
-  private parseTaskGraphFromMarkdown(body: string): TaskGraph {
-    // Look for the task graph table: | Step | Agent | Depends On | On Success | On Failure | Max Retries |
-    // Use (?:\n|$) to capture the last row even if no trailing newline
-    const tableMatch = body.match(/\|\s*Step\s*\|.*\n\|[-|\s]+\n((?:\|.*(?:\n|$))+)/i);
-    if (!tableMatch) return { nodes: [], description: '' };
+  // Task graph parsing delegated to standalone exported function below
 
-    const rows = tableMatch[1].trim().split('\n');
-    const nodes: TaskNode[] = [];
-
-    for (const row of rows) {
-      const cells = row.split('|').map(c => c.trim()).filter(c => c.length > 0);
-      if (cells.length < 5) continue;
-
-      const step = parseInt(cells[0]);
-      const agentId = cells[1].toLowerCase().replace(/\s+/g, '-') as AgentId;
-      const dependsOn = cells[2] === '(trigger)' ? [] :
-        cells[2].split(',').map(s => parseInt(s.replace(/Step\s*/i, '').trim())).filter(n => !isNaN(n));
-      const onSuccessRaw = cells[3].toLowerCase();
-      const onFailureRaw = cells[4].toLowerCase();
-      const maxRetries = cells.length > 5 ? parseInt(cells[5]) || 3 : 3;
-
-      const onSuccess: 'next' | 'complete' | number =
-        onSuccessRaw.includes('complete') ? 'complete' :
-        onSuccessRaw.match(/step\s*(\d+)/i) ? parseInt(onSuccessRaw.match(/step\s*(\d+)/i)![1]) :
-        'next';
-
-      const onFailure: 'retry' | 'halt' | number =
-        onFailureRaw.includes('halt') ? 'halt' :
-        onFailureRaw.includes('retry') ? 'retry' :
-        onFailureRaw.match(/step\s*(\d+)/i) ? parseInt(onFailureRaw.match(/step\s*(\d+)/i)![1]) :
-        'retry';
-
-      if (!isNaN(step)) {
-        nodes.push({ step, agentId, dependsOn, onSuccess, onFailure, maxRetries, escalateAfterRetries: true });
-      }
-    }
-
-    return { nodes, description: 'Loaded from vault' };
-  }
 
   // ── Decision Logging ──────────────────────────────────────
 
@@ -715,6 +680,37 @@ export class Orchestrator {
     }
   }
 
+  private async loadProjectPaths(): Promise<ProjectPaths> {
+    const defaults: ProjectPaths = {
+      storyboardsPath: 'design/web/v8/src/_analysis/09-storyboards.md',
+      apiContractsPath: 'design/web/v8/src/_analysis/06-api-contracts.md',
+      screenStatesPath: 'design/web/v8/src/_analysis/10-screen-state-matrix.md',
+      apiSpMapPath: 'design/web/v8/src/_analysis/11-api-to-sp-map.md',
+    };
+
+    try {
+      const note = await this.vault.read('knowledge/project-paths.md');
+
+      const extract = (key: string): string | undefined => {
+        const match = note.body.match(new RegExp(`${key}\\s*\\|\\s*([^|\\n]+)`));
+        return match?.[1]?.trim();
+      };
+
+      const paths: ProjectPaths = {
+        storyboardsPath: extract('storyboardsPath') ?? defaults.storyboardsPath,
+        apiContractsPath: extract('apiContractsPath') ?? defaults.apiContractsPath,
+        screenStatesPath: extract('screenStatesPath') ?? defaults.screenStatesPath,
+        apiSpMapPath: extract('apiSpMapPath') ?? defaults.apiSpMapPath,
+      };
+
+      console.log(`[ORCHESTRATOR] Project paths loaded from vault`);
+      return paths;
+    } catch {
+      console.log(`[ORCHESTRATOR] project-paths.md not found, using defaults`);
+      return defaults;
+    }
+  }
+
   private async getCurrentCommitSha(): Promise<string> {
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
@@ -768,4 +764,57 @@ export class Orchestrator {
       ),
     ].join('\n');
   }
+}
+
+// ── Standalone task graph parser (exported for testability) ──
+
+/** Parse task graph from the markdown table in an architecture note. */
+export function parseTaskGraphFromMarkdown(body: string): TaskGraph {
+  // Whitespace-tolerant, case-insensitive table header match
+  const tableMatch = body.match(/\|\s*Step\s*\|.*?\n\|[-|\s:]+\n((?:\|.*(?:\n|$))+)/is);
+  if (!tableMatch) return { nodes: [], description: '' };
+
+  const rows = tableMatch[1].trim().split('\n');
+  const nodes: TaskNode[] = [];
+
+  for (const row of rows) {
+    const cells = row.split('|').map(c => c.trim()).filter(c => c.length > 0);
+    if (cells.length < 5) {
+      console.warn(`[TASK-GRAPH] Skipping malformed row (${cells.length} cells): ${row.substring(0, 80)}`);
+      continue;
+    }
+
+    const step = parseInt(cells[0]);
+    if (isNaN(step)) {
+      console.warn(`[TASK-GRAPH] Skipping row with non-numeric step: "${cells[0]}"`);
+      continue;
+    }
+
+    const agentId = cells[1].toLowerCase().replace(/\s+/g, '-') as AgentId;
+    if (!agentId || agentId === ('-' as string)) {
+      console.warn(`[TASK-GRAPH] Skipping row ${step} with empty agent ID`);
+      continue;
+    }
+
+    const dependsOn = cells[2] === '(trigger)' ? [] :
+      cells[2].split(',').map(s => parseInt(s.replace(/Step\s*/i, '').trim())).filter(n => !isNaN(n));
+    const onSuccessRaw = cells[3].toLowerCase();
+    const onFailureRaw = cells[4].toLowerCase();
+    const maxRetries = cells.length > 5 ? parseInt(cells[5]) || 3 : 3;
+
+    const onSuccess: 'next' | 'complete' | number =
+      onSuccessRaw.includes('complete') ? 'complete' :
+      onSuccessRaw.match(/step\s*(\d+)/i) ? parseInt(onSuccessRaw.match(/step\s*(\d+)/i)![1]) :
+      'next';
+
+    const onFailure: 'retry' | 'halt' | number =
+      onFailureRaw.includes('halt') ? 'halt' :
+      onFailureRaw.includes('retry') ? 'retry' :
+      onFailureRaw.match(/step\s*(\d+)/i) ? parseInt(onFailureRaw.match(/step\s*(\d+)/i)![1]) :
+      'retry';
+
+    nodes.push({ step, agentId, dependsOn, onSuccess, onFailure, maxRetries, escalateAfterRetries: true });
+  }
+
+  return { nodes, description: 'Loaded from vault' };
 }

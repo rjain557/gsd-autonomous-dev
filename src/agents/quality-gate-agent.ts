@@ -146,6 +146,13 @@ export class QualityGateAgent extends BaseAgent {
       { regex: /api[_-]?key\s*=\s*["'][^"']+["']/i, label: 'Hardcoded API key' },
       { regex: /connectionString.*password/i, label: 'Password in connection string' },
       { regex: /secret\s*[:=]\s*["'][^"']{8,}["']/i, label: 'Hardcoded secret' },
+      { regex: /(AKIA|ASIA)[A-Z0-9]{16}/, label: 'AWS access key' },
+      { regex: /ghp_[A-Za-z0-9]{36}/, label: 'GitHub personal access token' },
+      { regex: /sk-[A-Za-z0-9]{20,}/, label: 'OpenAI/Anthropic API key' },
+      { regex: /-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/, label: 'Private key' },
+      { regex: /Bearer\s+eyJ[A-Za-z0-9_-]{10,}/, label: 'Hardcoded bearer/JWT token' },
+      { regex: /(passwd|pwd)\s*[:=]\s*["'][^"']{3,}["']/i, label: 'Hardcoded password (alt)' },
+      { regex: /\b(eyJ[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]+\b/, label: 'JWT token in source' },
     ];
 
     // Cross-platform: use Node.js fs to walk files instead of grep
@@ -171,6 +178,26 @@ export class QualityGateAgent extends BaseAgent {
           hasCritical = true;
         }
       }
+    }
+
+    // Optional: run Semgrep SAST if installed (free, OSS)
+    try {
+      const semgrep = await this.runCheck('semgrep --config auto --json . 2>&1', 120_000);
+      if (semgrep.success) {
+        try {
+          const output = JSON.parse(semgrep.output);
+          const semgrepResults = output.results ?? [];
+          for (const r of semgrepResults) {
+            const severity = (r.extra?.severity ?? 'WARNING').toUpperCase();
+            const msg = `semgrep [${severity}] ${r.check_id}: ${r.path}:${r.start?.line ?? '?'}`;
+            findings.push(msg);
+            if (severity === 'ERROR') hasCritical = true;
+          }
+          console.log(`[QUALITY-GATE] Semgrep found ${semgrepResults.length} findings`);
+        } catch { /* Semgrep output not parseable */ }
+      }
+    } catch {
+      // Semgrep not installed — regex-only scanning (acceptable)
     }
 
     // Run npm audit for known vulnerabilities (if package.json exists)

@@ -1,6 +1,6 @@
 # GSD Engine - Goal-Spec-Done Autonomous Development System
 
-**Version:** 4.0.0 | **Platform:** Windows + PowerShell 5.1+ / Node.js 20+ | **Agents:** 7 configured models (Claude, Codex, Gemini, Kimi, DeepSeek, GLM-5, MiniMax)
+**Version:** 4.1.0 | **Platform:** Windows + PowerShell 5.1+ / Node.js 18+ | **Agents:** 8 typed agents (Claude, Codex, Gemini + DeepSeek, MiniMax fallbacks)
 
 The GSD Engine is a PowerShell-based autonomous development framework that orchestrates seven configured models across CLI and REST providers to drive codebases from specification to 100% implementation through iterative convergence loops. It runs unattended with comprehensive self-healing for network failures, quota limits, agent crashes, and stalls.
 
@@ -80,10 +80,12 @@ Each provider draws from an independent quota pool, maximizing throughput. Gemin
 | [GSD-Installation-Guide.md](docs/GSD-Installation-Guide.md) | Prerequisites, quick start, first project setup, mobile monitoring |
 | [GSD-Configuration.md](docs/GSD-Configuration.md) | JSON schemas, pricing cache, per-project configs, environment variables |
 | [GSD-Troubleshooting.md](docs/GSD-Troubleshooting.md) | Installation, runtime, supervisor, cost tracking, common workflows |
+| [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md) | V4.1 TypeScript harness — all 47 gaps closed |
+| [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) | Graphify knowledge graph setup, querying, MCP server |
 
-## V4 TypeScript Agent Harness (New)
+## V4.1 TypeScript Agent Harness
 
-In addition to the PowerShell engine, V4 adds a TypeScript harness (`src/`) with typed agent contracts, vault-integrated memory, and orchestrated deployment with rollback.
+The TypeScript harness (`src/`) provides 8 typed agents with vault-integrated memory, rate-limited CLI-first LLM routing, and orchestrated deployment with rollback. **100% complete** as of v4.1.0.
 
 ```bash
 npm install
@@ -92,17 +94,32 @@ npx ts-node src/index.ts pipeline run --trigger manual --dry-run
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Type system | Complete | All agent I/O contracts typed |
+| Type system | Complete | All agent I/O contracts typed, ProjectPaths interface |
 | Vault adapter | Complete | OS-level file locking via proper-lockfile |
-| Hook system | Complete | 7 events, 7 default handlers |
-| Orchestrator | Complete | Stage routing, decision logging, state save/restore, task graph from vault |
+| Hook system | Complete | 8 events, 7 default handlers, all 7 stages validated |
+| Orchestrator | Complete | Stage routing, decision logging, configurable project paths, resilient task graph parsing |
 | Deploy + rollback | Complete | Cross-platform (Node fs.cp, http); rollback stops on first failure |
 | State restoration | Complete | Saves after each stage, restores on `--from-stage` |
-| LLM integration | Complete | Anthropic SDK with tool_use for structured output; CLI fallback |
-| JSON parsing | Complete | 3-strategy extractor; throws on failure so retry engages |
+| LLM integration | Complete | CLI-first ($0 marginal) + Anthropic SDK fallback; model-aware cost tracking |
+| Security scanning | Complete | 11 regex patterns + optional Semgrep SAST integration |
+| E2E validation | Complete | All 6 categories (API, screens, CRUD, auth, mock data, error states) |
+| PostDeploy validation | Complete | Real SP existence + DTO mismatch detection |
 | Eval framework | Complete | 6/6 test cases; vault markdown parser for dynamic loading |
+| Preflight checks | Complete | CLI availability, vault path, env var validation |
 
 Full status: [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md)
+
+## Graphify Knowledge Graph Integration
+
+The pipeline integrates with [Graphify](https://github.com/safishamsi/graphify), an open-source knowledge graph that converts the codebase into a queryable graph for structural navigation instead of flat file scanning (up to 71x token reduction).
+
+```bash
+pip install graphifyy
+graphify claude install     # Hook into Claude Code
+/graphify .                 # Build knowledge graph (from Claude Code)
+```
+
+Agents consult `graphify-out/GRAPH_REPORT.md` for god nodes and community structure before searching raw files. See [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) for full setup instructions.
 
 ## Scripts
 

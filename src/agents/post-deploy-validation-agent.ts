@@ -45,6 +45,12 @@ export class PostDeployValidationAgent extends BaseAgent {
     // 6. SPA JS bundle accessible (catches 404 from stale hash)
     checks.push(await this.checkSpaJsLoads(opts.frontendUrl));
 
+    // 7. SP existence validation
+    const spExistence = await this.validateSpExistence(opts);
+
+    // 8. DTO mismatch validation
+    const dtoValidation = await this.validateDtoMismatches(opts, apiEndpoints);
+
     const criticalFailed = checks.filter(c =>
       (c.severity === 'critical' || c.severity === 'high') && !c.passed
     );
@@ -52,8 +58,8 @@ export class PostDeployValidationAgent extends BaseAgent {
     return {
       passed: criticalFailed.length === 0,
       checks,
-      spExistence: { expected: 0, found: 0, missing: [] },
-      dtoValidation: { tested: apiEndpoints.length, passed: checks.filter(c => c.category === 'api' && c.passed).length, mismatches: [] },
+      spExistence,
+      dtoValidation,
       pageRender: { tested: 2, passed: checks.filter(c => c.category === 'frontend' && c.passed).length, failures: checks.filter(c => c.category === 'frontend' && !c.passed).map(c => c.details) },
       authFlow: { passed: checks.find(c => c.name === 'Auth (no token)')?.passed ?? false, details: checks.find(c => c.name === 'Auth (no token)')?.details ?? '' },
     } satisfies PostDeployValidationResult;
@@ -116,6 +122,85 @@ export class PostDeployValidationAgent extends BaseAgent {
     } catch (err) {
       return { name: `No 500: ${ep}`, category: 'api', passed: false, details: `${err instanceof Error ? err.message : String(err)}`, severity: 'high' };
     }
+  }
+
+  /** Parse SP names from API contracts, verify they exist in SQL files. */
+  private async validateSpExistence(opts: PostDeployInput): Promise<{ expected: number; found: number; missing: string[] }> {
+    if (!opts.apiContractsPath) return { expected: 0, found: 0, missing: [] };
+
+    try {
+      const contracts = await fs.readFile(path.resolve(opts.apiContractsPath), 'utf-8');
+      const spNames = new Set<string>();
+      const spRegex = /usp_\w+/g;
+      let m; while ((m = spRegex.exec(contracts)) !== null) spNames.add(m[0]);
+
+      if (spNames.size === 0) return { expected: 0, found: 0, missing: [] };
+
+      // Search for SP definitions in SQL files
+      const repoRoot = path.dirname(opts.apiContractsPath).replace(/[/\\]design[/\\].*$/, '') || '.';
+      const sqlFiles = await this.findFiles(repoRoot, ['.sql']);
+      let sqlContent = '';
+      for (const f of sqlFiles) {
+        try { sqlContent += await fs.readFile(f, 'utf-8') + '\n'; } catch {}
+      }
+
+      const missing: string[] = [];
+      for (const sp of spNames) {
+        if (!sqlContent.includes(sp)) missing.push(sp);
+      }
+
+      return { expected: spNames.size, found: spNames.size - missing.length, missing };
+    } catch {
+      return { expected: 0, found: 0, missing: [] };
+    }
+  }
+
+  /** Parse DTO types from API contracts, check matching C# classes exist. */
+  private async validateDtoMismatches(opts: PostDeployInput, _apiEndpoints: string[]): Promise<{ tested: number; passed: number; mismatches: string[] }> {
+    if (!opts.apiContractsPath) return { tested: 0, passed: 0, mismatches: [] };
+
+    try {
+      const contracts = await fs.readFile(path.resolve(opts.apiContractsPath), 'utf-8');
+
+      // Extract DTO names from contracts (patterns like "Request: CreateOrderDto" or "Response: OrderDto")
+      const dtoPattern = /(?:Request|Response|Body|Returns?):\s*`?(\w+Dto)\b`?/gi;
+      const expectedDtos = new Set<string>();
+      let m; while ((m = dtoPattern.exec(contracts)) !== null) expectedDtos.add(m[1]);
+
+      if (expectedDtos.size === 0) return { tested: 0, passed: 0, mismatches: [] };
+
+      // Search for DTO class definitions in C# files
+      const repoRoot = path.dirname(opts.apiContractsPath).replace(/[/\\]design[/\\].*$/, '') || '.';
+      const csFiles = await this.findFiles(repoRoot, ['.cs']);
+      let csContent = '';
+      for (const f of csFiles) {
+        try { csContent += await fs.readFile(f, 'utf-8') + '\n'; } catch {}
+      }
+
+      const mismatches: string[] = [];
+      for (const dto of expectedDtos) {
+        const classPattern = new RegExp(`class\\s+${dto}\\b`);
+        if (!classPattern.test(csContent)) {
+          mismatches.push(`${dto} — class not found in .cs files`);
+        }
+      }
+
+      return { tested: expectedDtos.size, passed: expectedDtos.size - mismatches.length, mismatches };
+    } catch {
+      return { tested: 0, passed: 0, mismatches: [] };
+    }
+  }
+
+  private async findFiles(dir: string, exts: string[]): Promise<string[]> {
+    const results: string[] = [];
+    const skip = new Set(['node_modules', '.git', 'bin', 'obj', 'dist', '.gsd']);
+    let entries; try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return results; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory() && !skip.has(e.name)) results.push(...await this.findFiles(p, exts));
+      else if (exts.some(ext => e.name.endsWith(ext))) results.push(p);
+    }
+    return results;
   }
 
   private httpGetStatus(url: string): Promise<number> {

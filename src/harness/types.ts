@@ -161,6 +161,13 @@ export interface DeployConfig {
   healthEndpoint: string;
 }
 
+export interface ProjectPaths {
+  storyboardsPath: string;
+  apiContractsPath: string;
+  screenStatesPath: string;
+  apiSpMapPath: string;
+}
+
 export interface StepResult {
   name: string;
   success: boolean;
@@ -225,6 +232,7 @@ export interface HookContext {
   attempt?: number;
   state?: PipelineState;
   durationMs?: number;
+  cliModel?: string;
   path?: string;
   content?: string;
 }

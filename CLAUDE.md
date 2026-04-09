@@ -26,7 +26,7 @@ Eight agents coordinated by an Orchestrator that routes work through a 7-stage d
 ```
 memory/
   agents/           - Agent system prompts and configs (frontmatter + body)
-  knowledge/        - Pipeline configs, quality gates, deploy targets, rollback procedures
+  knowledge/        - Pipeline configs, quality gates, deploy targets, rollback procedures, project paths
   architecture/     - System design docs, state schema, hook registry
   sessions/         - Append-only run logs (auto-created per run)
   decisions/        - Orchestrator decision records with rationale
@@ -254,3 +254,12 @@ const useStyles = makeStyles({
 ## LLM API Quick Reference
 
 See `C:\Users\rjain\.claude\CLAUDE.md` for full model endpoint reference (Anthropic, OpenAI, DeepSeek, Kimi, MiniMax, GLM5).
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current

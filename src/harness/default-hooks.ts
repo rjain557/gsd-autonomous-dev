@@ -10,10 +10,19 @@ import type { HookContext, PipelineState, CostEntry, GateResult, DeployRecord } 
 
 // ── Cost estimation helpers ─────────────────────────────────
 
-function estimateTokens(obj: unknown): number {
+// Model-aware character-to-token ratios (more accurate than flat /4)
+const MODEL_CHARS_PER_TOKEN: Record<string, number> = {
+  claude:   3.5,  // Claude models ~3.5 chars/token
+  codex:    4.0,  // GPT-family ~4 chars/token
+  gemini:   4.0,  // Gemini similar to GPT
+  deepseek: 3.8,  // CJK-optimized tokenizer
+  minimax:  3.8,
+};
+
+function estimateTokens(obj: unknown, model?: string): number {
   const json = JSON.stringify(obj ?? '');
-  // ~1 token per 4 characters (English text average)
-  return Math.ceil(json.length / 4);
+  const charsPerToken = MODEL_CHARS_PER_TOKEN[model ?? ''] ?? 3.75;
+  return Math.ceil(json.length / charsPerToken);
 }
 
 // Model-specific pricing per million tokens (input/output average)
@@ -26,10 +35,8 @@ const MODEL_COST_PER_M: Record<string, number> = {
   minimax:  0.75,  // $0.29 input + $1.20 output average
 };
 
-function estimateCostUsd(tokens: number, agentId?: string): number {
-  // Resolve the CLI model from the agent ID (all subscription agents = $0)
-  const cliModel = agentId?.replace(/-agent$/, '').split('-')[0] ?? '';
-  const costPerM = MODEL_COST_PER_M[cliModel] ?? 0;
+function estimateCostUsd(tokens: number, cliModel?: string): number {
+  const costPerM = MODEL_COST_PER_M[cliModel ?? ''] ?? 0;
   return (tokens / 1_000_000) * costPerM;
 }
 
@@ -50,20 +57,20 @@ export function registerDefaultHooks(
 
   // 2. Cost Tracker — onBeforeRun + onAfterRun
   hooks.register('onBeforeRun', 'cost-tracker', async (ctx: HookContext) => {
-    // Store input token estimate in context for later
-    (ctx as unknown as Record<string, unknown>)._inputTokenEstimate = estimateTokens(ctx.input);
+    // Store input token estimate in context for later (using model-aware estimation)
+    (ctx as unknown as Record<string, unknown>)._inputTokenEstimate = estimateTokens(ctx.input, ctx.cliModel);
   });
 
   hooks.register('onAfterRun', 'cost-tracker', async (ctx: HookContext) => {
     const state = getState();
     const inputTokens = ((ctx as unknown as Record<string, unknown>)._inputTokenEstimate as number) ?? 0;
-    const outputTokens = estimateTokens(ctx.output);
+    const outputTokens = estimateTokens(ctx.output, ctx.cliModel);
     const cost: CostEntry = {
       agentId: ctx.agentId!,
       stage: state.currentStage,
       inputTokens,
       outputTokens,
-      estimatedCostUsd: estimateCostUsd(inputTokens + outputTokens, ctx.agentId),
+      estimatedCostUsd: estimateCostUsd(inputTokens + outputTokens, ctx.cliModel),
     };
     state.costAccumulator.push(cost);
   });
@@ -115,6 +122,27 @@ export function registerDefaultHooks(
         const deploy = ctx.output as Record<string, unknown>;
         if (typeof deploy.success !== 'boolean' || !Array.isArray(deploy.steps)) {
           throw new Error(`DeployAgent output missing required fields: success, steps`);
+        }
+        break;
+      }
+      case 'e2e': {
+        const result = ctx.output as Record<string, unknown>;
+        if (typeof result.passed !== 'boolean' || typeof result.totalFlows !== 'number') {
+          throw new Error(`E2EValidationAgent output missing required fields: passed, totalFlows`);
+        }
+        break;
+      }
+      case 'remediate': {
+        const result = ctx.output as Record<string, unknown>;
+        if (!Array.isArray(result.patches) || typeof result.testsPassed !== 'boolean') {
+          throw new Error(`RemediationAgent output missing required fields: patches, testsPassed`);
+        }
+        break;
+      }
+      case 'post-deploy': {
+        const result = ctx.output as Record<string, unknown>;
+        if (typeof result.passed !== 'boolean' || !Array.isArray(result.checks)) {
+          throw new Error(`PostDeployValidationAgent output missing required fields: passed, checks`);
         }
         break;
       }

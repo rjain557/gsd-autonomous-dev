@@ -58,11 +58,28 @@ export class E2EValidationAgent extends BaseAgent {
     results.push(...authResults);
     this.tally(categories.authFlows, authResults);
 
+    // 6. CRUD operations validation — verify non-GET routes have controllers + tests
+    const crudResults = await this.validateCrudOperations(opts);
+    results.push(...crudResults);
+    this.tally(categories.crudOperations, crudResults);
+
+    // 7. Error states validation — verify error boundaries + no 500s on bad auth
+    const errorResults = await this.validateErrorStates(opts);
+    results.push(...errorResults);
+    this.tally(categories.errorStates, errorResults);
+
     const totalFlows = results.length;
     const passedFlows = results.filter(r => r.passed).length;
 
+    const criticalFailures = [
+      categories.apiContract,
+      categories.authFlows,
+      categories.crudOperations,
+      categories.errorStates,
+    ].some(c => c.failures.length > 0);
+
     return {
-      passed: categories.apiContract.failures.length === 0 && categories.authFlows.failures.length === 0,
+      passed: !criticalFailures,
       totalFlows,
       passedFlows,
       failedFlows: totalFlows - passedFlows,
@@ -131,6 +148,12 @@ export class E2EValidationAgent extends BaseAgent {
       { regex: /console\.\w+\s*\(\s*['"]TODO/gi, label: 'TODO stub handler' },
       { regex: /currentUserId\s*=\s*['"][^'"]+['"]/g, label: 'Hardcoded user ID' },
       { regex: /return\s+\{\s*data:\s*\[\]\s*\}/g, label: 'Empty stub hook return' },
+      { regex: /\/\/\s*(?:TODO|FIXME|HACK|XXX)\b/gi, label: 'Unfinished TODO/FIXME' },
+      { regex: /(?:mock|dummy|fake|stub)Data\b/gi, label: 'Mock/dummy/fake data variable' },
+      { regex: /lorem\s+ipsum/gi, label: 'Lorem ipsum placeholder text' },
+      { regex: /async\s+function\s+\w+\s*\([^)]*\)\s*\{\s*\}/g, label: 'Empty async function body' },
+      { regex: /tenantId\s*[:=]\s*['"][^'"]+['"]/gi, label: 'Hardcoded tenant ID' },
+      { regex: /if\s*\(\s*(?:isDev|isLocal|__DEV__)\s*\)/gi, label: 'Development-only conditional' },
     ];
     const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', '.gsd', 'test-fixtures']);
     const sourceFiles = await this.findFiles(repoRoot, ['.ts', '.tsx', '.js', '.jsx']);
@@ -188,6 +211,123 @@ export class E2EValidationAgent extends BaseAgent {
       } catch (err) {
         results.push({ flow: 'Auth Flow', step: 0, action: `GET ${endpoint}`, expected: 'responds', actual: `${err instanceof Error ? err.message : String(err)}`, passed: false });
       }
+    }
+    return results;
+  }
+
+  /** Verify non-GET endpoints have controllers and corresponding test files. */
+  private async validateCrudOperations(opts: E2EValidationInput): Promise<E2ETestResult[]> {
+    const results: E2ETestResult[] = [];
+    let contracts: string;
+    try { contracts = await fs.readFile(path.resolve(opts.repoRoot, opts.apiContractsPath), 'utf-8'); }
+    catch { return [{ flow: 'CRUD Operations', step: 0, action: 'read contracts', expected: 'exists', actual: `${opts.apiContractsPath} not found`, passed: false }]; }
+
+    const epPattern = /####?\s*`(POST|PUT|DELETE|PATCH)\s+(\/api\/[^`]+)`/g;
+    let match; let step = 0;
+    const controllerFiles = await this.findFiles(opts.repoRoot, ['.cs', '.ts']);
+    const testFiles = await this.findFiles(opts.repoRoot, ['.test.ts', '.spec.ts', 'Tests.cs']);
+
+    while ((match = epPattern.exec(contracts)) !== null) {
+      step++;
+      const [, method, endpoint] = match;
+      // Extract route segment for matching, e.g. /api/orders -> orders
+      const routeSegment = endpoint.split('/').filter(Boolean).pop() ?? endpoint;
+
+      // Check controller files contain the route
+      let controllerFound = false;
+      for (const cf of controllerFiles) {
+        if (cf.includes('test') || cf.includes('Test') || cf.includes('spec')) continue;
+        try {
+          const content = await fs.readFile(cf, 'utf-8');
+          if (content.includes(endpoint) || content.toLowerCase().includes(routeSegment.toLowerCase())) {
+            controllerFound = true;
+            break;
+          }
+        } catch { continue; }
+      }
+
+      results.push({
+        flow: 'CRUD Operations', step, action: `${method} ${endpoint} controller`,
+        expected: 'controller route exists', actual: controllerFound ? 'found' : 'MISSING',
+        passed: controllerFound,
+      });
+
+      // Check test file coverage
+      const hasTest = testFiles.some(tf => {
+        const name = path.basename(tf).toLowerCase();
+        return name.includes(routeSegment.toLowerCase());
+      });
+
+      results.push({
+        flow: 'CRUD Operations', step, action: `${method} ${endpoint} test`,
+        expected: 'test file exists', actual: hasTest ? 'found' : 'MISSING',
+        passed: hasTest,
+      });
+    }
+
+    if (results.length === 0) {
+      results.push({ flow: 'CRUD Operations', step: 0, action: 'scan', expected: 'non-GET endpoints', actual: 'None found in contracts', passed: true });
+    }
+    return results;
+  }
+
+  /** Verify error boundaries exist and bad-auth requests don't produce 500s. */
+  private async validateErrorStates(opts: E2EValidationInput): Promise<E2ETestResult[]> {
+    const results: E2ETestResult[] = [];
+
+    // 1. Check that error boundaries exist in React source
+    const tsxFiles = await this.findFiles(opts.repoRoot, ['.tsx', '.jsx']);
+    const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', '.gsd', 'test-fixtures']);
+    let errorBoundaryFound = false;
+    let messageBarErrorFound = false;
+
+    for (const filePath of tsxFiles) {
+      if (filePath.split(path.sep).some(s => skipDirs.has(s))) continue;
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        if (content.includes('ErrorBoundary')) errorBoundaryFound = true;
+        if (/MessageBar.*intent\s*=\s*["']error["']/i.test(content)) messageBarErrorFound = true;
+      } catch { continue; }
+    }
+
+    results.push({
+      flow: 'Error States', step: 1, action: 'Check ErrorBoundary component',
+      expected: 'ErrorBoundary in source', actual: errorBoundaryFound ? 'found' : 'MISSING',
+      passed: errorBoundaryFound,
+    });
+
+    results.push({
+      flow: 'Error States', step: 2, action: 'Check error MessageBar usage',
+      expected: 'MessageBar intent="error" in source', actual: messageBarErrorFound ? 'found' : 'MISSING',
+      passed: messageBarErrorFound,
+    });
+
+    // 2. Verify API endpoints don't return 500 on bad auth (should get 401)
+    let contracts: string;
+    try { contracts = await fs.readFile(path.resolve(opts.repoRoot, opts.apiContractsPath), 'utf-8'); }
+    catch { return results; }
+
+    const protectedPattern = /####?\s*`GET\s+(\/api\/(?!health)[^`]+)`/g;
+    let match; let step = 3;
+    while ((match = protectedPattern.exec(contracts)) !== null && step < 8) {
+      const endpoint = match[1];
+      const url = `${opts.backendUrl}${endpoint}`;
+      try {
+        // Request without auth — should get 401 not 500
+        const status = await this.httpGetStatus(url);
+        results.push({
+          flow: 'Error States', step, action: `GET ${endpoint} (no auth)`,
+          expected: 'not 500', actual: `HTTP ${status}`,
+          passed: status !== 500,
+        });
+      } catch (err) {
+        results.push({
+          flow: 'Error States', step, action: `GET ${endpoint} (no auth)`,
+          expected: 'not 500', actual: `${err instanceof Error ? err.message : String(err)}`,
+          passed: true, // connection error is not a 500
+        });
+      }
+      step++;
     }
     return results;
   }

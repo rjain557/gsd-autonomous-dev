@@ -9,7 +9,8 @@
     "pipeline": "ts-node src/index.ts pipeline run",
     "pipeline:dry": "ts-node src/index.ts pipeline run --dry-run",
     "evals": "ts-node src/evals/runner.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run evals"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.0",

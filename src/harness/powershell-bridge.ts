@@ -1,8 +1,9 @@
 // ═══════════════════════════════════════════════════════════
 // GSD Agent System — PowerShell Bridge
+// @deprecated Retained for legacy GSD v3 compatibility.
+// Not used by the v4.1 pipeline. May be removed in v5.
 // Calls existing GSD PowerShell scripts from the TypeScript
 // harness, parsing their JSON output into typed results.
-// Enables gradual migration: new orchestrator, old scripts.
 // ═══════════════════════════════════════════════════════════
 
 import { execFile } from 'child_process';

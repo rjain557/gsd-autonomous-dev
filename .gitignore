@@ -35,5 +35,8 @@ db/
 # If external projects generate src/ here, clean them manually
 !src/
 
+# Graphify knowledge graph output (regenerated per-machine)
+graphify-out/
+
 # External project repos (managed by GSD, not tracked here)
 external/

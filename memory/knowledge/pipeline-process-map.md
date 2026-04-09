@@ -5,7 +5,7 @@ description: Full pipeline process map derived from 2026-04-08 audit
 
 # Pipeline Process Map
 
-See [[06-Sessions/2026-04-08-pipeline-audit]] for the full audit.
+Derived from the 2026-04-08 pipeline audit.
 
 ## Convergence Pipeline
 

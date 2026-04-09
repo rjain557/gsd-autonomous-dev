@@ -5,6 +5,62 @@
 
 import { Orchestrator } from './harness/orchestrator';
 import type { PipelineStage, TriggerType } from './harness/types';
+import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
+import { join } from 'path';
+
+// ── Preflight validation ────────────────────────────────────
+
+interface PreflightResult {
+  ok: boolean;
+  warnings: string[];
+  errors: string[];
+}
+
+function preflight(vaultPath: string): PreflightResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+
+  // 1. Vault path exists with expected structure
+  if (!existsSync(vaultPath)) {
+    errors.push(`Vault path not found: ${vaultPath}`);
+  } else if (!existsSync(join(vaultPath, 'agents'))) {
+    errors.push(`Vault path missing agents/ subdirectory: ${vaultPath}/agents`);
+  }
+
+  // 2. Validate GSD_LLM_MODE
+  const llmMode = process.env.GSD_LLM_MODE;
+  if (llmMode && llmMode !== 'cli' && llmMode !== 'sdk') {
+    errors.push(`GSD_LLM_MODE must be "cli" or "sdk", got: "${llmMode}"`);
+  }
+
+  // 3. If SDK mode, check for API key
+  if (llmMode === 'sdk' && !process.env.ANTHROPIC_API_KEY) {
+    errors.push('GSD_LLM_MODE=sdk requires ANTHROPIC_API_KEY environment variable');
+  }
+
+  // 4. Check primary CLI availability (claude is required minimum)
+  const cliChecks: Array<{ name: string; required: boolean }> = [
+    { name: 'claude', required: true },
+    { name: 'codex', required: false },
+    { name: 'gemini', required: false },
+  ];
+
+  for (const cli of cliChecks) {
+    try {
+      execFileSync(cli.name, ['--version'], { timeout: 10_000, stdio: 'pipe' });
+    } catch {
+      const msg = `CLI "${cli.name}" not found on PATH. Install and authenticate before running the pipeline.`;
+      if (cli.required) {
+        errors.push(msg);
+      } else {
+        warnings.push(msg + ' (fallback agents will be used)');
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, warnings, errors };
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -40,6 +96,17 @@ async function handlePipeline(args: string[]): Promise<void> {
   const fromStage = options['from-stage'] as PipelineStage | undefined;
   const dryRun = options['dry-run'] === 'true' || options['dry-run'] === '';
   const vaultPath = options['vault-path'] ?? './memory';
+
+  // Run preflight checks before anything else
+  const check = preflight(vaultPath);
+  for (const w of check.warnings) console.warn(`  [WARN] ${w}`);
+  if (!check.ok) {
+    console.error('');
+    console.error('  Preflight failed:');
+    for (const e of check.errors) console.error(`    ✗ ${e}`);
+    console.error('');
+    process.exit(1);
+  }
 
   console.log('');
   console.log('═══════════════════════════════════════════════');

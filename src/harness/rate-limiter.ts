@@ -138,6 +138,18 @@ export class RateLimiter {
     return result;
   }
 
+  /** Track model switches for observability. Logs when a stage uses a different model than the previous stage. */
+  private lastModelPerStage = new Map<string, string>();
+
+  trackModelSwitch(stage: string, model: string): void {
+    const previous = this.lastModelPerStage.get('_last');
+    if (previous && previous !== model) {
+      console.log(`[RATE-LIMITER] Model switch: ${previous} -> ${model} for stage "${stage}" (context not transferred)`);
+    }
+    this.lastModelPerStage.set('_last', model);
+    this.lastModelPerStage.set(stage, model);
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }

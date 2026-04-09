@@ -99,13 +99,39 @@ memory/
 | 27 | Stale vault note (code-review-agent warnOnHigh) | Updated input schema to match actual QualityGateThresholds type (securityScanEnabled). |
 | 28 | Review quality judge not wired into eval runner | scoreReviewQuality() now runs on code-review eval results with thoroughness/actionability/FP scores. |
 
-### Remaining Gaps (P2 only)
+### V4.1.0 Gaps Closed (2026-04-09)
 
-| # | Gap | Impact | Priority |
-|---|---|---|---|
-| 1 | Security scanning uses regex patterns, not SAST | False positives/negatives on secret detection | P2 |
-| 2 | Cost estimation is rough (chars/4) | Inaccurate cost tracking | P2 |
-| 3 | No integration between PowerShell and TypeScript pipelines | Two independent orchestrators | P2 |
+| # | Gap | Fix Applied |
+|---|---|---|
+| 29 | Dependencies not installed, pipeline couldn't run | `npm install` + preflight validation in index.ts checks CLIs, vault, env vars |
+| 30 | CLI preflight missing — ENOENT on missing claude/codex/gemini | `preflight()` function validates CLI availability with clear error messages |
+| 31 | E2E hardcoded design doc paths | Configurable via `memory/knowledge/project-paths.md`, loaded by `loadProjectPaths()` |
+| 32 | E2E crudOperations category empty (declared, never tested) | `validateCrudOperations()` checks POST/PUT/DELETE routes have controllers + test files |
+| 33 | E2E errorStates category empty (declared, never tested) | `validateErrorStates()` verifies ErrorBoundary exists, checks endpoints return no 500s |
+| 34 | Mock data detection too simple (4 patterns) | Expanded to 10 patterns: TODO/FIXME, mockData vars, lorem ipsum, empty async, hardcoded tenantId, isDev |
+| 35 | Security scanning regex-only (4 patterns) | Expanded to 11 patterns + optional Semgrep SAST integration (`tryRunSemgrep()`) |
+| 36 | Cost estimation rough (chars/4) | Model-aware char-to-token ratios per CLI + `cliModel` field in HookContext |
+| 37 | PostDeploy SP existence stub (always {0,0,[]}) | `validateSpExistence()` parses SP names from contracts, checks SQL files |
+| 38 | PostDeploy DTO validation stub (always {0,0,[]}) | `validateDtoMismatches()` extracts DTO names from contracts, checks C# classes |
+| 39 | Result validator missing e2e/remediate/post-deploy | Added 3 validation cases to result-validator hook |
+| 40 | Task graph parsing fragile, silent fallback | Tolerant regex, explicit console.warn on fallback, row-level validation, exported standalone function |
+| 41 | Rate limiter ignores model switches | `trackModelSwitch()` logs when pipeline switches between CLIs |
+| 42 | Dead PHASE_ROUTING entries (plan, execute) | Removed unused entries from routing table |
+| 43 | PowerShell bridge undocumented status | Marked @deprecated with explanation |
+| 44 | Dead wikilink in pipeline-process-map.md | Removed broken reference |
+| 45 | state-schema.md was stub | Full schema documentation with all types, producers, and example JSON |
+| 46 | No env var validation | Preflight validates GSD_LLM_MODE, ANTHROPIC_API_KEY, vault path |
+| 47 | No `npm test` script | Added `test` script: typecheck + evals |
+
+### V4.1.0 Enhancements (2026-04-09)
+
+| # | Enhancement | Description |
+|---|---|---|
+| 48 | Graphify knowledge graph integration | Installed `graphifyy` + Claude Code PreToolUse hook. Agents consult `GRAPH_REPORT.md` for god nodes and community structure before file scanning. Up to 71x token reduction on codebase navigation. |
+
+### Remaining Gaps
+
+None. All identified gaps have been closed.
 
 ## V4.1 Model Strategy (Updated 2026-04-08)
 
