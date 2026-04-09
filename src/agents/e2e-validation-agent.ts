@@ -56,7 +56,8 @@ export class E2EValidationAgent extends BaseAgent {
       [extract(0), extract(1), extract(2), extract(3), extract(4), extract(5), extract(6), extract(7)];
 
     results.push(...apiResults, ...spResults, ...mockResults, ...pageResults, ...authResults, ...crudResults, ...errorResults, ...browserResults);
-    this.tally(categories.apiContract, apiResults);
+    // SP existence results folded into apiContract category (SPs back API contracts)
+    this.tally(categories.apiContract, [...apiResults, ...spResults]);
     this.tally(categories.mockDataDetection, mockResults);
     this.tally(categories.screenRender, pageResults);
     this.tally(categories.authFlows, authResults);
