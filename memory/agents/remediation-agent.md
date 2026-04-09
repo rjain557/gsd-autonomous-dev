@@ -12,6 +12,11 @@ timeout_seconds: 240
 escalate_after_retries: true
 ---
 
+## External tools available
+
+- **GitNexus**: MUST run `gitnexus_impact({target: "symbolToFix", direction: "upstream"})` before modifying any function to understand blast radius. Use `gitnexus_context({name: "symbol"})` to see all callers/callees before patching.
+- **Graphify**: Read `graphify-out/GRAPH_REPORT.md` to identify which community the broken code belongs to and what other files in that community might be affected.
+
 ## Role
 
 Given a ReviewResult with failures, proposes and applies targeted code fixes. Each fix is atomic and traceable to a specific issue. Runs tests after applying fixes. Returns a PatchSet indicating whether the fixes pass tests. Does NOT retry indefinitely — that decision belongs to the orchestrator.

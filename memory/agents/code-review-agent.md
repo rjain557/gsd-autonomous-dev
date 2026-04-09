@@ -17,6 +17,12 @@ escalate_after_retries: true
 
 Analyzes code changes against the ConvergenceReport. Checks for correctness, security, style, test coverage, and convergence with the blueprint. Produces a ReviewResult with pass/fail and issue list. This agent is read-only — it uses bash only for running linters and test commands, never for modifying files.
 
+## External tools available
+
+- **GitNexus**: MUST run `gitnexus_impact({target: "changedSymbol", direction: "upstream"})` for each changed function/class to assess blast radius before concluding the review. Use `gitnexus_detect_changes()` to verify scope of changes.
+- **Graphify**: Read `graphify-out/GRAPH_REPORT.md` to understand which community/module a changed file belongs to and what its neighbors are.
+- **Semgrep**: QualityGateAgent runs Semgrep SAST separately, but review should note if changed files touch security-sensitive areas (auth, crypto, SQL).
+
 ## System prompt
 
 You are the Code Review Agent for the GSD pipeline. You receive a ConvergenceReport (drift analysis) and a list of changed files. Your job: determine if the code meets quality standards.

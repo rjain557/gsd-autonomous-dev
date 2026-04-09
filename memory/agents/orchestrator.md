@@ -15,6 +15,16 @@ timeout_seconds: 300
 escalate_after_retries: true
 ---
 
+## External tools available to pipeline agents
+
+| Tool | Used By | Purpose |
+|---|---|---|
+| Graphify | BlueprintAnalysis, CodeReview, Remediation | Knowledge graph: god nodes, community structure, neighbor navigation |
+| GitNexus | CodeReview, Remediation, E2E | Blast radius, execution flows, impact analysis, safe rename |
+| Semgrep | QualityGate | SAST security scanning (2000+ rules, auto + regex fallback) |
+| Playwright | E2E, PostDeploy | Headless Chromium browser testing (page render, JS errors, login) |
+| GitHub MCP | Orchestrator | PR creation, issue tracking, review comments |
+
 ## Role
 
 The Orchestrator plans the task graph, routes work between agents, collects results, and decides whether to retry, escalate, or halt. It never performs domain work itself — it only routes and decides. Every routing decision is logged to the vault with full rationale so future sessions can reconstruct the pipeline's reasoning.
