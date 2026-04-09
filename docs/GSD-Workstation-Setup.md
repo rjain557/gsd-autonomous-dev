@@ -106,6 +106,44 @@ graphify .
 
 This generates `graphify-out/GRAPH_REPORT.md`, `graph.json`, and `graph.html`.
 
+## Step 5b: Install GitNexus (Code Intelligence Engine)
+
+GitNexus provides blast radius analysis, execution flow tracing, and impact scoring. Runs alongside Graphify — they serve complementary purposes.
+
+```bash
+npm install -g gitnexus
+```
+
+### Index the Repository
+
+```bash
+cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
+gitnexus analyze
+```
+
+This creates `.gitnexus/` with the indexed graph (830+ nodes, 1600+ edges, 47 execution flows).
+
+### Configure MCP + Hooks
+
+```bash
+gitnexus setup
+```
+
+This auto-configures:
+- MCP server in global Claude Code settings
+- PreToolUse hook (enriches searches with graph context)
+- PostToolUse hook (auto-reindex after git commits)
+- 7 skills in `~/.claude/skills/gitnexus/`
+
+### Verify
+
+```bash
+gitnexus --version
+# Expected: 1.5.3+
+```
+
+The `.gitnexus/` directory is gitignored (regenerated per-workstation).
+
 ## Step 6: Install GitHub MCP Server
 
 ```bash
@@ -197,11 +235,16 @@ node -e "require('playwright').chromium.launch({headless:true}).then(b => { cons
 graphify --help
 # Expected: Usage info
 
-# 6. Knowledge graph exists
+# 6. Graphify knowledge graph exists
 ls graphify-out/GRAPH_REPORT.md
 # Expected: file exists (run /graphify . if missing)
 
-# 7. Pipeline dry run (requires Claude CLI)
+# 7. GitNexus index exists
+gitnexus --version
+ls .gitnexus/
+# Expected: version 1.5.3+, .gitnexus/ directory exists (run gitnexus analyze if missing)
+
+# 8. Pipeline dry run (requires Claude CLI)
 npx ts-node src/index.ts pipeline run --trigger manual --dry-run
 # Expected: preflight passes, pipeline initializes
 ```

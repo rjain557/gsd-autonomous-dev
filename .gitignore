@@ -40,3 +40,4 @@ graphify-out/
 
 # External project repos (managed by GSD, not tracked here)
 external/
+.gitnexus

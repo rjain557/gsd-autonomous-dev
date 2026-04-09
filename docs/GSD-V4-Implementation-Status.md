@@ -131,6 +131,7 @@ memory/
 | 49 | Semgrep SAST mandatory | Installed `semgrep` v1.157.0. Preflight warns if missing. QualityGateAgent runs `semgrep --config auto --json` before regex fallback. 2000+ rules for HIPAA/SOC2/PCI compliance evidence. |
 | 50 | Playwright browser E2E testing | Installed `playwright` + Chromium headless. E2EValidationAgent runs real browser rendering, JS execution, console error detection. Falls back to HTTP checks if not installed. |
 | 51 | GitHub MCP server | Configured `@modelcontextprotocol/server-github` in `.claude/settings.json`. Enables autonomous PR creation, issue tracking, and review comments via MCP. |
+| 52 | GitNexus code intelligence | Installed `gitnexus` v1.5.3. Indexed repo: 830 nodes, 1632 edges, 48 clusters, 47 execution flows. Provides blast radius, impact analysis, process tracing. Runs alongside Graphify. |
 
 ### Remaining Gaps
 

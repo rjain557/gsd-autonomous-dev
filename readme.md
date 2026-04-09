@@ -129,6 +129,7 @@ Agents consult `graphify-out/GRAPH_REPORT.md` for god nodes and community struct
 |---|---|---|
 | [Semgrep](https://semgrep.dev/) | SAST security scanning (2000+ rules) | `pip install semgrep` |
 | [Playwright](https://playwright.dev/) | Headless browser E2E testing | `npm install playwright && npx playwright install chromium` |
+| [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | Blast radius, execution flows, impact analysis | `npm install -g gitnexus && gitnexus analyze` |
 | [GitHub MCP](https://github.com/modelcontextprotocol/servers) | Autonomous PR/issue management | Configured in `.claude/settings.json` |
 
 Semgrep and Playwright are checked at pipeline startup (preflight). If Semgrep is missing, security scanning falls back to regex patterns. If Playwright is missing, E2E tests fall back to HTTP status checks.
