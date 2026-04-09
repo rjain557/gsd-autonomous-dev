@@ -59,17 +59,25 @@ function preflight(vaultPath: string): PreflightResult {
     }
   }
 
-  // 5. Check recommended tools (non-blocking warnings)
-  const recommendedTools: Array<{ name: string; args: string[]; label: string }> = [
-    { name: 'semgrep', args: ['--version'], label: 'Semgrep SAST (security scanning will use regex-only fallback)' },
-  ];
-
-  for (const tool of recommendedTools) {
+  // 5. Check Semgrep availability (non-blocking — falls back to regex)
+  let semgrepFound = false;
+  try {
+    execFileSync('semgrep', ['--version'], { timeout: 10_000, stdio: 'pipe' });
+    semgrepFound = true;
+  } catch {
+    // Try python module invocation (Windows PATH workaround)
     try {
-      execFileSync(tool.name, tool.args, { timeout: 10_000, stdio: 'pipe' });
+      execFileSync('python', ['-m', 'semgrep', '--version'], { timeout: 10_000, stdio: 'pipe' });
+      semgrepFound = true;
     } catch {
-      warnings.push(`${tool.label} — "${tool.name}" not found on PATH.`);
+      try {
+        execFileSync('python3', ['-m', 'semgrep', '--version'], { timeout: 10_000, stdio: 'pipe' });
+        semgrepFound = true;
+      } catch { /* not installed */ }
     }
+  }
+  if (!semgrepFound) {
+    warnings.push('Semgrep SAST not found (pip install semgrep). Security scanning will use regex-only fallback.');
   }
 
   return { ok: errors.length === 0, warnings, errors };

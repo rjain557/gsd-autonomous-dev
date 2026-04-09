@@ -182,7 +182,10 @@ export class QualityGateAgent extends BaseAgent {
 
     // Optional: run Semgrep SAST if installed (free, OSS)
     try {
-      const semgrep = await this.runCheck('semgrep --config auto --json . 2>&1', 120_000);
+      // Try semgrep directly, then python -m semgrep (Windows PATH workaround)
+      let semgrep = await this.runCheck('semgrep --config auto --json . 2>&1', 120_000);
+      if (!semgrep.success) semgrep = await this.runCheck('python -m semgrep --config auto --json . 2>&1', 120_000);
+      if (!semgrep.success) semgrep = await this.runCheck('python3 -m semgrep --config auto --json . 2>&1', 120_000);
       if (semgrep.success) {
         try {
           const output = JSON.parse(semgrep.output);

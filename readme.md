@@ -82,6 +82,7 @@ Each provider draws from an independent quota pool, maximizing throughput. Gemin
 | [GSD-Troubleshooting.md](docs/GSD-Troubleshooting.md) | Installation, runtime, supervisor, cost tracking, common workflows |
 | [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md) | V4.1 TypeScript harness — all 47 gaps closed |
 | [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) | Graphify knowledge graph setup, querying, MCP server |
+| [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md) | Full new workstation setup (15 min, all tools) |
 
 ## V4.1 TypeScript Agent Harness
 
