@@ -59,15 +59,48 @@ description: Complete reference of all external tools available to pipeline agen
 - **Auth**: `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable
 - **Key stored**: `OneDrive/VSCODE/keys/github-mcp.md`
 
+## Documentation & Security
+
+### Context7 MCP (Live Library Docs)
+
+- **What**: Real-time, version-specific documentation for 1000+ libraries (.NET, React, Dapper, etc.)
+- **Install**: `claude mcp add context7 -- npx -y @upstash/context7-mcp@latest`
+- **Tools**: `resolve-library-id`, `query-docs`
+- **Cost**: Free (1000 requests/month)
+- **Used by**: All agents that generate code (Architecture, Remediation, Contract Freeze)
+
+### OWASP Security Skill
+
+- **What**: OWASP Top 10:2025, ASVS 5.0, Agentic AI security, C#/TS-specific patterns
+- **Install**: `npx skills add agamm/claude-code-owasp`
+- **Location**: `.claude/skills/owasp-security/SKILL.md`
+- **Cost**: Free (MIT), ~1500 tokens context
+- **Used by**: QualityGate (preventive), CodeReview (detection)
+
+### Shannon Lite (Penetration Testing)
+
+- **What**: White-box AI pentester, 96% exploit success rate, 50+ vulnerability types
+- **Install**: `npx skills add unicodeveloper/shannon`
+- **Location**: `.claude/skills/shannon/SKILL.md`
+- **Trigger**: `/shannon` in Claude Code
+- **Cost**: ~$50/pentest (Docker + LLM, 1-1.5 hours)
+- **Used by**: Release readiness (Phase G), on-demand security audits
+
 ## Which Agent Uses Which Tool
 
-| Agent | Graphify | GitNexus | Semgrep | Playwright | GitHub MCP |
-|---|---|---|---|---|---|
-| Orchestrator | - | - | - | - | PR/issues |
-| BlueprintAnalysis | GRAPH_REPORT | query, context | - | - | - |
-| CodeReview | GRAPH_REPORT | impact, detect_changes | - | - | - |
-| Remediation | GRAPH_REPORT | impact, context | - | - | - |
-| QualityGate | - | - | Full SAST scan | - | - |
-| E2EValidation | - | query | - | Browser tests | - |
-| Deploy | - | - | - | - | - |
-| PostDeploy | - | - | - | - | - |
+| Agent | Graphify | GitNexus | Semgrep | Playwright | Context7 | OWASP | GitHub MCP |
+|---|---|---|---|---|---|---|---|
+| Orchestrator | - | - | - | - | - | - | PR/issues |
+| BlueprintAnalysis | GRAPH_REPORT | query, context | - | - | - | - | - |
+| CodeReview | GRAPH_REPORT | impact, detect_changes | - | - | - | patterns | - |
+| Remediation | GRAPH_REPORT | impact, context | - | - | docs | patterns | - |
+| QualityGate | - | - | Full SAST | - | - | patterns | - |
+| E2EValidation | - | query | - | Browser tests | - | - | - |
+| Deploy | - | - | - | - | - | - | - |
+| PostDeploy | - | - | - | - | - | - | - |
+| RequirementsAgent | - | - | - | - | - | - | - |
+| ArchitectureAgent | - | - | - | - | docs | - | - |
+| FigmaIntegration | - | - | - | - | - | - | - |
+| PhaseReconcile | - | - | - | - | - | - | - |
+| BlueprintFreeze | - | - | - | - | - | - | - |
+| ContractFreeze | - | - | - | - | docs | - | - |

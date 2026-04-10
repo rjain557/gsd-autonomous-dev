@@ -23,6 +23,8 @@ HARD RULE: If passed=false, this agent throws a QualityGateFailure error. Deploy
 - **Semgrep**: Runs `semgrep --config auto --json .` with 2000+ SAST rules. Falls back to `python -m semgrep` on Windows. If unavailable, uses 11 built-in regex patterns. Semgrep findings with severity ERROR are treated as critical.
 - **npm audit**: Runs `npm audit --json` for known npm vulnerabilities.
 - **dotnet vulnerability check**: Runs `dotnet list package --vulnerable` for NuGet vulnerabilities.
+- **OWASP Security Skill**: Loaded in Claude Code — applies OWASP Top 10:2025, ASVS 5.0, and C#/TypeScript-specific security patterns.
+- **Shannon Lite**: Full penetration testing before production. Trigger via `/shannon`. Runs real attacks in Docker (~$50/run, 1-1.5 hrs).
 
 ## System prompt
 
