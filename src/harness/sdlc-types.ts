@@ -27,11 +27,26 @@ export interface IntakePack {
   stakeholders: Array<{ name: string; role: string; raci: 'R' | 'A' | 'C' | 'I' }>;
   dataClassification: string;
   regulatoryScope: string[];   // e.g., ['HIPAA', 'SOC2', 'PCI', 'GDPR']
-  domainOperations: Array<{ entity: string; operations: string[]; roles: string[] }>;
-  rbacSketch: Array<{ role: string; permissions: string[] }>;
+  domainOperations: Array<{
+    entity: string;
+    operations: string[];
+    roles: string[];
+    storedProcedures?: string[];   // SP names (usp_{Entity}_{Action})
+  }>;
+  rbacSketch: Array<{
+    role: string;
+    permissions: string[];
+    denials?: string[];             // Explicit denials (what this role CANNOT access)
+  }>;
   nfrs: Array<{ category: string; requirement: string; target: string }>;
   riskRegister: Array<{ risk: string; likelihood: string; impact: string; mitigation: string }>;
-  acceptanceCriteria: Array<{ id: string; description: string; testable: boolean }>;
+  acceptanceCriteria: Array<{
+    id: string;
+    feature?: string;               // Feature area (e.g., "Trade Management", "Scale Integration")
+    description: string;
+    spOrEndpoint?: string;           // SP or API endpoint under test
+    testable: boolean;
+  }>;
   dependencies: string[];
 }
 
