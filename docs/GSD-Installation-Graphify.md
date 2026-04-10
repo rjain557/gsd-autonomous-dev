@@ -1,8 +1,15 @@
-# Graphify Knowledge Graph — Installation Guide
+# Graphify and Augmentation Stack — Installation Guide
+
+This guide started as the Graphify setup doc. In v4.2 it covers the wider augmentation layer that ships alongside Graphify: GitNexus, Semgrep, Playwright, MCP servers, and security skills.
 
 ## What Graphify Does
 
 Graphify converts the GSD codebase (TypeScript + PowerShell + vault markdown) into a queryable knowledge graph using Tree-sitter AST parsing and Claude semantic extraction. This gives all pipeline agents structural navigation instead of flat file scanning, achieving up to 71x token reduction.
+
+In the 4.2 stack, Graphify works alongside GitNexus:
+
+- Graphify explains community structure, god nodes, and graph-level neighborhood.
+- GitNexus explains symbol context, execution flows, and blast radius before edits.
 
 **GSD pipeline integration points:**
 - BlueprintAnalysisAgent reads `GRAPH_REPORT.md` for architectural god nodes before drift detection
@@ -15,7 +22,8 @@ Graphify converts the GSD codebase (TypeScript + PowerShell + vault markdown) in
 - Python 3.10+ (`python --version`)
 - pip (`pip --version`)
 - Claude Code CLI installed and authenticated
-- Node.js 18+ (already required by GSD v4.1)
+- Node.js 18+ (already required by GSD v4.2)
+- Docker Desktop 4.0+ if you plan to use Shannon pentesting
 
 ## Installation (New Workstation)
 
@@ -125,6 +133,27 @@ pip uninstall graphifyy      # Remove package
 rm -rf graphify-out/         # Remove generated graph
 ```
 
+## GitNexus Code Intelligence
+
+Install:
+
+```bash
+npm install -g gitnexus
+gitnexus analyze
+gitnexus setup
+```
+
+What it adds:
+
+- Symbol-aware context and execution-flow tracing from `.gitnexus/`
+- Blast radius checks before edits
+- Safe rename workflow instead of text search and replace
+
+Operational rule of thumb:
+
+- Use Graphify to understand architecture and neighborhood.
+- Use GitNexus to understand caller impact and flow-level consequences.
+
 ## Troubleshooting
 
 | Issue | Fix |
@@ -187,6 +216,18 @@ E2EValidationAgent automatically detects Playwright at runtime via dynamic `impo
 
 If Playwright is not installed, the agent falls back to HTTP status code checks (existing behavior).
 
+## Context7 MCP
+
+Context7 is the live-library documentation MCP used by architecture, contract-freeze, and remediation workflows.
+
+### Install
+
+```bash
+claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
+```
+
+Use it when the agent needs version-aware docs for .NET, React, Fluent UI, Dapper, or other external libraries.
+
 ## GitHub MCP Server
 
 The GitHub MCP server enables autonomous PR creation, issue management, and review comments.
@@ -212,8 +253,8 @@ Already configured in `.claude/settings.json`:
 ### Setup
 
 1. Create a GitHub Personal Access Token at https://github.com/settings/tokens
-2. Set the token in `.claude/settings.json` under `env.GITHUB_PERSONAL_ACCESS_TOKEN`
-3. Or set environment variable: `export GITHUB_PERSONAL_ACCESS_TOKEN=ghp_...`
+2. Keep the committed `.claude/settings.json` file unchanged
+3. Set environment variable: `export GITHUB_PERSONAL_ACCESS_TOKEN=ghp_...` or the Windows equivalent
 
 ### Capabilities
 
@@ -222,3 +263,55 @@ Once configured, Claude Code can:
 - Read and link GitHub issues to requirements
 - Post code review findings as PR comments
 - Update deployment status on PRs
+
+## Security Skills
+
+### OWASP Security Skill
+
+Install:
+
+```bash
+npx -y skills add agamm/claude-code-owasp -y
+```
+
+What it adds:
+
+- OWASP Top 10:2025 review guidance
+- ASVS 5.0 checks
+- Agentic AI security patterns for tool use, memory, and privilege boundaries
+
+Repository reference copy:
+
+- `.agents/skills/owasp-security/SKILL.md`
+
+### Shannon Lite
+
+Install:
+
+```bash
+npx -y skills add unicodeveloper/shannon -y
+```
+
+What it adds:
+
+- Docker-based white-box pentesting
+- Real exploit verification before a finding is reported
+- Optional release-readiness validation beyond static scanning
+
+Requirements:
+
+- Docker Desktop
+- Authorization to test the target
+- Non-production scope
+
+Repository reference copy:
+
+- `.agents/skills/shannon/SKILL.md`
+
+## Repo-Bundled Skills and Wiring
+
+The repository also carries local skill content and committed config that operators should know about:
+
+- `.claude/skills/` contains the GitNexus skill pack plus SQL, React UI, composition, and web design skills.
+- `.agents/skills/` contains the OWASP and Shannon reference skills.
+- `.claude/settings.json` commits the Graphify `PreToolUse` reminder and the GitHub MCP server configuration.

@@ -125,6 +125,13 @@ npx -y skills add agamm/claude-code-owasp -y
 npx -y skills add unicodeveloper/shannon -y
 ```
 
+What this step wires up:
+
+- Graphify graph generation and the repo-local search reminder in `.claude/settings.json`.
+- The GitNexus local index in `.gitnexus/` plus the repo skill pack under `.claude/skills/gitnexus/`.
+- Context7 as a workstation MCP server for live library documentation.
+- OWASP and Shannon as host-installed security skills, while the repository keeps reference copies under `.agents/skills/`.
+
 ## Step 9: Build Knowledge Graphs
 
 ```bash
@@ -140,13 +147,16 @@ graphify .
 
 ### GitHub PAT
 
-Get the token from: `C:\Users\rjain\OneDrive - Technijian, Inc\Documents\VSCODE\keys\github-mcp.md`
-
-Set as environment variable:
+The repo already commits the GitHub MCP server configuration in `.claude/settings.json`. Supply the token through the environment instead of editing the committed file:
 
 ```powershell
 [System.Environment]::SetEnvironmentVariable('GITHUB_PERSONAL_ACCESS_TOKEN', 'ghp_YOUR_TOKEN', 'User')
 ```
+
+Optional variables:
+
+- `GSD_LLM_MODE=cli` is the default and does not need to be set unless you are overriding to `sdk`.
+- `ANTHROPIC_API_KEY` is only needed for SDK mode or for Shannon flows that are not using Claude Code OAuth.
 
 ## Verification Checklist
 
@@ -184,15 +194,20 @@ ls graphify-out/GRAPH_REPORT.md
 ls .gitnexus/
 # Expected: both exist (rebuild with /graphify . and gitnexus analyze if missing)
 
-# 8. Claude Code skills installed
-ls .claude/skills/
-# Expected: gitnexus, owasp-security, shannon, sql-expert, react-ui-design-patterns, etc.
+# 8. Repo skill packs are present
+find .claude/skills -maxdepth 3 -name SKILL.md
+find .agents/skills -maxdepth 2 -name SKILL.md
+# Expected: GitNexus + SQL/UI skills under .claude/skills, OWASP + Shannon under .agents/skills
 
-# 9. GSD pipeline dry run (requires Claude CLI)
+# 9. Repo hook + MCP config exists
+rg -n "PreToolUse|mcpServers|github" .claude/settings.json
+# Expected: Graphify PreToolUse reminder and GitHub MCP config
+
+# 10. GSD pipeline dry run (requires Claude CLI)
 npx ts-node src/index.ts run full --help
 # Expected: shows milestone list
 
-# 10. GSD status
+# 11. GSD status
 npx ts-node src/index.ts status
 # Expected: shows project status or "No SDLC state found"
 ```
@@ -235,6 +250,17 @@ npx ts-node src/index.ts status
 
 **Total monthly cost: ~$420 (3 subscriptions). Per-run marginal cost: $0.**
 
+## Repo-Bundled Skill Packs
+
+These live in the repository after clone and help explain why the 4.2 setup is larger than "just the vault":
+
+| Location | Contents |
+|---|---|
+| `.claude/skills/` | GitNexus skill pack plus `sql-expert`, `sql-performance-optimizer`, `react-ui-design-patterns`, `composition-patterns`, and `web-design-guidelines` |
+| `.agents/skills/` | `owasp-security` and `shannon` reference skills used by the security workflow |
+
+Some workstations also mirror the `.agents/skills/` entries into `.claude/skills/` through local symlinks. The repository source of truth remains the paths above.
+
 ## Directory Structure
 
 ```
@@ -247,8 +273,9 @@ gsd-autonomous-dev/
     agents/               #   14 agent vault notes
     knowledge/            #   Quality gates, deploy config, tools reference
     architecture/         #   Task graph, state schema, hook registry
-  .claude/skills/         # Claude Code skills (gitnexus, owasp, shannon, etc.)
-  .agents/skills/         # Universal agent skills
+  .claude/skills/         # Project skill pack (gitnexus, SQL, React UI, composition, web design)
+  .agents/skills/         # Shared/security skills (OWASP, Shannon)
+  .claude/settings.json   # Graphify hook + GitHub MCP config
   graphify-out/           # Knowledge graph output (per-machine)
   .gitnexus/              # GitNexus index (per-machine)
   docs/                   # Documentation

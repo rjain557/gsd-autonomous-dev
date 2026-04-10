@@ -1,10 +1,13 @@
 # GSD Autonomous Dev - Project Memory
 
 ## Project Overview
-- **V4.1 (current)**: TypeScript harness with 8 typed agents, Obsidian vault memory, CLI-first LLM routing ($0 marginal). 100% complete.
+- **V4.2 (current)**: Full Technijian SDLC v6.0 lifecycle in TypeScript with 14 typed agents, Obsidian vault memory, unified `gsd run <milestone>` CLI, and CLI-first LLM routing ($0 marginal).
+- **V4.2 augmentation stack**: Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP Security, Shannon Lite, Claude Max, ChatGPT Max/Codex, Gemini Ultra.
+- **V4.1**: Pipeline-only TypeScript harness with 8 typed agents, Obsidian vault memory, CLI-first LLM routing ($0 marginal). 100% complete.
 - **V3 (legacy)**: 2-model API-only pipeline (Sonnet + Codex Mini). Still in `v3/` directory
 - **V2 (legacy)**: 7-agent CLI+REST system (44 install scripts). Still in `v2/` + `scripts/`
 - **Graphify**: Knowledge graph integration — `graphify-out/` has GRAPH_REPORT.md, graph.json, graph.html
+- **Repo wiring**: `.claude/settings.json` commits the Graphify `PreToolUse` reminder and GitHub MCP config; `.claude/skills/` holds project skills; `.agents/skills/` holds OWASP + Shannon reference skills.
 - Backend: .NET 8 + Dapper + SQL Server stored procs | Frontend: React 18 | Compliance: HIPAA, SOC 2, PCI, GDPR
 
 ## Key Directories
@@ -12,16 +15,18 @@
 - Per-project state: `.gsd\` in each repo
 - Scripts: `scripts/` (46 scripts: 1 master installer + 1 pre-flight + 36 in install chain + standalone)
 - Supervisor state: `.gsd\supervisor\` per-project, `%USERPROFILE%\.gsd-global\supervisor\` cross-project
-- Docs: `docs/` (5 markdown files + GENERATE-DEV-GUIDE-PROMPT.md + generate-docx.py)
+- Docs: `docs/` (developer guide, workstation/setup docs, implementation status, skills reference, architecture/troubleshooting, Word export tooling)
 - Pricing cache: `%USERPROFILE%\.gsd-global\pricing-cache.json`
 - Intelligence: `%USERPROFILE%\.gsd-global\intelligence\` (agent scores, pattern cache)
 
-## Documentation Structure (5 files)
-1. **GSD-Architecture.md** - Engine overview, data flow, agents, resilience, notifications
-2. **GSD-Script-Reference.md** - All commands + install scripts + key functions
-3. **GSD-Troubleshooting.md** - Installation, runtime, health, JSON, boundaries
-4. **GSD-Installation-Guide.md** - Prerequisites, quick start, first project setup
-5. **GSD-Configuration.md** - global-config.json, pricing-cache.json, per-project configs
+## Documentation Structure (current canon)
+1. **GSD-Developer-Guide.md** - Full v4.2 SDLC + pipeline guide; canonical source for Word export
+2. **GSD-Workstation-Setup.md** - Fresh-machine setup for tools, skills, MCPs, secrets, verification
+3. **GSD-Installation-Graphify.md** - Graphify-first augmentation stack setup: Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, Shannon
+4. **GSD-Claude-Code-Skills.md** - SQL/UI/design skill reference for `.claude/skills/`
+5. **GSD-V4-Implementation-Status.md** - Current 4.2 implementation and maturity snapshot
+6. **GSD-Architecture.md** - Engine overview, data flow, agents, resilience, notifications
+7. **GSD-Troubleshooting.md** - Installation, runtime, health, JSON, and boundary issues
 
 ## Iteration Flow (2026-03-10)
 ```
@@ -36,6 +41,8 @@ At 100% convergence: Full code review + spec/Figma verification + quality gate -
 ## User Preferences
 - User creates Word developer guides from the markdown docs
 - Docs should be comprehensive enough for standalone Word doc export
+- Developer guide v4.2 source of truth: `docs/GSD-Developer-Guide.md`; Word export via `docs/generate-docx.py`
+- 2026-04-10 docs alignment: `readme.md`, `docs/GSD-Workstation-Setup.md`, `docs/GSD-Installation-Graphify.md`, and `docs/GSD-Developer-Guide.md` are aligned to the full 4.2 augmentation stack and current skill layout
 - User charges clients 5-10x markup on calculated token costs (7x default)
 - **Window management**: ALWAYS kill the old process BEFORE starting a new one. Never leave orphaned PowerShell windows
 - **Visible PowerShell**: ALWAYS start pipeline in a visible PowerShell window (WindowStyle Normal, -NoExit) so user can see output. NEVER use -WindowStyle Hidden or redirect stdout/stderr to files.

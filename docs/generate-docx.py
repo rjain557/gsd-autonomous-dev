@@ -123,6 +123,39 @@ def parse_inline(paragraph, text, base_size=Pt(11), base_color=BLACK):
         i = j
 
 
+def extract_document_metadata(md_text):
+    """Read title page metadata directly from the markdown source."""
+    title_match = re.search(r'^#\s+(.+)$', md_text, re.MULTILINE)
+    version_match = re.search(r'^\*\*Version:\*\*\s*(.+)$', md_text, re.MULTILINE)
+    date_match = re.search(r'^\*\*Date:\*\*\s*(.+)$', md_text, re.MULTILINE)
+    classification_match = re.search(r'^\*\*Classification:\*\*\s*(.+)$', md_text, re.MULTILINE)
+
+    title = title_match.group(1).strip() if title_match else "GSD Autonomous Development Engine - Developer Guide"
+    version = version_match.group(1).strip() if version_match else "Unknown Version"
+    date_text = date_match.group(1).strip() if date_match else "Unknown Date"
+    classification = classification_match.group(1).strip() if classification_match else "Internal Use Only"
+
+    if title.endswith(" - Developer Guide"):
+        cover_title = title[:-len(" - Developer Guide")].strip()
+        cover_subtitle = "Developer Guide"
+    else:
+        cover_title = title
+        cover_subtitle = "Developer Guide"
+
+    classification_parts = [part.strip() for part in classification.split(" - ", 1)]
+
+    return {
+        "title": title,
+        "cover_title": cover_title,
+        "cover_subtitle": cover_subtitle,
+        "version": version,
+        "date": date_text,
+        "classification": classification,
+        "classification_title": classification_parts[0].upper() if classification_parts else classification.upper(),
+        "classification_subtitle": classification_parts[1] if len(classification_parts) > 1 else "",
+    }
+
+
 # ── Style Setup ──────────────────────────────────────────────────
 
 def setup_styles(doc):
@@ -175,7 +208,7 @@ def setup_styles(doc):
     h4.paragraph_format.space_after = Pt(4)
 
 
-def add_headers_footers(doc):
+def add_headers_footers(doc, metadata):
     """Add header and footer to each section."""
     for section in doc.sections:
         section.top_margin = Inches(1.0)
@@ -188,7 +221,7 @@ def add_headers_footers(doc):
         header.is_linked_to_previous = False
         p = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        run = p.add_run("GSD Autonomous Development Engine  |  Developer Guide")
+        run = p.add_run(metadata["title"].replace(" - ", "  |  "))
         run.font.size = Pt(8)
         run.font.color.rgb = MED_GRAY
         run.font.name = "Calibri"
@@ -221,7 +254,7 @@ def add_headers_footers(doc):
 
 # ── Title Page ───────────────────────────────────────────────────
 
-def create_title_page(doc):
+def create_title_page(doc, metadata):
     """Create a clean, professional title page."""
     # Vertical spacing
     for _ in range(4):
@@ -241,28 +274,17 @@ def create_title_page(doc):
     # Title line 1
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("GSD Autonomous")
+    run = p.add_run(metadata["cover_title"])
     run.bold = True
     run.font.size = Pt(28)
     run.font.color.rgb = BLUE
     run.font.name = "Calibri"
     p.paragraph_format.space_after = Pt(0)
 
-    # Title line 2
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("Development Engine")
-    run.bold = True
-    run.font.size = Pt(28)
-    run.font.color.rgb = BLUE
-    run.font.name = "Calibri"
-    p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after = Pt(12)
-
     # Subtitle
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("Developer Guide")
+    run = p.add_run(metadata["cover_subtitle"])
     run.font.size = Pt(20)
     run.font.color.rgb = DARK_BLUE
     run.font.name = "Calibri"
@@ -277,7 +299,7 @@ def create_title_page(doc):
     # Version & Date
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("Version 2.2.0  |  March 2026")
+    run = p.add_run(f"Version {metadata['version']}  |  {metadata['date']}")
     run.font.size = Pt(13)
     run.font.color.rgb = MED_GRAY
     run.font.name = "Calibri"
@@ -290,20 +312,21 @@ def create_title_page(doc):
     # Confidential notice
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("CONFIDENTIAL")
+    run = p.add_run(metadata["classification_title"])
     run.bold = True
     run.font.size = Pt(11)
     run.font.color.rgb = RGBColor(0xCC, 0x00, 0x00)
     run.font.name = "Calibri"
     run.font.letter_spacing = Pt(3)
 
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("Internal Use Only")
-    run.italic = True
-    run.font.size = Pt(10)
-    run.font.color.rgb = RGBColor(0xCC, 0x00, 0x00)
-    run.font.name = "Calibri"
+    if metadata["classification_subtitle"]:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(metadata["classification_subtitle"])
+        run.italic = True
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(0xCC, 0x00, 0x00)
+        run.font.name = "Calibri"
 
     doc.add_page_break()
 
@@ -1008,6 +1031,7 @@ def main():
     print("Reading markdown file...")
     with open(MD_PATH, "r", encoding="utf-8") as f:
         md_text = f.read()
+    metadata = extract_document_metadata(md_text)
 
     # ── Step 1: Proof the markdown source ──
     print("\n" + "=" * 60)
@@ -1037,16 +1061,19 @@ def main():
     print("\n" + "=" * 60)
     print("STEP 2: Generating Word document...")
     print("=" * 60)
+    print(f"  Title:      {metadata['title']}")
+    print(f"  Version:    {metadata['version']}")
+    print(f"  Date:       {metadata['date']}")
 
     doc = Document()
     setup_styles(doc)
-    create_title_page(doc)
+    create_title_page(doc, metadata)
     create_toc(doc)
     create_doc_history(doc, md_text)
 
     print("  Processing markdown content...")
     process_markdown(doc, md_text)
-    add_headers_footers(doc)
+    add_headers_footers(doc, metadata)
 
     print(f"  Saving to {DOCX_PATH}...")
     doc.save(DOCX_PATH)

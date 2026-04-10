@@ -2,7 +2,7 @@
 
 **Version:** 4.2.0 | **Platform:** Windows + Node.js 18+ | **Agents:** 14 typed agents | **Cost:** $0 marginal (CLI subscriptions)
 
-An AI-native autonomous development pipeline covering the complete Technijian SDLC v6.0 — from requirements gathering through alpha deployment — with 14 TypeScript agents, 11 integrated tools, Obsidian vault memory, and $0 per-run cost.
+An AI-native autonomous development pipeline covering the complete Technijian SDLC v6.0 — from requirements gathering through alpha deployment — with 14 TypeScript agents, Obsidian vault memory, and a full 4.2 augmentation stack for code intelligence, MCP automation, security review, and browser validation.
 
 ## What It Does
 
@@ -31,11 +31,17 @@ npm install
 npx playwright install chromium
 pip install graphifyy semgrep
 npm install -g gitnexus @modelcontextprotocol/server-github
+npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
 
 # Configure
+claude auth
+codex auth
+gemini auth
 graphify claude install && graphify install
 gitnexus analyze && gitnexus setup
 claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
+npx -y skills add agamm/claude-code-owasp -y
+npx -y skills add unicodeveloper/shannon -y
 
 # Run
 npx ts-node src/index.ts run requirements --project "MyApp" --description "Multi-tenant SaaS"
@@ -86,7 +92,7 @@ Each phase writes artifacts to `docs/sdlc/` and saves state for resume. Use `--r
 
 All agents use CLI-first LLM routing (Claude/Codex/Gemini) with dynamic model selection per stage and automatic API fallback (DeepSeek/MiniMax) if all subscriptions exhausted.
 
-## Integrated Tools (11)
+## Integrated Tooling and Model Stack (11)
 
 | Tool | Purpose | Cost |
 |---|---|---|
@@ -104,6 +110,19 @@ All agents use CLI-first LLM routing (Claude/Codex/Gemini) with dynamic model se
 
 **Total: ~$420/mo fixed. $0 per-run marginal cost.**
 
+This 11-item stack is the combination of:
+
+- 8 augmentation tools on the workstation or in Claude Code.
+- 3 paid CLI subscriptions that provide the primary reasoning and execution models.
+
+## Repo-Bundled Skills and Wiring
+
+The repository also includes local skill packs and hook wiring beyond the vault itself:
+
+- `.claude/skills/` contains the GitNexus skill pack plus SQL, React UI, composition, and web design skills.
+- `.agents/skills/` contains the OWASP Security and Shannon reference skills used by the 4.2 security workflow.
+- `.claude/settings.json` wires the Graphify `PreToolUse` reminder and the GitHub MCP server configuration committed with the repo.
+
 ## Key Features
 
 - **Unified CLI** — one command (`gsd run <milestone>`), tell it where you are
@@ -114,6 +133,7 @@ All agents use CLI-first LLM routing (Claude/Codex/Gemini) with dynamic model se
 - **5-strategy JSON recovery** — reduces retry waste from malformed LLM responses
 - **Obsidian vault memory** — 14 agent configs, 8 knowledge notes, 3 architecture docs
 - **Dual knowledge graphs** — Graphify (community structure) + GitNexus (blast radius)
+- **MCP + hook augmentation** — Graphify search guidance, GitHub automation, live docs via Context7
 - **State persistence** — resume from any phase/stage with `--from-phase` or `--from-stage`
 - **Human review gates** — `--review` flag pauses after each SDLC phase
 - **Milestone validation** — prerequisite checks prevent out-of-order execution
@@ -127,10 +147,10 @@ All agents use CLI-first LLM routing (Claude/Codex/Gemini) with dynamic model se
 
 | Document | Description |
 |---|---|
-| [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md) | Complete setup guide — 10 steps, all 11 tools, verification checklist |
+| [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md) | Complete setup guide — tools, skills, MCPs, secrets, and verification checklist |
 | [GSD-Figma-Make-Integration.md](docs/GSD-Figma-Make-Integration.md) | Figma Make export structure, 12/12 deliverables, version numbering |
 | [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md) | Implementation status — all 52 gaps closed |
-| [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) | Graphify + Semgrep + Playwright + GitHub MCP setup |
+| [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) | Graphify-first augmentation setup: Graphify, GitNexus, Semgrep, Playwright, MCPs, and security skills |
 | [GSD-Architecture.md](docs/GSD-Architecture.md) | Engine architecture, data flow, resilience |
 | [GSD-Script-Reference.md](docs/GSD-Script-Reference.md) | Legacy PowerShell commands reference |
 | [GSD-Configuration.md](docs/GSD-Configuration.md) | JSON schemas, per-project configs |
@@ -160,7 +180,9 @@ gsd-autonomous-dev/
     agents/               14 agent vault notes with system prompts
     knowledge/            Quality gates, deploy config, tools reference, project paths
     architecture/         Task graph, state schema, hook registry
-  .claude/skills/         Claude Code skills (gitnexus, owasp, shannon, etc.)
+  .claude/skills/         Project skill pack (gitnexus, SQL, React UI, composition, web design)
+  .agents/skills/         Shared/security skills (OWASP, Shannon)
+  .claude/settings.json   Graphify hook + GitHub MCP repo config
   graphify-out/           Knowledge graph output (per-machine, gitignored)
   .gitnexus/              GitNexus index (per-machine, gitignored)
   docs/                   All documentation

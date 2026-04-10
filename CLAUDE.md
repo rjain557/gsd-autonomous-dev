@@ -2,16 +2,27 @@
 
 ## What this project is
 
-A multi-agent autonomous development pipeline that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through code review, remediation, quality gates, and alpha deployment — without human intervention at each step. It wraps an existing PowerShell convergence engine (7 LLM agents) in a TypeScript harness with typed agent contracts, Obsidian vault memory, and coordinated orchestration.
+A multi-agent autonomous development system that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. The current v4.2 implementation uses a TypeScript harness with typed agent contracts, Obsidian vault memory, CLI-first LLM routing, and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon.
 
 ## Agent System Overview
 
-Eight agents coordinated by an Orchestrator that routes work through a 7-stage dependency graph: BlueprintAnalysisAgent detects drift, CodeReviewAgent validates, RemediationAgent fixes, QualityGateAgent gates, E2EValidationAgent tests against Figma storyboards, DeployAgent deploys with rollback, PostDeployValidationAgent validates the live environment. All system prompts live in `memory/agents/` vault notes, all configs in `memory/knowledge/`, all decisions logged to `memory/decisions/`.
+Fourteen typed agents coordinated through a unified CLI and two orchestration layers:
+
+- SDLC agents for Phases A-E: requirements, architecture, Figma validation, reconcile, blueprint freeze, and contract freeze.
+- Pipeline agents for Phases F-G: blueprint analysis, review, remediation, quality gates, E2E, deploy, and post-deploy validation.
+
+All system prompts live in `memory/agents/` vault notes, runtime configuration lives in `memory/knowledge/`, architecture/state contracts live in `memory/architecture/`, and decisions are logged to `memory/decisions/`.
 
 ## Agent Roster
 
 | Agent | File | Vault Note | Job |
 |---|---|---|---|
+| RequirementsAgent | `src/agents/requirements-agent.ts` | `memory/agents/requirements-agent.md` | Draft Intake Pack from project description |
+| ArchitectureAgent | `src/agents/architecture-agent.ts` | `memory/agents/architecture-agent.md` | Generate diagrams, OpenAPI draft, and threat model |
+| FigmaIntegrationAgent | `src/agents/figma-integration-agent.ts` | `memory/agents/figma-integration-agent.md` | Validate 12/12 Figma Make deliverables |
+| PhaseReconcileAgent | `src/agents/phase-reconcile-agent.ts` | `memory/agents/phase-reconcile-agent.md` | Reconcile requirements after prototyping |
+| BlueprintFreezeAgent | `src/agents/blueprint-freeze-agent.ts` | `memory/agents/blueprint-freeze-agent.md` | Freeze implementation blueprint for Phase F |
+| ContractFreezeAgent | `src/agents/contract-freeze-agent.ts` | `memory/agents/contract-freeze-agent.md` | Generate SCG1 contracts and validation report |
 | Orchestrator | `src/harness/orchestrator.ts` | `memory/agents/orchestrator.md` | Route work, decide retry/escalate/halt |
 | BlueprintAnalysisAgent | `src/agents/blueprint-analysis-agent.ts` | `memory/agents/blueprint-analysis-agent.md` | Read specs, detect drift |
 | CodeReviewAgent | `src/agents/code-review-agent.ts` | `memory/agents/code-review-agent.md` | Review code, check quality |
@@ -36,12 +47,13 @@ memory/
 ## How to Start a Pipeline Run
 
 ```bash
-npx ts-node src/index.ts pipeline run --trigger manual
+npx ts-node src/index.ts run requirements --project "MyApp" --description "Multi-tenant SaaS"
 ```
 
 ## How to Resume a Failed Run
 
 ```bash
+npx ts-node src/index.ts sdlc run --from-phase contracts
 npx ts-node src/index.ts pipeline run --from-stage gate
 ```
 
@@ -54,7 +66,7 @@ npx ts-node src/evals/runner.ts
 ## How to Run in Dry-Run Mode (No Deploy)
 
 ```bash
-npx ts-node src/index.ts pipeline run --trigger manual --dry-run
+npx ts-node src/index.ts run full --dry-run
 ```
 
 ## Memory Rules — ALWAYS Follow These
@@ -101,7 +113,7 @@ Claude Code also handles 3 phases of the legacy PowerShell convergence loop:
 
 Legacy write paths: `.gsd/health/`, `.gsd/code-review/`, `.gsd/generation-queue/`, `.gsd/agent-handoff/current-assignment.md`
 
-**Note:** `config/agent-map.json` and `config/global-config.json` are PowerShell-legacy only. The TypeScript harness (v4.1) reads all configuration from `memory/knowledge/` and `memory/agents/` vault notes.
+**Note:** `config/agent-map.json` and `config/global-config.json` are PowerShell-legacy only. The TypeScript harness (v4.2) reads runtime configuration from `memory/knowledge/` and `memory/agents/` vault notes.
 
 ---
 
@@ -138,6 +150,13 @@ Skill path: `.claude/skills/composition-patterns/SKILL.md`
 Skill path: `.claude/skills/web-design-guidelines/SKILL.md`
 
 Full skills reference: `docs/GSD-Claude-Code-Skills.md`
+
+### Security and Repo Wiring
+
+- OWASP Security reference skill: `.agents/skills/owasp-security/SKILL.md`
+- Shannon reference skill: `.agents/skills/shannon/SKILL.md`
+- Some workstations mirror those security skills into `.claude/skills/` through local symlinks, but the repository source of truth is `.agents/skills/`
+- Graphify `PreToolUse` guidance and GitHub MCP config live in `.claude/settings.json`
 
 ---
 
@@ -257,11 +276,14 @@ const useStyles = makeStyles({
 
 See `C:\Users\rjain\.claude\CLAUDE.md` for full model endpoint reference (Anthropic, OpenAI, DeepSeek, Kimi, MiniMax, GLM5).
 
-## Quality & Automation Tools
+## Quality, Security, and Automation Tools
 
 - **Semgrep** (`pip install semgrep`): SAST scanner with 2000+ rules. QualityGateAgent runs it automatically. Preflight warns if missing.
 - **Playwright** (`npm install playwright`): Headless Chromium browser testing. E2EValidationAgent uses it for real page rendering, JS console error detection. Falls back to HTTP if not installed.
-- **GitHub MCP** (`@modelcontextprotocol/server-github`): Configured in `.claude/settings.json`. Provides PR creation, issue tracking, review comments.
+- **Context7** (`claude mcp add context7 -- npx -y @upstash/context7-mcp@latest`): Live library documentation MCP used during architecture, contract freeze, and remediation.
+- **GitHub MCP** (`@modelcontextprotocol/server-github`): Configured in `.claude/settings.json`. Provides PR creation, issue tracking, review comments. Supply `GITHUB_PERSONAL_ACCESS_TOKEN` through the environment rather than editing the committed file.
+- **OWASP Security Skill** (`npx -y skills add agamm/claude-code-owasp -y`): Security review guidance rooted in OWASP Top 10:2025, ASVS 5.0, and agentic AI controls. Repository reference path: `.agents/skills/owasp-security/SKILL.md`.
+- **Shannon Lite** (`npx -y skills add unicodeveloper/shannon -y`): Docker-based white-box pentesting for explicit release-readiness or audit work. Repository reference path: `.agents/skills/shannon/SKILL.md`.
 
 ## graphify
 

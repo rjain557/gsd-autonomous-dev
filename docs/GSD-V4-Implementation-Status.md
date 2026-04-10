@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-10
 **Version:** 4.2.0
-**Verdict:** 100% complete — full SDLC lifecycle (Phases A-G), 14 agents, 11 tools, unified CLI
+**Verdict:** 100% complete — full SDLC lifecycle (Phases A-G), 14 agents, 11-tool/model stack, unified CLI
 
 ## What v4.2 Is
 
@@ -14,7 +14,7 @@ A TypeScript-based autonomous development pipeline covering the complete Technij
 |---|---|
 | v4.0 | Initial TypeScript harness (65% complete) |
 | v4.1 | All 47 gaps closed, Graphify integration, 100% pipeline complete |
-| v4.2 | Full SDLC lifecycle (Phases A-E), 6 new agents, unified CLI, Context7/OWASP/Shannon |
+| v4.2 | Full SDLC lifecycle (Phases A-G), 6 SDLC agents added, unified CLI, dual graphs, MCPs, and security skills |
 
 ## File Inventory
 
@@ -40,11 +40,11 @@ src/
   evals/
     runner.ts                     470 lines   Eval framework, 6 test cases, vault parser, quality judge
     judges/review-quality-judge.ts 53 lines   LLM-as-judge scorer
-  index.ts                        144 lines   CLI: pipeline run [options]
+  index.ts                        144 lines   Unified CLI: `run`, `sdlc`, `pipeline`, `status`
 
 memory/
-  agents/         8 notes   Agent configs with frontmatter (model, tools, retries, timeout)
-  knowledge/      6 notes   Quality gates, deploy config, rollback, tools, model strategy, pipeline map
+  agents/         14 notes  Agent configs with frontmatter (model, tools, retries, timeout)
+  knowledge/      8 notes   Quality gates, deploy config, rollback, tools, model strategy, project paths, pipeline map
   architecture/   3 notes   Agent system design (task graph), state schema, hook registry
   evals/          1 note    Test case definitions
 ```
@@ -145,7 +145,7 @@ memory/
 
 None. All identified gaps have been closed.
 
-## V4.1 Model Strategy (Updated 2026-04-08)
+## V4.2 Model Strategy (Updated 2026-04-10)
 
 **3 Max/Ultra subscriptions = $0 marginal token cost.** API models are emergency-only.
 
@@ -189,11 +189,11 @@ PowerShell Pipeline (V2/V4)        TypeScript Harness (V4)
 
 | Capability | PowerShell | TypeScript |
 |---|---|---|
-| Multi-agent orchestration | Mature, 7 agents, rate limiting, cooldowns | 6 agents, no rate limiting yet |
-| Resilience | Retry, checkpoint, lock, watchdog, disk check | Hook-based retry, no checkpoint |
-| Quality gates | 9-phase smoke test, runtime validation | Build + basic test only |
-| Cost tracking | Actual token counting per call | Rough estimate (chars/4) |
-| Deploy | Manual (gsd-deploy-prep.ps1) | Automated with rollback (new) |
+| Multi-agent orchestration | Mature, 7 agents, rate limiting, cooldowns | 14 typed agents, unified CLI, rate-limited routing, phase/stage resume |
+| Resilience | Retry, checkpoint, lock, watchdog, disk check | Hook-based retry, state persistence, decision logging, resume support |
+| Quality gates | 9-phase smoke test, runtime validation | Build, test, Semgrep, E2E, deploy, rollback, post-deploy validation |
+| Cost tracking | Actual token counting per call | Model-aware cost estimation and per-run decision/cost records |
+| Deploy | Manual (gsd-deploy-prep.ps1) | Automated with rollback and post-deploy validation |
 | Type safety | None (PowerShell) | Full TypeScript contracts |
 | Decision audit | None | Every routing choice logged to vault |
 | Vault memory | Read-only (inject into prompts) | Read-write (configs, prompts, decisions, logs) |
@@ -209,16 +209,22 @@ npm install
 # Type check (should pass with 0 errors)
 npx tsc --noEmit
 
+# Start a new lifecycle run
+npx ts-node src/index.ts run requirements --project "MyApp" --description "Multi-tenant SaaS"
+
 # Dry run (no deploy)
-npx ts-node src/index.ts pipeline run --trigger manual --dry-run
+npx ts-node src/index.ts run full --dry-run
 
-# Full run (requires claude CLI in PATH + target project)
-npx ts-node src/index.ts pipeline run --trigger manual
+# Resume SDLC from an explicit phase
+npx ts-node src/index.ts sdlc run --from-phase contracts
 
-# Resume from stage (NOTE: currently starts fresh — state restoration not implemented)
+# Resume pipeline from an explicit stage
 npx ts-node src/index.ts pipeline run --from-stage gate
 
-# Run evals (only 1 test case currently)
+# Show current status
+npx ts-node src/index.ts status
+
+# Run evals (6 built-in cases plus vault-loaded definitions)
 npx ts-node src/evals/runner.ts
 ```
 

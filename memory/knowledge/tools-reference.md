@@ -1,6 +1,6 @@
 ---
 type: knowledge
-description: Complete reference of all external tools available to pipeline agents
+description: Complete reference of the external augmentation stack available to v4.2 agents
 ---
 
 # Pipeline Tools Reference
@@ -57,6 +57,7 @@ description: Complete reference of all external tools available to pipeline agen
 - **Install**: `npm install -g @modelcontextprotocol/server-github`
 - **Config**: `.claude/settings.json` mcpServers section
 - **Auth**: `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable
+- **Guidance**: Keep the committed `.claude/settings.json` config unchanged; inject the PAT through the environment
 - **Key stored**: `OneDrive/VSCODE/keys/github-mcp.md`
 
 ## Documentation & Security
@@ -72,16 +73,18 @@ description: Complete reference of all external tools available to pipeline agen
 ### OWASP Security Skill
 
 - **What**: OWASP Top 10:2025, ASVS 5.0, Agentic AI security, C#/TS-specific patterns
-- **Install**: `npx skills add agamm/claude-code-owasp`
-- **Location**: `.claude/skills/owasp-security/SKILL.md`
+- **Install**: `npx -y skills add agamm/claude-code-owasp -y`
+- **Location**: `.agents/skills/owasp-security/SKILL.md`
+- **Mirror note**: Some local workstations mirror this into `.claude/skills/` via symlink, but the repo source of truth is `.agents/skills/`
 - **Cost**: Free (MIT), ~1500 tokens context
 - **Used by**: QualityGate (preventive), CodeReview (detection)
 
 ### Shannon Lite (Penetration Testing)
 
 - **What**: White-box AI pentester, 96% exploit success rate, 50+ vulnerability types
-- **Install**: `npx skills add unicodeveloper/shannon`
-- **Location**: `.claude/skills/shannon/SKILL.md`
+- **Install**: `npx -y skills add unicodeveloper/shannon -y`
+- **Location**: `.agents/skills/shannon/SKILL.md`
+- **Mirror note**: Some local workstations mirror this into `.claude/skills/` via symlink, but the repo source of truth is `.agents/skills/`
 - **Trigger**: `/shannon` in Claude Code
 - **Cost**: ~$50/pentest (Docker + LLM, 1-1.5 hours)
 - **Used by**: Release readiness (Phase G), on-demand security audits
