@@ -1,17 +1,20 @@
-# GSD v4.1 — New Workstation Setup Guide
+# GSD v4.2 — Complete Workstation Setup Guide
 
-Complete instructions to set up a fully functional GSD autonomous development environment on a new Windows workstation. Total time: ~15 minutes.
+Everything needed to run the GSD autonomous development pipeline on a new Windows workstation. Total time: ~20 minutes.
 
 ## Prerequisites
 
-| Requirement | Minimum Version | Check Command |
-|---|---|---|
-| Windows 10/11 | 10.0.19041+ | `winver` |
-| Git | 2.40+ | `git --version` |
-| Node.js | 18+ | `node --version` |
-| npm | 9+ | `npm --version` |
-| Python | 3.10+ | `python --version` |
-| pip | 23+ | `pip --version` |
+| Requirement | Minimum Version | Check Command | Install |
+|---|---|---|---|
+| Windows 10/11 | 10.0.19041+ | `winver` | - |
+| Git | 2.40+ | `git --version` | `winget install Git.Git` |
+| Node.js | 18+ | `node --version` | `winget install OpenJS.NodeJS.LTS` |
+| npm | 9+ | `npm --version` | Comes with Node.js |
+| Python | 3.10+ | `python --version` | `winget install Python.Python.3.14` |
+| pip | 23+ | `pip --version` | Comes with Python |
+| Docker Desktop | 4.0+ | `docker --version` | `winget install Docker.DockerDesktop` |
+
+Docker is optional but required for Shannon penetration testing.
 
 ## Step 1: Clone the Repository
 
@@ -27,9 +30,9 @@ cd gsd-autonomous-dev\gsd-autonomous-dev
 npm install
 ```
 
-This installs: TypeScript, Anthropic SDK, Playwright, proper-lockfile, uuid, docx.
+Installs: TypeScript, Anthropic SDK, Playwright, proper-lockfile, uuid, docx.
 
-Verify: `npx tsc --noEmit` should print nothing (0 errors).
+Verify: `npx tsc --noEmit` — should print nothing (0 errors).
 
 ## Step 3: Install Playwright Browser
 
@@ -39,178 +42,115 @@ npx playwright install chromium
 
 Downloads headless Chromium (~112 MB) for browser-level E2E testing.
 
-## Step 4: Install Python Tools
-
-### Add Python Scripts to PATH (one-time)
+## Step 4: Add Python Scripts to PATH
 
 ```powershell
-# Check current PATH
-[System.Environment]::GetEnvironmentVariable('Path', 'User')
-
-# Add Python Scripts directory (adjust version number if different)
+# Find your Python Scripts directory
 $pythonScripts = "$env:APPDATA\Python\Python314\Scripts"
-if (Test-Path $pythonScripts) {
-    $currentPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($currentPath -notlike "*$pythonScripts*") {
-        [System.Environment]::SetEnvironmentVariable('Path', "$currentPath;$pythonScripts", 'User')
-        Write-Host "Added $pythonScripts to PATH. Restart terminal to take effect."
-    }
+
+# Add to PATH permanently (one-time)
+$currentPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+if ($currentPath -notlike "*$pythonScripts*") {
+    [System.Environment]::SetEnvironmentVariable('Path', "$currentPath;$pythonScripts", 'User')
+    Write-Host "Added to PATH. RESTART YOUR TERMINAL now."
 }
 ```
 
-**Restart your terminal** after adding to PATH.
+**Restart your terminal after this step.**
 
-### Install Graphify (Knowledge Graph)
-
-```bash
-pip install graphifyy
-```
-
-Verify: `graphify --help` should show usage info.
-
-### Install Semgrep (SAST Security Scanner)
+## Step 5: Install Python Tools
 
 ```bash
-pip install semgrep
+pip install graphifyy semgrep
 ```
 
-Verify: `semgrep --version` should print version (1.157.0+).
-
-## Step 5: Install Claude Code Integration
-
-### Graphify Hook
+Verify:
 
 ```bash
-cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
-graphify claude install
-graphify install
+graphify --help     # Should show usage
+semgrep --version   # Should show 1.157.0+
 ```
 
-This adds:
-- `## graphify` section to `CLAUDE.md`
-- PreToolUse hook in `.claude/settings.json` that redirects file searches to the knowledge graph
-
-### Build the Knowledge Graph
-
-From within Claude Code, run:
-
-```
-/graphify .
-```
-
-Or from the command line:
+## Step 6: Install Global npm Tools
 
 ```bash
-graphify .
+npm install -g gitnexus @modelcontextprotocol/server-github
 ```
-
-This generates `graphify-out/GRAPH_REPORT.md`, `graph.json`, and `graph.html`.
-
-## Step 5b: Install GitNexus (Code Intelligence Engine)
-
-GitNexus provides blast radius analysis, execution flow tracing, and impact scoring. Runs alongside Graphify — they serve complementary purposes.
-
-```bash
-npm install -g gitnexus
-```
-
-### Index the Repository
-
-```bash
-cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
-gitnexus analyze
-```
-
-This creates `.gitnexus/` with the indexed graph (830+ nodes, 1600+ edges, 47 execution flows).
-
-### Configure MCP + Hooks
-
-```bash
-gitnexus setup
-```
-
-This auto-configures:
-- MCP server in global Claude Code settings
-- PreToolUse hook (enriches searches with graph context)
-- PostToolUse hook (auto-reindex after git commits)
-- 7 skills in `~/.claude/skills/gitnexus/`
-
-### Verify
-
-```bash
-gitnexus --version
-# Expected: 1.5.3+
-```
-
-The `.gitnexus/` directory is gitignored (regenerated per-workstation).
-
-## Step 6: Install GitHub MCP Server
-
-```bash
-npm install -g @modelcontextprotocol/server-github
-```
-
-### Configure Token
-
-1. Get your GitHub PAT from the keys file:
-   `C:\Users\rjain\OneDrive - Technijian, Inc\Documents\VSCODE\keys\github-mcp.md`
-
-2. Set it in `.claude/settings.json` (already configured in the repo):
-   ```json
-   {
-     "mcpServers": {
-       "github": {
-         "env": {
-           "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_YOUR_TOKEN"
-         }
-       }
-     }
-   }
-   ```
-
-3. Or set as system environment variable:
-   ```powershell
-   [System.Environment]::SetEnvironmentVariable('GITHUB_PERSONAL_ACCESS_TOKEN', 'ghp_YOUR_TOKEN', 'User')
-   ```
 
 ## Step 7: Install AI CLI Tools
 
-### Claude Code (Required)
+### Claude Code (REQUIRED)
 
-Install Claude Code extension in VS Code, or install the CLI:
+Install the Claude Code extension in VS Code, or:
 
 ```bash
 npm install -g @anthropic-ai/claude-code
+claude auth
 ```
 
-Authenticate: `claude auth`
-
-### Codex CLI (Optional — fallback agent)
+### Codex CLI (recommended — fallback agent)
 
 ```bash
 npm install -g @openai/codex
 codex auth
 ```
 
-### Gemini CLI (Optional — fallback agent)
+### Gemini CLI (recommended — fallback agent)
 
 ```bash
 npm install -g @google/gemini-cli
 gemini auth
 ```
 
-## Step 8: Install Legacy PowerShell Engine (Optional)
+## Step 8: Configure Claude Code Integrations
 
-Only needed if running the v1.5/v2/v3 PowerShell pipelines:
+Run these from the project root (`gsd-autonomous-dev/gsd-autonomous-dev`):
+
+```bash
+# Graphify — knowledge graph + PreToolUse hook
+graphify claude install
+graphify install
+
+# GitNexus — code intelligence + blast radius
+gitnexus analyze
+gitnexus setup
+
+# Context7 — live library docs MCP
+claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
+
+# OWASP Security Skill
+npx -y skills add agamm/claude-code-owasp -y
+
+# Shannon Lite — penetration testing
+npx -y skills add unicodeveloper/shannon -y
+```
+
+## Step 9: Build Knowledge Graphs
+
+```bash
+# Graphify knowledge graph (from Claude Code)
+# /graphify .
+# Or from CLI:
+graphify .
+
+# GitNexus is already indexed from Step 8
+```
+
+## Step 10: Configure Secrets
+
+### GitHub PAT
+
+Get the token from: `C:\Users\rjain\OneDrive - Technijian, Inc\Documents\VSCODE\keys\github-mcp.md`
+
+Set as environment variable:
 
 ```powershell
-cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
-powershell -ExecutionPolicy Bypass -File scripts\install-gsd-all.ps1
+[System.Environment]::SetEnvironmentVariable('GITHUB_PERSONAL_ACCESS_TOKEN', 'ghp_YOUR_TOKEN', 'User')
 ```
 
 ## Verification Checklist
 
-Run these checks to confirm everything works:
+Run all checks to confirm everything works:
 
 ```bash
 cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
@@ -219,13 +159,13 @@ cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
 npx tsc --noEmit
 # Expected: no output (0 errors)
 
-# 2. Dependencies load
+# 2. Node dependencies load
 node -e "['uuid','proper-lockfile','@anthropic-ai/sdk','playwright'].forEach(d => { try { require(d); console.log('OK:', d); } catch { console.log('FAIL:', d); } })"
 # Expected: all OK
 
-# 3. Semgrep works
+# 3. Semgrep
 semgrep --version
-# Expected: 1.157.0 or higher
+# Expected: 1.157.0+
 
 # 4. Playwright browser
 node -e "require('playwright').chromium.launch({headless:true}).then(b => { console.log('OK: Chromium'); b.close(); })"
@@ -235,61 +175,102 @@ node -e "require('playwright').chromium.launch({headless:true}).then(b => { cons
 graphify --help
 # Expected: Usage info
 
-# 6. Graphify knowledge graph exists
-ls graphify-out/GRAPH_REPORT.md
-# Expected: file exists (run /graphify . if missing)
-
-# 7. GitNexus index exists
+# 6. GitNexus
 gitnexus --version
-ls .gitnexus/
-# Expected: version 1.5.3+, .gitnexus/ directory exists (run gitnexus analyze if missing)
+# Expected: 1.5.3+
 
-# 8. Pipeline dry run (requires Claude CLI)
-npx ts-node src/index.ts pipeline run --trigger manual --dry-run
-# Expected: preflight passes, pipeline initializes
+# 7. Knowledge graphs exist
+ls graphify-out/GRAPH_REPORT.md
+ls .gitnexus/
+# Expected: both exist (rebuild with /graphify . and gitnexus analyze if missing)
+
+# 8. Claude Code skills installed
+ls .claude/skills/
+# Expected: gitnexus, owasp-security, shannon, sql-expert, react-ui-design-patterns, etc.
+
+# 9. GSD pipeline dry run (requires Claude CLI)
+npx ts-node src/index.ts run full --help
+# Expected: shows milestone list
+
+# 10. GSD status
+npx ts-node src/index.ts status
+# Expected: shows project status or "No SDLC state found"
 ```
 
 ## Quick Reference Card
 
 | Task | Command |
 |---|---|
-| Run pipeline | `npx ts-node src/index.ts pipeline run --trigger manual` |
-| Dry run (no deploy) | `npx ts-node src/index.ts pipeline run --dry-run` |
-| Resume from stage | `npx ts-node src/index.ts pipeline run --from-stage gate` |
+| **SDLC lifecycle** | `gsd run full --project "X" --description "Y"` |
+| Requirements only | `gsd run requirements --project "X" --description "Y"` |
+| After Figma upload | `gsd run figma-uploaded --design-path design/web/v1/src/` |
+| Generate contracts | `gsd run contracts` |
+| Code pipeline | `gsd run blueprint` |
+| Deploy to alpha | `gsd run deploy` |
+| Check progress | `gsd status` |
+| With review gates | `gsd run requirements --review` |
+| Pipeline only | `npx ts-node src/index.ts pipeline run --trigger manual` |
+| Dry run | `npx ts-node src/index.ts pipeline run --dry-run` |
 | Type check | `npx tsc --noEmit` |
 | Run tests | `npm test` |
-| Run evals | `npm run evals` |
 | Build knowledge graph | `/graphify .` (in Claude Code) |
-| Update graph | `/graphify . --update` |
-| Query graph | `graphify query "what connects X to Y?"` |
+| Reindex GitNexus | `gitnexus analyze` |
+| Security pentest | `/shannon` (in Claude Code, needs Docker) |
 
-## Directory Structure (What You Get)
+## Complete Tool Inventory
+
+| Tool | Type | Purpose | Cost |
+|---|---|---|---|
+| Claude Code | AI CLI | Primary reasoning agent | $200/mo subscription ($0 marginal) |
+| Codex CLI | AI CLI | Code generation fallback | $200/mo subscription ($0 marginal) |
+| Gemini CLI | AI CLI | Research/synthesis fallback | $20/mo subscription ($0 marginal) |
+| Graphify | Knowledge graph | Codebase structure, community detection | Free (MIT) |
+| GitNexus | Code intelligence | Blast radius, execution flows, impact | Free (PolyForm NC) |
+| Context7 | MCP server | Live library docs (.NET, React, etc.) | Free (1000 req/mo) |
+| Semgrep | SAST scanner | 2000+ security rules | Free (OSS) |
+| Playwright | Browser testing | Headless Chromium E2E | Free (Apache 2.0) |
+| OWASP Skill | Security patterns | OWASP Top 10, ASVS 5.0 | Free (MIT) |
+| Shannon Lite | Pentesting | White-box vuln testing, 96% success | Free (runs on your LLM subscription) |
+| GitHub MCP | Automation | PR creation, issue tracking | Free (needs PAT) |
+
+**Total monthly cost: ~$420 (3 subscriptions). Per-run marginal cost: $0.**
+
+## Directory Structure
 
 ```
 gsd-autonomous-dev/
-  src/                    # V4.1 TypeScript harness (orchestrator, 7 agents, evals)
-  memory/                 # Obsidian vault (agent configs, knowledge, architecture)
-  graphify-out/           # Knowledge graph (GRAPH_REPORT.md, graph.json, graph.html)
-  .claude/settings.json   # Graphify hook + GitHub MCP config
-  v2/                     # Legacy V2 pipeline (PowerShell)
-  v3/                     # Legacy V3 pipeline (PowerShell)
-  scripts/                # Legacy install + patch scripts
-  docs/                   # All documentation
+  src/                    # v4.2 TypeScript harness
+    harness/              #   Orchestrators, types, hooks, vault adapter
+    agents/               #   14 agents (8 pipeline + 6 SDLC)
+    evals/                #   Test framework
+  memory/                 # Obsidian vault
+    agents/               #   14 agent vault notes
+    knowledge/            #   Quality gates, deploy config, tools reference
+    architecture/         #   Task graph, state schema, hook registry
+  .claude/skills/         # Claude Code skills (gitnexus, owasp, shannon, etc.)
+  .agents/skills/         # Universal agent skills
+  graphify-out/           # Knowledge graph output (per-machine)
+  .gitnexus/              # GitNexus index (per-machine)
+  docs/                   # Documentation
   test-fixtures/          # Eval test data
-  node_modules/           # (generated by npm install)
+  v2/, v3/                # Legacy pipelines
+  scripts/                # Legacy PowerShell scripts
 ```
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---|---|
-| `semgrep: command not found` | Restart terminal after adding Python Scripts to PATH |
-| `pysemgrep not found` | Same fix — PATH must include Python Scripts dir |
-| `graphify: command not found` | Same fix — Python Scripts dir on PATH |
-| `tsc: command not found` | Use `npx tsc` or `./node_modules/.bin/tsc` |
-| `ENOENT: claude` in preflight | Install Claude Code CLI and authenticate |
+| `semgrep: command not found` | Restart terminal after Step 4 (PATH update) |
+| `pysemgrep not found` | Same — Python Scripts not on PATH |
+| `graphify: command not found` | Same — Python Scripts not on PATH |
+| `tsc: command not found` | Use `npx tsc` instead |
+| `ENOENT: claude` in preflight | Install Claude Code CLI: `npm install -g @anthropic-ai/claude-code` |
 | `Chromium not found` | Run `npx playwright install chromium` |
 | Graphify graph missing | Run `/graphify .` from Claude Code |
+| GitNexus stale | Run `gitnexus analyze` |
 | GitHub MCP not connecting | Set `GITHUB_PERSONAL_ACCESS_TOKEN` env var |
-| TypeScript errors after pull | Run `npm install` (new dependencies may have been added) |
-| Pipeline paused | Check `memory/sessions/alerts.md`, resume with `--from-stage` |
+| TypeScript errors after pull | Run `npm install` |
+| Shannon won't run | Install Docker Desktop: `winget install Docker.DockerDesktop` |
+| Pipeline paused | Run `gsd status` to see where you are, then resume |
+| Context7 rate limited | Free tier: 1000 req/month, 60 req/hour |
