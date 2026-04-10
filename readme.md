@@ -84,6 +84,31 @@ Each provider draws from an independent quota pool, maximizing throughput. Gemin
 | [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) | Graphify knowledge graph setup, querying, MCP server |
 | [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md) | Full new workstation setup (15 min, all tools) |
 
+## SDLC Lifecycle (Phases A-G)
+
+GSD v4.2 covers the **complete Technijian SDLC v6.0 lifecycle** from requirements to deployment:
+
+```bash
+# Full lifecycle: requirements → architecture → Figma → reconcile → blueprint → contract → pipeline
+npx ts-node src/index.ts sdlc run --trigger manual --project "MyApp" --description "..."
+
+# Resume from any phase
+npx ts-node src/index.ts sdlc run --from-phase phase-c
+
+# Pipeline only (Phases F-G, skip A-E)
+npx ts-node src/index.ts pipeline run --trigger manual
+```
+
+| Phase | Agent | What it produces |
+|---|---|---|
+| A | RequirementsAgent | Intake Pack (requirements, RACI, NFRs, risks) |
+| B | ArchitectureAgent | Architecture Pack (diagrams, OpenAPI draft, threat model) |
+| C | FigmaIntegrationAgent | 12 analysis files + stubs (validates Figma Make output) |
+| A/B Update | PhaseReconcileAgent | Updated requirements/architecture post-Figma |
+| D | BlueprintFreezeAgent | Frozen UI/UX Blueprint |
+| E | ContractFreezeAgent | SCG1 contract (OpenAPI, API↔SP Map, DB Plan, Test Plan) |
+| F-G | Pipeline Orchestrator | Enhanced code → reviewed → gated → deployed |
+
 ## V4.1 TypeScript Agent Harness
 
 The TypeScript harness (`src/`) provides 8 typed agents with vault-integrated memory, rate-limited CLI-first LLM routing, and orchestrated deployment with rollback. **100% complete** as of v4.1.0.

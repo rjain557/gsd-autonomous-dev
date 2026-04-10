@@ -4,7 +4,9 @@
 // ═══════════════════════════════════════════════════════════
 
 import { Orchestrator } from './harness/orchestrator';
+import { SdlcOrchestrator } from './harness/sdlc-orchestrator';
 import type { PipelineStage, TriggerType } from './harness/types';
+import type { SdlcPhase } from './harness/sdlc-types';
 import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -96,6 +98,9 @@ async function main(): Promise<void> {
     case 'pipeline':
       await handlePipeline(args.slice(1));
       break;
+    case 'sdlc':
+      await handleSdlc(args.slice(1));
+      break;
     default:
       console.error(`Unknown command: ${args[0]}`);
       printUsage();
@@ -174,6 +179,72 @@ async function handlePipeline(args: string[]): Promise<void> {
 
   if (finalState.status === 'failed' || finalState.status === 'paused') {
     console.log(`Resume with: npx ts-node src/index.ts pipeline run --from-stage ${finalState.currentStage}`);
+    process.exit(1);
+  }
+}
+
+async function handleSdlc(args: string[]): Promise<void> {
+  if (args[0] !== 'run') {
+    console.error(`Unknown sdlc subcommand: ${args[0]}`);
+    console.log('Usage: sdlc run [options]');
+    process.exit(1);
+  }
+
+  const options = parseOptions(args.slice(1));
+
+  const trigger = (options['trigger'] ?? 'manual') as 'manual' | 'schedule';
+  const fromPhase = options['from-phase'] as SdlcPhase | undefined;
+  const vaultPath = options['vault-path'] ?? './memory';
+  const projectName = options['project'] ?? 'Untitled Project';
+  const projectDescription = options['description'] ?? '';
+  const designPath = options['design-path'];
+
+  // Run preflight checks
+  const check = preflight(vaultPath);
+  for (const w of check.warnings) console.warn(`  [WARN] ${w}`);
+  if (!check.ok) {
+    console.error('\n  Preflight failed:');
+    for (const e of check.errors) console.error(`    ✗ ${e}`);
+    process.exit(1);
+  }
+
+  console.log('');
+  console.log('═══════════════════════════════════════════════');
+  console.log('  GSD SDLC Lifecycle (Phases A-G)');
+  console.log('═══════════════════════════════════════════════');
+  console.log(`  Trigger:    ${trigger}`);
+  console.log(`  From phase: ${fromPhase ?? 'phase-a (start)'}`);
+  console.log(`  Project:    ${projectName}`);
+  console.log(`  Design:     ${designPath ?? '(auto-detect)'}`);
+  console.log(`  Vault:      ${vaultPath}`);
+  console.log('═══════════════════════════════════════════════');
+  console.log('');
+
+  const orchestrator = new SdlcOrchestrator(vaultPath);
+  await orchestrator.initialize();
+
+  const finalState = await orchestrator.run({
+    trigger,
+    fromPhase,
+    projectName,
+    projectDescription,
+    designPath,
+    vaultPath,
+  });
+
+  console.log('');
+  console.log('═══════════════════════════════════════════════');
+  console.log(`  SDLC ${finalState.status.toUpperCase()}`);
+  console.log('═══════════════════════════════════════════════');
+  console.log(`  Run ID:     ${finalState.sdlcRunId}`);
+  console.log(`  Status:     ${finalState.status}`);
+  console.log(`  Phase:      ${finalState.currentPhase}`);
+  console.log(`  Decisions:  ${finalState.decisions.length}`);
+  console.log('═══════════════════════════════════════════════');
+  console.log('');
+
+  if (finalState.status === 'failed' || finalState.status === 'paused') {
+    console.log(`Resume with: npx ts-node src/index.ts sdlc run --from-phase ${finalState.currentPhase}`);
     process.exit(1);
   }
 }

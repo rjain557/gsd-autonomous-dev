@@ -1,0 +1,303 @@
+// ═══════════════════════════════════════════════════════════
+// GSD Agent System — SDLC Orchestrator
+// Orchestrates Phases A-E of the Technijian SDLC v6.0,
+// then hands off to the Pipeline Orchestrator (Phases F-G).
+// ═══════════════════════════════════════════════════════════
+
+import { v4 as uuidv4 } from 'uuid';
+import type {
+  SdlcPhase,
+  SdlcState,
+  SdlcTrigger,
+  IntakePack,
+  ArchitecturePack,
+  FigmaDeliverables,
+  ReconciliationReport,
+  FrozenBlueprint,
+  ContractArtifacts,
+} from './sdlc-types';
+import { VaultAdapter } from './vault-adapter';
+import { HookSystem } from './hooks';
+import { RateLimiter } from './rate-limiter';
+import { registerDefaultHooks } from './default-hooks';
+import { BaseAgent } from './base-agent';
+import { Orchestrator } from './orchestrator';
+
+// Agent imports
+import { RequirementsAgent } from '../agents/requirements-agent';
+import { ArchitectureAgent } from '../agents/architecture-agent';
+import { FigmaIntegrationAgent } from '../agents/figma-integration-agent';
+import { PhaseReconcileAgent } from '../agents/phase-reconcile-agent';
+import { BlueprintFreezeAgent } from '../agents/blueprint-freeze-agent';
+import { ContractFreezeAgent } from '../agents/contract-freeze-agent';
+
+/**
+ * Phase-to-model routing for SDLC phases.
+ * Uses PHASE_ROUTING style: primary → fallback.
+ */
+const SDLC_PHASE_ROUTING: Record<string, string[]> = {
+  'phase-a':           ['claude', 'gemini'],      // Requirements need deep reasoning
+  'phase-b':           ['claude', 'codex'],        // Architecture needs deep reasoning
+  'phase-c':           ['codex', 'gemini'],         // File validation, minimal LLM
+  'phase-ab-reconcile': ['claude', 'gemini'],      // Document comparison
+  'phase-d':           ['gemini', 'claude'],        // Large context synthesis
+  'phase-e':           ['codex', 'claude'],          // Structured output generation
+};
+
+const SDLC_PHASE_ORDER: SdlcPhase[] = [
+  'phase-a', 'phase-b', 'phase-c', 'phase-ab-reconcile', 'phase-d', 'phase-e', 'pipeline',
+];
+
+export class SdlcOrchestrator {
+  private agents = new Map<string, BaseAgent>();
+  private vault: VaultAdapter;
+  private hooks: HookSystem;
+  private rateLimiter: RateLimiter;
+  private pipelineOrchestrator: Orchestrator;
+  state: SdlcState;
+
+  constructor(vaultPath: string) {
+    this.vault = new VaultAdapter(vaultPath);
+    this.hooks = new HookSystem();
+    this.rateLimiter = new RateLimiter(0.8);
+    this.pipelineOrchestrator = new Orchestrator(vaultPath);
+    this.state = this.createInitialState();
+  }
+
+  async initialize(): Promise<void> {
+    // Register hooks and rate limits (shared with pipeline)
+    registerDefaultHooks(this.hooks, this.vault, () => ({
+      runId: this.state.sdlcRunId,
+      triggeredBy: 'manual' as const,
+      blueprintVersion: '0.0.0',
+      convergenceReport: null,
+      reviewResult: null,
+      patchSet: null,
+      gateResult: null,
+      deployRecord: null,
+      decisions: [],
+      currentStage: 'blueprint' as const,
+      status: 'running' as const,
+      costAccumulator: [],
+      startedAt: this.state.startedAt,
+      completedAt: null,
+    }));
+
+    this.rateLimiter.registerAgent('claude', { rpm: 10, cooldownMs: 5 * 60_000, safetyFactor: 0.8 });
+    this.rateLimiter.registerAgent('codex',  { rpm: 10, cooldownMs: 5 * 60_000, safetyFactor: 0.8 });
+    this.rateLimiter.registerAgent('gemini', { rpm: 15, cooldownMs: 5 * 60_000, safetyFactor: 0.8 });
+
+    // Instantiate SDLC agents
+    const agentDefs: Array<[string, new (...args: ConstructorParameters<typeof BaseAgent>) => BaseAgent]> = [
+      ['requirements-agent', RequirementsAgent],
+      ['architecture-agent', ArchitectureAgent],
+      ['figma-integration-agent', FigmaIntegrationAgent],
+      ['phase-reconcile-agent', PhaseReconcileAgent],
+      ['blueprint-freeze-agent', BlueprintFreezeAgent],
+      ['contract-freeze-agent', ContractFreezeAgent],
+    ];
+
+    for (const [id, AgentClass] of agentDefs) {
+      const agent = new (AgentClass as new (...args: unknown[]) => BaseAgent)(id, this.vault, this.hooks, {});
+      await agent.initialize();
+      agent.setRateLimiter(this.rateLimiter, 'claude');
+      this.agents.set(id, agent);
+    }
+
+    // Initialize pipeline orchestrator for Phase F-G handoff
+    await this.pipelineOrchestrator.initialize();
+
+    console.log(`[SDLC] Initialized ${this.agents.size} SDLC agents + pipeline orchestrator`);
+  }
+
+  async run(trigger: SdlcTrigger): Promise<SdlcState> {
+    this.state = this.createInitialState();
+    this.state.sdlcRunId = uuidv4().substring(0, 8);
+    this.state.startedAt = new Date().toISOString();
+
+    // Resume from phase if specified
+    const startPhase = trigger.fromPhase ?? 'phase-a';
+    const startIdx = SDLC_PHASE_ORDER.indexOf(startPhase);
+
+    console.log(`\n[SDLC] Starting from phase: ${startPhase}`);
+
+    for (let i = startIdx; i < SDLC_PHASE_ORDER.length; i++) {
+      const phase = SDLC_PHASE_ORDER[i];
+      this.state.currentPhase = phase;
+      this.state.status = 'running';
+
+      // Pick best available CLI model for this phase
+      const candidates = SDLC_PHASE_ROUTING[phase] ?? ['claude', 'codex', 'gemini'];
+      const cliModel = this.rateLimiter.pickAvailable(candidates) ?? candidates[0];
+      this.rateLimiter.trackModelSwitch(phase, cliModel);
+
+      // Update the active agent's rate limiter
+      const agentId = this.getAgentIdForPhase(phase);
+      if (agentId) {
+        const agent = this.agents.get(agentId);
+        if (agent) agent.setRateLimiter(this.rateLimiter, cliModel);
+      }
+
+      console.log(`\n[SDLC] Phase: ${phase} | Model: ${cliModel}`);
+
+      try {
+        if (phase === 'pipeline') {
+          // Hand off to existing v4.1 pipeline
+          console.log(`[SDLC] Handing off to Pipeline Orchestrator (Phases F-G)...`);
+          const pipelineResult = await this.pipelineOrchestrator.run({
+            trigger: trigger.trigger,
+            vaultPath: trigger.vaultPath,
+          });
+          this.state.status = pipelineResult.status === 'complete' ? 'complete' : 'failed';
+        } else {
+          await this.executePhase(phase, trigger);
+        }
+
+        await this.saveState();
+        this.logDecision(phase, 'complete', `Phase ${phase} completed successfully`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[SDLC] Phase ${phase} failed: ${msg}`);
+        this.logDecision(phase, 'failed', msg);
+        this.state.status = 'failed';
+        await this.saveState();
+        break;
+      }
+    }
+
+    this.state.completedAt = new Date().toISOString();
+    await this.saveState();
+    return this.state;
+  }
+
+  private async executePhase(phase: SdlcPhase, trigger: SdlcTrigger): Promise<void> {
+    switch (phase) {
+      case 'phase-a': {
+        const agent = this.agents.get('requirements-agent')!;
+        const result = await agent.execute({
+          projectName: trigger.projectName,
+          projectDescription: trigger.projectDescription,
+        }) as unknown as IntakePack;
+        this.state.intakePack = result;
+        break;
+      }
+
+      case 'phase-b': {
+        if (!this.state.intakePack) throw new Error('Phase B requires Phase A output (IntakePack)');
+        const agent = this.agents.get('architecture-agent')!;
+        const result = await agent.execute({
+          intakePack: this.state.intakePack,
+        }) as unknown as ArchitecturePack;
+        this.state.architecturePack = result;
+        break;
+      }
+
+      case 'phase-c': {
+        const agent = this.agents.get('figma-integration-agent')!;
+        const result = await agent.execute({
+          designPath: trigger.designPath ?? 'design/web/v1/src/',
+          architecturePack: this.state.architecturePack,
+        }) as unknown as FigmaDeliverables;
+        this.state.figmaDeliverables = result;
+
+        if (result.completeness < 12) {
+          console.warn(`[SDLC] Figma deliverables incomplete: ${result.completeness}/12. Run Figma Make generation first.`);
+        }
+        break;
+      }
+
+      case 'phase-ab-reconcile': {
+        if (!this.state.intakePack || !this.state.architecturePack || !this.state.figmaDeliverables) {
+          throw new Error('Phase AB-Reconcile requires Phase A, B, and C outputs');
+        }
+        const agent = this.agents.get('phase-reconcile-agent')!;
+        const result = await agent.execute({
+          intakePack: this.state.intakePack,
+          architecturePack: this.state.architecturePack,
+          figmaDeliverables: this.state.figmaDeliverables,
+        }) as unknown as ReconciliationReport;
+        this.state.reconciliationReport = result;
+        // Update A/B with reconciled versions
+        this.state.intakePack = result.updatedIntakePack;
+        this.state.architecturePack = result.updatedArchitecturePack;
+        break;
+      }
+
+      case 'phase-d': {
+        if (!this.state.figmaDeliverables) throw new Error('Phase D requires Phase C output');
+        const agent = this.agents.get('blueprint-freeze-agent')!;
+        const result = await agent.execute({
+          intakePack: this.state.intakePack,
+          architecturePack: this.state.architecturePack,
+          figmaDeliverables: this.state.figmaDeliverables,
+          reconciliationReport: this.state.reconciliationReport,
+        }) as unknown as FrozenBlueprint;
+        this.state.frozenBlueprint = result;
+        break;
+      }
+
+      case 'phase-e': {
+        if (!this.state.frozenBlueprint) throw new Error('Phase E requires Phase D output (Frozen Blueprint)');
+        const agent = this.agents.get('contract-freeze-agent')!;
+        const result = await agent.execute({
+          frozenBlueprint: this.state.frozenBlueprint,
+          architecturePack: this.state.architecturePack,
+          figmaDeliverables: this.state.figmaDeliverables,
+        }) as unknown as ContractArtifacts;
+        this.state.contractArtifacts = result;
+
+        if (!result.scg1Passed) {
+          console.warn(`[SDLC] SCG1 gate has ${result.gaps.length} gaps. Review validation-report.md before proceeding.`);
+        }
+        break;
+      }
+    }
+  }
+
+  private getAgentIdForPhase(phase: SdlcPhase): string | undefined {
+    const map: Partial<Record<SdlcPhase, string>> = {
+      'phase-a': 'requirements-agent',
+      'phase-b': 'architecture-agent',
+      'phase-c': 'figma-integration-agent',
+      'phase-ab-reconcile': 'phase-reconcile-agent',
+      'phase-d': 'blueprint-freeze-agent',
+      'phase-e': 'contract-freeze-agent',
+    };
+    return map[phase];
+  }
+
+  private logDecision(phase: string, action: string, reason: string): void {
+    this.state.decisions.push({
+      phase,
+      action,
+      reason,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private async saveState(): Promise<void> {
+    try {
+      await this.vault.create(`sessions/sdlc-state-${this.state.sdlcRunId}.json`, {
+        type: 'sdlc-state',
+        description: `SDLC run ${this.state.sdlcRunId}`,
+      }, JSON.stringify(this.state, null, 2));
+    } catch { /* state save is best-effort */ }
+  }
+
+  private createInitialState(): SdlcState {
+    return {
+      sdlcRunId: '',
+      currentPhase: 'phase-a',
+      status: 'pending',
+      intakePack: null,
+      architecturePack: null,
+      figmaDeliverables: null,
+      reconciliationReport: null,
+      frozenBlueprint: null,
+      contractArtifacts: null,
+      decisions: [],
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    };
+  }
+}
