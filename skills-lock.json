@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "owasp-security": {
+      "source": "agamm/claude-code-owasp",
+      "sourceType": "github",
+      "computedHash": "83c34090993133965481722f5fec50544ff3268b627f8b914773baded8f32924"
+    },
+    "shannon": {
+      "source": "unicodeveloper/shannon",
+      "sourceType": "github",
+      "computedHash": "a63c0a99388e6ca1ecd553f59c11acf32acdb1201f7c899294397d8ee3cc8b5b"
+    }
+  }
+}
