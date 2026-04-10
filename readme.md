@@ -1,164 +1,181 @@
-# GSD Engine - Goal-Spec-Done Autonomous Development System
+# GSD Engine — Goal Spec Done
 
-**Version:** 4.1.0 | **Platform:** Windows + PowerShell 5.1+ / Node.js 18+ | **Agents:** 8 typed agents (Claude, Codex, Gemini + DeepSeek, MiniMax fallbacks)
+**Version:** 4.2.0 | **Platform:** Windows + Node.js 18+ | **Agents:** 14 typed agents | **Cost:** $0 marginal (CLI subscriptions)
 
-The GSD Engine is a PowerShell-based autonomous development framework that orchestrates seven configured models across CLI and REST providers to drive codebases from specification to 100% implementation through iterative convergence loops. It runs unattended with comprehensive self-healing for network failures, quota limits, agent crashes, and stalls.
+An AI-native autonomous development pipeline covering the complete Technijian SDLC v6.0 — from requirements gathering through alpha deployment — with 14 TypeScript agents, 11 integrated tools, Obsidian vault memory, and $0 per-run cost.
 
 ## What It Does
 
-1. **Assesses** your codebase against specs (what exists, what is missing, what is broken)
-2. **Converges** existing code toward spec compliance (fix issues, apply patterns)
-3. **Builds** missing features from blueprint manifests (new screens, SPs, components)
+One command. Tell it where you are in the project.
+
+```bash
+gsd run requirements      # "I'm starting a new project"
+gsd run figma-prompts     # "I need Figma Make prompts"
+gsd run figma-uploaded    # "Figma designs are done"
+gsd run contracts         # "Ready to freeze contracts"
+gsd run blueprint         # "Ready for code pipeline"
+gsd run deploy            # "Ready for alpha"
+gsd run full              # "Do everything"
+gsd status                # "Where am I?"
+```
 
 ## Quick Start
 
-```powershell
-# Install (runs 36 installer steps in dependency order)
-powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
+```bash
+# Clone
+git clone https://github.com/rjain557/gsd-autonomous-dev.git
+cd gsd-autonomous-dev/gsd-autonomous-dev
 
-# Restart terminal, then:
-cd C:\path\to\your\repo    # Must be git root with .sln
+# Install
+npm install
+npx playwright install chromium
+pip install graphifyy semgrep
+npm install -g gitnexus @modelcontextprotocol/server-github
 
-gsd-assess                  # Analyze codebase
-gsd-converge                # Fix existing code toward 100%
-gsd-blueprint               # Build from specs (greenfield)
+# Configure
+graphify claude install && graphify install
+gitnexus analyze && gitnexus setup
+claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
+
+# Run
+npx ts-node src/index.ts run requirements --project "MyApp" --description "Multi-tenant SaaS"
 ```
 
-## Important: Run From Git Root
+Full setup: [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md)
 
-Always cd into the directory containing .git, .sln, and source code. If nested project folders exist, run from the inner one.
+## SDLC Pipeline (Phases A-G)
 
-## Agents (Seven-Model Strategy)
+```
+Phase A: Requirements ──→ Intake Pack (RACI, NFRs, risks, acceptance criteria)
+Phase B: Architecture ──→ Architecture Pack (Mermaid diagrams, OpenAPI draft, threat model)
+Phase C: Figma ─────────→ Validate 12/12 analysis files + stubs from Figma Make
+Phase A/B: Reconcile ───→ Update requirements based on what prototyping revealed
+Phase D: Blueprint ─────→ Frozen UI/UX specification (immutable after this point)
+Phase E: Contracts ─────→ SCG1 gate (OpenAPI, API↔SP Map, DB Plan, Test Plan)
+Phase F: Code Pipeline ─→ Blueprint analysis → code review → remediation → quality gate → E2E
+Phase G: Deploy ────────→ Alpha deploy with rollback + post-deploy validation
+```
 
-| Agent | Role | Phases |
-|-------|------|--------|
-| **Claude Code** | Reasoning & analysis | Review, plan, verify, blueprint |
-| **Codex CLI** | Code generation | Execute, build |
-| **Gemini CLI** | Research & spec-fix (optional) | Research, spec-fix |
-| **Kimi / DeepSeek / GLM-5 / MiniMax** | Fallback review and research pool | Council, fallback, burst throughput |
+Each phase writes artifacts to `docs/sdlc/` and saves state for resume. Use `--review` flag to pause after each phase for human review.
 
-Each provider draws from an independent quota pool, maximizing throughput. Gemini is optional for core routing; the REST agents expand review and fallback capacity.
+## Agents (14)
+
+### SDLC Agents (Phases A-E)
+
+| Agent | Phase | Purpose |
+|---|---|---|
+| RequirementsAgent | A | Draft Intake Pack from project description |
+| ArchitectureAgent | B | Generate diagrams, OpenAPI, threat model |
+| FigmaIntegrationAgent | C | Validate 12/12 Figma Make deliverables |
+| PhaseReconcileAgent | A/B | Gap analysis + update requirements post-Figma |
+| BlueprintFreezeAgent | D | Synthesize frozen UI/UX blueprint |
+| ContractFreezeAgent | E | Generate SCG1 contracts + validation report |
+
+### Pipeline Agents (Phases F-G)
+
+| Agent | Stage | Purpose |
+|---|---|---|
+| Orchestrator | All | Route work, decide retry/escalate/halt |
+| BlueprintAnalysisAgent | Blueprint | Detect spec drift |
+| CodeReviewAgent | Review | Standard + adversarial design review |
+| RemediationAgent | Remediate | Fix issues with blast radius awareness |
+| QualityGateAgent | Gate | Build, test, coverage, Semgrep SAST |
+| E2EValidationAgent | E2E | 8 categories + Playwright browser testing |
+| DeployAgent | Deploy | Deploy with mandatory rollback |
+| PostDeployValidationAgent | Post-deploy | SPA cache, auth flow, SP/DTO validation |
+
+All agents use CLI-first LLM routing (Claude/Codex/Gemini) with dynamic model selection per stage and automatic API fallback (DeepSeek/MiniMax) if all subscriptions exhausted.
+
+## Integrated Tools (11)
+
+| Tool | Purpose | Cost |
+|---|---|---|
+| [Graphify](https://github.com/safishamsi/graphify) | Knowledge graph — community detection, god nodes, 71x token reduction | Free |
+| [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | Blast radius, execution flows, impact analysis, safe rename | Free |
+| [Context7](https://github.com/upstash/context7) | Live library docs for .NET, React, Dapper (MCP server) | Free |
+| [Semgrep](https://semgrep.dev/) | SAST security scanning — 2000+ rules | Free |
+| [Playwright](https://playwright.dev/) | Headless Chromium browser E2E testing | Free |
+| [OWASP Skill](https://github.com/agamm/claude-code-owasp) | OWASP Top 10:2025, ASVS 5.0, C#/TS security patterns | Free |
+| [Shannon Lite](https://github.com/KeygraphHQ/shannon) | White-box pentesting — 96% exploit rate, 50+ vuln types | Free (uses your LLM subscription) |
+| [GitHub MCP](https://github.com/modelcontextprotocol/servers) | PR creation, issue tracking, review comments | Free |
+| Claude Max | Primary reasoning agent (10 RPM) | $200/mo subscription |
+| ChatGPT Max (Codex) | Code generation agent (10 RPM) | $200/mo subscription |
+| Gemini Ultra | Research/synthesis agent (15 RPM) | $20/mo subscription |
+
+**Total: ~$420/mo fixed. $0 per-run marginal cost.**
 
 ## Key Features
 
-- **Seven-model orchestration** with independent quota pools and automatic fallback
-- **Self-healing supervisor** that root-causes stalls, modifies prompts, and restarts (up to 5 attempts)
-- **Final validation gate** at 100% health: builds, tests, SQL, and security audits
-- **Developer handoff report** auto-generated at pipeline exit with build commands, DB setup, costs
-- **Actual token cost tracking** across all agent calls with estimated vs actual comparison
-- **Client quoting** with configurable markup (5-10x) and three-tier pricing
-- **Multi-interface detection** (web, MCP, browser, mobile, agent)
-- **Figma Make integration** with _analysis/ and _stubs/ auto-discovery
-- **Live file map** updated every iteration for agent spatial awareness
-- **Adaptive batch sizing**, crash recovery, checkpoint/resume, quota management
-- **Spec consistency pre-check** with auto-resolution via Gemini
-- **Storyboard-aware verification** tracing data paths end-to-end
-- **Git auto-commit** with code review text as commit body and auto-push
-- **Push notifications** via ntfy.sh with mobile monitoring and progress commands
-- **Remote monitoring** via QR code (gsd-remote)
-- **Dynamic pricing** from LiteLLM with pipeline comparison and subscription analysis
-- **Idempotent installer** (install or update with same command)
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `gsd-assess` | Scan codebase, detect interfaces, generate file map |
-| `gsd-converge` | 5-phase convergence loop (review, research, plan, execute, verify) |
-| `gsd-blueprint` | 3-phase spec-to-code pipeline (blueprint, build, verify) |
-| `gsd-status` | Health dashboard for current project |
-| `gsd-init` | Initialize .gsd/ folder without running iterations |
-| `gsd-remote` | Launch remote monitoring with QR code |
-| `gsd-costs` | Estimate API costs, compare pipelines, generate client quotes |
+- **Unified CLI** — one command (`gsd run <milestone>`), tell it where you are
+- **14 typed agents** with vault-based system prompts and structured I/O contracts
+- **7-layer quality defense** — spec gate, requirement quality, research quality, plan quality, build validation, adversarial code review, final validation
+- **Dynamic agent routing** — distributes work across 3 CLI subscriptions per stage
+- **Parallel execution** — E2E validation (8 categories), build checks (dotnet + npm), all concurrent
+- **5-strategy JSON recovery** — reduces retry waste from malformed LLM responses
+- **Obsidian vault memory** — 14 agent configs, 8 knowledge notes, 3 architecture docs
+- **Dual knowledge graphs** — Graphify (community structure) + GitNexus (blast radius)
+- **State persistence** — resume from any phase/stage with `--from-phase` or `--from-stage`
+- **Human review gates** — `--review` flag pauses after each SDLC phase
+- **Milestone validation** — prerequisite checks prevent out-of-order execution
+- **Artifact persistence** — all SDLC phases write JSON artifacts to `docs/sdlc/`
+- **Adversarial code review** — challenges design decisions (simplicity, scalability, coupling)
+- **Figma Make integration** — validates 12/12 analysis deliverables + DTO naming
+- **Deploy with rollback** — hard gate enforcement, rollback stops on first failure
+- **$0 cost model** — all LLM calls via subscription CLIs, no per-token charges
 
 ## Documentation
 
 | Document | Description |
-|----------|-------------|
-| [GSD-Architecture.md](docs/GSD-Architecture.md) | Engine overview, data flow, agents, resilience, notifications, specs |
-| [GSD-Script-Reference.md](docs/GSD-Script-Reference.md) | All commands, parameters, functions, VS Code integration |
-| [GSD-Installation-Guide.md](docs/GSD-Installation-Guide.md) | Prerequisites, quick start, first project setup, mobile monitoring |
-| [GSD-Configuration.md](docs/GSD-Configuration.md) | JSON schemas, pricing cache, per-project configs, environment variables |
-| [GSD-Troubleshooting.md](docs/GSD-Troubleshooting.md) | Installation, runtime, supervisor, cost tracking, common workflows |
-| [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md) | V4.1 TypeScript harness — all 47 gaps closed |
-| [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) | Graphify knowledge graph setup, querying, MCP server |
-| [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md) | Full new workstation setup (15 min, all tools) |
+|---|---|
+| [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md) | Complete setup guide — 10 steps, all 11 tools, verification checklist |
+| [GSD-Figma-Make-Integration.md](docs/GSD-Figma-Make-Integration.md) | Figma Make export structure, 12/12 deliverables, version numbering |
+| [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md) | Implementation status — all 52 gaps closed |
+| [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) | Graphify + Semgrep + Playwright + GitHub MCP setup |
+| [GSD-Architecture.md](docs/GSD-Architecture.md) | Engine architecture, data flow, resilience |
+| [GSD-Script-Reference.md](docs/GSD-Script-Reference.md) | Legacy PowerShell commands reference |
+| [GSD-Configuration.md](docs/GSD-Configuration.md) | JSON schemas, per-project configs |
+| [GSD-Troubleshooting.md](docs/GSD-Troubleshooting.md) | Common issues and solutions |
 
-## SDLC Lifecycle (Phases A-G)
+## Tech Stack (Enforced)
 
-GSD v4.2 covers the **complete Technijian SDLC v6.0 lifecycle** from requirements to deployment:
+All projects built by GSD use:
 
-```bash
-# Full lifecycle: requirements → architecture → Figma → reconcile → blueprint → contract → pipeline
-npx ts-node src/index.ts sdlc run --trigger manual --project "MyApp" --description "..."
+| Layer | Technology |
+|---|---|
+| Backend | .NET 8 Web API + Dapper + SQL Server stored procedures (no EF Core) |
+| Frontend | React 18 + TypeScript + Fluent UI React v9 |
+| Auth | JWT Bearer, role-based, multi-tenant with TenantId |
+| Database | SQL Server, SP-Only pattern (usp_{Entity}_{Action}) |
+| Compliance | HIPAA, SOC 2, PCI, GDPR |
 
-# Resume from any phase
-npx ts-node src/index.ts sdlc run --from-phase phase-c
+## Directory Structure
 
-# Pipeline only (Phases F-G, skip A-E)
-npx ts-node src/index.ts pipeline run --trigger manual
+```
+gsd-autonomous-dev/
+  src/
+    harness/              Orchestrators, types, hooks, vault adapter, rate limiter
+    agents/               14 agents (8 pipeline + 6 SDLC)
+    evals/                Test framework with 6 golden test cases
+  memory/
+    agents/               14 agent vault notes with system prompts
+    knowledge/            Quality gates, deploy config, tools reference, project paths
+    architecture/         Task graph, state schema, hook registry
+  .claude/skills/         Claude Code skills (gitnexus, owasp, shannon, etc.)
+  graphify-out/           Knowledge graph output (per-machine, gitignored)
+  .gitnexus/              GitNexus index (per-machine, gitignored)
+  docs/                   All documentation
+  test-fixtures/          Eval test data
+  v2/, v3/                Legacy PowerShell pipelines
+  scripts/                Legacy scripts + Figma generation prompt
 ```
 
-| Phase | Agent | What it produces |
-|---|---|---|
-| A | RequirementsAgent | Intake Pack (requirements, RACI, NFRs, risks) |
-| B | ArchitectureAgent | Architecture Pack (diagrams, OpenAPI draft, threat model) |
-| C | FigmaIntegrationAgent | 12 analysis files + stubs (validates Figma Make output) |
-| A/B Update | PhaseReconcileAgent | Updated requirements/architecture post-Figma |
-| D | BlueprintFreezeAgent | Frozen UI/UX Blueprint |
-| E | ContractFreezeAgent | SCG1 contract (OpenAPI, API↔SP Map, DB Plan, Test Plan) |
-| F-G | Pipeline Orchestrator | Enhanced code → reviewed → gated → deployed |
+## Legacy Commands
 
-## V4.1 TypeScript Agent Harness
+The PowerShell engine (v1.5/v2/v3) is still available:
 
-The TypeScript harness (`src/`) provides 8 typed agents with vault-integrated memory, rate-limited CLI-first LLM routing, and orchestrated deployment with rollback. **100% complete** as of v4.1.0.
-
-```bash
-npm install
-npx ts-node src/index.ts pipeline run --trigger manual --dry-run
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-gsd-all.ps1
+gsd-assess       # Analyze codebase
+gsd-converge     # 5-phase convergence loop
+gsd-blueprint    # 3-phase spec-to-code pipeline
 ```
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Type system | Complete | All agent I/O contracts typed, ProjectPaths interface |
-| Vault adapter | Complete | OS-level file locking via proper-lockfile |
-| Hook system | Complete | 8 events, 7 default handlers, all 7 stages validated |
-| Orchestrator | Complete | Stage routing, decision logging, configurable project paths, resilient task graph parsing |
-| Deploy + rollback | Complete | Cross-platform (Node fs.cp, http); rollback stops on first failure |
-| State restoration | Complete | Saves after each stage, restores on `--from-stage` |
-| LLM integration | Complete | CLI-first ($0 marginal) + Anthropic SDK fallback; model-aware cost tracking |
-| Security scanning | Complete | 11 regex patterns + Semgrep SAST (preflight warns if missing) |
-| E2E validation | Complete | 6 categories + Playwright browser testing (headless Chromium) |
-| PostDeploy validation | Complete | Real SP existence + DTO mismatch detection |
-| Eval framework | Complete | 6/6 test cases; vault markdown parser for dynamic loading |
-| Preflight checks | Complete | CLI availability, vault path, env var, Semgrep detection |
-| GitHub MCP | Configured | PR creation, issue tracking, review comments via MCP server |
-
-Full status: [GSD-V4-Implementation-Status.md](docs/GSD-V4-Implementation-Status.md)
-
-## Graphify Knowledge Graph Integration
-
-The pipeline integrates with [Graphify](https://github.com/safishamsi/graphify), an open-source knowledge graph that converts the codebase into a queryable graph for structural navigation instead of flat file scanning (up to 71x token reduction).
-
-```bash
-pip install graphifyy
-graphify claude install     # Hook into Claude Code
-/graphify .                 # Build knowledge graph (from Claude Code)
-```
-
-Agents consult `graphify-out/GRAPH_REPORT.md` for god nodes and community structure before searching raw files. See [GSD-Installation-Graphify.md](docs/GSD-Installation-Graphify.md) for full setup instructions.
-
-## Quality & Automation Tools
-
-| Tool | Purpose | Install |
-|---|---|---|
-| [Semgrep](https://semgrep.dev/) | SAST security scanning (2000+ rules) | `pip install semgrep` |
-| [Playwright](https://playwright.dev/) | Headless browser E2E testing | `npm install playwright && npx playwright install chromium` |
-| [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | Blast radius, execution flows, impact analysis | `npm install -g gitnexus && gitnexus analyze` |
-| [GitHub MCP](https://github.com/modelcontextprotocol/servers) | Autonomous PR/issue management | Configured in `.claude/settings.json` |
-
-Semgrep and Playwright are checked at pipeline startup (preflight). If Semgrep is missing, security scanning falls back to regex patterns. If Playwright is missing, E2E tests fall back to HTTP status checks.
-
-## Scripts
-
-The repository currently contains 54 PowerShell scripts in total, with `scripts/install-gsd-all.ps1` executing 36 installer steps in dependency order. Run `install-gsd-all.ps1` to install everything.

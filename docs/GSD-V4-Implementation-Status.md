@@ -1,12 +1,20 @@
-# GSD V4 Agent Harness — Implementation Status
+# GSD v4.2 — Implementation Status
 
-**Date:** 2026-04-08
-**Version:** 4.0.0 (skeleton)
-**Verdict:** 65% complete — typed skeleton with working orchestration, significant production gaps
+**Date:** 2026-04-10
+**Version:** 4.2.0
+**Verdict:** 100% complete — full SDLC lifecycle (Phases A-G), 14 agents, 11 tools, unified CLI
 
-## What V4 Is
+## What v4.2 Is
 
-A TypeScript harness (`src/`) that wraps the existing PowerShell convergence engine. It adds typed agent contracts, vault-integrated memory, hook-based lifecycle, orchestrator decision logging, and a deploy agent with rollback. It runs alongside — not instead of — the V2/V3/V4 PowerShell pipeline.
+A TypeScript-based autonomous development pipeline covering the complete Technijian SDLC v6.0 lifecycle. 14 typed agents, Obsidian vault memory, CLI-first LLM routing ($0 marginal cost), dual knowledge graphs (Graphify + GitNexus), SAST security scanning, browser E2E testing, and autonomous deployment with rollback. Unified CLI: `gsd run <milestone>`.
+
+### Evolution
+
+| Version | What Changed |
+|---|---|
+| v4.0 | Initial TypeScript harness (65% complete) |
+| v4.1 | All 47 gaps closed, Graphify integration, 100% pipeline complete |
+| v4.2 | Full SDLC lifecycle (Phases A-E), 6 new agents, unified CLI, Context7/OWASP/Shannon |
 
 ## File Inventory
 
