@@ -98,6 +98,9 @@ async function main(): Promise<void> {
     case 'run':
       await handleGsd(args.slice(1));
       break;
+    case 'status':
+      await handleStatus();
+      break;
     case 'pipeline':
       await handlePipeline(args.slice(1));
       break;
@@ -132,6 +135,62 @@ const MILESTONE_TO_PHASES: Record<string, { sdlcFrom?: SdlcPhase; sdlcTo?: SdlcP
   'deploy':        { pipelineFrom: 'deploy', description: 'Deploy to alpha + post-deploy validation' },
   'full':          { sdlcFrom: 'phase-a', description: 'Full lifecycle: requirements → deploy' },
 };
+
+async function handleStatus(): Promise<void> {
+  const vaultPath = './memory';
+
+  console.log('');
+  console.log('═══════════════════════════════════════════════');
+  console.log('  GSD Project Status');
+  console.log('═══════════════════════════════════════════════');
+
+  // Try to load SDLC state
+  try {
+    const { VaultAdapter } = await import('./harness/vault-adapter');
+    const vault = new VaultAdapter(vaultPath);
+    const note = await vault.read('sessions/sdlc-state-latest.json');
+    const state = JSON.parse(note.body);
+
+    const milestoneMap: Record<string, string> = {
+      'phase-a': 'requirements', 'phase-b': 'requirements',
+      'phase-c': 'figma-uploaded', 'phase-ab-reconcile': 'figma-uploaded',
+      'phase-d': 'contracts', 'phase-e': 'contracts',
+      'pipeline': 'blueprint/deploy',
+    };
+
+    console.log(`  Run ID:     ${state.sdlcRunId}`);
+    console.log(`  Status:     ${state.status}`);
+    console.log(`  Phase:      ${state.currentPhase}`);
+    console.log(`  Milestone:  ${milestoneMap[state.currentPhase] ?? 'unknown'}`);
+    console.log('');
+    console.log('  Completed:');
+    if (state.intakePack) console.log('    ✓ Phase A — Requirements (Intake Pack)');
+    if (state.architecturePack) console.log('    ✓ Phase B — Architecture Pack');
+    if (state.figmaDeliverables) console.log(`    ✓ Phase C — Figma (${state.figmaDeliverables.completeness ?? '?'}/12 deliverables)`);
+    if (state.reconciliationReport) console.log(`    ✓ Phase A/B Reconcile (alignment: ${state.reconciliationReport.alignmentScore ?? '?'}%)`);
+    if (state.frozenBlueprint) console.log(`    ✓ Phase D — Blueprint Frozen (${state.frozenBlueprint.frozenAt ?? ''})`);
+    if (state.contractArtifacts) console.log(`    ✓ Phase E — SCG1 ${state.contractArtifacts.scg1Passed ? 'PASSED' : 'FAILED'} (${state.contractArtifacts.endpoints ?? '?'} endpoints, ${state.contractArtifacts.storedProcedures ?? '?'} SPs)`);
+    console.log('');
+
+    // Suggest next step
+    const nextMilestone: Record<string, string> = {
+      'phase-a': 'gsd run requirements', 'phase-b': 'gsd run figma-prompts',
+      'phase-c': 'gsd run figma-uploaded', 'phase-ab-reconcile': 'gsd run contracts',
+      'phase-d': 'gsd run contracts', 'phase-e': 'gsd run blueprint',
+      'pipeline': 'gsd run deploy',
+    };
+    if (state.status === 'complete') {
+      console.log('  All phases complete!');
+    } else {
+      console.log(`  Next: ${nextMilestone[state.currentPhase] ?? 'gsd run full'}`);
+    }
+  } catch {
+    console.log('  No SDLC state found. Start with:');
+    console.log('    gsd run requirements --project "MyProject" --description "..."');
+  }
+  console.log('═══════════════════════════════════════════════');
+  console.log('');
+}
 
 async function handleGsd(args: string[]): Promise<void> {
   const milestone = args[0];

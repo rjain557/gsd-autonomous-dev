@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type {
   SdlcPhase,
   SdlcState,
+  SdlcStatus,
   SdlcTrigger,
   IntakePack,
   ArchitecturePack,
@@ -111,14 +112,23 @@ export class SdlcOrchestrator {
   }
 
   async run(trigger: SdlcTrigger): Promise<SdlcState> {
-    this.state = this.createInitialState();
-    this.state.sdlcRunId = uuidv4().substring(0, 8);
-    this.state.startedAt = new Date().toISOString();
-
-    // Resume from phase if specified
+    // If resuming, load prior state from vault
     const startPhase = trigger.fromPhase ?? 'phase-a';
-    const startIdx = SDLC_PHASE_ORDER.indexOf(startPhase);
+    if (startPhase !== 'phase-a') {
+      await this.loadLastState();
+      if (this.state.sdlcRunId) {
+        console.log(`[SDLC] Resumed from saved state (run ${this.state.sdlcRunId})`);
+      }
+    } else {
+      this.state = this.createInitialState();
+    }
 
+    if (!this.state.sdlcRunId) {
+      this.state.sdlcRunId = uuidv4().substring(0, 8);
+    }
+    this.state.startedAt = this.state.startedAt || new Date().toISOString();
+
+    const startIdx = SDLC_PHASE_ORDER.indexOf(startPhase);
     console.log(`\n[SDLC] Starting from phase: ${startPhase}`);
 
     for (let i = startIdx; i < SDLC_PHASE_ORDER.length; i++) {
@@ -276,12 +286,55 @@ export class SdlcOrchestrator {
   }
 
   private async saveState(): Promise<void> {
+    const stateJson = JSON.stringify(this.state, null, 2);
     try {
+      // Save run-specific state
       await this.vault.create(`sessions/sdlc-state-${this.state.sdlcRunId}.json`, {
         type: 'sdlc-state',
         description: `SDLC run ${this.state.sdlcRunId}`,
-      }, JSON.stringify(this.state, null, 2));
+      }, stateJson);
+      // Save latest pointer for resume
+      await this.vault.create(`sessions/sdlc-state-latest.json`, {
+        type: 'sdlc-state',
+        description: 'Latest SDLC state for resume',
+      }, stateJson);
     } catch { /* state save is best-effort */ }
+  }
+
+  private async loadLastState(): Promise<void> {
+    try {
+      const note = await this.vault.read('sessions/sdlc-state-latest.json');
+      const parsed = JSON.parse(note.body) as SdlcState;
+      this.state.sdlcRunId = parsed.sdlcRunId;
+      this.state.intakePack = parsed.intakePack;
+      this.state.architecturePack = parsed.architecturePack;
+      this.state.figmaDeliverables = parsed.figmaDeliverables;
+      this.state.reconciliationReport = parsed.reconciliationReport;
+      this.state.frozenBlueprint = parsed.frozenBlueprint;
+      this.state.contractArtifacts = parsed.contractArtifacts;
+      this.state.decisions = parsed.decisions ?? [];
+      this.state.startedAt = parsed.startedAt;
+    } catch {
+      console.log('[SDLC] No prior state found — starting fresh');
+    }
+  }
+
+  /** Get current state for status reporting */
+  getStatus(): { phase: SdlcPhase; status: SdlcStatus; completed: string[]; next: string | null } {
+    const currentIdx = SDLC_PHASE_ORDER.indexOf(this.state.currentPhase);
+    const completed = SDLC_PHASE_ORDER.slice(0, currentIdx).filter(p => {
+      switch (p) {
+        case 'phase-a': return !!this.state.intakePack;
+        case 'phase-b': return !!this.state.architecturePack;
+        case 'phase-c': return !!this.state.figmaDeliverables;
+        case 'phase-ab-reconcile': return !!this.state.reconciliationReport;
+        case 'phase-d': return !!this.state.frozenBlueprint;
+        case 'phase-e': return !!this.state.contractArtifacts;
+        default: return false;
+      }
+    });
+    const next = currentIdx < SDLC_PHASE_ORDER.length - 1 ? SDLC_PHASE_ORDER[currentIdx + 1] : null;
+    return { phase: this.state.currentPhase, status: this.state.status, completed, next };
   }
 
   private createInitialState(): SdlcState {
