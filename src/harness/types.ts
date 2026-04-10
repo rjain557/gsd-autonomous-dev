@@ -30,7 +30,7 @@ export type PipelineStatus = 'running' | 'paused' | 'failed' | 'complete';
 export type TriggerType = 'manual' | 'schedule' | 'webhook';
 export type RiskLevel = 'low' | 'medium' | 'high';
 export type Severity = 'low' | 'medium' | 'high' | 'critical';
-export type IssueCategory = 'correctness' | 'security' | 'style' | 'coverage' | 'convergence';
+export type IssueCategory = 'correctness' | 'security' | 'style' | 'coverage' | 'convergence' | 'design';
 
 // ── Agent I/O Base ──────────────────────────────────────────
 
