@@ -135,6 +135,7 @@ export interface SdlcState {
   frozenBlueprint: FrozenBlueprint | null;
   contractArtifacts: ContractArtifacts | null;
   decisions: Array<{ phase: string; action: string; reason: string; timestamp: string }>;
+  costAccumulator: Array<{ phase: string; agentId: string; estimatedTokens: number; estimatedCostUsd: number }>;
   startedAt: string;
   completedAt: string | null;
 }
@@ -148,4 +149,5 @@ export interface SdlcTrigger {
   projectDescription: string;
   designPath?: string;          // Path to Figma Make output (design/web/v##/src/)
   vaultPath: string;
+  review?: boolean;             // Pause after each phase for human review
 }

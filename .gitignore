@@ -38,6 +38,10 @@ db/
 # Graphify knowledge graph output (regenerated per-machine)
 graphify-out/
 
+# SDLC phase artifacts (generated per-project run)
+docs/sdlc/
+docs/spec/
+
 # External project repos (managed by GSD, not tracked here)
 external/
 .gitnexus

@@ -5,6 +5,8 @@
 // ═══════════════════════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import type {
   SdlcPhase,
   SdlcState,
@@ -165,6 +167,18 @@ export class SdlcOrchestrator {
 
         await this.saveState();
         this.logDecision(phase, 'complete', `Phase ${phase} completed successfully`);
+
+        // Human review gate — pause after each phase if --review flag set
+        if (trigger.review && phase !== 'pipeline') {
+          console.log(`\n[SDLC] ═══ REVIEW GATE ═══`);
+          console.log(`[SDLC] Phase ${phase} output saved to docs/sdlc/`);
+          console.log(`[SDLC] Review the artifacts, then resume with:`);
+          console.log(`[SDLC]   gsd run <next-milestone>`);
+          console.log(`[SDLC] ════════════════════\n`);
+          this.state.status = 'paused';
+          await this.saveState();
+          break; // Exit the phase loop — user resumes manually
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[SDLC] Phase ${phase} failed: ${msg}`);
@@ -189,6 +203,7 @@ export class SdlcOrchestrator {
           projectDescription: trigger.projectDescription,
         }) as unknown as IntakePack;
         this.state.intakePack = result;
+        await this.writeArtifact('docs/sdlc/phase-a-intake-pack.json', result);
         break;
       }
 
@@ -199,6 +214,11 @@ export class SdlcOrchestrator {
           intakePack: this.state.intakePack,
         }) as unknown as ArchitecturePack;
         this.state.architecturePack = result;
+        await this.writeArtifact('docs/sdlc/phase-b-architecture-pack.json', result);
+        // Write OpenAPI draft as separate file if present
+        if (result.openApiDraft) {
+          await this.writeArtifactRaw('docs/sdlc/openapi-draft.yaml', result.openApiDraft as string);
+        }
         break;
       }
 
@@ -227,9 +247,12 @@ export class SdlcOrchestrator {
           figmaDeliverables: this.state.figmaDeliverables,
         }) as unknown as ReconciliationReport;
         this.state.reconciliationReport = result;
-        // Update A/B with reconciled versions
         this.state.intakePack = result.updatedIntakePack;
         this.state.architecturePack = result.updatedArchitecturePack;
+        await this.writeArtifact('docs/sdlc/phase-ab-reconciliation-report.json', result);
+        // Overwrite Phase A/B with reconciled versions
+        await this.writeArtifact('docs/sdlc/phase-a-intake-pack.json', result.updatedIntakePack);
+        await this.writeArtifact('docs/sdlc/phase-b-architecture-pack.json', result.updatedArchitecturePack);
         break;
       }
 
@@ -243,6 +266,7 @@ export class SdlcOrchestrator {
           reconciliationReport: this.state.reconciliationReport,
         }) as unknown as FrozenBlueprint;
         this.state.frozenBlueprint = result;
+        await this.writeArtifact('docs/sdlc/phase-d-frozen-blueprint.json', result);
         break;
       }
 
@@ -255,9 +279,25 @@ export class SdlcOrchestrator {
           figmaDeliverables: this.state.figmaDeliverables,
         }) as unknown as ContractArtifacts;
         this.state.contractArtifacts = result;
+        await this.writeArtifact('docs/sdlc/phase-e-contract-artifacts.json', result);
+        // Write validation report as readable markdown
+        const gapReport = [
+          '# SCG1 Validation Report',
+          '',
+          `**Status:** ${result.scg1Passed ? 'PASSED' : 'FAILED'}`,
+          `**Routes:** ${result.routes} | **Endpoints:** ${result.endpoints} | **SPs:** ${result.storedProcedures}`,
+          '',
+          '## Gaps',
+          '',
+          ...(result.gaps as Array<{id: string; layer: string; issue: string; action: string}>).map(
+            (g) => `- **${g.id}** [${g.layer}]: ${g.issue} — Action: ${g.action}`
+          ),
+          result.gaps.length === 0 ? '- None' : '',
+        ].join('\n');
+        await this.writeArtifactRaw('docs/spec/validation-report.md', gapReport);
 
         if (!result.scg1Passed) {
-          console.warn(`[SDLC] SCG1 gate has ${result.gaps.length} gaps. Review validation-report.md before proceeding.`);
+          console.warn(`[SDLC] SCG1 gate has ${result.gaps.length} gaps. Review docs/spec/validation-report.md before proceeding.`);
         }
         break;
       }
@@ -274,6 +314,30 @@ export class SdlcOrchestrator {
       'phase-e': 'contract-freeze-agent',
     };
     return map[phase];
+  }
+
+  /** Write a JSON artifact to disk (creates parent directories). */
+  private async writeArtifact(relativePath: string, data: unknown): Promise<void> {
+    try {
+      const fullPath = path.resolve(relativePath);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, JSON.stringify(data, null, 2), 'utf-8');
+      console.log(`[SDLC] Wrote artifact: ${relativePath}`);
+    } catch (err) {
+      console.warn(`[SDLC] Failed to write artifact ${relativePath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Write a raw string artifact to disk. */
+  private async writeArtifactRaw(relativePath: string, content: string): Promise<void> {
+    try {
+      const fullPath = path.resolve(relativePath);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, content, 'utf-8');
+      console.log(`[SDLC] Wrote artifact: ${relativePath}`);
+    } catch (err) {
+      console.warn(`[SDLC] Failed to write artifact ${relativePath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private logDecision(phase: string, action: string, reason: string): void {
@@ -313,6 +377,7 @@ export class SdlcOrchestrator {
       this.state.frozenBlueprint = parsed.frozenBlueprint;
       this.state.contractArtifacts = parsed.contractArtifacts;
       this.state.decisions = parsed.decisions ?? [];
+      this.state.costAccumulator = parsed.costAccumulator ?? [];
       this.state.startedAt = parsed.startedAt;
     } catch {
       console.log('[SDLC] No prior state found — starting fresh');
@@ -349,6 +414,7 @@ export class SdlcOrchestrator {
       frozenBlueprint: null,
       contractArtifacts: null,
       decisions: [],
+      costAccumulator: [],
       startedAt: new Date().toISOString(),
       completedAt: null,
     };

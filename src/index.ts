@@ -270,11 +270,33 @@ Examples:
   console.log('═══════════════════════════════════════════════');
   console.log('');
 
+  // Milestone prerequisite validation — check prior state exists
+  const prereqs: Record<string, { needs: string; check: string }> = {
+    'figma-prompts': { needs: 'requirements', check: 'docs/sdlc/phase-b-architecture-pack.json' },
+    'figma-uploaded': { needs: 'figma-prompts (Figma Make export)', check: '' },  // No file check — design path validated by agent
+    'contracts':     { needs: 'figma-uploaded', check: 'docs/sdlc/phase-ab-reconciliation-report.json' },
+    'blueprint':     { needs: 'contracts', check: 'docs/sdlc/phase-e-contract-artifacts.json' },
+    'deploy':        { needs: 'blueprint', check: '' },  // Pipeline state checked by orchestrator
+  };
+  const prereq = prereqs[milestone];
+  if (prereq?.check) {
+    try {
+      const { existsSync } = await import('fs');
+      if (!existsSync(prereq.check)) {
+        console.error(`  Cannot run '${milestone}' — prerequisite '${prereq.needs}' not yet complete.`);
+        console.error(`  Expected: ${prereq.check}`);
+        console.error(`  Run: gsd run ${prereq.needs}`);
+        process.exit(1);
+      }
+    } catch { /* fs check failed, proceed anyway */ }
+  }
+
   // Run SDLC phases if needed
   if (config.sdlcFrom) {
     const sdlcOrchestrator = new SdlcOrchestrator(vaultPath);
     await sdlcOrchestrator.initialize();
 
+    const review = options['review'] === 'true' || options['review'] === '';
     const sdlcResult = await sdlcOrchestrator.run({
       trigger: 'manual',
       fromPhase: config.sdlcFrom,
@@ -282,6 +304,7 @@ Examples:
       projectDescription: options['description'] ?? '',
       designPath: options['design-path'],
       vaultPath,
+      review,
     });
 
     console.log(`[GSD] SDLC phases: ${sdlcResult.status}`);
