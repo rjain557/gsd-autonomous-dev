@@ -22,6 +22,8 @@
 | 2.2.0 | March 2026 | Council-based requirements verification (Script 36): 3-phase parallel pipeline -- partitioned extract (each agent processes 1/3 of specs in chunks via `Start-Job`), cross-verification (different agent checks each extraction), Claude synthesis. Live progress monitoring (disk polling every 15s + heartbeat). Ntfy push notifications at every phase with token cost breakdown. `gsd-verify-requirements` standalone command with `-SkipAgent`, `-SkipVerify`, `-ChunkSize`. Convergence pipeline Phase 0 council integration. Added Chapter 21. |
 | 2.3.0 | March 2026 | Model version pinning: `--model` flag enforced on all CLI invocations (claude-sonnet-4-6, gpt-5.4, gemini-3.0-pro). `agent_models` config block in global-config.json for zero-reinstall model upgrades. `$script:CLAUDE_MODEL` / `$script:GEMINI_MODEL` / `$script:CODEX_MODEL` script-scope constants in resilience.ps1. `--allowed-tools` kebab-case fix across all scripts. `disabled:` and `connection_failed:` error prefixes in Get-FailureDiagnosis (triggers immediate fallback). ImageMagick three-tier visual diff (SHA256 → pixel diff → file-size fallback). HSL/oklch/hwb design token detection. Incremental file map threshold (≤20 files prunes cache; >20 full rebuild). SEC-NET-05/SEC-FE-01 `[AllowAnonymous]` exclusion. Binary file skip logging in LOC tracking. `gsd-update` matrix existence guard. `Initialize-ProjectInterfaces` guard in gsd-assess. Set-Content error handling in convergence fix. Per-project supervisor pattern memory. |
 | 3.1.0 | March 2026 | **Verification Gates + E2E Infrastructure + Memory System.** Three mandatory post-convergence gates: CSS responsive-utility check (Tailwind v4 rebuild guard), DB migration completeness check (cross-reference stored procs → CREATE TABLE migrations), headless E2E smoke test. Full E2E test infrastructure: VITE_E2E_BYPASS_AUTH pattern, Playwright LIFO route-ordering rule (catch-all first, specific routes last), module mock data per role, standard file structure. Three PowerShell gate functions (`Test-CssResponsiveUtilities`, `Test-MigrationCompleteness`, `Invoke-E2ESmokeTest`). Persistent memory system: learned patterns automatically applied by Claude Code to catch recurrences. Added Chapter 30. |
+| 4.2.0 | April 2026 | **V4.2 — Full SDLC Lifecycle.** TypeScript harness replaces PowerShell for pipeline orchestration. 14 typed agents (8 pipeline + 6 SDLC). Unified CLI: `gsd run <milestone>`. Full Technijian SDLC v6.0 coverage (Phases A-G). 11 integrated tools: Graphify, GitNexus, Context7, Semgrep, Playwright, OWASP, Shannon, GitHub MCP + 3 CLI subscriptions. $0 marginal cost. Adversarial code review. Parallel E2E validation. 5-strategy JSON recovery. Dynamic agent routing across 3 CLI models. State persistence with --from-phase resume. Human review gates (--review flag). Milestone prerequisite validation. Artifact persistence to docs/sdlc/. Added Chapter 32. |
+| 4.1.0 | April 2026 | **V4.1 — 100% Pipeline Complete.** All 47 gaps closed. Graphify knowledge graph. Semgrep SAST. Playwright browser testing. GitHub MCP. Configurable project paths. Complete result validators. Model-aware cost tracking. |
 | 3.0.1 | March 2026 | Added SEC-FE-17–SEC-FE-21 (DB-driven navigation + auth guard pattern). Section 15.9.2 added. `security-standards.md` updated globally. |
 | 3.0.0 | March 2026 | **V3 Pipeline — API-only architecture.** Replaced 7-agent CLI+REST system with 2-model API-only pipeline (Sonnet 4.6 + Codex Mini), ~85% cheaper, ~10x faster. 7-model weighted round-robin execute pool. Anti-plateau protection (graduated escalation). Spec alignment guard (drift detection). Decomposition budget (20/iter max, depth ≤4). Confidence-gated review. Speculative execution (+40% speed). Checkpoint and recovery. Centralized logging with per-repo iteration tracking. **New: Full Pipeline Orchestrator** (gsd-full-pipeline.ps1) — 5-phase end-to-end quality gate (wire-up → code-review → smoke-test → final-review → handoff). **New: Smoke Testing** (gsd-smoketest.ps1) — 9-phase integration validation with tiered LLM cost optimization (~85% cheaper). **New: Wire-Up Phase** — mock data detection, route-role matrix, integration gap prevention. **New: 3-Model Code Review** (gsd-codereview.ps1) — Claude+Codex+Gemini consensus with auto-fix cycles. **New: Tiered LLM Cost Optimization** — 4-tier model routing (local/cheap/mid/premium) for smoke testing. **New: LLM Pre-Validate Fix Phase** — proactive error fixing before local build. **New: Existing Codebase Mode** (gsd-existing.ps1) — deep extraction, code inventory, satisfaction verification. **New: Supervision Insights** — cross-session learning for pipeline improvement. Added Chapters 22-27. |
 
@@ -7053,3 +7055,177 @@ For a new feature spanning DB → backend → frontend:
 4. Add a row to the table in `docs/GSD-Claude-Code-Skills.md`
 
 *End of Chapter 31 — Claude Code Skills*
+
+---
+
+# Chapter 32: GSD v4.2 — Full SDLC Lifecycle
+
+## 32.1 Overview
+
+GSD v4.2 extends the engine from a code generation pipeline (Phases F-G) to a complete Technijian SDLC v6.0 lifecycle covering requirements gathering (Phase A) through alpha deployment (Phase G). The entire system is implemented in TypeScript with typed agent contracts, Obsidian vault memory, and $0 per-run marginal cost via CLI subscription routing.
+
+### Architecture
+
+```
+SDLC Orchestrator (Phases A-E)
+  Phase A: RequirementsAgent ──────→ Intake Pack
+  Phase B: ArchitectureAgent ──────→ Architecture Pack + Mermaid + OpenAPI
+  Phase C: FigmaIntegrationAgent ──→ Validate 12/12 deliverables
+  Phase A/B: PhaseReconcileAgent ──→ Updated requirements post-Figma
+  Phase D: BlueprintFreezeAgent ───→ Frozen UI/UX specification
+  Phase E: ContractFreezeAgent ────→ SCG1 (OpenAPI + API-SP Map + DB Plan)
+Pipeline Orchestrator (Phases F-G)
+  Blueprint → Review → Remediate → Quality Gate → E2E → Deploy → Post-Deploy
+```
+
+### Unified CLI
+
+One command, tell it where you are:
+
+| Milestone | Command | What runs |
+|---|---|---|
+| requirements | `gsd run requirements --project "X" --description "Y"` | Phase A + B |
+| figma-prompts | `gsd run figma-prompts` | Generate Figma Make prompts |
+| figma-uploaded | `gsd run figma-uploaded --design-path design/web/v1/src/` | Phase C + A/B Reconcile |
+| contracts | `gsd run contracts` | Phase D + E (SCG1) |
+| blueprint | `gsd run blueprint` | Full code pipeline |
+| deploy | `gsd run deploy` | Alpha deploy + post-deploy |
+| full | `gsd run full --project "X"` | Everything A through G |
+
+Additional commands: `gsd status` (progress check), `--review` flag (human review gates), `--dry-run` (skip deploy).
+
+## 32.2 Agents (14 Total)
+
+### SDLC Agents
+
+| Agent | File | Phase | Input | Output |
+|---|---|---|---|---|
+| RequirementsAgent | `src/agents/requirements-agent.ts` | A | Project name + description | IntakePack (RACI, NFRs, risks, acceptance criteria) |
+| ArchitectureAgent | `src/agents/architecture-agent.ts` | B | IntakePack | ArchitecturePack (Mermaid diagrams, OpenAPI draft, threat model) |
+| FigmaIntegrationAgent | `src/agents/figma-integration-agent.ts` | C | Design path | FigmaDeliverables (12/12 file check, DTO validation) |
+| PhaseReconcileAgent | `src/agents/phase-reconcile-agent.ts` | A/B | IntakePack + ArchPack + Figma | ReconciliationReport (gaps, alignment score, updated A/B) |
+| BlueprintFreezeAgent | `src/agents/blueprint-freeze-agent.ts` | D | All prior outputs | FrozenBlueprint (screens, components, tokens, RBAC) |
+| ContractFreezeAgent | `src/agents/contract-freeze-agent.ts` | E | FrozenBlueprint + Figma | ContractArtifacts (routes, endpoints, SPs, gaps, SCG1 verdict) |
+
+### Pipeline Agents
+
+| Agent | File | Stage | Purpose |
+|---|---|---|---|
+| BlueprintAnalysisAgent | `src/agents/blueprint-analysis-agent.ts` | Blueprint | Detect spec drift (aligned/drifted/missing) |
+| CodeReviewAgent | `src/agents/code-review-agent.ts` | Review | Standard + adversarial design review |
+| RemediationAgent | `src/agents/remediation-agent.ts` | Remediate | Atomic patches with backup/rollback |
+| QualityGateAgent | `src/agents/quality-gate-agent.ts` | Gate | Build, test, coverage, Semgrep SAST |
+| E2EValidationAgent | `src/agents/e2e-validation-agent.ts` | E2E | 8 categories + Playwright browser |
+| DeployAgent | `src/agents/deploy-agent.ts` | Deploy | Deploy with mandatory rollback |
+| PostDeployValidationAgent | `src/agents/post-deploy-validation-agent.ts` | Post-deploy | SPA cache, auth, SP/DTO validation |
+
+All agents have vault notes in `memory/agents/` with YAML frontmatter (model, tools, forbidden_tools, timeout, system prompt).
+
+## 32.3 Integrated Tools (11)
+
+| Tool | Type | Purpose | Used By |
+|---|---|---|---|
+| Graphify | Knowledge graph | Community detection, god nodes, 71x token reduction | Blueprint, Review, Remediation |
+| GitNexus | Code intelligence | Blast radius, execution flows, impact analysis | Review, Remediation, E2E |
+| Context7 | MCP server | Live library docs for .NET, React, Dapper | Architecture, Contract, Remediation |
+| Semgrep | SAST scanner | 2000+ security rules, OWASP patterns | QualityGate |
+| Playwright | Browser testing | Headless Chromium E2E, console error detection | E2E, PostDeploy |
+| OWASP Skill | Security patterns | OWASP Top 10:2025, ASVS 5.0, C#/TS-specific | QualityGate, CodeReview |
+| Shannon Lite | Pentesting | White-box, 96% success rate, 50+ vuln types | Release readiness (Phase G) |
+| GitHub MCP | Automation | PR creation, issue tracking, review comments | Orchestrator |
+| Claude Max | AI CLI | Primary reasoning (10 RPM) | Dynamic per-stage |
+| ChatGPT Max | AI CLI | Code generation (10 RPM) | Dynamic per-stage |
+| Gemini Ultra | AI CLI | Research/synthesis (15 RPM) | Dynamic per-stage |
+
+## 32.4 Key Optimizations
+
+### Speed
+- Dynamic agent routing: distributes work across 3 CLI models per stage (not hardcoded to Claude)
+- Parallel E2E validation: 8 categories run via Promise.allSettled
+- Parallel build checks: dotnet build + npm build concurrent in CodeReview and QualityGate
+- Phase C (Figma validation) requires 0 LLM calls — pure filesystem checks
+
+### Cost
+- CLI-first routing: $0 marginal per LLM call (subscription CLIs)
+- 5-strategy JSON recovery: reduces full-retry waste from malformed responses
+- Model-aware token estimation: 3.5-4.0 chars/token by model (not flat /4)
+- SDLC phases use ~6-8 LLM calls total for Phases A-E
+
+### Quality
+- 7-layer defense: spec gate → requirement quality → research → plan → build validation → adversarial review → final validation
+- Adversarial code review: challenges design decisions (simplicity, scalability, coupling, maintainability)
+- Semgrep SAST with 3-attempt fallback (semgrep → python -m semgrep → python3 -m semgrep)
+- E2E: 6 validation categories + Playwright browser rendering + console error detection
+- OWASP skill: preventive security patterns (agents write secure code by default)
+- Shannon Lite: penetration testing before production deploy
+
+## 32.5 State Management
+
+### SDLC State
+- Saved to `memory/sessions/sdlc-state-{runId}.json` after each phase
+- Latest pointer at `memory/sessions/sdlc-state-latest.json` for resume
+- Contains: intakePack, architecturePack, figmaDeliverables, reconciliationReport, frozenBlueprint, contractArtifacts, decisions, costAccumulator
+
+### Pipeline State
+- Saved to `memory/sessions/pipeline-state-{runId}.json` after each stage
+- Contains: convergenceReport, reviewResult, patchSet, gateResult, deployRecord, decisions, costAccumulator
+
+### Resume
+- SDLC: `gsd run <milestone>` auto-loads latest state
+- Pipeline: `npx ts-node src/index.ts pipeline run --from-stage gate`
+
+## 32.6 Artifact Output
+
+SDLC phases write artifacts to `docs/sdlc/`:
+
+| File | Phase | Contents |
+|---|---|---|
+| phase-a-intake-pack.json | A | Requirements, RACI, NFRs, risks |
+| phase-b-architecture-pack.json | B | Diagrams, OpenAPI, threat model |
+| openapi-draft.yaml | B | Draft OpenAPI 3.0 spec |
+| phase-ab-reconciliation-report.json | A/B | Gaps, alignment score, updated A/B |
+| phase-d-frozen-blueprint.json | D | Frozen UI/UX specification |
+| phase-e-contract-artifacts.json | E | Contract summary + SCG1 verdict |
+| docs/spec/validation-report.md | E | Gap analysis in readable markdown |
+
+## 32.7 Workstation Setup
+
+Complete setup guide: `docs/GSD-Workstation-Setup.md`
+
+10-step process (~20 minutes): clone → npm install → Playwright → Python PATH → pip tools → global npm tools → AI CLIs → Claude Code integrations → knowledge graphs → secrets.
+
+Verification checklist: 10 checks confirming all tools work.
+
+## 32.8 Figma Make Integration
+
+Guide: `docs/GSD-Figma-Make-Integration.md`
+
+Workflow: Build prototype in Figma Make → run generation prompt (scripts/Figma_Complete_Generation_Prompt.md) → export to design/web/v##/src/ → run `gsd run figma-uploaded`.
+
+Expected: 12 analysis files in _analysis/ + backend/database stubs in _stubs/.
+
+## 32.9 Human Review Gates
+
+Use `--review` flag to pause after each SDLC phase:
+
+```bash
+gsd run requirements --project "MyApp" --description "..." --review
+# Phase A completes → pauses → user reviews docs/sdlc/phase-a-intake-pack.json
+# User runs: gsd run figma-prompts
+```
+
+Without `--review`, all phases run continuously (autonomous mode).
+
+## 32.10 Milestone Prerequisites
+
+The pipeline validates prerequisites before running each milestone:
+
+| Milestone | Requires |
+|---|---|
+| figma-prompts | phase-b-architecture-pack.json |
+| contracts | phase-ab-reconciliation-report.json |
+| blueprint | phase-e-contract-artifacts.json |
+
+Running milestones out of order produces a clear error with the command to run first.
+
+*End of Chapter 32 — GSD v4.2 Full SDLC Lifecycle*
