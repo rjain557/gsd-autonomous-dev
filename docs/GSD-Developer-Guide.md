@@ -1115,7 +1115,7 @@ Every feature below was tested by running the actual CLI command or checking the
 | Playwright (MCP) | `claude mcp list` | MCP plugin connected (separate from npm) | VERIFIED |
 | Graphify v0.4.1 | `graphify install --platform claude` | Skill installed to Claude Code | VERIFIED |
 | GitNexus v1.5.3 | `gitnexus analyze` | 1,045 nodes, 2,090 edges, 46 clusters, 64 flows | VERIFIED |
-| ANTHROPIC_API_KEY | env check | **NOT SET** (set it to enable dual auth fallback) | ACTION NEEDED |
+| ANTHROPIC_API_KEY | user env var set | Dual auth fallback enabled (new terminal sessions) | VERIFIED |
 | GitHub PAT | `SetEnvironmentVariable` | Set as user env var (new terminal sessions) | VERIFIED |
 
 **Action items remaining after verification:**
@@ -1123,9 +1123,11 @@ Every feature below was tested by running the actual CLI command or checking the
 2. ~~Install playwright~~ DONE (npm package loaded)
 3. ~~Install graphify~~ DONE (v0.4.1, skill installed to Claude Code)
 4. ~~Install gitnexus~~ DONE (v1.5.3, indexed: 1,045 nodes, 2,090 edges, 46 clusters, 64 flows)
-5. Set ANTHROPIC_API_KEY in environment (enables dual auth fallback)
+5. ~~Set ANTHROPIC_API_KEY~~ DONE (user env var, enables dual auth fallback)
 6. ~~Set GITHUB_PERSONAL_ACCESS_TOKEN~~ DONE (user env var set)
 7. Run `/graphify .` in a Claude Code session to generate the knowledge graph (interactive step)
+
+All API keys set as persistent user environment variables (DEEPSEEK_API_KEY and MINIMAX_API_KEY also configured for emergency fallback).
 
 ### V5.0 Dual Auth Architecture
 
