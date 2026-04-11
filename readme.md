@@ -1,6 +1,6 @@
 # GSD Engine — Goal Spec Done
 
-**Version:** 4.2.0 | **Platform:** Windows + Node.js 18+ | **Agents:** 14 typed agents | **Cost:** $0 marginal (CLI subscriptions)
+**Version:** 5.0.0 | **Platform:** Windows + Node.js 18+ | **Agents:** 14 typed agents | **Cost:** $0 marginal (CLI subscriptions, API key auto-fallback)
 
 An AI-native autonomous development pipeline covering the complete Technijian SDLC v6.0 — from requirements gathering through alpha deployment — with 14 TypeScript agents, Obsidian vault memory, and a full 4.2 augmentation stack for code intelligence, MCP automation, security review, and browser validation.
 
@@ -108,7 +108,7 @@ All agents use CLI-first LLM routing (Claude/Codex/Gemini) with dynamic model se
 | ChatGPT Max (Codex) | Code generation agent (10 RPM) | $200/mo subscription |
 | Gemini Ultra | Research/synthesis agent (15 RPM) | $20/mo subscription |
 
-**Total: ~$420/mo fixed. $0 per-run marginal cost.**
+**Total: ~$420/mo fixed. $0 per-run marginal cost.** API key backup auto-activates when CLI hits limits, auto-returns to CLI after 5-min cooldown.
 
 This 11-item stack is the combination of:
 

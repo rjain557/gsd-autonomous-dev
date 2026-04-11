@@ -1,8 +1,8 @@
-# GSD v4.2 — Implementation Status
+# GSD V5.0 — Implementation Status
 
 **Date:** 2026-04-10
-**Version:** 4.2.0
-**Verdict:** 100% complete — full SDLC lifecycle (Phases A-G), 14 agents, 11-tool/model stack, unified CLI
+**Version:** 5.0.0
+**Verdict:** 100% complete — full SDLC lifecycle (Phases A-G), 14 agents, dual auth (OAuth + API key auto-switch), 30-day feature check cycle
 
 ## What v4.2 Is
 
@@ -15,6 +15,7 @@ A TypeScript-based autonomous development pipeline covering the complete Technij
 | v4.0 | Initial TypeScript harness (65% complete) |
 | v4.1 | All 47 gaps closed, Graphify integration, 100% pipeline complete |
 | v4.2 | Full SDLC lifecycle (Phases A-G), 6 SDLC agents added, unified CLI, dual graphs, MCPs, and security skills |
+| v5.0 | Dual auth (OAuth primary, API key auto-fallback), 30-day feature check cycle, Codex/Gemini feature parity tracking |
 
 ## File Inventory
 

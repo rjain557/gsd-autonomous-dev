@@ -38,16 +38,28 @@ Every 30 days, review the latest releases from Anthropic, OpenAI, and Google for
 - [ ] Rate limit changes for Max plan?
 
 ### OpenAI / Codex
-- [ ] Codex CLI updates? New capabilities?
-- [ ] New models? (GPT-5.1, o3 updates)
-- [ ] Rate limit changes for Max plan?
-- [ ] New features in full-auto mode?
+- [ ] Codex CLI updates? New commands, flags, approval modes?
+- [ ] New models? (GPT-5.1, o3 updates, o4 launch?)
+- [ ] Rate limit changes for ChatGPT Max plan? RPM/TPM changes?
+- [ ] New features in full-auto mode? Better error handling?
+- [ ] Codex agent/sub-agent capabilities? Can Codex spawn sub-tasks?
+- [ ] Codex structured output? JSON mode improvements?
+- [ ] Codex tool use? Can it call external tools like Claude Code?
+- [ ] Codex file editing improvements? Better diff handling?
+- [ ] Multi-file generation? Can Codex create multiple files atomically?
+- [ ] Codex hooks or extensions? Equivalent of Claude Code hooks?
 
 ### Google / Gemini
-- [ ] Gemini CLI updates?
-- [ ] New models? Context window changes?
+- [ ] Gemini CLI updates? New commands, approval modes?
+- [ ] New models? Context window beyond 1M? Gemini 2.5 Pro updates?
 - [ ] Rate limit changes for Ultra plan?
-- [ ] New Gemini Code Assist features?
+- [ ] Gemini Code Assist features? Inline suggestions, multi-file edits?
+- [ ] Gemini agent capabilities? Sub-agent spawning?
+- [ ] Gemini tool use? MCP support? External tool calling?
+- [ ] Gemini structured output? JSON schema enforcement?
+- [ ] Gemini grounding? Can it search code repos natively?
+- [ ] Gemini Batch API? Cost reduction for bulk calls?
+- [ ] Gemini multimodal for Figma? Can it analyze Figma screenshots directly?
 
 ### Cost Optimization
 - [ ] Any subscription price changes?

@@ -2,7 +2,7 @@
 
 ## What this project is
 
-A multi-agent autonomous development system that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. The current v4.2 implementation uses a TypeScript harness with typed agent contracts, Obsidian vault memory, CLI-first LLM routing, and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon.
+A multi-agent autonomous development system (V5.0) that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. Uses a TypeScript harness with typed agent contracts, Obsidian vault memory, dual-auth LLM routing (CLI OAuth primary at $0, API key backup when limits hit), and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon.
 
 ## Agent System Overview
 
@@ -81,6 +81,8 @@ npx ts-node src/index.ts run full --dry-run
 8. DeployAgent MUST NOT execute unless GateResult.passed === true (runtime assertion)
 9. Rollback logic must exist before deploy logic — never implement deploy without rollback
 10. All vault log writes use append() — never overwrite session/decision files
+11. Set ANTHROPIC_API_KEY in environment as backup — costs $0 unless CLI OAuth hits limits, then auto-switches
+12. Check `memory/knowledge/feature-check-schedule.md` every 30 days for new Claude/Codex/Gemini features
 
 ## Current Pipeline Stage Map
 
