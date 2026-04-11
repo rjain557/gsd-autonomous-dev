@@ -1112,35 +1112,45 @@ Set `ANTHROPIC_API_KEY` in your environment as insurance. It costs nothing unles
 | Sonnet model for agents | All pipeline agents | Best balance of speed and quality for execution | V4.0 |
 | API key fallback | Auto-switch when CLI quota hit | Prevents pipeline stalls from rate limiting | V5.0 |
 
-**Features we are watching (not yet adopted):**
+**Confirmed features not yet adopted (with specific reason):**
 
-| Feature | Status | Why We're Waiting | Check Again |
+| Feature | Confirmed? | Why Not Adopted Yet | What Would Change If We Did |
 |---|---|---|---|
-| Claude Code agent teams | Experimental | Multi-teammate parallelism, but Claude-only (can't route to Codex/Gemini) | 2026-05-10 |
-| Claude Code sub-agents | GA | Could replace custom TypeScript agent classes, but locks out multi-LLM | 2026-05-10 |
-| Prompt caching | Available | 50% cost reduction on repeated system prompts; need to measure savings first | 2026-05-10 |
-| Batch API | Available | 50% cost for non-urgent bulk reviews; need to test latency impact | 2026-05-10 |
-| Extended thinking | Available | Better judgment on complex decisions; costs more, need to benchmark | 2026-05-10 |
-| Cloud scheduled tasks | GA | Autonomous pipeline runs without local machine; need to test reliability | 2026-05-10 |
+| Claude Code sub-agents | Yes (GA in Claude Code) | Locks out Codex and Gemini. Our pipeline needs all 3 CLIs. | Could replace TypeScript agent classes, saving ~1,300 lines. But only Claude would run them. |
+| Claude Code agent teams | Yes (experimental) | Experimental flag required. Claude-only. No Codex/Gemini routing. | Would enable parallel teammates for review + remediation + gate simultaneously. |
+| Prompt caching | Yes (Claude API) | Only helps in SDK mode. We default to CLI (OAuth) where caching is handled by the CLI itself. | Would save ~50% on system prompt tokens if we switch to SDK mode. |
+| Batch API | Yes (Claude API) | Returns results in hours, not seconds. Pipeline needs real-time responses. | Would cut cost 50% for overnight bulk code reviews if we add a deferred review mode. |
+| Extended thinking | Yes (Claude API) | Costs more tokens. Not clear which agent benefits enough to justify it. | Would improve orchestrator judgment on complex routing decisions. Need to benchmark. |
+| Cloud scheduled tasks | Yes (Claude Code) | Requires cloud infrastructure setup. Need to test repo access and MCP connectivity. | Would enable daily autonomous pipeline runs without a local machine. |
+
+**Not yet confirmed (need to verify at next 30-day check):**
+
+These items are on the 30-day review checklist (`memory/knowledge/feature-check-schedule.md`) but we have not confirmed they exist. They will be moved to "Confirmed" or removed after the 2026-05-10 review.
+
+- Prompt caching for CLI mode (does the Claude CLI cache system prompts automatically?)
+- Opus 5 / Sonnet 5 model availability
+- Rate limit changes for Max plan
 
 ### Codex / OpenAI — Features in Use
 
 | Feature | Where Used | Why | Since |
 |---|---|---|---|
 | ChatGPT Max subscription ($200/mo) | All Codex CLI calls | $0 marginal cost; 60% of pipeline tokens go to code generation | V4.0 |
-| Full-auto mode (`codex --full-auto`) | Execute phase | Generates/modifies multiple files without approval prompts | V4.0 |
+| Full-auto mode | Execute phase | Generates/modifies multiple files without approval prompts | V4.0 |
 | GPT-4o for code generation | Execute, remediation fallback | Best-in-class code completion and multi-file editing | V4.0 |
-| o1/o3 for complex reasoning | Fallback for high-complexity tasks | Deeper reasoning when standard GPT-4o insufficient | V4.2 |
 
-**Features we are watching (not yet adopted):**
+**Confirmed features not yet adopted:**
 
-| Feature | Status | Why We're Waiting | Check Again |
+| Feature | Confirmed? | Why Not Adopted Yet | What Would Change If We Did |
 |---|---|---|---|
-| Codex sub-agent spawning | Unknown | Could parallelize code generation across files | 2026-05-10 |
-| Codex structured JSON output | Partial | tool_use equivalent for guaranteed schema compliance | 2026-05-10 |
-| Codex hooks/extensions | Unknown | Quality gates equivalent to Claude Code hooks | 2026-05-10 |
-| Multi-file atomic generation | Available | Generate related files together (controller + DTO + SP) | 2026-05-10 |
-| Codex tool use (external tools) | Unknown | MCP-like capability for calling external APIs | 2026-05-10 |
+| o1/o3 reasoning models | Yes (ChatGPT Max) | Higher latency, uses more of the subscription rolling window. | Would improve complex refactoring quality. Need to test if latency trade-off is worth it. |
+
+**Not yet confirmed (need to verify at next 30-day check):**
+
+- Codex CLI sub-agent or multi-session capabilities
+- Codex structured JSON output mode
+- Codex hook or extension system
+- Rate limit changes for ChatGPT Max plan
 
 ### Gemini / Google — Features in Use
 
@@ -1151,17 +1161,18 @@ Set `ANTHROPIC_API_KEY` in your environment as insurance. It costs nothing unles
 | 15 RPM (highest of all 3 CLIs) | Bulk review chunks, parallel research | Highest throughput for spreading review load | V4.0 |
 | Approval mode (`--approval-mode plan`) | Research phase | Read-only mode prevents accidental writes during research | V4.0 |
 
-**Features we are watching (not yet adopted):**
+**Confirmed features not yet adopted:**
 
-| Feature | Status | Why We're Waiting | Check Again |
-|---|---|---|---|
-| Gemini agent capabilities | Unknown | Sub-agent spawning, parallel research delegation | 2026-05-10 |
-| Gemini MCP support | Unknown | Shared tool abstraction across agents | 2026-05-10 |
-| Gemini grounding (web search) | Available | Real-time library version lookup during research | 2026-05-10 |
-| Gemini Batch API | Unknown | Cost reduction for off-peak bulk analysis | 2026-05-10 |
-| Gemini multimodal (vision) | Available | Direct Figma screenshot analysis without export | 2026-05-10 |
-| Gemini structured output | Partial | JSON mode for guaranteed schema compliance | 2026-05-10 |
-| Context window beyond 1M | Unknown | Process even larger monorepos | 2026-05-10 |
+None confirmed at this time. Gemini CLI is the newest of the three and has fewer documented extensibility features than Claude Code.
+
+**Not yet confirmed (need to verify at next 30-day check):**
+
+- Gemini CLI agent or sub-agent capabilities
+- Gemini CLI structured output or JSON mode
+- Gemini grounding (web search during CLI sessions)
+- Gemini multimodal (can the CLI analyze images/screenshots?)
+- Context window changes beyond 1M
+- Rate limit changes for Ultra plan
 
 ### Emergency API Fallbacks — Features in Use
 
