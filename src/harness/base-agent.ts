@@ -142,19 +142,33 @@ export abstract class BaseAgent {
     try {
       let result: string;
 
-      if (mode === 'sdk' && process.env.ANTHROPIC_API_KEY) {
+      if (mode === 'sdk') {
+        // SDK mode: always use API key (pay-per-token)
         result = await this.callLLMWithSDK(systemPromptText, userMessage, model, jsonSchema);
-      } else if (jsonSchema) {
-        const schemaInstructions = `\n\nIMPORTANT: Return ONLY valid JSON matching this schema:\n${JSON.stringify(jsonSchema, null, 2)}\n\nReturn ONLY the JSON object, no markdown, no explanation.`;
-        result = await this.callLLMWithCLI(systemPromptText, userMessage + schemaInstructions, model);
       } else {
-        result = await this.callLLMWithCLI(systemPromptText, userMessage, model);
+        // CLI mode: use OAuth subscription ($0 marginal cost)
+        const userMsg = jsonSchema
+          ? userMessage + `\n\nIMPORTANT: Return ONLY valid JSON matching this schema:\n${JSON.stringify(jsonSchema, null, 2)}\n\nReturn ONLY the JSON object, no markdown, no explanation.`
+          : userMessage;
+        try {
+          result = await this.callLLMWithCLI(systemPromptText, userMsg, model);
+        } catch (cliErr) {
+          // AUTO-FALLBACK: If CLI fails (quota exhaustion, rate limit, CLI not found)
+          // and API key is available, retry with SDK (pay-per-token backup)
+          if (process.env.ANTHROPIC_API_KEY) {
+            console.log(`[LLM] CLI failed for ${this.agentId}, falling back to API key: ${cliErr instanceof Error ? cliErr.message.substring(0, 80) : 'unknown'}`);
+            if (this.rateLimiter) {
+              this.rateLimiter.setCooldown(this.cliAgentId, 5 * 60_000);
+            }
+            result = await this.callLLMWithSDK(systemPromptText, userMessage, model, jsonSchema);
+          } else {
+            throw cliErr;
+          }
+        }
       }
 
       return result;
     } finally {
-      // Always record the call for sliding-window tracking, even on failure.
-      // Prevents phantom rate limit reservations from timed-out calls.
       if (this.rateLimiter) {
         this.rateLimiter.recordCall(this.cliAgentId);
       }

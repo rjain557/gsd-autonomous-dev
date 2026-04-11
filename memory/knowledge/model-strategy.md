@@ -66,7 +66,12 @@ The orchestrator picks the first available agent from each phase's priority list
    └── Agent skipped for 5 minutes
    └── Next agent in priority list takes over
 
-4. If ALL subscription CLIs on cooldown:
+4. If CLI fails (quota, rate limit, CLI not found):
+   └── Auto-fallback to Anthropic SDK (ANTHROPIC_API_KEY, pay-per-token)
+   └── Set 5-min cooldown on failed CLI
+   └── After cooldown expires: auto-switch back to CLI ($0)
+
+5. If ALL subscription CLIs on cooldown AND no API key:
    └── Fall back to DeepSeek API (cheapest)
    └── If DeepSeek also exhausted: MiniMax
    └── If everything exhausted: pause pipeline, log to vault
@@ -80,14 +85,38 @@ The orchestrator picks the first available agent from each phase's priority list
 4. **Review-chunking spreads load**: 50% safety factor = only use half the RPM per review wave
 5. **Time-of-day matters**: Run long convergence sessions overnight when subscription limits reset
 
-## TypeScript Harness Integration
+## V5.0 Dual Auth Strategy (OAuth + API Key)
 
-The harness defaults to CLI (OAuth) for all calls. The `GSD_LLM_MODE` env var controls behavior:
+The harness uses CLI OAuth as primary ($0 marginal cost) and auto-falls back to API key billing when subscription limits are hit. No manual intervention needed.
 
-| Mode | When | How |
-|---|---|---|
-| `cli` (default) | Normal operation | Uses `claude`/`codex`/`gemini` CLI. $0 cost. JSON schema appended as prompt instructions. |
-| `sdk` | Need guaranteed structured output | Uses Anthropic SDK with `tool_use`. Costs per token. Set `ANTHROPIC_API_KEY`. |
+```
+Normal:  CLI (OAuth) ──$0──> LLM response
+                |
+         On failure (quota/rate limit):
+                |
+                v
+Fallback: SDK (API key) ──pay-per-token──> LLM response
+                |                          + set 5-min cooldown on CLI
+                v
+         After 5 minutes:
+                |
+                v
+Resume:  CLI (OAuth) ──$0──> back to normal
+```
+
+| Mode | Auth | Cost | When |
+|---|---|---|---|
+| `cli` (default) | OAuth via `claude auth login` | $0 (Max subscription) | Normal operation — all calls route here first |
+| `sdk` (auto-fallback) | `ANTHROPIC_API_KEY` env var | Pay-per-token | CLI hits rate limit → auto-switches for 5 min → switches back |
+| `sdk` (forced) | `GSD_LLM_MODE=sdk` | Pay-per-token | Set explicitly when guaranteed structured output needed |
+
+**Setup:** Set `ANTHROPIC_API_KEY` in your environment even if you normally use OAuth. It's insurance — costs $0 unless CLI fails.
+
+## Feature Check Schedule
+
+Review new Claude/OpenAI/Google features every 30 days. Full checklist: `memory/knowledge/feature-check-schedule.md`
+
+**Next check: 2026-05-10**
 
 ## Cost Comparison
 

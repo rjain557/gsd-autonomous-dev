@@ -1,6 +1,6 @@
 {
   "name": "gsd-autonomous-dev",
-  "version": "4.2.0",
+  "version": "5.0.0",
   "description": "GSD Autonomous Development Pipeline — Multi-Agent System with Vault Memory",
   "main": "dist/index.js",
   "scripts": {
