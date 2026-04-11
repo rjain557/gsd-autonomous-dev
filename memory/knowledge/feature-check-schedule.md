@@ -67,15 +67,40 @@ Every 30 days, review the latest releases from Anthropic, OpenAI, and Google for
 - [ ] API pricing changes for DeepSeek/MiniMax?
 - [ ] Can any paid feature replace a custom implementation?
 
-## Decision Framework
+## Verification-First Process
 
-When evaluating a new feature:
+NEVER implement a feature based on assumptions or training data. Every feature must be verified before adoption.
 
-1. **Does it replace custom code?** If yes, migrate (less code to maintain)
-2. **Does it reduce cost?** If yes, adopt (prompt caching, batch API)
-3. **Does it improve quality?** If yes, evaluate (extended thinking, better models)
-4. **Does it improve speed?** If yes, adopt (parallelism, caching)
-5. **Is it stable?** If experimental, wait. If GA, adopt.
+### Step 1: Discover
+- Read the provider's official changelog and documentation
+- Search for the feature name in official docs (not blog posts or community speculation)
+- If the feature has a CLI flag, run it locally and confirm it works
+
+### Step 2: Verify
+- Run a minimal test: create a throwaway project and test the feature in isolation
+- Confirm: does it actually do what the docs say? On your OS? With your subscription tier?
+- Document: exact command, exact output, exact behavior observed
+- If the feature doesn't work as documented, mark it as "unverified" and move on
+
+### Step 3: Evaluate
+- Does it replace custom code? If yes, how many lines does it save?
+- Does it reduce cost? Run both paths and compare actual token/dollar costs
+- Does it improve quality? Run the same task with and without, compare outputs
+- Does it improve speed? Time both paths with the same input
+- Is it Claude-only? If yes, keep the TypeScript harness for multi-LLM; use native for orchestration only
+- Is it stable? If experimental, add to "watching" table. If GA, proceed to Step 4
+
+### Step 4: Implement
+- Create a branch, implement the change, test the full pipeline
+- Verify no regressions in existing agents
+- Update the developer guide Section 10.11 (move from "not yet confirmed" to "in use")
+- Update the change log at the bottom of Section 10.11
+- Commit with a clear message explaining what was adopted and why
+
+### Step 5: Monitor
+- After 1 week: check vault session logs for any errors related to the new feature
+- After 30 days: evaluate whether the feature delivered the expected benefit
+- If not: revert and document why in the change log
 
 ## Auth Mode Strategy
 

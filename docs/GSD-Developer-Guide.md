@@ -1181,16 +1181,22 @@ None confirmed at this time. Gemini CLI is the newest of the three and has fewer
 | DeepSeek | 60 RPM, $0.28/$0.42 per M tokens | Cheapest API fallback; highest RPM | Pay-per-token |
 | MiniMax | 30 RPM, $0.29/$1.20 per M tokens | Backup to DeepSeek; good value | Pay-per-token |
 
-### Feature Adoption Decision Framework
+### Feature Adoption Process (Verification-First)
 
-When evaluating a new feature during the 30-day check:
+NEVER adopt a feature based on assumptions, training data, or blog posts. Every feature must pass this 5-step gate before implementation. Full process is documented in `memory/knowledge/feature-check-schedule.md`.
 
-1. **Does it replace custom code?** Adopt immediately (less code to maintain)
-2. **Does it reduce cost?** Adopt after benchmarking (prompt caching, batch API)
-3. **Does it improve quality?** Evaluate with A/B test (extended thinking, better models)
-4. **Does it improve speed?** Adopt after measuring (parallelism, caching)
-5. **Is it Claude-only?** Keep TypeScript harness for multi-LLM; use Claude native for orchestration layer only
-6. **Is it stable?** If experimental, add to "watching" table. If GA, evaluate adoption.
+1. **Discover** — Read the provider's official changelog. Search for the feature in official docs.
+2. **Verify** — Run it locally on a throwaway project. Confirm it works on your OS, with your subscription tier. Document exact command and exact output.
+3. **Evaluate** — Measure the actual benefit:
+   - Does it replace custom code? How many lines saved?
+   - Does it reduce cost? Run both paths, compare real costs.
+   - Does it improve speed? Time both paths with same input.
+   - Is it Claude-only? If yes, keep TypeScript harness for multi-LLM.
+   - Is it stable? If experimental, add to "not yet confirmed" and revisit next cycle.
+4. **Implement** — Branch, implement, test full pipeline, update Section 10.11 tables and change log.
+5. **Monitor** — Check vault logs after 1 week and 30 days. Revert if benefit didn't materialize.
+
+Features that haven't passed Step 2 go in the "Not yet confirmed" list. Features that passed Step 2 but not Step 3 go in "Confirmed but not adopted." Only features that passed all 5 steps appear in the "Features in Use" table.
 
 ### Change Log
 
