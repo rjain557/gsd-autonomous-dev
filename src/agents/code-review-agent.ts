@@ -39,7 +39,7 @@ export class CodeReviewAgent extends BaseAgent {
       '',
       '## Changed Files',
       '',
-      changedFiles.slice(0, 50).join('\n'),
+      changedFiles.join('\n'),
       '',
       '## Build Results',
       '',
