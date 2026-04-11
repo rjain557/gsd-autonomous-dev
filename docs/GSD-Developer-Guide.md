@@ -46,18 +46,19 @@ At the end of a successful run, GSD can produce:
 - A full code pipeline result with review findings, patches, gate evidence, E2E evidence, deploy records, and post-deploy checks.
 - A durable run history in the vault under `memory/sessions/` and `memory/decisions/`.
 
-## 1.3 What Changed in v4.2
+## 1.3 What Changed in v4.2 and v5.0
 
-Version 4.2 extends the 4.1 pipeline-only harness into a lifecycle system.
+Version 4.2 extends the 4.1 pipeline-only harness into a lifecycle system. Version 5.0 adds dual auth and a 30-day feature adoption cycle.
 
-| Area | v4.1 | v4.2 |
-|---|---|---|
-| Scope | Pipeline only (Phases F-G) | Full SDLC lifecycle (Phases A-G) |
-| Agents | 8 pipeline agents | 14 total agents (1 control + 6 SDLC + 7 pipeline) |
-| CLI model | `pipeline run` as the primary entry point | Unified `run <milestone>` entry point plus explicit `sdlc` and `pipeline` subcommands |
-| Artifact model | Pipeline state and deploy evidence | SDLC artifacts in `docs/sdlc/` plus pipeline state and deploy evidence |
-| Design handoff | Consumed existing specs | Added Figma Make validation, reconciliation, blueprint freeze, and contract freeze |
-| Resume model | `--from-stage` for pipeline | Milestone-driven resume plus explicit `--from-phase` and `--from-stage` subcommands |
+| Area | v4.1 | v4.2 | v5.0 |
+|---|---|---|---|
+| Scope | Pipeline only (Phases F-G) | Full SDLC lifecycle (Phases A-G) | Same + dual auth + feature tracking |
+| Agents | 8 pipeline agents | 14 total agents | Same 14 agents |
+| CLI model | `pipeline run` | Unified `run <milestone>` | Same + API key auto-fallback |
+| Auth | CLI OAuth only | CLI OAuth only | CLI OAuth primary, API key auto-fallback on rate limit |
+| Cost model | $0 marginal (subscription only) | $0 marginal | $0 normal; pay-per-token during 5-min cooldowns only |
+| Feature cadence | None | None | 30-day check cycle for Claude/Codex/Gemini new features |
+| LLM features | Basic CLI calls | Structured output, tool_use | See Section 10.11 for full feature inventory per LLM |
 
 ## 1.4 Enforced Technology and Delivery Constraints
 
@@ -1082,6 +1083,107 @@ These internal contracts matter because the external tooling is not invoked arbi
 | Orchestrator | GitHub MCP, hook-driven vault logging |
 | ArchitectureAgent | Context7-compatible live docs workflow |
 | ContractFreezeAgent | Context7-compatible live docs workflow |
+
+## 10.11 LLM Features in Use (Updated Every 30 Days)
+
+This section documents every LLM provider feature the pipeline actively uses, why we chose it, and what we gain. It grows every 30 days as providers release new capabilities. See `memory/knowledge/feature-check-schedule.md` for the full review checklist.
+
+**Last reviewed:** 2026-04-10 | **Next review:** 2026-05-10
+
+### V5.0 Dual Auth Architecture
+
+The pipeline uses two auth modes for Claude, switching automatically:
+
+| Mode | Auth Method | Cost | When Active |
+|---|---|---|---|
+| CLI (default) | OAuth via `claude auth login` | $0 (Max subscription) | Normal operation |
+| SDK (auto-fallback) | `ANTHROPIC_API_KEY` env var | Pay-per-token | When CLI hits rate limit (auto-switches back after 5 min) |
+
+Set `ANTHROPIC_API_KEY` in your environment as insurance. It costs nothing unless the CLI fails.
+
+### Claude (Anthropic) — Features in Use
+
+| Feature | Where Used | Why | Since |
+|---|---|---|---|
+| Claude Max subscription ($100-200/mo) | All Claude CLI calls | $0 marginal cost for review, plan, architecture, judgment | V4.0 |
+| tool_use (structured output) | BlueprintAnalysisAgent, CodeReviewAgent | Guarantees JSON schema compliance when GSD_LLM_MODE=sdk | V4.1 |
+| 200K-1M context window | All agents via CLI | Processes large blueprints + specs in single call | V4.0 |
+| Opus model for orchestrator | Orchestrator decisions | Highest reasoning quality for routing decisions | V4.0 |
+| Sonnet model for agents | All pipeline agents | Best balance of speed and quality for execution | V4.0 |
+| API key fallback | Auto-switch when CLI quota hit | Prevents pipeline stalls from rate limiting | V5.0 |
+
+**Features we are watching (not yet adopted):**
+
+| Feature | Status | Why We're Waiting | Check Again |
+|---|---|---|---|
+| Claude Code agent teams | Experimental | Multi-teammate parallelism, but Claude-only (can't route to Codex/Gemini) | 2026-05-10 |
+| Claude Code sub-agents | GA | Could replace custom TypeScript agent classes, but locks out multi-LLM | 2026-05-10 |
+| Prompt caching | Available | 50% cost reduction on repeated system prompts; need to measure savings first | 2026-05-10 |
+| Batch API | Available | 50% cost for non-urgent bulk reviews; need to test latency impact | 2026-05-10 |
+| Extended thinking | Available | Better judgment on complex decisions; costs more, need to benchmark | 2026-05-10 |
+| Cloud scheduled tasks | GA | Autonomous pipeline runs without local machine; need to test reliability | 2026-05-10 |
+
+### Codex / OpenAI — Features in Use
+
+| Feature | Where Used | Why | Since |
+|---|---|---|---|
+| ChatGPT Max subscription ($200/mo) | All Codex CLI calls | $0 marginal cost; 60% of pipeline tokens go to code generation | V4.0 |
+| Full-auto mode (`codex --full-auto`) | Execute phase | Generates/modifies multiple files without approval prompts | V4.0 |
+| GPT-4o for code generation | Execute, remediation fallback | Best-in-class code completion and multi-file editing | V4.0 |
+| o1/o3 for complex reasoning | Fallback for high-complexity tasks | Deeper reasoning when standard GPT-4o insufficient | V4.2 |
+
+**Features we are watching (not yet adopted):**
+
+| Feature | Status | Why We're Waiting | Check Again |
+|---|---|---|---|
+| Codex sub-agent spawning | Unknown | Could parallelize code generation across files | 2026-05-10 |
+| Codex structured JSON output | Partial | tool_use equivalent for guaranteed schema compliance | 2026-05-10 |
+| Codex hooks/extensions | Unknown | Quality gates equivalent to Claude Code hooks | 2026-05-10 |
+| Multi-file atomic generation | Available | Generate related files together (controller + DTO + SP) | 2026-05-10 |
+| Codex tool use (external tools) | Unknown | MCP-like capability for calling external APIs | 2026-05-10 |
+
+### Gemini / Google — Features in Use
+
+| Feature | Where Used | Why | Since |
+|---|---|---|---|
+| Gemini Ultra subscription ($20/mo) | All Gemini CLI calls | $0 marginal; cheapest subscription of the three | V4.0 |
+| 1M token context window | Research phase, large codebase analysis | Can process entire repos in single call; no chunking needed | V4.0 |
+| 15 RPM (highest of all 3 CLIs) | Bulk review chunks, parallel research | Highest throughput for spreading review load | V4.0 |
+| Approval mode (`--approval-mode plan`) | Research phase | Read-only mode prevents accidental writes during research | V4.0 |
+
+**Features we are watching (not yet adopted):**
+
+| Feature | Status | Why We're Waiting | Check Again |
+|---|---|---|---|
+| Gemini agent capabilities | Unknown | Sub-agent spawning, parallel research delegation | 2026-05-10 |
+| Gemini MCP support | Unknown | Shared tool abstraction across agents | 2026-05-10 |
+| Gemini grounding (web search) | Available | Real-time library version lookup during research | 2026-05-10 |
+| Gemini Batch API | Unknown | Cost reduction for off-peak bulk analysis | 2026-05-10 |
+| Gemini multimodal (vision) | Available | Direct Figma screenshot analysis without export | 2026-05-10 |
+| Gemini structured output | Partial | JSON mode for guaranteed schema compliance | 2026-05-10 |
+| Context window beyond 1M | Unknown | Process even larger monorepos | 2026-05-10 |
+
+### Emergency API Fallbacks — Features in Use
+
+| Model | Feature | Why | Cost |
+|---|---|---|---|
+| DeepSeek | 60 RPM, $0.28/$0.42 per M tokens | Cheapest API fallback; highest RPM | Pay-per-token |
+| MiniMax | 30 RPM, $0.29/$1.20 per M tokens | Backup to DeepSeek; good value | Pay-per-token |
+
+### Feature Adoption Decision Framework
+
+When evaluating a new feature during the 30-day check:
+
+1. **Does it replace custom code?** Adopt immediately (less code to maintain)
+2. **Does it reduce cost?** Adopt after benchmarking (prompt caching, batch API)
+3. **Does it improve quality?** Evaluate with A/B test (extended thinking, better models)
+4. **Does it improve speed?** Adopt after measuring (parallelism, caching)
+5. **Is it Claude-only?** Keep TypeScript harness for multi-LLM; use Claude native for orchestration layer only
+6. **Is it stable?** If experimental, add to "watching" table. If GA, evaluate adoption.
+
+### Change Log
+
+**2026-04-10 (V5.0):** Initial section. Documented all features in active use across 3 subscription CLIs + 2 API fallbacks. Created "watching" tables for features not yet adopted. Established 30-day review cadence.
 
 # Chapter 11: Configuration, Operations, and Troubleshooting
 
