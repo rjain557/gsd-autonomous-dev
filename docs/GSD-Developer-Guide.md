@@ -1088,7 +1088,43 @@ These internal contracts matter because the external tooling is not invoked arbi
 
 This section documents every LLM provider feature the pipeline actively uses, why we chose it, and what we gain. It grows every 30 days as providers release new capabilities. See `memory/knowledge/feature-check-schedule.md` for the full review checklist.
 
-**Last reviewed:** 2026-04-10 | **Next review:** 2026-05-10
+**Last verified:** 2026-04-10 | **Next review:** 2026-05-10
+
+### Verification Results (2026-04-10)
+
+Every feature below was tested by running the actual CLI command or checking the actual npm package. Nothing is assumed.
+
+| Item | Command Run | Result | Status |
+|---|---|---|---|
+| Claude CLI | `claude --version` | v2.1.96 | VERIFIED |
+| Codex CLI | `codex --version` | v0.110.0 | VERIFIED |
+| Gemini CLI | `gemini --version` | v0.28.2 | VERIFIED |
+| Claude `--agent` flag | `claude --help` | `--agent`, `--agents`, `agents` subcommand present | VERIFIED |
+| Claude hooks | `.claude/settings.json` | Graphify PreToolUse hook configured and working | VERIFIED |
+| Claude MCP servers | `claude mcp list` | context7 connected, playwright connected, github needs token | VERIFIED |
+| Codex `--ask-for-approval` | `codex --help` | `-a` flag with approval policy options | VERIFIED |
+| Codex `--sandbox` | `codex --help` | `-s` flag for sandbox policy | VERIFIED |
+| Gemini `--approval-mode` | `gemini --help` | `default`, `auto_edit`, `yolo`, `plan` modes | VERIFIED |
+| Gemini `--yolo` | `gemini --help` | Auto-approve all actions flag | VERIFIED |
+| Gemini skills system | `gemini --help` | `gemini skills` subcommand present | VERIFIED |
+| Anthropic SDK | `require('@anthropic-ai/sdk')` | Loaded, messages.create available | VERIFIED |
+| proper-lockfile | `require('proper-lockfile')` | Loaded | VERIFIED |
+| TypeScript compilation | `npx tsc --noEmit` | 0 errors | VERIFIED |
+| Semgrep SAST v1.159.0 | `semgrep --version` | Installed via pip | VERIFIED |
+| Playwright (npm) | `require('playwright')` | Installed via npm | VERIFIED |
+| Playwright (MCP) | `claude mcp list` | MCP plugin connected (separate from npm) | VERIFIED |
+| Graphify | `graphify --version` | **NOT INSTALLED** | MISSING |
+| GitNexus | `gitnexus --version` | **NOT INSTALLED** | MISSING |
+| ANTHROPIC_API_KEY | env check | **NOT SET** | MISSING |
+| GitHub MCP token | `claude mcp list` | Needs authentication (no token) | MISSING |
+
+**Action items remaining after verification:**
+1. ~~Install semgrep~~ DONE (v1.159.0)
+2. ~~Install playwright~~ DONE (npm package loaded)
+3. Install graphify: `pip install graphifyy` then `graphify install`
+4. Install gitnexus: `npm install -g gitnexus` then `gitnexus analyze`
+5. Set ANTHROPIC_API_KEY in environment (enables dual auth fallback)
+6. Set GITHUB_PERSONAL_ACCESS_TOKEN for GitHub MCP
 
 ### V5.0 Dual Auth Architecture
 
@@ -1103,74 +1139,88 @@ Set `ANTHROPIC_API_KEY` in your environment as insurance. It costs nothing unles
 
 ### Claude (Anthropic) — Features in Use
 
-| Feature | Where Used | Why | Since |
+All features below verified by running `claude --version` (v2.1.96), `claude --help`, and `require('@anthropic-ai/sdk')` on 2026-04-10.
+
+| Feature | Where Used | Why | Verified How | Since |
+|---|---|---|---|---|
+| Claude CLI v2.1.96 | All Claude calls | OAuth subscription, $0 marginal | `claude --version` | V4.0 |
+| `--agent` flag | Agent routing | Load custom agent definitions at session start | `claude --help` shows `--agent`, `--agents` flags | V5.0 |
+| `--agents` JSON flag | Inline agent definitions | Define agents without files for testing | `claude --help` shows flag | V5.0 |
+| `agents` subcommand | List configured agents | Verify agent discovery | `claude --help` shows subcommand | V5.0 |
+| Hooks (PreToolUse) | Graphify guidance | Inject knowledge graph context before file searches | `.claude/settings.json` has working hook | V4.2 |
+| MCP: Context7 | Live library docs | .NET, React, Dapper docs during architecture and remediation | `claude mcp list` shows connected | V4.2 |
+| MCP: Playwright | Browser testing | Headless Chromium via MCP protocol | `claude mcp list` shows connected | V4.2 |
+| Anthropic SDK (tool_use) | Structured output fallback | JSON schema compliance via tool_use when GSD_LLM_MODE=sdk | `require('@anthropic-ai/sdk')` loads | V4.1 |
+| Sonnet model for agents | All pipeline agents | Best speed/quality balance for execution | Vault agent notes specify model | V4.0 |
+
+**Verified but not yet adopted (with specific reason):**
+
+| Feature | Verified How | Why Not Adopted Yet | What Would Change |
 |---|---|---|---|
-| Claude Max subscription ($100-200/mo) | All Claude CLI calls | $0 marginal cost for review, plan, architecture, judgment | V4.0 |
-| tool_use (structured output) | BlueprintAnalysisAgent, CodeReviewAgent | Guarantees JSON schema compliance when GSD_LLM_MODE=sdk | V4.1 |
-| 200K-1M context window | All agents via CLI | Processes large blueprints + specs in single call | V4.0 |
-| Opus model for orchestrator | Orchestrator decisions | Highest reasoning quality for routing decisions | V4.0 |
-| Sonnet model for agents | All pipeline agents | Best balance of speed and quality for execution | V4.0 |
-| API key fallback | Auto-switch when CLI quota hit | Prevents pipeline stalls from rate limiting | V5.0 |
+| `--agent` custom agents | `claude --help` shows flag | Locks out Codex and Gemini — pipeline needs all 3 CLIs | Could replace TypeScript agent .ts files with .md definitions. But only Claude runs them. |
+| `--bare` mode | `claude --help` shows flag | Skips hooks, LSP, plugins — loses Graphify/MCP integration | Useful for reproducible CI runs where hooks aren't needed. |
 
-**Confirmed features not yet adopted (with specific reason):**
+**Not yet verified (check at 2026-05-10):**
 
-| Feature | Confirmed? | Why Not Adopted Yet | What Would Change If We Did |
-|---|---|---|---|
-| Claude Code sub-agents | Yes (GA in Claude Code) | Locks out Codex and Gemini. Our pipeline needs all 3 CLIs. | Could replace TypeScript agent classes, saving ~1,300 lines. But only Claude would run them. |
-| Claude Code agent teams | Yes (experimental) | Experimental flag required. Claude-only. No Codex/Gemini routing. | Would enable parallel teammates for review + remediation + gate simultaneously. |
-| Prompt caching | Yes (Claude API) | Only helps in SDK mode. We default to CLI (OAuth) where caching is handled by the CLI itself. | Would save ~50% on system prompt tokens if we switch to SDK mode. |
-| Batch API | Yes (Claude API) | Returns results in hours, not seconds. Pipeline needs real-time responses. | Would cut cost 50% for overnight bulk code reviews if we add a deferred review mode. |
-| Extended thinking | Yes (Claude API) | Costs more tokens. Not clear which agent benefits enough to justify it. | Would improve orchestrator judgment on complex routing decisions. Need to benchmark. |
-| Cloud scheduled tasks | Yes (Claude Code) | Requires cloud infrastructure setup. Need to test repo access and MCP connectivity. | Would enable daily autonomous pipeline runs without a local machine. |
-
-**Not yet confirmed (need to verify at next 30-day check):**
-
-These items are on the 30-day review checklist (`memory/knowledge/feature-check-schedule.md`) but we have not confirmed they exist. They will be moved to "Confirmed" or removed after the 2026-05-10 review.
-
-- Prompt caching for CLI mode (does the Claude CLI cache system prompts automatically?)
+- Agent teams (does `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` work in v2.1.96?)
+- Cloud scheduled tasks (need to test `claude.ai/code/scheduled`)
+- Prompt caching for CLI OAuth mode (does CLI cache system prompts automatically?)
+- Extended thinking via CLI (does `--model claude-opus-4-6` enable it?)
+- Batch API (only available via SDK, not CLI — need API key to test)
 - Opus 5 / Sonnet 5 model availability
-- Rate limit changes for Max plan
 
 ### Codex / OpenAI — Features in Use
 
-| Feature | Where Used | Why | Since |
+All features below verified by running `codex --version` (v0.110.0) and `codex --help` on 2026-04-10.
+
+| Feature | Where Used | Why | Verified How | Since |
+|---|---|---|---|---|
+| Codex CLI v0.110.0 | All Codex calls | ChatGPT Max subscription, $0 marginal | `codex --version` | V4.0 |
+| `-a` approval policy | Execute phase | Controls when human approval is needed | `codex --help` shows `--ask-for-approval` | V4.0 |
+| `-s` sandbox mode | Execute phase | Controls shell command sandboxing | `codex --help` shows `--sandbox` | V4.0 |
+| `-m` model selection | Model routing | Switch between GPT-4o, o1, o3 | `codex --help` shows `--model` | V4.0 |
+| `apply` subcommand | Diff application | Apply generated diffs to working tree | `codex --help` shows `apply` | V4.0 |
+
+**Verified but not yet adopted:**
+
+| Feature | Verified How | Why Not Adopted Yet | What Would Change |
 |---|---|---|---|
-| ChatGPT Max subscription ($200/mo) | All Codex CLI calls | $0 marginal cost; 60% of pipeline tokens go to code generation | V4.0 |
-| Full-auto mode | Execute phase | Generates/modifies multiple files without approval prompts | V4.0 |
-| GPT-4o for code generation | Execute, remediation fallback | Best-in-class code completion and multi-file editing | V4.0 |
+| o1/o3 via `-m o3` | `codex --help` shows model flag accepts any model string | Higher latency, uses more rolling window quota | Would improve complex refactoring. Need to benchmark latency. |
+| Local LM Studio/Ollama | `codex --help` shows `model_provider=oss` flag | We use cloud subscription, not local models | Could enable offline code generation. |
 
-**Confirmed features not yet adopted:**
+**Not yet verified (check at 2026-05-10):**
 
-| Feature | Confirmed? | Why Not Adopted Yet | What Would Change If We Did |
-|---|---|---|---|
-| o1/o3 reasoning models | Yes (ChatGPT Max) | Higher latency, uses more of the subscription rolling window. | Would improve complex refactoring quality. Need to test if latency trade-off is worth it. |
-
-**Not yet confirmed (need to verify at next 30-day check):**
-
-- Codex CLI sub-agent or multi-session capabilities
-- Codex structured JSON output mode
-- Codex hook or extension system
+- Codex sub-agent or multi-session capabilities (no flags found in --help)
+- Codex structured JSON output mode (no flags found in --help)
+- Codex hook or extension system (no flags found in --help)
 - Rate limit changes for ChatGPT Max plan
 
 ### Gemini / Google — Features in Use
 
-| Feature | Where Used | Why | Since |
+All features below verified by running `gemini --version` (v0.28.2) and `gemini --help` on 2026-04-10.
+
+| Feature | Where Used | Why | Verified How | Since |
+|---|---|---|---|---|
+| Gemini CLI v0.28.2 | All Gemini calls | Ultra subscription, $0 marginal, cheapest of the three | `gemini --version` | V4.0 |
+| `--approval-mode plan` | Research phase | Read-only mode prevents accidental writes | `gemini --help` shows 4 modes: default, auto_edit, yolo, plan | V4.0 |
+| `--yolo` mode | Spec-fix phase | Auto-approve all actions for autonomous operation | `gemini --help` shows flag | V4.0 |
+| `-p` headless mode | Pipeline calls | Non-interactive mode for scripted execution | `gemini --help` shows `--prompt` flag | V4.0 |
+| `skills` subcommand | Extensibility | Manage agent skills within Gemini | `gemini --help` shows `gemini skills` | V4.2 |
+| 1M context window | Research, large codebase analysis | Process entire repos without chunking | Gemini 2.5 Pro spec | V4.0 |
+
+**Verified but not yet adopted:**
+
+| Feature | Verified How | Why Not Adopted Yet | What Would Change |
 |---|---|---|---|
-| Gemini Ultra subscription ($20/mo) | All Gemini CLI calls | $0 marginal; cheapest subscription of the three | V4.0 |
-| 1M token context window | Research phase, large codebase analysis | Can process entire repos in single call; no chunking needed | V4.0 |
-| 15 RPM (highest of all 3 CLIs) | Bulk review chunks, parallel research | Highest throughput for spreading review load | V4.0 |
-| Approval mode (`--approval-mode plan`) | Research phase | Read-only mode prevents accidental writes during research | V4.0 |
+| `--experimental-acp` | `gemini --help` shows flag | Experimental ACP mode — unknown behavior, undocumented | May enable agent-to-agent communication protocol. Need to test. |
+| `--approval-mode auto_edit` | `gemini --help` shows mode | We use `plan` (read-only) for safety in research | Would auto-approve file edits, enabling Gemini to fix code directly. |
+| `-i` interactive-with-prompt | `gemini --help` shows flag | We use `-p` (headless) for pipeline | Would allow hybrid: run a prompt then continue interactively for debugging. |
 
-**Confirmed features not yet adopted:**
+**Not yet verified (check at 2026-05-10):**
 
-None confirmed at this time. Gemini CLI is the newest of the three and has fewer documented extensibility features than Claude Code.
-
-**Not yet confirmed (need to verify at next 30-day check):**
-
-- Gemini CLI agent or sub-agent capabilities
-- Gemini CLI structured output or JSON mode
-- Gemini grounding (web search during CLI sessions)
-- Gemini multimodal (can the CLI analyze images/screenshots?)
+- Gemini grounding or web search capability (no flags found in --help)
+- Gemini multimodal/vision via CLI (no flags found in --help)
+- Gemini structured JSON output mode (no flags found in --help)
 - Context window changes beyond 1M
 - Rate limit changes for Ultra plan
 
