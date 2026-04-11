@@ -1113,18 +1113,19 @@ Every feature below was tested by running the actual CLI command or checking the
 | Semgrep SAST v1.159.0 | `semgrep --version` | Installed via pip | VERIFIED |
 | Playwright (npm) | `require('playwright')` | Installed via npm | VERIFIED |
 | Playwright (MCP) | `claude mcp list` | MCP plugin connected (separate from npm) | VERIFIED |
-| Graphify | `graphify --version` | **NOT INSTALLED** | MISSING |
-| GitNexus | `gitnexus --version` | **NOT INSTALLED** | MISSING |
-| ANTHROPIC_API_KEY | env check | **NOT SET** | MISSING |
-| GitHub MCP token | `claude mcp list` | Needs authentication (no token) | MISSING |
+| Graphify v0.4.1 | `graphify install --platform claude` | Skill installed to Claude Code | VERIFIED |
+| GitNexus v1.5.3 | `gitnexus analyze` | 1,045 nodes, 2,090 edges, 46 clusters, 64 flows | VERIFIED |
+| ANTHROPIC_API_KEY | env check | **NOT SET** (set it to enable dual auth fallback) | ACTION NEEDED |
+| GitHub PAT | `SetEnvironmentVariable` | Set as user env var (new terminal sessions) | VERIFIED |
 
 **Action items remaining after verification:**
 1. ~~Install semgrep~~ DONE (v1.159.0)
 2. ~~Install playwright~~ DONE (npm package loaded)
-3. Install graphify: `pip install graphifyy` then `graphify install`
-4. Install gitnexus: `npm install -g gitnexus` then `gitnexus analyze`
+3. ~~Install graphify~~ DONE (v0.4.1, skill installed to Claude Code)
+4. ~~Install gitnexus~~ DONE (v1.5.3, indexed: 1,045 nodes, 2,090 edges, 46 clusters, 64 flows)
 5. Set ANTHROPIC_API_KEY in environment (enables dual auth fallback)
-6. Set GITHUB_PERSONAL_ACCESS_TOKEN for GitHub MCP
+6. ~~Set GITHUB_PERSONAL_ACCESS_TOKEN~~ DONE (user env var set)
+7. Run `/graphify .` in a Claude Code session to generate the knowledge graph (interactive step)
 
 ### V5.0 Dual Auth Architecture
 
