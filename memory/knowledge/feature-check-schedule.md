@@ -61,11 +61,25 @@ Every 30 days, review the latest releases from Anthropic, OpenAI, and Google for
 - [ ] Gemini Batch API? Cost reduction for bulk calls?
 - [ ] Gemini multimodal for Figma? Can it analyze Figma screenshots directly?
 
+### Skills Marketplace Scan
+
+- [ ] Check github.com/vercel-labs/skills for new official skills
+- [ ] Check github.com/agentskillexchange/skills for new security-scanned skills
+- [ ] Check github.com/trailofbits/skills for new security research skills
+- [ ] Check github.com/anthropics/skills for new Anthropic-published skills
+- [ ] Check github.com/AgentSecOps/SecOpsAgentKit for new security ops skills
+- [ ] Run `npx skills add <repo> --list` to see what's new before installing
+- [ ] Check for caveman updates (token reduction improvements)
+- [ ] Check for new .NET / React / SQL Server specific skills
+- [ ] Verify installed skills still work after CLI version updates
+
 ### Cost Optimization
+
 - [ ] Any subscription price changes?
 - [ ] Any new free tiers or credits?
 - [ ] API pricing changes for DeepSeek/MiniMax?
 - [ ] Can any paid feature replace a custom implementation?
+- [ ] Is caveman actually reducing token usage? Check session logs.
 
 ## Verification-First Process
 

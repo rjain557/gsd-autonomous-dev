@@ -1251,7 +1251,90 @@ NEVER adopt a feature based on assumptions, training data, or blog posts. Every 
 
 Features that haven't passed Step 2 go in the "Not yet confirmed" list. Features that passed Step 2 but not Step 3 go in "Confirmed but not adopted." Only features that passed all 5 steps appear in the "Features in Use" table.
 
+### Installed Community Skills (107 Claude Code + 97 Agent Skills)
+
+Installed 2026-04-11 via `npx skills add`. These extend agent capabilities beyond the core TypeScript harness.
+
+**Token optimization:**
+
+| Skill | Source | What it does | Install |
+|---|---|---|---|
+| caveman | JuliusBrussee/caveman | Cuts 65-75% output tokens via terse responses | `npx skills add JuliusBrussee/caveman` |
+| caveman-commit | JuliusBrussee/caveman | Terse git commit messages | Included with caveman |
+| caveman-review | JuliusBrussee/caveman | One-line code reviews | Included with caveman |
+
+**Security (Trail of Bits + McGo + OWASP + Shannon):**
+
+| Skill | What it does | GSD Agent |
+|---|---|---|
+| security-audit | Automated codebase security audit with OWASP/CWE classification | QualityGateAgent |
+| semgrep | Semgrep SAST rule creation and variant analysis | QualityGateAgent |
+| semgrep-rule-creator | Create custom Semgrep rules for project-specific patterns | QualityGateAgent |
+| codeql | CodeQL query writing for deep static analysis | QualityGateAgent |
+| owasp-security | OWASP Top 10:2025 + ASVS 5.0 patterns | CodeReviewAgent |
+| shannon | White-box penetration testing (~96% exploit rate) | QualityGateAgent (pre-deploy) |
+| supply-chain-risk-auditor | Dependency supply chain risk assessment | QualityGateAgent |
+| zeroize-audit | Memory zeroization audit for secrets handling | QualityGateAgent |
+
+**Infrastructure (HashiCorp):**
+
+| Skill | What it does |
+|---|---|
+| new-terraform-provider | Terraform provider scaffolding |
+| terraform-style-guide | Terraform code standards |
+| terraform-test | Terraform test generation |
+| terraform-stacks | Terraform stack management |
+
+**Code quality:**
+
+| Skill | What it does |
+|---|---|
+| differential-review | Review only changed code (reduces review scope) |
+| spec-to-code-compliance | Verify code matches specifications |
+| coverage-analysis | Test coverage analysis and gap identification |
+| mutation-testing | Mutation testing to verify test quality |
+| property-based-testing | Property-based test generation |
+| refactor-module | Safe module refactoring with dependency tracking |
+
+### 90-Day Platform Scan Results (2026-01 through 2026-04)
+
+**Claude Code (Anthropic):**
+- v2.0 terminal interface + VS Code native extension (shipped)
+- Checkpoints with /rewind (shipped)
+- Subagents, hooks, background tasks (shipped)
+- Managed Agents API (public beta, April 2026) — hosted agent harness with sandboxing
+- Advanced tool use beta: Tool Search, Programmatic Tool Calling
+- Agent session duration: 99.9th percentile nearly doubled (25min to 45min) Oct 2025 to Jan 2026
+
+**Codex CLI (OpenAI):**
+- v0.110.0 with plugin system (March 2026) — skills + MCP in Codex now possible
+- Desktop app for macOS (February 2026) — parallel agent threads
+- TUI improvements: Ctrl+O copy, /resume by ID, async rate limit fetch
+- Remote/cloud workflows: egress websocket, remote --cd, sandbox-aware filesystem
+
+**Gemini CLI (Google):**
+- v0.28.2 with skills system, hooks, /rewind (shipped)
+- Gemini 3 Flash model available (better performance, lower cost than 2.5 Pro)
+- Browser agent (experimental)
+- Traffic prioritization by license tier (March 2026) — Pro models require paid subscription
+- Code customization support in agent mode
+
+### 30-Day Review: Skills Marketplace Scan
+
+The 30-day review should now also scan these skill sources:
+
+| Source | URL | What to check |
+|---|---|---|
+| Vercel Labs Skills | github.com/vercel-labs/skills | Official skill tool updates, new skills |
+| Agent Skill Exchange | github.com/agentskillexchange/skills | 1,100+ security-scanned skills catalog |
+| Trail of Bits | github.com/trailofbits/skills | Security research skills (already installed) |
+| SecOpsAgentKit | github.com/AgentSecOps/SecOpsAgentKit | 25+ security operations skills |
+| Anthropic official | github.com/anthropics/skills | Official Anthropic-published skills |
+| Awesome Claude Skills | github.com/travisvn/awesome-claude-skills | Community curated list |
+
 ### Change Log
+
+**2026-04-11 (V5.0 scan):** Installed 107 Claude Code skills + 97 agent skills from Trail of Bits, HashiCorp, McGo security audit, caveman token reduction. Completed 90-day platform scan covering Claude Code, Codex CLI, and Gemini CLI changelogs. Added skills marketplace to 30-day review checklist.
 
 **2026-04-10 (V5.0):** Initial section. Documented all features in active use across 3 subscription CLIs + 2 API fallbacks. Created "watching" tables for features not yet adopted. Established 30-day review cadence.
 
