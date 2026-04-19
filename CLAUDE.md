@@ -397,3 +397,93 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+
+---
+
+## Memory + Code Intelligence Stack
+
+### Layer Boundaries
+
+| Layer | Location | Purpose |
+|-------|----------|---------|
+| **Vault (Obsidian)** | `claude-memory/` in Obsidian vault | Durable human knowledge — topic pages only |
+| **Auto-memory (CC built-in)** | `C:\Users\rjain\.claude\projects\c--VSCode-gsd-autonomous-dev\memory\` | Claude's working notes, managed automatically |
+| **GitNexus** | `.gitnexus/` + MCP server | Code structure, impact analysis, symbol graph |
+
+### Vault Path
+`C:\Users\rjain\OneDrive - Technijian, Inc\Documents\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\claude-memory\`
+
+### Retrieval Rules
+- Vault topics are loaded automatically on `UserPromptSubmit` when topic keywords appear in the prompt
+- `preferences.md` is ALWAYS loaded on every retrieval (no keyword gate)
+- Topic matches are logged to `.retrieval-log.jsonl` with timestamp and query snippet
+- Manually run `/vault-status` to see retrieval quality metrics
+
+### Write Rules
+- Topic pages live in `claude-memory/topics/` — write there, never outside this directory
+- Never write transcript-style pages — only structured topic format with YAML frontmatter
+- Every vault mutation appends to `CHANGELOG.md` with the appropriate prefix
+- Run `/consolidate` after a substantive session to save durable knowledge
+
+### Topic Page Schema
+```yaml
+---
+topic: <short name>
+aliases: [<alternate names>]
+volatility: stable|evolving|ephemeral
+last_updated: <ISO date>
+confidence: high|medium|low
+sources: [<session dates, commit hashes>]
+access_count: 0
+last_accessed: <ISO date>
+---
+```
+
+### Volatility Semantics
+- **stable**: architectural decisions, domain invariants. Review cadence: yearly. Conservative consolidation.
+- **evolving**: active development state (default). Review cadence: quarterly. Normal consolidation.
+- **ephemeral**: workarounds, "current state of X" snapshots. Review cadence: aggressive. Auto-archive after 60 days with no access or update.
+
+### Contradiction Handling
+Before updating any topic, compare new info against existing `## Key facts`:
+- **Compatible** → extend, proceed normally
+- **Clarifying** → update in-place, note refinement in CHANGELOG
+- **Contradicting** → append to `## Open questions` as `CONTRADICTION detected on [date]`, lower confidence, do NOT overwrite
+- **Replacing** (explicit "this was wrong") → overwrite, record in CHANGELOG with `[replaced]` prefix
+
+### Hooks Installed
+| Hook | Trigger | Purpose |
+|------|---------|---------|
+| `retrieve.sh` | UserPromptSubmit | Load matching vault topics + preferences.md |
+| `impact-check.sh` | PreToolUse (Edit/Write) | Warn on HIGH/CRITICAL agent/harness edits |
+| `reindex.sh` | PostToolUse (Bash) | Run `gitnexus analyze` after git commit/merge |
+| `consolidate.sh` | Stop | Remind to consolidate if vault was accessed |
+| `health-check.sh` | Stop | Recompute HEALTH.md metrics |
+| `preference-extract.sh` | Stop | Signal to check for preference-shaped statements |
+
+### Slash Commands
+| Command | Purpose |
+|---------|---------|
+| `/vault-status` | Health dashboard — topic count, retrieval quality, freshness |
+| `/consolidate` | Save durable session knowledge to vault topics |
+| `/review` | Weekly vault review — quality, contradictions, volatility calibration |
+| `/contradictions` | List and resolve unresolved contradictions |
+| `/volatility <topic> <level>` | Manually set topic volatility |
+| `/graduate` | Recommend stay vs. migrate to LightRAG |
+
+### Weekly Review Mandate
+Run `/review` every week. Target: 5–10 minutes. If days-since-review > 14, the health-check hook prints a warning at session end. If > 30 days, `/graduate` will refuse to give a recommendation.
+
+### Vault Version Control
+The Obsidian vault is NOT currently a git repo. To initialize (strongly recommended):
+```bash
+git init "C:/Users/rjain/OneDrive - Technijian, Inc/Documents/obsidian/gsd-autonomous-dev/gsd-autonomous-dev"
+```
+Run this once to enable rollback for all vault mutations.
+
+### Key Files
+- `claude-memory/index.md` — topic registry
+- `claude-memory/HEALTH.md` — live health metrics
+- `claude-memory/CHANGELOG.md` — audit trail of all vault mutations
+- `claude-memory/.retrieval-log.jsonl` — retrieval event log (used for health metrics)
