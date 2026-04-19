@@ -1,6 +1,6 @@
 # GSD Engine — Goal Spec Done
 
-**Version:** 5.0.0 | **Platform:** Windows + Node.js 18+ | **Agents:** 14 typed agents | **Cost:** $0 marginal (CLI subscriptions, API key auto-fallback)
+**Version:** 5.0.0 (production) | **V6 designed:** `memory/architecture/v6-design.md` | **Platform:** Windows + Node.js 18+ | **Agents:** 14 typed agents | **Cost:** $0 marginal (CLI subscriptions, API key auto-fallback)
 
 An AI-native autonomous development pipeline covering the complete Technijian SDLC v6.0 — from requirements gathering through alpha deployment — with 14 TypeScript agents, Obsidian vault memory, and a full 4.2 augmentation stack for code intelligence, MCP automation, security review, and browser validation.
 

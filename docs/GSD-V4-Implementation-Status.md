@@ -16,6 +16,7 @@ A TypeScript-based autonomous development pipeline covering the complete Technij
 | v4.1 | All 47 gaps closed, Graphify integration, 100% pipeline complete |
 | v4.2 | Full SDLC lifecycle (Phases A-G), 6 SDLC agents added, unified CLI, dual graphs, MCPs, and security skills |
 | v5.0 | Dual auth (OAuth primary, API key auto-fallback), 30-day feature check cycle, Codex/Gemini feature parity tracking |
+| v6 (designed) | Hierarchical decomposition (Milestone → Slice → Task), SQLite durable state, git worktree isolation, execution graph scheduler, harness-engineering alignment. See `memory/architecture/v6-design.md`. |
 
 ## File Inventory
 

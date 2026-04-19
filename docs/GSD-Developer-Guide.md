@@ -1466,6 +1466,123 @@ That last rule matters most in v4.2 because the unified lifecycle surface is now
 
 ---
 
+# Chapter 13: V6 Design Roadmap (Planned)
+
+V6 is currently a design specification, not an implementation. The canonical design lives in `memory/architecture/v6-design.md`. This chapter summarizes what V6 changes, why, and how it differs from V5.
+
+## 13.1 Why V6 Exists
+
+V5 was synthesized by comparing the pipeline against two external sources:
+
+1. **gsd-build/gsd-2** — a general-purpose autonomous coding kernel with hierarchical decomposition, git worktree isolation, SQLite durable state, and execution graph scheduling
+2. **OpenAI harness-engineering playbook** — repo-as-record, golden rules enforced mechanically, filesystem-as-memory, agent-legible environment, self-healing feedback loops
+
+V5 already satisfies parts of both. V6 fills the remaining gaps.
+
+## 13.2 Core Design Shift
+
+V5 has a flat 7-stage pipeline with long-lived agent sessions running in the main checkout. V6 introduces three levels above the stages and changes how state is stored:
+
+| Aspect | V5 | V6 |
+|---|---|---|
+| Task graph | Flat 7 stages | Milestone → Slice → Task → Stage |
+| Context model | Long-lived agent sessions | Fresh session per task with explicit preamble |
+| Filesystem | Main checkout | Git worktree per milestone (`.gsd-worktrees/M001/`) |
+| State | Markdown only | Hybrid: SQLite (`memory/state.db`) + markdown narrative |
+| Scheduler | Linear stage order | Execution graph with parallel independent tasks |
+| Commits | At end of run | Turn-level git transaction per task |
+
+V6 is a breaking change. Projects mid-SDLC on V5 finish on V5. New milestones start on V6.0.
+
+## 13.3 Five-Tier Roadmap
+
+V6 ships in five tiers, roughly one every one or two weeks after design freeze.
+
+**Tier 1 — Execution Kernel (breaking)**
+
+- Hierarchical decomposition with `memory/milestones/M###-NAME/slices/S##-NAME/tasks/T##-*.md`
+- Hybrid state model: SQLite durable store + markdown narrative
+- Git worktree isolation per milestone
+- Execution graph scheduler (blueprint, Semgrep, GitNexus run in parallel)
+- Fresh agent session per task
+
+**Tier 2 — Reliability and Supervision**
+
+- Timeout hierarchy: soft (wrap up), idle (probe), hard (halt + forensic bundle)
+- Stuck-loop detection via PatchSet hash comparison
+- Auto-lock + session forensics on crash
+- Turn-level git transactions with auto-rollback on failure
+
+**Tier 3 — Cost, Routing, Verification**
+
+- Budget-pressure model router (50/75/90% thresholds trigger progressive downgrade)
+- Capability-aware routing (score agents per task metadata)
+- Mechanical fix band between gate failure and RemediationAgent (lint, format, re-run)
+
+**Tier 4 — Harness-Engineering Alignment**
+
+- Golden rules as code (Semgrep and ESLint rules generated from CLAUDE.md conventions)
+- AGENTS.md top-level map with progressive disclosure
+- Tool-output compaction layer (raw persisted to disk, summary injected into context)
+- Agent-queryable observability (Playwright/deploy/build logs as JSONL)
+- Cross-review gate (second-pass reviewer on Gemini before deploy)
+- Doc-gardening recurring agent
+- Depth-first capability escalation (agents can halt and request new skills)
+
+**Tier 5 — Developer Experience**
+
+- Headless JSON state API (`gsd query`)
+- Forensics bundle command (`gsd forensics --run <id>`)
+- Knowledge harvest job (weekly pattern mining from decisions)
+- Scout and Researcher subagents for context gathering
+
+## 13.4 What V6 Preserves From V5
+
+- All 14 agents (no rewrites)
+- Dual auth (CLI OAuth primary, API key auto-fallback)
+- Vault memory structure (`memory/agents/`, `memory/knowledge/`, `memory/architecture/`, `memory/sessions/`, `memory/decisions/`)
+- 30-day feature-check cadence
+- Verification-first adoption process
+- The 5-model stack (Claude, Codex, Gemini, DeepSeek, MiniMax)
+- The SDLC Phase A-G workflow
+- All installed skills (107 Claude Code + 97 agent skills)
+
+## 13.5 What V6 Does NOT Do
+
+- Does not adopt Claude Code agent teams (still experimental; deferred to next 30-day check)
+- Does not replace the TypeScript harness with pure Claude Code native agents (multi-LLM routing is core value)
+- Does not introduce a new LLM provider
+- Does not alter the SDLC Phase A-G structure
+
+## 13.6 Migration Plan
+
+1. Complete any in-progress V5 milestones on V5 using `--from-stage` resume.
+2. For new work on V6.0+: run `gsd run <milestone>` — the same command still works; the implementation underneath migrates.
+3. Existing `memory/agents/`, `memory/knowledge/`, `memory/decisions/` stay in place.
+4. V6 adds `memory/milestones/`, `memory/state.db`, `memory/observability/`.
+5. `.gsd-worktrees/` gitignored; worktrees created on demand per milestone.
+
+## 13.7 Risks and Mitigations
+
+| Risk | Mitigation |
+|---|---|
+| SQLite contention on concurrent writes | Use `better-sqlite3` (synchronous) with vault-adapter-style lock |
+| Git worktrees unfamiliar to some devs | Document in developer guide; add `gsd worktree status` |
+| Hierarchical decomp overhead for tiny changes | Skip Milestone/Slice for single-task runs; fall through to V5 flow |
+| Compaction loses information agents need | Always persist raw to disk; agents can request by path |
+| Cross-review gate adds latency | Runs on Gemini Ultra (15 RPM, $0 marginal, 1M context); deploy-bound changes only |
+| Golden rules block edge cases | Each rule has `severity`; warnings don't block |
+
+## 13.8 Canonical References
+
+- Full design: `memory/architecture/v6-design.md`
+- ADR-006 (V4 harness decision)
+- ADR-007 (V5 hybrid + dual auth)
+- gsd-build/gsd-2: <https://github.com/gsd-build/gsd-2>
+- OpenAI harness engineering: <https://openai.com/index/harness-engineering/>
+
+---
+
 # Appendix A: Quick Command Reference
 
 | Task | Command |

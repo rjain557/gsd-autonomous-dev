@@ -2,7 +2,7 @@
 
 ## What this project is
 
-A multi-agent autonomous development system (V5.0) that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. Uses a TypeScript harness with typed agent contracts, Obsidian vault memory, dual-auth LLM routing (CLI OAuth primary at $0, API key backup when limits hit), and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon.
+A multi-agent autonomous development system (V5.0 in production; V6 designed) that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. Uses a TypeScript harness with typed agent contracts, Obsidian vault memory, dual-auth LLM routing (CLI OAuth primary at $0, API key backup when limits hit), and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon. V6 (designed in `memory/architecture/v6-design.md`) adds hierarchical decomposition (Milestone → Slice → Task), git worktree isolation, SQLite durable state, and harness-engineering alignment from the OpenAI playbook.
 
 ## Agent System Overview
 
@@ -299,7 +299,7 @@ Rules:
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **gsd-autonomous-dev** (1071 symbols, 2122 relationships, 67 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **gsd-autonomous-dev** (1096 symbols, 2147 relationships, 69 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
