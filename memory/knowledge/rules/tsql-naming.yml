@@ -1,0 +1,15 @@
+rules:
+  - id: gsd-v6-tsql-sp-naming
+    languages: [generic]
+    paths:
+      include:
+        - "*.sql"
+    patterns:
+      - pattern-regex: '(?i)CREATE\s+PROCEDURE\s+(?!dbo\.usp_[A-Z][a-zA-Z0-9]+_[A-Z][a-zA-Z0-9]+)'
+    message: >
+      Stored procedures must follow the naming convention `dbo.usp_Entity_Action`
+      (e.g. dbo.usp_Order_Create, dbo.usp_Order_ListByTenant).
+    severity: WARNING
+    metadata:
+      category: backend-sql
+      gsd-rule: tsql-naming

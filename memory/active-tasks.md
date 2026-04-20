@@ -8,9 +8,9 @@ type: project
 
 ## Task 0: 4.2 docs and memory alignment
 - **Status**: completed
-- **Scope**: aligned `readme.md`, `CLAUDE.md`, `docs/GSD-Developer-Guide.md`, `docs/GSD-Workstation-Setup.md`, `docs/GSD-Installation-Graphify.md`, `docs/GSD-V4-Implementation-Status.md`, `memory/MEMORY.md`, and `memory/knowledge/tools-reference.md`
-- **Outcome**: canonical docs now describe the full 4.2 augmentation stack, current skill layout, unified CLI/resume commands, and `.claude/settings.json` hook/MCP wiring accurately
-- **Follow-up if resumed**: sweep secondary legacy docs for leftover v4.1-only wording where it affects onboarding
+- **Scope**: aligned `readme.md`, `CLAUDE.md`, `docs/GSD-Developer-Guide.md`, `docs/GSD-Workstation-Setup.md`, `docs/workstation.md`, `docs/GSD-Installation-Graphify.md`, `memory/MEMORY.md`, and `memory/knowledge/tools-reference.md` to V6
+- **Outcome**: canonical docs now describe the V6 augmentation stack, current skill layout, unified CLI/resume commands, and `.claude/settings.json` hook/MCP wiring accurately
+- **Follow-up if resumed**: sweep secondary legacy docs for leftover pre-V6 wording where it affects onboarding
 
 ## Task 1: tech-web-chatai.v8 recovery handoff
 - **Pipeline status**: stopped by user; no matching pipeline process found in follow-up check

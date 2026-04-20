@@ -89,10 +89,30 @@ export function registerDefaultHooks(
   });
 
   // 4. Result Validator — onAfterRun
+  //
+  // The switch below validates output shapes for PIPELINE-stage agents
+  // (blueprint, review, gate, deploy, e2e, remediate, post-deploy). The
+  // SDLC orchestrator hardcodes state.currentStage = 'blueprint' when it
+  // registers these hooks, so without this guard every SDLC agent trips
+  // the BlueprintAnalysisAgent validator (which expects aligned/drifted
+  // fields — only BlueprintAnalysisAgent produces those). SDLC agents
+  // have their own output contracts enforced elsewhere in the SDLC flow.
+  const SDLC_AGENT_IDS = new Set([
+    'requirements-agent',
+    'architecture-agent',
+    'figma-integration-agent',
+    'phase-reconcile-agent',
+    'blueprint-freeze-agent',
+    'contract-freeze-agent',
+  ]);
+
   hooks.register('onAfterRun', 'result-validator', async (ctx: HookContext) => {
     if (!ctx.output) {
       throw new Error(`Agent ${ctx.agentId} returned null/undefined output`);
     }
+
+    // Skip pipeline-stage validation for SDLC agents — see comment above.
+    if (ctx.agentId && SDLC_AGENT_IDS.has(ctx.agentId)) return;
 
     // Type-specific validation based on stage
     const state = getState();

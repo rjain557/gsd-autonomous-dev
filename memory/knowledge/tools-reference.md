@@ -1,6 +1,6 @@
 ---
 type: knowledge
-description: Complete reference of the external augmentation stack available to v4.2 agents
+description: Complete reference of the external augmentation stack available to V6 agents
 ---
 
 # Pipeline Tools Reference

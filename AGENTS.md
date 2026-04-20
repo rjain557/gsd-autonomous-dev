@@ -1,3 +1,67 @@
+# GSD V6 Agent Map
+
+Top-level progressive-disclosure map of every agent in the V6 pipeline. Read this file first to understand which agent to use; then read the linked `memory/agents/*.md` for the full system prompt and contract.
+
+## Orchestrators
+
+| Agent | When to use | Vault Note |
+|-------|------------|------------|
+| `milestone-orchestrator` | Top-level V6 runner. Handles Milestone → Slice → Task hierarchy, worktree isolation, SQLite state, budget/capability routing. Invoked by `gsd run <milestone>`. | `memory/agents/milestone-orchestrator.md` |
+| `orchestrator` | Slice-level pipeline orchestrator. Runs the 7-stage pipeline (blueprint → review → remediate → gate → e2e → deploy → post-deploy) inside one slice. | `memory/agents/orchestrator.md` |
+
+## SDLC Agents (Phases A-E)
+
+| Agent | Phase | Role |
+|-------|-------|------|
+| `requirements-agent` | A | Build Intake Pack from project description |
+| `architecture-agent` | B | Diagrams, OpenAPI draft, data model, threat model, observability plan |
+| `figma-integration-agent` | C | Validate 12/12 Figma Make deliverables |
+| `phase-reconcile-agent` | A/B Reconcile | Merge design discoveries back into requirements and architecture |
+| `blueprint-freeze-agent` | D | Create immutable UI/UX blueprint |
+| `contract-freeze-agent` | E | Build SCG1 contract artifacts and compute gap report |
+
+## Pipeline Agents (Phases F-G)
+
+| Agent | Stage | Role |
+|-------|-------|------|
+| `blueprint-analysis-agent` | Blueprint | Detect aligned, drifted, and missing implementation against the blueprint/specs |
+| `code-review-agent` | Review | Standard review + adversarial design review |
+| `remediation-agent` | Remediate | Apply targeted patches, validate, report results |
+| `quality-gate-agent` | Gate | Enforce build, test, coverage, and security thresholds; runs golden rules from `memory/knowledge/rules/` |
+| `review-auditor-agent` | Post-Gate / Pre-Deploy | V6 cross-review gate — second opinion before deploy |
+| `e2e-validation-agent` | E2E | Validate routes, contracts, stored procedures, auth, browser rendering |
+| `deploy-agent` | Deploy | Deploy sequence with mandatory rollback on failure |
+| `post-deploy-validation-agent` | Post-Deploy | Verify live environment, SPA freshness, auth flow, bundle accessibility |
+
+## Subagents (Support)
+
+| Agent | Used by | Role |
+|-------|---------|------|
+| `scout-agent` | Blueprint, Review, Remediation | Reads specs and vault notes, returns summarized context |
+| `researcher-agent` | Remediation, E2E | Runs Context7 / GitNexus / Graphify queries, returns synthesized findings |
+
+## V6 Agent Invocation Rules
+
+- Agents are invoked with a **fresh context per task** (no long-lived accumulation across stages)
+- Every invocation records a Decision in SQLite (`memory/state.db`, `decisions` table) and a markdown trail in `memory/decisions/`
+- LLM model selection goes through `BudgetRouter` (downgrades at 50/75/90% of milestone budget) and optionally `CapabilityRouter` (scores agents against task metadata)
+- Every agent run is wrapped in `TimeoutHierarchy` (soft/idle/hard timeouts)
+- Tool output (bash/Semgrep/Playwright) runs through `CompactedExec` — agent sees summary, raw persisted on disk
+- **v6.1.0**: Every agent's system prompt carries a `PROJECT STACK CONTEXT` block injected by `BaseAgent.buildSystemPrompt()`. The block declares backend framework, SDK, data access, database, frontend, mobile, compliance, and agent language. Agents honor the declared values when generating artifacts — never emit `net8.0` when the context declares `net9.0`
+- **v6.1.0**: After the SDLC phase completes, `MilestoneOrchestrator` runs the stack-leak validator against generated artifacts. Findings are logged to observability (`gate-results`) and persisted as decisions in `state.db`
+
+## Progressive Disclosure
+
+Read order for new contributors:
+
+1. `README.md` / `CLAUDE.md` — project overview
+2. This file (`AGENTS.md`) — agent map
+3. `memory/architecture/v6-design.md` — full V6 architecture
+4. `memory/architecture/agent-system-design.md` — task graph
+5. `memory/agents/{agent}.md` — specific agent prompt and contract (only when needed)
+
+---
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 

@@ -1,10 +1,11 @@
 ---
 type: knowledge
-description: V4.1 model strategy — 3 Max subscriptions + 2 emergency API fallbacks, $0 marginal cost target
-date: 2026-04-08
+description: V6 model strategy — 3 Max subscriptions + 2 emergency API fallbacks, $0 marginal cost target
+date: 2026-04-19
+version: 6.0.0
 ---
 
-# V4.1 Model Strategy
+# V6 Model Strategy
 
 ## Principle
 
@@ -85,7 +86,7 @@ The orchestrator picks the first available agent from each phase's priority list
 4. **Review-chunking spreads load**: 50% safety factor = only use half the RPM per review wave
 5. **Time-of-day matters**: Run long convergence sessions overnight when subscription limits reset
 
-## V5.0 Dual Auth Strategy (OAuth + API Key)
+## Dual Auth Strategy (OAuth + API Key)
 
 The harness uses CLI OAuth as primary ($0 marginal cost) and auto-falls back to API key billing when subscription limits are hit. No manual intervention needed.
 
@@ -120,7 +121,7 @@ Review new Claude/OpenAI/Google features every 30 days. Full checklist: `memory/
 
 ## Cost Comparison
 
-| Scenario | V4.1 (3 Max subs) | V4.0 (Pro + API) | V2 (pure API) |
+| Scenario | V6 (3 Max subs) | Pro + API reference | Pure API reference |
 |---|---|---|---|
 | Light (5 iters) | $220-320 fixed, $0 variable | $60 + $40 API | $200+ |
 | Normal (20 iters) | $220-320 fixed, $0 variable | $60 + $80 API | $400+ |

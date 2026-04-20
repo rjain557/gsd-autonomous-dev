@@ -131,7 +131,7 @@ The pipeline auto-switches: CLI fails → 5-min cooldown → SDK takes over → 
 
 ### 2026-04-10 (Initial)
 - Established 30-day check schedule
-- V5.0: Hybrid architecture (TypeScript harness + Claude Code native features)
+- V6: Hybrid architecture (TypeScript harness + Claude Code native features, SQLite state, worktrees)
 - Dual auth: CLI OAuth primary, API key backup with auto-switch
 - Agent teams: experimental, monitoring for GA
 - Prompt caching: not yet applied (TODO for next check)

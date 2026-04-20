@@ -1,10 +1,10 @@
 ---
 type: architecture
 id: v6-design
-title: GSD V6 Design — Hierarchical decomposition, durable state, harness-engineering alignment
-status: Draft
-date: 2026-04-11
-supersedes: none
+title: GSD V6 Architecture — Hierarchical decomposition, durable state, harness-engineering alignment
+status: Active (canonical)
+date: 2026-04-19
+supersedes: V5.0 (archived)
 depends_on: [ADR-006, ADR-007]
 ---
 

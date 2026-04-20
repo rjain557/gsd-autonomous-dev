@@ -1,0 +1,19 @@
+rules:
+  - id: gsd-v6-react-no-tabindex-positive
+    languages: [tsx, ts, jsx, js]
+    patterns:
+      - pattern-either:
+          - pattern: tabIndex={$N}
+          - pattern: tabIndex="$N"
+      - metavariable-regex:
+          metavariable: $N
+          regex: '^[1-9][0-9]*$'
+    message: >
+      tabIndex values > 0 break natural focus order and create an accessibility
+      defect. Use tabIndex={0} to make an element focusable or tabIndex={-1}
+      to remove from tab order.
+    severity: ERROR
+    metadata:
+      category: frontend-react
+      gsd-rule: react-no-tabindex-positive
+      wcag: "2.4.3 Focus Order"

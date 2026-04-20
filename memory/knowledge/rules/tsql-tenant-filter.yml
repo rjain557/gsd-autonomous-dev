@@ -1,0 +1,19 @@
+rules:
+  - id: gsd-v6-tsql-tenant-filter
+    languages: [generic]
+    paths:
+      include:
+        - "*.sql"
+    patterns:
+      - pattern-either:
+          - pattern-regex: '(?is)SELECT[^;]+FROM\s+dbo\.(Orders|Users|Invoices|Accounts|Tenants|AuditLog)\s+(?!.*WHERE[^;]*TenantId)'
+          - pattern-regex: '(?is)UPDATE\s+dbo\.(Orders|Users|Invoices|Accounts|AuditLog)\s+(?!.*WHERE[^;]*TenantId)'
+          - pattern-regex: '(?is)DELETE\s+FROM\s+dbo\.(Orders|Users|Invoices|Accounts|AuditLog)\s+(?!.*WHERE[^;]*TenantId)'
+    message: >
+      Queries on tenant-scoped tables must include `WHERE TenantId = @TenantId`.
+      Missing tenant filter is a data-leak severity issue.
+    severity: ERROR
+    metadata:
+      category: backend-sql
+      gsd-rule: tenant-filter
+      compliance: [HIPAA, SOC2, PCI, GDPR]

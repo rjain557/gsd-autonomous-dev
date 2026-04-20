@@ -1,14 +1,13 @@
 # GSD Autonomous Dev - Project Memory
 
 ## Project Overview
-- **V4.2 (current)**: Full Technijian SDLC v6.0 lifecycle in TypeScript with 14 typed agents, Obsidian vault memory, unified `gsd run <milestone>` CLI, and CLI-first LLM routing ($0 marginal).
-- **V4.2 augmentation stack**: Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP Security, Shannon Lite, Claude Max, ChatGPT Max/Codex, Gemini Ultra.
-- **V4.1**: Pipeline-only TypeScript harness with 8 typed agents, Obsidian vault memory, CLI-first LLM routing ($0 marginal). 100% complete.
-- **V3 (legacy)**: 2-model API-only pipeline (Sonnet + Codex Mini). Still in `v3/` directory
-- **V2 (legacy)**: 7-agent CLI+REST system (44 install scripts). Still in `v2/` + `scripts/`
+- **V6 (canonical)**: Full Technijian SDLC lifecycle in TypeScript with 14 typed agents, Milestone → Slice → Task → Stage hierarchy, hybrid SQLite + Obsidian vault memory, git worktree isolation per milestone, execution graph scheduler, unified `gsd run <milestone>` CLI, and dual-auth LLM routing ($0 marginal).
+- **V6 augmentation stack**: Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP Security, Shannon Lite, Claude Max, ChatGPT Max/Codex, Gemini Ultra.
+- **Claude Memory Stack**: `claude-memory/` vault (Obsidian, OneDrive-synced) with retrieval/consolidate/health hooks and `/vault-status`, `/review`, `/consolidate`, `/contradictions`, `/volatility`, `/graduate` commands.
 - **Graphify**: Knowledge graph integration — `graphify-out/` has GRAPH_REPORT.md, graph.json, graph.html
-- **Repo wiring**: `.claude/settings.json` commits the Graphify `PreToolUse` reminder and GitHub MCP config; `.claude/skills/` holds project skills; `.agents/skills/` holds OWASP + Shannon reference skills.
-- Backend: .NET 8 + Dapper + SQL Server stored procs | Frontend: React 18 | Compliance: HIPAA, SOC 2, PCI, GDPR
+- **Repo wiring**: `.claude/settings.json` registers all V6 hooks (retrieve, impact-check, reindex, consolidate, health-check, preference-extract) + GitHub MCP; `.claude/skills/` holds project skills; `.agents/skills/` holds OWASP + Shannon reference skills.
+- Backend: .NET 8 + Dapper + SQL Server stored procs | Frontend: React 18 + Fluent UI v9 | Compliance: HIPAA, SOC 2, PCI, GDPR
+- **Pre-V6 artifacts:** Legacy docs archived in `docs/legacy/`. Do not use for current development.
 
 ## Key Directories
 - Engine install: `%USERPROFILE%\.gsd-global\`
@@ -19,14 +18,16 @@
 - Pricing cache: `%USERPROFILE%\.gsd-global\pricing-cache.json`
 - Intelligence: `%USERPROFILE%\.gsd-global\intelligence\` (agent scores, pattern cache)
 
-## Documentation Structure (current canon)
-1. **GSD-Developer-Guide.md** - Full v4.2 SDLC + pipeline guide; canonical source for Word export
-2. **GSD-Workstation-Setup.md** - Fresh-machine setup for tools, skills, MCPs, secrets, verification
-3. **GSD-Installation-Graphify.md** - Graphify-first augmentation stack setup: Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, Shannon
-4. **GSD-Claude-Code-Skills.md** - SQL/UI/design skill reference for `.claude/skills/`
-5. **GSD-V4-Implementation-Status.md** - Current 4.2 implementation and maturity snapshot
-6. **GSD-Architecture.md** - Engine overview, data flow, agents, resilience, notifications
+## Documentation Structure (V6 canon)
+1. **GSD-Developer-Guide.md** - Full V6 SDLC + pipeline guide; canonical source for Word export
+2. **GSD-Workstation-Setup.md** - Fresh-machine base toolchain setup
+3. **workstation.md** - Per-workstation Claude memory stack + hooks config
+4. **GSD-Installation-Graphify.md** - Graphify-first augmentation stack setup: Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, Shannon
+5. **GSD-Claude-Code-Skills.md** - SQL/UI/design skill reference for `.claude/skills/`
+6. **GSD-Configuration.md** - Runtime configuration reference
 7. **GSD-Troubleshooting.md** - Installation, runtime, health, JSON, and boundary issues
+8. **memory/architecture/v6-design.md** - Canonical V6 architecture design
+9. **docs/legacy/** - Pre-V6 archived docs (do not use)
 
 ## Iteration Flow (2026-03-10)
 ```
@@ -41,7 +42,7 @@ At 100% convergence: Full code review + spec/Figma verification + quality gate -
 ## User Preferences
 - User creates Word developer guides from the markdown docs
 - Docs should be comprehensive enough for standalone Word doc export
-- Developer guide v4.2 source of truth: `docs/GSD-Developer-Guide.md`; Word export via `docs/generate-docx.py`
+- Developer guide V6 source of truth: `docs/GSD-Developer-Guide.md`; Word export via `docs/generate-docx.py`
 - 2026-04-10 docs alignment: `readme.md`, `docs/GSD-Workstation-Setup.md`, `docs/GSD-Installation-Graphify.md`, and `docs/GSD-Developer-Guide.md` are aligned to the full 4.2 augmentation stack and current skill layout
 - User charges clients 5-10x markup on calculated token costs (7x default)
 - **Window management**: ALWAYS kill the old process BEFORE starting a new one. Never leave orphaned PowerShell windows
@@ -81,7 +82,7 @@ At 100% convergence: Full code review + spec/Figma verification + quality gate -
 - [feedback_partial_promotion.md](feedback_partial_promotion.md) - Every cron tick: promote partial reqs to satisfied when referenced files exist
 - [telegram-bridge.md](telegram-bridge.md) - Telegram bridge setup, config, bot token, startup commands, known issues
 
-## V4.1 Architecture (vault-based)
+## V6 Architecture (vault-based)
 - [agents/](agents/) - 8 agent vault notes with frontmatter (model, tools, timeouts)
 - [architecture/agent-system-design.md](architecture/agent-system-design.md) - 7-step task graph, agent roster
 - [architecture/state-schema.md](architecture/state-schema.md) - TypeScript type definitions for all agent I/O

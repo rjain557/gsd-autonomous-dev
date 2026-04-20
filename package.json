@@ -1,7 +1,7 @@
 {
   "name": "gsd-autonomous-dev",
-  "version": "5.0.0",
-  "description": "GSD Autonomous Development Pipeline — Multi-Agent System with Vault Memory",
+  "version": "6.1.0",
+  "description": "GSD V6 Autonomous Development Pipeline — Multi-Agent System with Hierarchical Decomposition, Durable State, Per-Project Stack Overrides, and Vault Memory",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -10,16 +10,19 @@
     "pipeline:dry": "ts-node src/index.ts pipeline run --dry-run",
     "evals": "ts-node src/evals/runner.ts",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run evals"
+    "test:v6": "ts-node src/harness/v6/__tests__/v6-tests.ts",
+    "test": "npm run typecheck && npm run test:v6 && npm run evals"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.86.0",
+    "better-sqlite3": "^11.10.0",
     "docx": "^9.6.1",
     "playwright": "^1.59.1",
     "proper-lockfile": "^4.1.2",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/uuid": "^9.0.0",

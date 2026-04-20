@@ -1,0 +1,15 @@
+rules:
+  - id: gsd-v6-tsql-no-select-star
+    languages: [generic]
+    paths:
+      include:
+        - "*.sql"
+    patterns:
+      - pattern-regex: '(?i)\bSELECT\s+\*'
+    message: >
+      Use an explicit column list instead of SELECT *. Implicit column lists
+      drift silently when the table schema changes and leak unintended data.
+    severity: ERROR
+    metadata:
+      category: backend-sql
+      gsd-rule: no-select-star

@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════
-// GSD Agent System — SDLC Types & Schemas
-// Types for Phases A-E of the Technijian SDLC v6.0 lifecycle.
-// These phases produce artifacts consumed by the v4.1 pipeline.
+// GSD V6 — SDLC Types & Schemas
+// Types for Phases A-E of the Technijian SDLC lifecycle.
+// These phases produce artifacts consumed by the Pipeline (Phases F-G).
 // ═══════════════════════════════════════════════════════════
 
 // ── SDLC Phase Identity ─────────────────────────────────────
@@ -13,7 +13,7 @@ export type SdlcPhase =
   | 'phase-ab-reconcile' // Update A/B based on Figma output
   | 'phase-d'           // Blueprint freeze
   | 'phase-e'           // Contract freeze (SCG1)
-  | 'pipeline';         // Hand off to existing v4.1 pipeline
+  | 'pipeline';         // Hand off to Pipeline Orchestrator (Phases F-G)
 
 export type SdlcStatus = 'pending' | 'running' | 'paused' | 'failed' | 'complete';
 

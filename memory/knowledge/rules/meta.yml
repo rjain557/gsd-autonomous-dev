@@ -1,0 +1,32 @@
+# Rule registry metadata for GSD V6
+# Fields: id, enabled, severity_override, owner, notes
+rules:
+  - id: gsd-v6-tsql-sp-naming
+    file: tsql-naming.yml
+    enabled: true
+    owner: quality-gate-agent
+    notes: "Enforces dbo.usp_Entity_Action convention."
+
+  - id: gsd-v6-tsql-no-select-star
+    file: tsql-no-select-star.yml
+    enabled: true
+    owner: quality-gate-agent
+    notes: "Blocking: SELECT * in stored procs."
+
+  - id: gsd-v6-tsql-tenant-filter
+    file: tsql-tenant-filter.yml
+    enabled: true
+    owner: quality-gate-agent
+    notes: "Blocking: missing tenant filter on tenant-scoped tables."
+
+  - id: gsd-v6-tsql-nvarchar-max-param
+    file: tsql-nvarchar-max.yml
+    enabled: true
+    owner: quality-gate-agent
+    notes: "Warning: prefer explicit NVARCHAR length."
+
+  - id: gsd-v6-react-no-tabindex-positive
+    file: react-no-tabindex-positive.yml
+    enabled: true
+    owner: quality-gate-agent
+    notes: "Blocking: accessibility defect."

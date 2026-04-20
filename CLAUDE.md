@@ -1,8 +1,10 @@
-# GSD Autonomous Dev — Claude Code Project Configuration
+# GSD V6 Autonomous Dev — Claude Code Project Configuration
 
 ## What this project is
 
-A multi-agent autonomous development system (V5.0 in production; V6 designed) that drives .NET 8 + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. Uses a TypeScript harness with typed agent contracts, Obsidian vault memory, dual-auth LLM routing (CLI OAuth primary at $0, API key backup when limits hit), and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon. V6 (designed in `memory/architecture/v6-design.md`) adds hierarchical decomposition (Milestone → Slice → Task), git worktree isolation, SQLite durable state, and harness-engineering alignment from the OpenAI playbook.
+A V6 multi-agent autonomous development system that drives .NET (configurable, default .NET 8) + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. Canonical architecture is documented in `memory/architecture/v6-design.md` and `docs/GSD-Developer-Guide.md`. Projects can declare `net9.0` or `net10.0` in `docs/gsd/stack-overrides.md` (see GSD Developer Guide §1.4.1).
+
+V6 combines a TypeScript harness with typed agent contracts, hierarchical decomposition (Milestone → Slice → Task → Stage), hybrid SQLite + vault memory, git worktree isolation per milestone, an execution graph scheduler, dual-auth LLM routing (CLI OAuth primary at $0, API key backup when limits hit), and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon.
 
 ## Agent System Overview
 
@@ -32,16 +34,20 @@ All system prompts live in `memory/agents/` vault notes, runtime configuration l
 | DeployAgent | `src/agents/deploy-agent.ts` | `memory/agents/deploy-agent.md` | Deploy with rollback |
 | PostDeployValidationAgent | `src/agents/post-deploy-validation-agent.ts` | `memory/agents/post-deploy-validation-agent.md` | Validate live env: SPA cache, DI, no 500s |
 
-## Vault Memory Structure
+## Vault Memory Structure (V6)
 
 ```
 memory/
   agents/           - Agent system prompts and configs (frontmatter + body)
   knowledge/        - Pipeline configs, quality gates, deploy targets, rollback procedures, project paths
-  architecture/     - System design docs, state schema, hook registry
+    rules/          - Golden-rules-as-code (Semgrep/ESLint YAML)
+  architecture/     - v6-design.md (canonical), agent-system-design, state schema, hook registry
+  milestones/       - V6 hierarchical runtime: M{nnn}/ROADMAP.md, slices/, tasks/
+  observability/    - Structured logs: e2e-traces/, deploy-logs/, gate-results/, build-output/
   sessions/         - Append-only run logs (auto-created per run)
   decisions/        - Orchestrator decision records with rationale
   evals/            - Test cases and results
+  state.db          - V6 SQLite durable state (milestones, slices, tasks, decisions)
 ```
 
 ## How to Start a Pipeline Run
@@ -115,7 +121,7 @@ Claude Code also handles 3 phases of the legacy PowerShell convergence loop:
 
 Legacy write paths: `.gsd/health/`, `.gsd/code-review/`, `.gsd/generation-queue/`, `.gsd/agent-handoff/current-assignment.md`
 
-**Note:** `config/agent-map.json` and `config/global-config.json` are PowerShell-legacy only. The TypeScript harness (v4.2) reads runtime configuration from `memory/knowledge/` and `memory/agents/` vault notes.
+**Note:** `config/agent-map.json` and `config/global-config.json` are PowerShell-legacy only. The V6 TypeScript harness reads runtime configuration from `memory/knowledge/` and `memory/agents/` vault notes.
 
 ---
 
@@ -164,7 +170,7 @@ Full skills reference: `docs/GSD-Claude-Code-Skills.md`
 
 ## Project Patterns (enforced for all generated projects)
 
-- **Backend**: .NET 8 + Dapper + SQL Server stored procedures only (no EF Core, no inline SQL)
+- **Backend**: .NET (configurable per project via `docs/gsd/stack-overrides.md`; default .NET 8) + Dapper + SQL Server stored procedures only (no EF Core, no inline SQL)
 - **Frontend**: React 18 + TypeScript + Fluent UI React v9 + React Query v5
 - **Auth**: JWT, role-based, with DB-driven module-level navigation guards (SEC-FE-17–21)
 - **Compliance**: HIPAA, SOC 2, PCI, GDPR

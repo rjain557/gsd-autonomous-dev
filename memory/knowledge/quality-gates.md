@@ -13,6 +13,8 @@ description: Quality gate thresholds for pipeline pass/fail decisions
 | npm run build | 0 errors | Yes |
 | Build warnings | < 50 | No (warn) |
 
+> **SDK version (v6.1.0+):** The .NET SDK used for `dotnet build` is determined by the project stack context. Defaults to .NET 8 SDK if no override is declared in `docs/gsd/stack-overrides.md` of the target project. The SDK must support the project's declared `backendFramework`. See [`src/harness/project-stack-context.ts`](../../src/harness/project-stack-context.ts).
+
 ## Coverage Gate
 
 | Metric | Threshold | Block on Fail |

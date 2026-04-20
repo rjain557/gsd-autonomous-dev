@@ -1,0 +1,16 @@
+rules:
+  - id: gsd-v6-tsql-nvarchar-max-param
+    languages: [generic]
+    paths:
+      include:
+        - "*.sql"
+    patterns:
+      - pattern-regex: '(?i)@\w+\s+NVARCHAR\s*\(\s*MAX\s*\)'
+    message: >
+      Parameters should use explicit length (NVARCHAR(100), NVARCHAR(4000), etc.)
+      instead of NVARCHAR(MAX). Implicit conversions with NVARCHAR(MAX)
+      degrade plan quality and can cause unexpected truncation.
+    severity: WARNING
+    metadata:
+      category: backend-sql
+      gsd-rule: nvarchar-max

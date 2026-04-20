@@ -67,7 +67,7 @@
                                              "requirements"
                                          ],
                                 "enabled":  false,
-                                "disabled_reason": "v4.0: Redundant with DeepSeek/MiniMax. Higher cost ($0.60/$2.50/M). Re-enable for council voting if needed.",
+                                "disabled_reason": "Redundant with DeepSeek/MiniMax. Higher cost ($0.60/$2.50/M). Re-enable for council voting if needed.",
                                 "thinking_flag":  "--thinking",
                                 "no_thinking_flag":  "--no-thinking",
                                 "note":  "Kimi Code CLI v1.17+. Install: pip install kimi-cli. Auth: KIMI_API_KEY env var.",
@@ -117,7 +117,7 @@
                                          ],
                                 "supports_tools":  true,
                                 "enabled":  false,
-                                "disabled_reason": "v4.0: Corporate firewall blocks 128.14.69.x. Highest API cost ($1.00/$3.20/M). Use DeepSeek/MiniMax instead.",
+                                "disabled_reason": "Corporate firewall blocks 128.14.69.x. Highest API cost ($1.00/$3.20/M). Use DeepSeek/MiniMax instead.",
                                 "endpoint_note":  "International endpoint (api.z.ai). Get API key from z.ai. Requires firewall whitelist for 128.14.69.x",
                                 "rate_limits":  {
                                     "rpm":  30,
