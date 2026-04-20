@@ -14,7 +14,12 @@ export type AgentId =
   | 'quality-gate-agent'
   | 'e2e-validation-agent'
   | 'post-deploy-validation-agent'
-  | 'deploy-agent';
+  | 'deploy-agent'
+  // V6 additions:
+  | 'milestone-orchestrator'
+  | 'review-auditor-agent'
+  | 'scout-agent'
+  | 'researcher-agent';
 
 export type PipelineStage =
   | 'blueprint'
@@ -23,6 +28,7 @@ export type PipelineStage =
   | 'e2e'
   | 'post-deploy'
   | 'gate'
+  | 'audit'          // V6: ReviewAuditor cross-review between gate and deploy
   | 'deploy'
   | 'complete';
 

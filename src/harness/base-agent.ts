@@ -17,6 +17,15 @@ import { AgentTimeoutError } from './types';
 import type { VaultAdapter } from './vault-adapter';
 import type { HookSystem } from './hooks';
 import type { RateLimiter } from './rate-limiter';
+import { runWithTimeouts } from './v6/timeout-hierarchy';
+import type { TaskTimeouts } from './v6/types';
+import type { ObservabilityLogger, ObservabilityCategory } from './v6/observability-logger';
+import type { BudgetRouter, ModelTier } from './v6/budget-router';
+import { compactedRun, type CompactedResult } from './v6/compacted-exec';
+import { spawnCli } from './v6/spawn-cli';
+import type { SubagentRegistry } from './v6/subagent-registry';
+import type { ProjectStackContext } from './project-stack-context';
+import { DEFAULT_STACK_CONTEXT, renderStackContextBlock } from './project-stack-context';
 
 export abstract class BaseAgent {
   protected agentId: AgentId;
@@ -27,6 +36,14 @@ export abstract class BaseAgent {
   protected systemPrompt: string = '';
   private rateLimiter: RateLimiter | null = null;
   private cliAgentId: string = 'claude'; // which CLI model this agent routes to
+  // V6: milestone context (optional — null for standalone slice/phase runs)
+  protected observability: ObservabilityLogger | null = null;
+  protected budgetRouter: BudgetRouter | null = null;
+  protected milestoneRunId: string | null = null;
+  protected compactedOutputDir: string | null = null;
+  protected _subagents: SubagentRegistry | null = null;
+  // v6.1.0: per-project stack context (defaults to .NET 8 when no override declared)
+  protected projectStackContext: ProjectStackContext = DEFAULT_STACK_CONTEXT;
 
   constructor(
     agentId: AgentId,
@@ -46,6 +63,109 @@ export abstract class BaseAgent {
     this.cliAgentId = cliAgentId;
   }
 
+  /** V6: attach milestone context so the agent can log observability + route budget. */
+  setMilestoneContext(ctx: {
+    observability?: ObservabilityLogger | null;
+    budgetRouter?: BudgetRouter | null;
+    runId?: string | null;
+    compactedOutputDir?: string | null;
+  }): void {
+    if (ctx.observability !== undefined) this.observability = ctx.observability;
+    if (ctx.budgetRouter !== undefined) this.budgetRouter = ctx.budgetRouter;
+    if (ctx.runId !== undefined) this.milestoneRunId = ctx.runId;
+    if (ctx.compactedOutputDir !== undefined) this.compactedOutputDir = ctx.compactedOutputDir;
+  }
+
+  /**
+   * v6.1.0: attach per-project stack context. Defaults to .NET 8 when no
+   * override is declared. Agents must honor this context when generating
+   * artifacts (csproj TargetFramework, SDK references, architecture prose).
+   */
+  setProjectStackContext(ctx: ProjectStackContext): void {
+    this.projectStackContext = ctx;
+  }
+
+  /**
+   * v6.1.0: accessor for the project stack context. Subclasses use this
+   * to derive runtime values (framework strings, SDK paths, etc.).
+   */
+  protected getProjectStackContext(): ProjectStackContext {
+    return this.projectStackContext;
+  }
+
+  /**
+   * V6: Fresh context per task — reset transient state fields before invoking run().
+   * The PipelineState reference is preserved (it's the shared mutable slice state),
+   * but the agent starts each call with a clean working slate: no accumulated
+   * prompt context, no stale prior output, no carried-over retry state.
+   *
+   * Subclasses can override to clear subclass-specific fields.
+   */
+  protected resetTaskContext(): void {
+    // BaseAgent has no accumulated context of its own, but the hook is here
+    // so subclasses can wipe their per-task scratch. Called automatically
+    // at the start of each execute().
+  }
+
+  /** V6: emit a structured observability event (no-op if no logger attached). */
+  protected logObs(category: ObservabilityCategory, kind: string, data: Record<string, unknown>): void {
+    if (!this.observability) return;
+    this.observability.log(category, kind, { agentId: this.agentId, ...data });
+  }
+
+  /**
+   * V6: pick the CLI model for this agent's next call based on budget pressure.
+   * Returns the model ID (claude/codex/gemini/deepseek). Falls back to the
+   * rate-limiter's current assignment if no budget context is attached.
+   */
+  protected pickModelWithBudget(preferred: ModelTier = 'premium'): string {
+    if (!this.budgetRouter) return this.cliAgentId;
+    const pick = this.budgetRouter.pickModel(preferred);
+    this.logObs('router-decisions', 'budget-routed', {
+      preferred,
+      picked: pick.model,
+      tier: pick.tier,
+      reason: pick.reason,
+    });
+    return pick.model;
+  }
+
+  /** V6: lazy-initialized subagent registry. Subclasses can call this.subagents().scoutVault(...). */
+  protected subagents(): SubagentRegistry {
+    if (!this._subagents) {
+      // Dynamic require breaks the circular dep (base-agent ↔ subagent-registry)
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SubagentRegistry: Cls } = require('./v6/subagent-registry') as typeof import('./v6/subagent-registry');
+      this._subagents = new Cls(this.vaultAdapter, this.hooks, this.state);
+    }
+    return this._subagents;
+  }
+
+  /** V6: run a shell command with raw output persisted to disk, summary returned. */
+  protected async compactedExec(
+    command: string,
+    args: string[],
+    opts: { cwd?: string; timeoutMs?: number } = {},
+  ): Promise<CompactedResult> {
+    const outputDir = this.compactedOutputDir ?? './memory/observability/raw-tool-output';
+    const runId = this.milestoneRunId ?? this.state.runId;
+    const result = await compactedRun(command, args, {
+      cwd: opts.cwd ?? process.cwd(),
+      outputDir,
+      runId,
+      timeoutMs: opts.timeoutMs,
+    });
+    this.logObs('build-output', 'compacted-exec', {
+      command,
+      args: args.slice(0, 5),
+      exitCode: result.exitCode,
+      rawSize: result.rawSize,
+      rawPath: result.rawPath,
+      durationMs: result.durationMs,
+    });
+    return result;
+  }
+
   /** Load agent config and system prompt from vault note. */
   async initialize(): Promise<void> {
     const note = await this.vaultAdapter.read(`agents/${this.agentId}.md`);
@@ -63,6 +183,9 @@ export abstract class BaseAgent {
   async execute(input: AgentInput): Promise<AgentOutput> {
     const startTime = Date.now();
 
+    // V6: fresh task context — wipe any per-task scratch before hooks fire
+    this.resetTaskContext();
+
     await this.hooks.fire('onBeforeRun', {
       runId: this.state.runId,
       agentId: this.agentId,
@@ -71,8 +194,32 @@ export abstract class BaseAgent {
     });
 
     try {
-      const timeoutMs = (this.agentConfig.timeout_seconds ?? 120) * 1000;
-      const output = await this.withTimeout(this.run(input), timeoutMs);
+      // V6: timeout hierarchy (soft / idle / hard)
+      const hard = this.agentConfig.timeout_seconds ?? 120;
+      const timeouts: TaskTimeouts = {
+        softTimeoutSec: Math.max(30, Math.floor(hard * 0.4)),
+        idleTimeoutSec: Math.max(60, Math.floor(hard * 0.6)),
+        hardTimeoutSec: hard,
+      };
+      const runResult = await runWithTimeouts<AgentOutput>(
+        async (_signalProgress) => this.run(input),
+        timeouts,
+        {
+          onSoftTimeout: async () => {
+            console.log(`[${this.agentId}] soft timeout (${timeouts.softTimeoutSec}s) — wrap up signal`);
+          },
+          onIdleTimeout: async () => {
+            console.log(`[${this.agentId}] idle timeout (${timeouts.idleTimeoutSec}s) — progress probe`);
+          },
+          onHardTimeout: async () => {
+            console.error(`[${this.agentId}] HARD timeout (${timeouts.hardTimeoutSec}s) — forensic bundle will be required`);
+          },
+        },
+      );
+      if (runResult.timedOut || runResult.result === null) {
+        throw new AgentTimeoutError(this.agentId, timeouts.hardTimeoutSec * 1000);
+      }
+      const output = runResult.result;
 
       const durationMs = Date.now() - startTime;
       await this.hooks.fire('onAfterRun', {
@@ -106,17 +253,23 @@ export abstract class BaseAgent {
   /**
    * Build a context-injected system prompt from vault.
    * Reads the agent's configured "reads" notes and appends them.
+   *
+   * v6.1.0: every prompt receives a `PROJECT STACK CONTEXT` block so
+   * agents honor the project's declared backend framework, SDK, and
+   * related stack choices (default .NET 8 preserved for backward compat).
    */
   protected async buildSystemPrompt(extraNotes?: string[]): Promise<string> {
     const readPaths = (this.agentConfig.reads as string[] | undefined) ?? [];
     const allPaths = [...readPaths, ...(extraNotes ?? [])];
 
+    const stackBlock = renderStackContextBlock(this.projectStackContext);
+
     if (allPaths.length === 0) {
-      return this.systemPrompt;
+      return `${this.systemPrompt}\n\n${stackBlock}`;
     }
 
     const context = await this.vaultAdapter.buildContext(allPaths);
-    return `${this.systemPrompt}\n\n---\n\n# Context from vault\n\n${context}`;
+    return `${this.systemPrompt}\n\n${stackBlock}\n\n---\n\n# Context from vault\n\n${context}`;
   }
 
   /**
@@ -229,29 +382,43 @@ export abstract class BaseAgent {
     }
   }
 
-  /** CLI fallback path — used when ANTHROPIC_API_KEY is not set. */
+  /**
+   * CLI fallback path — used when ANTHROPIC_API_KEY is not set.
+   *
+   * Uses spawnCli so that Windows .cmd shims resolve (via shell: true) AND
+   * the prompt text flows through stdin rather than argv — which means
+   * quotes, $, backticks, &, |, and other shell metacharacters in the
+   * prompt are never parsed by a shell. argv contains only safe constants.
+   */
   private async callLLMWithCLI(
     systemPromptText: string,
     userMessage: string,
     model: string,
   ): Promise<string> {
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
+    const fullPrompt = `${systemPromptText}\n\n---\n\nUser request:\n${userMessage}`;
+    const timeoutMs = ((this.agentConfig.timeout_seconds as number) ?? 120) * 1000;
 
     try {
-      const fullPrompt = `${systemPromptText}\n\n---\n\nUser request:\n${userMessage}`;
+      const { stdout, stderr, exitCode } = await spawnCli(
+        'claude',
+        [
+          '--model', model,
+          '--print',
+          '--output-format', 'text',
+          '--max-turns', '1',
+        ],
+        {
+          stdin: fullPrompt,
+          timeoutMs,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      );
 
-      const { stdout } = await execFileAsync('claude', [
-        '--model', model,
-        '--print',
-        '--output-format', 'text',
-        '--max-turns', '1',
-        '-p', fullPrompt,
-      ], {
-        timeout: ((this.agentConfig.timeout_seconds as number) ?? 120) * 1000,
-        maxBuffer: 10 * 1024 * 1024,
-      });
+      if (exitCode !== 0) {
+        throw new Error(
+          `CLI exited ${exitCode}: ${stderr.slice(0, 500) || '(no stderr)'}`,
+        );
+      }
 
       return stdout.trim();
     } catch (error) {

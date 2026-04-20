@@ -183,23 +183,39 @@ export class QualityGateAgent extends BaseAgent {
     }
 
     // Optional: run Semgrep SAST if installed (free, OSS)
+    // V6: also run golden rules from memory/knowledge/rules/ alongside --config auto
     try {
-      // Try semgrep directly, then python -m semgrep (Windows PATH workaround)
-      let semgrep = await this.runCheck('semgrep --config auto --json . 2>&1', 120_000);
-      if (!semgrep.success) semgrep = await this.runCheck('python -m semgrep --config auto --json . 2>&1', 120_000);
-      if (!semgrep.success) semgrep = await this.runCheck('python3 -m semgrep --config auto --json . 2>&1', 120_000);
-      if (semgrep.success) {
+      const runSemgrep = async (configArg: string): Promise<{ success: boolean; output: string }> => {
+        let r = await this.runCheck(`semgrep ${configArg} --json . 2>&1`, 120_000);
+        if (!r.success) r = await this.runCheck(`python -m semgrep ${configArg} --json . 2>&1`, 120_000);
+        if (!r.success) r = await this.runCheck(`python3 -m semgrep ${configArg} --json . 2>&1`, 120_000);
+        return r;
+      };
+
+      const parseResults = (output: string, source: string): void => {
         try {
-          const output = JSON.parse(semgrep.output);
-          const semgrepResults = output.results ?? [];
-          for (const r of semgrepResults) {
+          const parsed = JSON.parse(output);
+          const results = parsed.results ?? [];
+          for (const r of results) {
             const severity = (r.extra?.severity ?? 'WARNING').toUpperCase();
-            const msg = `semgrep [${severity}] ${r.check_id}: ${r.path}:${r.start?.line ?? '?'}`;
+            const msg = `semgrep[${source}] [${severity}] ${r.check_id}: ${r.path}:${r.start?.line ?? '?'}`;
             findings.push(msg);
             if (severity === 'ERROR') hasCritical = true;
           }
-          console.log(`[QUALITY-GATE] Semgrep found ${semgrepResults.length} findings`);
-        } catch { /* Semgrep output not parseable */ }
+          console.log(`[QUALITY-GATE] Semgrep (${source}) found ${results.length} findings`);
+        } catch { /* not parseable */ }
+      };
+
+      // Standard rules
+      const auto = await runSemgrep('--config auto');
+      if (auto.success) parseResults(auto.output, 'auto');
+
+      // V6: golden rules from vault
+      const { existsSync } = await import('fs');
+      const rulesDir = 'memory/knowledge/rules';
+      if (existsSync(rulesDir)) {
+        const golden = await runSemgrep(`--config ${rulesDir}`);
+        if (golden.success) parseResults(golden.output, 'golden-rules');
       }
     } catch {
       // Semgrep not installed — regex-only scanning (acceptable)

@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════
-// GSD Agent System — SDLC Orchestrator
-// Orchestrates Phases A-E of the Technijian SDLC v6.0,
+// GSD V6 — SDLC Orchestrator
+// Orchestrates Phases A-E of the Technijian SDLC,
 // then hands off to the Pipeline Orchestrator (Phases F-G).
 // ═══════════════════════════════════════════════════════════
 
@@ -25,6 +25,7 @@ import { RateLimiter } from './rate-limiter';
 import { registerDefaultHooks } from './default-hooks';
 import { BaseAgent } from './base-agent';
 import { Orchestrator } from './orchestrator';
+import { getProjectStackContext } from './project-stack-context';
 
 // Agent imports
 import { RequirementsAgent } from '../agents/requirements-agent';
@@ -57,13 +58,16 @@ export class SdlcOrchestrator {
   private hooks: HookSystem;
   private rateLimiter: RateLimiter;
   private pipelineOrchestrator: Orchestrator;
+  // v6.1.0: project root for per-project stack-overrides resolution
+  private projectRoot: string;
   state: SdlcState;
 
-  constructor(vaultPath: string) {
+  constructor(vaultPath: string, projectRoot: string = process.cwd()) {
     this.vault = new VaultAdapter(vaultPath);
     this.hooks = new HookSystem();
     this.rateLimiter = new RateLimiter(0.8);
-    this.pipelineOrchestrator = new Orchestrator(vaultPath);
+    this.pipelineOrchestrator = new Orchestrator(vaultPath, projectRoot);
+    this.projectRoot = projectRoot;
     this.state = this.createInitialState();
   }
 
@@ -100,10 +104,16 @@ export class SdlcOrchestrator {
       ['contract-freeze-agent', ContractFreezeAgent],
     ];
 
+    // v6.1.0: resolve project stack context once per run (reads
+    // <projectRoot>/docs/gsd/stack-overrides.md; defaults to .NET 8)
+    const stackContext = await getProjectStackContext(this.projectRoot);
+    console.log(`[SDLC] Project stack: ${stackContext.backendFramework} (source: ${stackContext.source})`);
+
     for (const [id, AgentClass] of agentDefs) {
       const agent = new (AgentClass as new (...args: unknown[]) => BaseAgent)(id, this.vault, this.hooks, {});
       await agent.initialize();
       agent.setRateLimiter(this.rateLimiter, 'claude');
+      agent.setProjectStackContext(stackContext);
       this.agents.set(id, agent);
     }
 
@@ -154,7 +164,7 @@ export class SdlcOrchestrator {
 
       try {
         if (phase === 'pipeline') {
-          // Hand off to existing v4.1 pipeline
+          // Hand off to Pipeline Orchestrator (Phases F-G)
           console.log(`[SDLC] Handing off to Pipeline Orchestrator (Phases F-G)...`);
           const pipelineResult = await this.pipelineOrchestrator.run({
             trigger: trigger.trigger,

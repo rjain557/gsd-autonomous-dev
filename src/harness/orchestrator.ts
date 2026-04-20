@@ -36,6 +36,19 @@ import { QualityGateAgent } from '../agents/quality-gate-agent';
 import { E2EValidationAgent } from '../agents/e2e-validation-agent';
 import { PostDeployValidationAgent } from '../agents/post-deploy-validation-agent';
 import { DeployAgent } from '../agents/deploy-agent';
+import { ReviewAuditorAgent } from '../agents/review-auditor-agent';
+
+// V6 primitives
+import { StuckDetector } from './v6/stuck-detector';
+import { runMechanicalFixBand } from './v6/mechanical-fix';
+import { StateDB } from './v6/state-db';
+import type { ObservabilityLogger } from './v6/observability-logger';
+import type { BudgetRouter } from './v6/budget-router';
+import { CapabilityRouter } from './v6/capability-router';
+import type { AgentCapability } from './v6/types';
+import { GitTxn } from './v6/git-txn';
+import { getProjectStackContext } from './project-stack-context';
+import * as path from 'path';
 
 /**
  * Phase-to-agent routing table.
@@ -47,6 +60,7 @@ const PHASE_ROUTING: Record<string, string[]> = {
   review:       ['claude', 'gemini', 'codex'],
   remediate:    ['claude', 'codex', 'gemini'],
   gate:         ['claude', 'codex'],
+  audit:        ['gemini', 'claude'], // V6: prefer Gemini for 1M context cross-review
   e2e:          ['claude', 'gemini', 'codex'],
   deploy:       ['claude'],
   'post-deploy': ['claude', 'gemini'],
@@ -55,15 +69,43 @@ const PHASE_ROUTING: Record<string, string[]> = {
 export class Orchestrator {
   private agents = new Map<AgentId, BaseAgent>();
   private vault: VaultAdapter;
+  private vaultPath: string;
   private hooks: HookSystem;
   private rateLimiter: RateLimiter;
+  private stuckDetector: StuckDetector | null = null;
+  private capabilityRouter: CapabilityRouter | null = null;
+  private milestoneContext: {
+    observability?: ObservabilityLogger | null;
+    budgetRouter?: BudgetRouter | null;
+    runId?: string | null;
+    compactedOutputDir?: string | null;
+  } | null = null;
   state: PipelineState;
 
-  constructor(vaultPath: string) {
+  // v6.1.0: project root for per-project stack-overrides resolution
+  private projectRoot: string;
+
+  constructor(vaultPath: string, projectRoot: string = process.cwd()) {
+    this.vaultPath = vaultPath;
+    this.projectRoot = projectRoot;
     this.vault = new VaultAdapter(vaultPath);
     this.hooks = new HookSystem();
     this.rateLimiter = new RateLimiter(0.8);
     this.state = this.createInitialState('manual');
+  }
+
+  /** V6: attach milestone context (observability + budget + runId). Call before initialize(). */
+  setMilestoneContext(ctx: {
+    observability?: ObservabilityLogger | null;
+    budgetRouter?: BudgetRouter | null;
+    runId?: string | null;
+    compactedOutputDir?: string | null;
+  }): void {
+    this.milestoneContext = ctx;
+    // If agents already instantiated, propagate to them
+    for (const agent of this.agents.values()) {
+      agent.setMilestoneContext(ctx);
+    }
   }
 
   /** Load all agent notes, register hooks, instantiate agents, create state. */
@@ -87,6 +129,7 @@ export class Orchestrator {
       ['code-review-agent', CodeReviewAgent],
       ['remediation-agent', RemediationAgent],
       ['quality-gate-agent', QualityGateAgent],
+      ['review-auditor-agent', ReviewAuditorAgent],   // V6: cross-review gate
       ['e2e-validation-agent', E2EValidationAgent],
       ['deploy-agent', DeployAgent],
       ['post-deploy-validation-agent', PostDeployValidationAgent],
@@ -94,25 +137,98 @@ export class Orchestrator {
 
     // Agent-to-stage mapping for phase-based model routing
     // (models are picked dynamically per stage via pickAgentForPhase, not hardcoded)
+    // v6.1.0: resolve project stack context once per run (reads
+    // <projectRoot>/docs/gsd/stack-overrides.md; defaults to .NET 8)
+    const stackContext = await getProjectStackContext(this.projectRoot);
+    console.log(`[ORCHESTRATOR] Project stack: ${stackContext.backendFramework} (source: ${stackContext.source})`);
+
     for (const [id, AgentClass] of agentDefs) {
       const agent = new AgentClass(id, this.vault, this.hooks, this.state);
       await agent.initialize();
       // Initial rate limiter set to claude; overridden per-stage in run()
       agent.setRateLimiter(this.rateLimiter, 'claude');
+      // V6: propagate milestone context if set
+      if (this.milestoneContext) agent.setMilestoneContext(this.milestoneContext);
+      // v6.1.0: inject per-project stack context
+      agent.setProjectStackContext(stackContext);
       this.agents.set(id, agent);
     }
+
+    // V6: initialize StuckDetector backed by the shared state.db
+    try {
+      const dbPath = path.join(this.vaultPath, 'state.db');
+      const sdb = new StateDB(dbPath);
+      this.stuckDetector = new StuckDetector(sdb, 2);
+    } catch {
+      this.stuckDetector = null;
+    }
+
+    // V6: initialize CapabilityRouter with static capability profiles per CLI model
+    const capabilities: AgentCapability[] = [
+      { agentId: 'claude',   languages: ['typescript', 'csharp', 'sql', 'tsx'],         domains: ['auth', 'billing', 'ui', 'api', 'db'], maxContextTokens: 200_000, qualityScore: 0.95, availabilityScore: 1.0 },
+      { agentId: 'codex',    languages: ['typescript', 'csharp', 'sql', 'python'],      domains: ['api', 'db', 'refactor'],              maxContextTokens: 200_000, qualityScore: 0.90, availabilityScore: 1.0 },
+      { agentId: 'gemini',   languages: ['typescript', 'csharp', 'sql', 'tsx', 'md'],   domains: ['research', 'review', 'audit', 'ui'],  maxContextTokens: 1_000_000, qualityScore: 0.88, availabilityScore: 1.0 },
+      { agentId: 'deepseek', languages: ['typescript', 'csharp', 'sql', 'python'],      domains: ['api', 'db', 'refactor'],              maxContextTokens: 128_000, qualityScore: 0.82, availabilityScore: 0.9 },
+      { agentId: 'minimax',  languages: ['typescript', 'csharp', 'sql'],                domains: ['api', 'review'],                      maxContextTokens: 200_000, qualityScore: 0.78, availabilityScore: 0.9 },
+    ];
+    this.capabilityRouter = new CapabilityRouter(capabilities);
 
     // Log subscription status
     console.log(`[ORCHESTRATOR] Initialized ${this.agents.size} agents`);
     console.log(`[ORCHESTRATOR] Subscription CLIs: Claude Max + ChatGPT Max + Gemini Ultra ($0 marginal)`);
     console.log(`[ORCHESTRATOR] API fallbacks: DeepSeek + MiniMax (emergency only)`);
+    if (this.stuckDetector) console.log(`[ORCHESTRATOR] V6 StuckDetector: active`);
   }
 
-  /** Get the best CLI agent for a phase, respecting rate limits. */
+  /** Get the best CLI agent for a phase, respecting rate limits, V6 budget pressure, and capability scoring. */
   private pickAgentForPhase(phase: string): string {
-    const candidates = PHASE_ROUTING[phase] ?? ['claude', 'codex', 'gemini'];
-    const available = this.rateLimiter.pickAvailable(candidates);
+    let candidates = PHASE_ROUTING[phase] ?? ['claude', 'codex', 'gemini'];
 
+    // V6: CapabilityRouter — re-order candidates by score for this phase's task shape
+    if (this.capabilityRouter) {
+      const domainForPhase: Record<string, string[]> = {
+        blueprint: ['review', 'research'],
+        review:    ['review'],
+        remediate: ['refactor', 'api', 'db'],
+        gate:      ['review'],
+        audit:     ['audit', 'review'],
+        e2e:       ['ui', 'api'],
+        deploy:    ['api'],
+        'post-deploy': ['api', 'ui'],
+      };
+      const ranked = this.capabilityRouter.rank({
+        languages: ['typescript', 'csharp', 'sql'],
+        domains: domainForPhase[phase] ?? [],
+        tokenSize: 0,
+        stage: phase,
+      });
+      const rankedIds = ranked.map((r) => r.agentId);
+      // Keep only candidates in the phase routing list, but order by capability score
+      candidates = rankedIds.filter((id) => candidates.includes(id)).concat(
+        candidates.filter((id) => !rankedIds.includes(id)),
+      );
+      this.logObs('router-decisions', 'capability-rank', { phase, rankedCandidates: candidates, topScore: ranked[0]?.score });
+    }
+
+    // V6: if a budget router is attached and budget pressure warrants it, downgrade.
+    const budget = this.milestoneContext?.budgetRouter;
+    if (budget) {
+      const status = budget.status;
+      if (status.tier === 'emergency') {
+        candidates = ['deepseek', 'minimax'];
+        this.logObs('router-decisions', 'budget-emergency-override', { phase, candidates, status });
+      } else if (status.tier === 'downgrade-hard') {
+        // Prefer gemini (cheapest subscription CLI) at >= 75%
+        candidates = ['gemini', ...candidates.filter((c) => c !== 'gemini')];
+        this.logObs('router-decisions', 'budget-hard-downgrade', { phase, candidates, status });
+      } else if (status.tier === 'downgrade-soft') {
+        // Prefer gemini/codex over premium (claude) at >= 50%
+        candidates = [...candidates.filter((c) => c !== 'claude'), 'claude'];
+        this.logObs('router-decisions', 'budget-soft-downgrade', { phase, candidates, status });
+      }
+    }
+
+    const available = this.rateLimiter.pickAvailable(candidates);
     if (available) return available;
 
     // All subscription CLIs exhausted — try API fallbacks
@@ -142,8 +258,8 @@ export class Orchestrator {
     console.log(`[ORCHESTRATOR] Pipeline run=${this.state.runId} trigger=${trigger.trigger}`);
     console.log(`[ORCHESTRATOR] Task graph: ${graph.nodes.length} steps`);
 
-    // Execute stages in dependency order
-    const stageOrder: PipelineStage[] = ['blueprint', 'review', 'remediate', 'gate', 'e2e', 'deploy', 'post-deploy'];
+    // Execute stages in dependency order (V6: audit inserted between gate and e2e)
+    const stageOrder: PipelineStage[] = ['blueprint', 'review', 'remediate', 'gate', 'audit', 'e2e', 'deploy', 'post-deploy'];
     const startIdx = stageOrder.indexOf(startStage);
 
     for (let i = startIdx; i < stageOrder.length; i++) {
@@ -310,9 +426,46 @@ export class Orchestrator {
         }) as GateResult;
 
         this.state.gateResult = result;
+        this.logObs('gate-results', 'gate-complete', {
+          passed: result.passed,
+          coverage: result.coverage,
+          securityScore: result.securityScore,
+          evidenceCount: result.evidence.length,
+        });
         await this.logDecision('gate', 'passed',
           `Gate passed: coverage=${result.coverage}%, security=${result.securityScore}`,
           result.evidence.join(' | '));
+        break;
+      }
+
+      case 'audit': {
+        // V6 cross-review gate between QualityGate (pass) and Deploy.
+        if (!this.state.gateResult?.passed) {
+          await this.logDecision('audit', 'skip', 'Gate did not pass — audit skipped', '');
+          break;
+        }
+        const agent = this.agents.get('review-auditor-agent');
+        if (!agent) {
+          await this.logDecision('audit', 'skip', 'ReviewAuditorAgent not registered', '');
+          break;
+        }
+        const auditInput = {
+          reviewResult: this.state.reviewResult ?? { passed: true, issues: [], coveragePercent: 0, securityFlags: [] },
+          patchSet: this.state.patchSet ?? { patches: [], testsPassed: true },
+          gateResult: this.state.gateResult,
+          convergenceSummary: this.state.convergenceReport
+            ? `aligned=${this.state.convergenceReport.aligned.length} drifted=${this.state.convergenceReport.drifted.length} missing=${this.state.convergenceReport.missing.length}`
+            : '(no convergence report)',
+        };
+        const audit = await this.executeWithRetry(agent, auditInput as unknown as Record<string, unknown>) as Record<string, unknown>;
+        const auditPassed = audit.passed === true;
+        await this.logDecision('audit', auditPassed ? 'passed' : 'failed',
+          `Cross-review: ${(audit.findings as unknown[] | undefined)?.length ?? 0} findings, recommendation=${audit.recommendation}`,
+          `confidence=${audit.confidence} reviewer=${audit.reviewerModel}`);
+        if (!auditPassed) {
+          // Audit blocks deploy: mark gate as failed so downstream HardGateViolation trips
+          this.state.gateResult = { ...this.state.gateResult, passed: false };
+        }
         break;
       }
 
@@ -334,6 +487,13 @@ export class Orchestrator {
         }) as DeployRecord;
 
         this.state.deployRecord = record;
+        this.logObs('deploy-logs', 'deploy-complete', {
+          success: record.success,
+          environment: record.environment,
+          commitSha: record.commitSha,
+          steps: record.steps.map((s) => ({ name: s.name, success: s.success, durationMs: s.durationMs })),
+          rollbackExecuted: record.rollbackExecuted,
+        });
         await this.logDecision('deploy', record.success ? 'success' : 'failed',
           `Deploy ${record.success ? 'succeeded' : 'failed'} to ${record.environment}`,
           record.rollbackExecuted ? 'ROLLBACK EXECUTED' : '');
@@ -355,6 +515,13 @@ export class Orchestrator {
         }) as Record<string, unknown>;
 
         const passed = result.passed as boolean;
+        this.logObs('e2e-traces', 'e2e-complete', {
+          passed,
+          totalFlows: result.totalFlows,
+          passedFlows: result.passedFlows,
+          failedFlows: result.failedFlows,
+          categories: result.categories,
+        });
         await this.logDecision('e2e', passed ? 'passed' : 'failed',
           `E2E validation: ${result.passedFlows}/${result.totalFlows} flows passed`,
           `API: ${(result.categories as Record<string, unknown>)?.apiContract ? JSON.stringify((result.categories as Record<string, Record<string, unknown>>).apiContract.failures).substring(0, 200) : ''}`);
@@ -407,15 +574,55 @@ export class Orchestrator {
     }
   }
 
-  /** Execute an agent with retry logic based on vault config. */
+  /** Execute an agent with retry logic based on vault config. V6: wrapped in a git transaction that rolls back on failure if the agent is destructive. */
   private async executeWithRetry(agent: BaseAgent, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const agentId = (agent as unknown as { agentId: AgentId }).agentId;
     const maxRetries = await this.getMaxRetries(agentId);
 
+    // V6: destructive agents (those that write code) run inside a git transaction.
+    // Read-only agents (review, gate, audit, e2e) don't need a transaction.
+    const destructiveAgents: AgentId[] = ['remediation-agent', 'deploy-agent'];
+    const needsTxn = destructiveAgents.includes(agentId) && this.isGitRepo();
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let txn: GitTxn | null = null;
+      let handle: Awaited<ReturnType<GitTxn['begin']>> | null = null;
+      if (needsTxn) {
+        try {
+          txn = new GitTxn({ cwd: process.cwd() });
+          handle = await txn.begin();
+          this.logObs('router-decisions', 'git-txn-begin', { agentId, attempt, beganAtSha: handle.beganAtSha });
+        } catch (e) {
+          // Git txn setup failed — proceed without it rather than halting
+          txn = null;
+          handle = null;
+          this.logObs('router-decisions', 'git-txn-setup-failed', { agentId, error: (e as Error).message });
+        }
+      }
+
       try {
-        return await agent.execute(input) as Record<string, unknown>;
+        const result = await agent.execute(input) as Record<string, unknown>;
+        // Success: commit the txn if we started one
+        if (txn && handle) {
+          try {
+            const sha = await txn.commit(handle, `[gsd-v6] ${agentId} attempt=${attempt + 1}`);
+            this.logObs('router-decisions', 'git-txn-commit', { agentId, sha, attempt });
+          } catch (e) {
+            this.logObs('router-decisions', 'git-txn-commit-failed', { agentId, error: (e as Error).message });
+          }
+        }
+        return result;
       } catch (err) {
+        // Failure: rollback txn to pre-task state
+        if (txn && handle) {
+          try {
+            await txn.rollback(handle);
+            this.logObs('router-decisions', 'git-txn-rollback', { agentId, attempt, beganAtSha: handle.beganAtSha });
+          } catch (rbErr) {
+            this.logObs('router-decisions', 'git-txn-rollback-failed', { agentId, error: (rbErr as Error).message });
+          }
+        }
+
         if (err instanceof QualityGateFailure) {
           throw err; // Don't retry gate failures — they're intentional
         }
@@ -441,6 +648,15 @@ export class Orchestrator {
     throw new Error('Unreachable');
   }
 
+  private isGitRepo(): boolean {
+    try {
+      require('child_process').execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: process.cwd(), stdio: 'pipe', timeout: 5000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Remediation → Gate loop with max iterations. */
   private async handleRemediationLoop(
     reviewResult: ReviewResult,
@@ -456,6 +672,14 @@ export class Orchestrator {
     for (let i = 0; i < maxIterations; i++) {
       console.log(`[ORCHESTRATOR] Remediation loop iteration ${i + 1}/${maxIterations}`);
 
+      // V6: run the mechanical-fix band first — cheap, fast, sometimes resolves the failure
+      try {
+        const mech = await runMechanicalFixBand({ cwd: process.cwd(), timeoutMs: 120_000 });
+        await this.logDecision('remediate', 'mechanical-fix-band',
+          `mechfix: ${mech.steps.filter((s) => s.ran && s.success).length}/${mech.steps.length} steps ok, anyChange=${mech.anyChange}`,
+          mech.steps.map((s) => `${s.name}:${s.success ? 'ok' : 'fail'}`).join(' | '));
+      } catch { /* mechfix band is best-effort */ }
+
       // Run remediation
       this.state.currentStage = 'remediate';
       const remAgent = this.agents.get('remediation-agent')!;
@@ -464,6 +688,18 @@ export class Orchestrator {
         repoRoot: process.cwd(),
       }) as PatchSet;
       this.state.patchSet = patchSet;
+
+      // V6: StuckDetector — hash the PatchSet; if the same hash reappears, escalate
+      if (this.stuckDetector) {
+        const signal = this.stuckDetector.record(`remediation-loop-${this.state.runId}`, patchSet, `iter=${i + 1}`);
+        if (signal.isStuck) {
+          await this.logDecision('remediate', 'stuck-detected',
+            `Remediation loop produced a repeating PatchSet signature (occurrences=${signal.occurrences}). Escalating instead of retrying.`,
+            `sig=${signal.signatureHash.slice(0, 12)}`);
+          // Return last known gate result; caller will mark failed
+          return lastGateResult;
+        }
+      }
 
       // Run quality gate
       this.state.currentStage = 'gate';
@@ -529,6 +765,17 @@ export class Orchestrator {
 
   // ── Decision Logging ──────────────────────────────────────
 
+  /** V6: structured observability event (no-op if no logger attached). */
+  private logObs(
+    category: 'e2e-traces' | 'deploy-logs' | 'gate-results' | 'build-output' | 'router-decisions',
+    kind: string,
+    data: Record<string, unknown>,
+  ): void {
+    const obs = this.milestoneContext?.observability;
+    if (!obs) return;
+    obs.log(category, kind, { source: 'orchestrator', stage: this.state.currentStage, ...data });
+  }
+
   private async logDecision(
     stage: PipelineStage,
     action: string,
@@ -556,6 +803,7 @@ export class Orchestrator {
       review: 'code-review-agent',
       remediate: 'remediation-agent',
       gate: 'quality-gate-agent',
+      audit: 'review-auditor-agent',
       e2e: 'e2e-validation-agent',
       deploy: 'deploy-agent',
       'post-deploy': 'post-deploy-validation-agent',

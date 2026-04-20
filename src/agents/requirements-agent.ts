@@ -31,17 +31,46 @@ export interface SpecValidationReport {
 }
 
 // ── Authoritative Stack Definition ─────────────────────────
+// v6.1.0: backend is now derived from the PROJECT STACK CONTEXT block
+// that BaseAgent injects into the system prompt. The default here remains
+// ".NET 8" for backward compatibility; projects with docs/gsd/stack-overrides.md
+// get their declared framework (net9.0, net10.0, etc.) instead.
 
-const AUTHORITATIVE_STACK = {
-  database: 'MS SQL Server 2022',
-  orm: 'Dapper (no EF Core, no inline SQL)',
-  spPattern: 'usp_{Entity}_{Action}',
-  backend: '.NET 8 Web API on IIS',
-  frontend: 'React 18 + TypeScript + Fluent UI React v9 + React Query v5',
-  auth: 'Microsoft Entra ID (Azure AD) + JWT Bearer',
-  infra: 'Windows Server 2022 / IIS 10 Web Farm (no Docker/K8s)',
-  compliance: ['HIPAA', 'SOC 2', 'PCI', 'GDPR'],
+type AuthoritativeStack = {
+  database: string;
+  orm: string;
+  spPattern: string;
+  backend: string;
+  frontend: string;
+  auth: string;
+  infra: string;
+  compliance: string[];
 };
+
+function buildAuthoritativeStack(stack: {
+  backendFramework: string;
+  database: string;
+  dataAccessPattern: string;
+  frontendFramework: string;
+  frontendUiLibrary: string;
+  complianceFrameworks: string[];
+}): AuthoritativeStack {
+  // Map canonical net9.0 → ".NET 9 Web API on IIS" for human-facing prose
+  const nicename = (fw: string): string => {
+    const m = fw.match(/^net(\d+)(?:\.\d+)?$/);
+    return m ? `.NET ${m[1]} Web API on IIS` : `${fw} Web API on IIS`;
+  };
+  return {
+    database: stack.database.includes('SQL Server') ? 'MS SQL Server 2022' : stack.database,
+    orm: `${stack.dataAccessPattern} (no EF Core, no inline SQL)`,
+    spPattern: 'usp_{Entity}_{Action}',
+    backend: nicename(stack.backendFramework),
+    frontend: `${stack.frontendFramework} + TypeScript + ${stack.frontendUiLibrary} + React Query v5`,
+    auth: 'Microsoft Entra ID (Azure AD) + JWT Bearer',
+    infra: 'Windows Server 2022 / IIS 10 Web Farm (no Docker/K8s)',
+    compliance: stack.complianceFrameworks,
+  };
+}
 
 const BANNED_TECH = [
   { pattern: /\bpostgre(sql|s)\b/i, label: 'PostgreSQL', replacement: 'MS SQL Server 2022' },

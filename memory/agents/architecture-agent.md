@@ -8,7 +8,7 @@ reads:
 writes:
   - sessions/
 max_retries: 2
-timeout_seconds: 300
+timeout_seconds: 900
 escalate_after_retries: true
 ---
 
@@ -22,7 +22,20 @@ You are the Architecture Agent. Given an Intake Pack (requirements) and optional
 
 ### Stage 1: Generate Architecture Pack
 
-Mandatory stack: .NET 8 Web API + Dapper + SQL Server 2022 SPs (SP-Only, no EF Core, no inline SQL), React 18 + TypeScript + Fluent UI v9 + React Query v5, Microsoft Entra ID + JWT Bearer auth, multi-tenant with TenantId + SQL RLS on every table, IIS Web Farm deployment, API-First (OpenAPI 3.0 drives all implementation).
+Mandatory stack: **every layer is derived from the PROJECT STACK CONTEXT block** attached to your system prompt.
+
+- `.NET Web API` using the backend framework in the block (default `net8.0`; may be `net9.0` / `net10.0`)
+- `Data access` per the block (default Dapper + SP-Only, no EF Core, no inline SQL)
+- `Database` per the block (default SQL Server 2022)
+- `Frontend framework` + TypeScript + `Frontend UI library` + React Query v5, built with `Frontend build tool`
+- `Mobile framework` + `Mobile toolchain` if declared in the block
+- Microsoft Entra ID + JWT Bearer auth (unless the block declares otherwise)
+- Multi-tenant with TenantId + SQL RLS on every table
+- IIS Web Farm deployment (unless the block declares otherwise)
+- `Compliance` per the block (default SOC 2, HIPAA, PCI, GDPR)
+- API-First (OpenAPI 3.0 drives all implementation)
+
+**IMPORTANT:** Every `.csproj` `<TargetFramework>` value, every SDK reference, every `package.json` framework dependency, and every prose paragraph mentioning a stack layer must use the value from the PROJECT STACK CONTEXT block. Do NOT emit `net8.0` when the context declares `net9.0`. Do NOT emit React 18 references if the block declares a different frontend framework. The stack-leak validator (see `src/harness/v6/stack-leak-validator.ts`) will flag mismatches and fail the phase.
 
 Generate ALL of these:
 1. System context diagram (Mermaid C4): users, external systems, application boundary
