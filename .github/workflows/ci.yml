@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-test:
+    name: Typecheck + V6 tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: V6 unit tests
+        run: npm run test:v6
+
+      - name: Verify CLI help surface
+        run: |
+          npx ts-node src/index.ts help
+          npx ts-node src/index.ts query --help
+          npx ts-node src/index.ts validate-stack --help
+          npx ts-node src/index.ts worktree --help
+
+  stack-leak-validator-smoke:
+    name: Stack-leak validator smoke test
+    runs-on: ubuntu-latest
+    needs: typecheck-and-test
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build a synthetic project with a leak
+        run: |
+          mkdir -p /tmp/leak-test/docs/gsd
+          cp test-fixtures/stack-overrides/net9-full.md /tmp/leak-test/docs/gsd/stack-overrides.md
+          echo '<Project><TargetFramework>net8.0</TargetFramework></Project>' > /tmp/leak-test/Leak.csproj
+
+      - name: Run validator — expect non-zero exit with --fail-on-findings
+        run: |
+          set +e
+          npx ts-node src/index.ts validate-stack --project-root /tmp/leak-test --fail-on-findings
+          rc=$?
+          set -e
+          if [ "$rc" -ne 1 ]; then
+            echo "Expected exit code 1 (findings detected), got $rc"
+            exit 1
+          fi
+          echo "OK — validator correctly flagged the leak"
+
+      - name: Run validator — expect clean exit on matching project
+        run: |
+          echo '<Project><TargetFramework>net9.0</TargetFramework></Project>' > /tmp/leak-test/Leak.csproj
+          npx ts-node src/index.ts validate-stack --project-root /tmp/leak-test --fail-on-findings
+          echo "OK — validator passed on clean project"

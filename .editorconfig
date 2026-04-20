@@ -1,0 +1,42 @@
+# EditorConfig — https://editorconfig.org/
+# Consistent settings across editors. Top-level config.
+root = true
+
+[*]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.{md,markdown}]
+# Preserve trailing spaces in markdown (used for line breaks)
+trim_trailing_whitespace = false
+# Prose tables can get wide — don't enforce a wrap width
+max_line_length = off
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{json,jsonc}]
+indent_size = 2
+
+[*.{ts,tsx,js,jsx}]
+indent_size = 2
+max_line_length = 120
+
+[*.ps1]
+# PowerShell uses 4-space indent by convention
+indent_size = 4
+end_of_line = crlf
+
+[*.{sln,slnx,csproj,props,targets}]
+indent_style = tab
+end_of_line = crlf
+
+[Makefile]
+indent_style = tab
+
+[*.{bat,cmd}]
+end_of_line = crlf

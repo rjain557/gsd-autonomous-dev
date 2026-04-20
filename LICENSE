@@ -1,0 +1,25 @@
+Copyright (c) 2026 Technijian, Inc.
+All rights reserved.
+
+CONFIDENTIAL — INTERNAL USE ONLY
+
+This software and its associated documentation (the "Software") are the
+proprietary and confidential property of Technijian, Inc. The Software is
+made available solely for internal use by Technijian, Inc. personnel and
+authorized contractors.
+
+Unauthorized copying, distribution, modification, public performance, public
+display, or creation of derivative works of the Software, in whole or in part,
+by any means and in any form, is strictly prohibited without the prior
+written consent of Technijian, Inc.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Third-party components distributed with or referenced by this Software remain
+under their original licenses. See `package.json` for the full dependency list.
