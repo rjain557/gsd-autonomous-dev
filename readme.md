@@ -1,8 +1,8 @@
 # GSD Engine — Goal Spec Done
 
-**Version:** 5.0.0 (production) | **V6 designed:** `memory/architecture/v6-design.md` | **Platform:** Windows + Node.js 18+ | **Agents:** 14 typed agents | **Cost:** $0 marginal (CLI subscriptions, API key auto-fallback)
+**Version:** 6.1.0 (canonical) | **Architecture:** `memory/architecture/v6-design.md` | **Platform:** Windows + Node.js 18+ | **Agents:** 14 SDLC/Pipeline + 4 V6 (scout, researcher, review-auditor, milestone-orchestrator) | **Cost:** $0 marginal (CLI subscriptions, API key auto-fallback) | **Per-project stack overrides:** `docs/gsd/stack-overrides.md` in target project (default .NET 8; may declare `net9.0` / `net10.0`)
 
-An AI-native autonomous development pipeline covering the complete Technijian SDLC v6.0 — from requirements gathering through alpha deployment — with 14 TypeScript agents, Obsidian vault memory, and a full 4.2 augmentation stack for code intelligence, MCP automation, security review, and browser validation.
+An AI-native autonomous development pipeline covering the complete Technijian SDLC — from requirements gathering through alpha deployment — with a TypeScript agent harness, hierarchical Milestone → Slice → Task decomposition, hybrid SQLite + Obsidian vault memory, git worktree isolation, and a full V6 augmentation stack for code intelligence, MCP automation, security review, and browser validation.
 
 ## What It Does
 
@@ -21,33 +21,91 @@ gsd status                # "Where am I?"
 
 ## Quick Start
 
+### 1. Clone + install (~5 min)
+
 ```bash
-# Clone
 git clone https://github.com/rjain557/gsd-autonomous-dev.git
 cd gsd-autonomous-dev/gsd-autonomous-dev
-
-# Install
 npm install
+```
+
+### 2. Verify the repo is healthy (~30 sec)
+
+```bash
+npm run typecheck         # should emit no output
+npm run test:v6           # should report: 31 passed, 0 failed
+```
+
+If both pass, the V6 harness is working. You don't need any AI CLIs or external tools yet — those are needed only when you actually run a milestone.
+
+### 3. Explore the CLI (~30 sec)
+
+```bash
+npx ts-node src/index.ts help                        # full command reference
+npx ts-node src/index.ts query stack                 # show default stack context (no override)
+npx ts-node src/index.ts status                      # "no state.db yet — will be created on first run"
+```
+
+### 4. Install the agent stack (required before your first milestone run)
+
+```bash
+# Browser + security scanners
 npx playwright install chromium
 pip install graphifyy semgrep
-npm install -g gitnexus @modelcontextprotocol/server-github
-npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
 
-# Configure
+# Code intelligence + MCP servers (npm-global)
+npm install -g gitnexus @modelcontextprotocol/server-github
+
+# AI CLIs (at least `claude` is required; `codex` and `gemini` are fallbacks)
+npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
 claude auth
 codex auth
 gemini auth
+
+# Per-repo wiring
 graphify claude install && graphify install
 gitnexus analyze && gitnexus setup
 claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
-npx -y skills add agamm/claude-code-owasp -y
-npx -y skills add unicodeveloper/shannon -y
-
-# Run
-npx ts-node src/index.ts run requirements --project "MyApp" --description "Multi-tenant SaaS"
 ```
 
-Full setup: [GSD-Workstation-Setup.md](docs/GSD-Workstation-Setup.md)
+### 5. Configure environment (one-time)
+
+Copy `.env.example` → `.env` and fill in at minimum `ANTHROPIC_API_KEY` + `GITHUB_PERSONAL_ACCESS_TOKEN`. Set them as persistent Windows user env vars so they survive terminal restarts. See [`.env.example`](.env.example) and [`docs/workstation.md`](docs/workstation.md) for the exact setup.
+
+### 6. Run your first milestone
+
+```bash
+# Against a target project (any project that has source code you want to generate/review)
+gsd run requirements \
+    --project "MyApp" \
+    --description "Multi-tenant SaaS" \
+    --project-root /path/to/myapp
+
+# Check progress
+gsd status
+
+# Inspect the milestone
+gsd query milestones
+gsd query milestone <id>
+```
+
+### 7. If your target project isn't .NET 8
+
+Create `docs/gsd/stack-overrides.md` in the **target project** (not this repo) — copy [`docs/stack-overrides-template.md`](docs/stack-overrides-template.md) and edit the fields you need. GSD will honor the declared framework. Verify with:
+
+```bash
+gsd query stack --project-root /path/to/myapp
+```
+
+Expected: `"source": "override"` and your declared `backendFramework`.
+
+### Where to go next
+
+- Full workstation guide (for fresh machines): [`docs/GSD-Workstation-Setup.md`](docs/GSD-Workstation-Setup.md)
+- Per-workstation memory-stack setup: [`docs/workstation.md`](docs/workstation.md)
+- Full developer guide with all chapters: [`docs/GSD-Developer-Guide.md`](docs/GSD-Developer-Guide.md)
+- CLI reference: Developer Guide Appendix A, or `gsd help`
+- Architecture: [`memory/architecture/v6-design.md`](memory/architecture/v6-design.md)
 
 ## SDLC Pipeline (Phases A-G)
 
@@ -162,7 +220,7 @@ All projects built by GSD use:
 
 | Layer | Technology |
 |---|---|
-| Backend | .NET 8 Web API + Dapper + SQL Server stored procedures (no EF Core) |
+| Backend | .NET Web API (configurable, default .NET 8; declare `net9.0`/`net10.0` in `docs/gsd/stack-overrides.md`) + Dapper + SQL Server stored procedures (no EF Core) |
 | Frontend | React 18 + TypeScript + Fluent UI React v9 |
 | Auth | JWT Bearer, role-based, multi-tenant with TenantId |
 | Database | SQL Server, SP-Only pattern (usp_{Entity}_{Action}) |

@@ -1,4 +1,4 @@
-# GSD v4.2 — Complete Workstation Setup Guide
+# GSD V6 — Complete Workstation Setup Guide
 
 Everything needed to run the GSD autonomous development pipeline on a new Windows workstation. Total time: ~20 minutes.
 
@@ -265,7 +265,7 @@ Some workstations also mirror the `.agents/skills/` entries into `.claude/skills
 
 ```
 gsd-autonomous-dev/
-  src/                    # v4.2 TypeScript harness
+  src/                    # V6 TypeScript harness
     harness/              #   Orchestrators, types, hooks, vault adapter
     agents/               #   14 agents (8 pipeline + 6 SDLC)
     evals/                #   Test framework

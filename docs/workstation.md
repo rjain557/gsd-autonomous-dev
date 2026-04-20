@@ -1,6 +1,6 @@
-# GSD Autonomous Dev — Workstation Configuration
+# GSD V6 — Workstation Configuration
 
-This document covers the Claude Code + memory stack configuration that must be set up on every workstation. It supplements [GSD-Workstation-Setup.md](GSD-Workstation-Setup.md), which covers base tooling (Node, Python, Git, AI CLIs).
+This document covers the V6 Claude Code + memory stack configuration that must be set up on every workstation. It supplements [GSD-Workstation-Setup.md](GSD-Workstation-Setup.md), which covers base tooling (Node, Python, Git, AI CLIs).
 
 **Complete base setup first**, then follow this document.
 
@@ -308,3 +308,42 @@ Run `/review` weekly — the health-check hook will escalate warnings if you ski
 **health-check.sh fails:**
 - Requires Python 3 — verify with `python3 --version`
 - Must have read/write access to the vault path
+
+---
+
+## Per-Project Stack Overrides (v6.1.0+)
+
+If your target project needs a non-default .NET version (`net9.0`, `net10.0`), declare it in the target project, not in the GSD repo:
+
+1. Copy [`docs/stack-overrides-template.md`](stack-overrides-template.md) to `<your-project>/docs/gsd/stack-overrides.md`.
+2. Edit only the rows you're overriding; unspecified fields inherit GSD defaults.
+3. Verify with:
+
+   ```bash
+   gsd query stack --project-root <path-to-your-project>
+   ```
+
+   The JSON output should show `"source": "override"` and your declared values.
+
+4. Run GSD against the target project with `--project-root`:
+
+   ```bash
+   gsd run requirements \
+       --project "MyApp" \
+       --description "..." \
+       --project-root /path/to/myapp
+   ```
+
+5. After a run, validate that no generated artifacts leak a contradicting framework:
+
+   ```bash
+   gsd validate-stack --project-root /path/to/myapp --fail-on-findings
+   ```
+
+   Expected: exit code 0, "No stack leaks detected."
+
+**Where the override is read from:**
+`<projectRoot>/docs/gsd/stack-overrides.md` — resolved once per run by [`getProjectStackContext()`](../src/harness/project-stack-context.ts).
+
+**What happens without it:**
+Projects without the file receive GSD v6.0.0 defaults (.NET 8). No regression, no migration required.

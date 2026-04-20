@@ -1,12 +1,12 @@
 # Graphify and Augmentation Stack — Installation Guide
 
-This guide started as the Graphify setup doc. In v4.2 it covers the wider augmentation layer that ships alongside Graphify: GitNexus, Semgrep, Playwright, MCP servers, and security skills.
+This guide started as the Graphify setup doc. Under V6 it covers the wider augmentation layer that ships alongside Graphify: GitNexus, Semgrep, Playwright, MCP servers, and security skills.
 
 ## What Graphify Does
 
 Graphify converts the GSD codebase (TypeScript + PowerShell + vault markdown) into a queryable knowledge graph using Tree-sitter AST parsing and Claude semantic extraction. This gives all pipeline agents structural navigation instead of flat file scanning, achieving up to 71x token reduction.
 
-In the 4.2 stack, Graphify works alongside GitNexus:
+In the V6 stack, Graphify works alongside GitNexus:
 
 - Graphify explains community structure, god nodes, and graph-level neighborhood.
 - GitNexus explains symbol context, execution flows, and blast radius before edits.
@@ -22,7 +22,7 @@ In the 4.2 stack, Graphify works alongside GitNexus:
 - Python 3.10+ (`python --version`)
 - pip (`pip --version`)
 - Claude Code CLI installed and authenticated
-- Node.js 18+ (already required by GSD v4.2)
+- Node.js 18+ (already required by GSD V6)
 - Docker Desktop 4.0+ if you plan to use Shannon pentesting
 
 ## Installation (New Workstation)

@@ -1,7 +1,8 @@
-# GSD Autonomous Development Engine - Developer Guide
+# GSD V6 — Autonomous Development Engine Developer Guide
 
-**Version:** 4.2.0
+**Version:** 6.1.0
 **Date:** April 2026
+**Status:** Canonical
 **Classification:** Confidential - Internal Use Only
 
 ---
@@ -10,32 +11,36 @@
 
 | Version | Date | Changes |
 |---|---|---|
-| 1.0.0 | February 2026 | Initial developer guide for the original PowerShell-driven GSD engine. |
-| 2.0.0 | March 2026 | Added expanded validation gates, council review patterns, and multi-model execution coverage. |
-| 3.0.0 | March 2026 | Documented the API-first v3 pipeline and full post-convergence quality workflow. |
-| 3.1.0 | March 2026 | Added verification gates, E2E infrastructure, and persistent project memory. |
-| 4.0.0 | April 2026 | Introduced the TypeScript harness and typed pipeline orchestration. |
-| 4.1.0 | April 2026 | Closed the pipeline implementation gaps and integrated Graphify, Semgrep, Playwright, and GitHub MCP. |
-| 4.2.0 | April 2026 | Rewrote the guide for the full SDLC lifecycle: unified CLI, 14 agents, vault-backed SDLC phases, contract freeze, state resume, and Word export workflow. |
+| 6.0.0 | April 2026 | Canonical V6 architecture: hierarchical decomposition (Milestone → Slice → Task), hybrid SQLite + markdown state, git worktree isolation, execution graph scheduler, 14-agent roster, Claude memory stack (`claude-memory/`), and unified workstation configuration. All prior version docs archived to `docs/legacy/`. |
+| 6.1.0 | April 2026 | Per-project backend framework override via `docs/gsd/stack-overrides.md`. Target projects can declare `net8.0` / `net9.0` / `net10.0`, solution file format, data access pattern, and frontend stack. Backward compatible: projects without the override continue to receive .NET 8 defaults. Adds `src/harness/project-stack-context.ts`, `--project-root` CLI flag, `PROJECT STACK CONTEXT` prompt block injection, and §1.4.1 documentation. |
 
 ---
 
 # Chapter 1: Introduction
 
-## 1.1 What GSD v4.2 Is
+## 1.1 What GSD V6 Is
 
-GSD v4.2 is an AI-native autonomous development system that covers the full Technijian SDLC v6.0 lifecycle from project intake through alpha deployment. It combines a TypeScript control plane, vault-backed agent configuration, CLI-first model routing, and deployment automation into a single workflow.
+GSD V6 is an AI-native autonomous development system that covers the full Technijian SDLC lifecycle from project intake through alpha deployment. It combines a TypeScript control plane, hybrid SQLite + vault memory, git worktree isolation, an execution graph scheduler, CLI-first model routing, and deployment automation into a single workflow.
 
-The current implementation has two coordinated layers:
+V6 is organized around three levels of hierarchical decomposition above the existing 7-stage pipeline:
 
-- A **SDLC orchestrator** for Phases A-E: requirements, architecture, Figma validation, reconciliation, blueprint freeze, and contract freeze.
-- A **pipeline orchestrator** for Phases F-G: blueprint drift analysis, code review, remediation, quality gates, E2E validation, deployment, and post-deploy validation.
+```text
+Milestone      (SCG1 release, e.g., "v1.2 chatbot improvements")
+  └── Slice    (user-visible feature, e.g., "thread archive")
+        └── Task (single agent run, e.g., "blueprint-analysis for thread archive")
+              └── Stage (Blueprint → Review → Remediate → Gate → E2E → Deploy → Post-deploy)
+```
 
-The system is designed to be operated from one command surface while still exposing explicit low-level entry points for resume and debugging.
+The runtime uses two coordinated layers:
+
+- An **SDLC orchestrator** for Phases A-E: requirements, architecture, Figma validation, reconciliation, blueprint freeze, and contract freeze.
+- A **Pipeline orchestrator** for Phases F-G: blueprint drift analysis, code review, remediation, quality gates, E2E validation, deployment, and post-deploy validation.
+
+Each milestone runs in its own git worktree. Each task gets a fresh agent context with explicit preamble injection (no accumulated context from prior stages). Durable runtime state lives in SQLite (`memory/state.db`); human-readable narrative stays in markdown.
 
 ## 1.2 What the System Produces
 
-At the end of a successful run, GSD can produce:
+At the end of a successful milestone run, GSD V6 produces:
 
 - A structured **Intake Pack** with outcomes, RACI, NFRs, risks, and acceptance criteria.
 - An **Architecture Pack** with Mermaid diagrams, an OpenAPI draft, a threat model, and an observability plan.
@@ -43,22 +48,26 @@ At the end of a successful run, GSD can produce:
 - A reconciled requirements and architecture baseline after design feedback.
 - A **Frozen Blueprint** that becomes the Phase F implementation contract.
 - **SCG1 contract artifacts** for UI, API, stored procedure mapping, database planning, testing, and CI gates.
-- A full code pipeline result with review findings, patches, gate evidence, E2E evidence, deploy records, and post-deploy checks.
-- A durable run history in the vault under `memory/sessions/` and `memory/decisions/`.
+- A full code pipeline result per slice with review findings, patches, gate evidence, E2E evidence, deploy records, and post-deploy checks.
+- A milestone-scoped PR (or multiple slice-scoped PRs) merged back from the worktree to main.
+- A durable run history in SQLite (queryable via `gsd query`) and in markdown under `memory/sessions/`, `memory/decisions/`, `memory/observability/`.
 
-## 1.3 What Changed in v4.2 and v5.0
+## 1.3 V6 Capabilities At A Glance
 
-Version 4.2 extends the 4.1 pipeline-only harness into a lifecycle system. Version 5.0 adds dual auth and a 30-day feature adoption cycle.
-
-| Area | v4.1 | v4.2 | v5.0 |
-|---|---|---|---|
-| Scope | Pipeline only (Phases F-G) | Full SDLC lifecycle (Phases A-G) | Same + dual auth + feature tracking |
-| Agents | 8 pipeline agents | 14 total agents | Same 14 agents |
-| CLI model | `pipeline run` | Unified `run <milestone>` | Same + API key auto-fallback |
-| Auth | CLI OAuth only | CLI OAuth only | CLI OAuth primary, API key auto-fallback on rate limit |
-| Cost model | $0 marginal (subscription only) | $0 marginal | $0 normal; pay-per-token during 5-min cooldowns only |
-| Feature cadence | None | None | 30-day check cycle for Claude/Codex/Gemini new features |
-| LLM features | Basic CLI calls | Structured output, tool_use | See Section 10.11 for full feature inventory per LLM |
+| Capability | V6 Behavior |
+|---|---|
+| Scope | Full SDLC lifecycle (Phases A-G) |
+| Agents | 14 typed agents (6 SDLC + 7 Pipeline + Orchestrator) |
+| Task graph | Milestone → Slice → Task → Stage hierarchy |
+| State model | Hybrid: SQLite (`memory/state.db`) for queryable state + markdown for narrative |
+| Isolation | Git worktree per milestone (`.gsd-worktrees/M001/`) |
+| Scheduler | Dependency-graph scheduler (parallel-capable) |
+| Agent context | Fresh context per task with explicit preamble |
+| Auth | CLI OAuth primary, API key auto-fallback with 5-min cooldown |
+| Cost model | $0 marginal under normal load; pay-per-token only during CLI cooldowns |
+| Budget routing | Model downgrades at 50/75/90% budget thresholds |
+| Feature cadence | 30-day check cycle for Claude/Codex/Gemini capability updates |
+| Memory stack | Durable knowledge in `claude-memory/` vault (Obsidian, OneDrive-synced) with retrieval hooks |
 
 ## 1.4 Enforced Technology and Delivery Constraints
 
@@ -66,7 +75,7 @@ GSD does not attempt to be framework-neutral. The system encodes a specific deli
 
 | Layer | Standard |
 |---|---|
-| Backend | .NET 8 Web API + Dapper + SQL Server stored procedures |
+| Backend | .NET Web API (configurable, default .NET 8) + Dapper + SQL Server stored procedures |
 | Frontend | React 18 + TypeScript + Fluent UI React v9 |
 | Database | SQL Server, stored-procedure-first design |
 | Auth | JWT Bearer, role-based, multi-tenant with `TenantId` |
@@ -75,38 +84,289 @@ GSD does not attempt to be framework-neutral. The system encodes a specific deli
 
 If a target project does not fit that stack, GSD can still be used selectively, but many generated assumptions, checks, and prompts will no longer be authoritative.
 
+## 1.4.1 Per-Project Stack Overrides (v6.1.0+)
+
+Projects that require a different backend framework can declare it in `docs/gsd/stack-overrides.md` of the target project. GSD agents read this file as part of project context and honor the declared framework.
+
+**Supported backend frameworks:**
+
+- `net8.0` — default when no override is declared
+- `net9.0` — Technijian Platform standard per `tech-web-shared` ADR-0004
+- `net10.0` — when projects upgrade after the .NET 10 LTS release
+
+**How it works:**
+
+1. At the start of every SDLC / Pipeline run, the orchestrator calls [`getProjectStackContext(projectRoot)`](../src/harness/project-stack-context.ts) which reads `<projectRoot>/docs/gsd/stack-overrides.md` from the target project.
+2. If the file exists, its fields override defaults. If absent, `.NET 8` defaults are returned (preserving v6.0.0 behavior).
+3. The resolved context is attached to every agent via `BaseAgent.setProjectStackContext()` and injected into each agent's system prompt as a `PROJECT STACK CONTEXT` block.
+4. Agents honor the declared framework when generating `.csproj` TargetFrameworks, SDK references, architecture prose, and quality-gate commands.
+
+**CLI:**
+
+```bash
+gsd run requirements \
+    --project "Technijian ITSM" \
+    --description "..." \
+    --project-root ../tech-web-myitsm
+```
+
+The `--project-root` flag defaults to the current working directory. The target project's `docs/gsd/stack-overrides.md` is looked up relative to that root.
+
+**stack-overrides.md format (any subset of these rows — unspecified fields inherit defaults):**
+
+```markdown
+| Field                | Value                      |
+|----------------------|----------------------------|
+| Backend framework    | net9.0                     |
+| Backend SDK          | .NET 10 SDK                |
+| Solution file format | slnx                       |
+| Data access          | Dapper + stored procedures |
+| Database             | SQL Server                 |
+| Frontend framework   | React 18                   |
+| Frontend UI library  | Fluent UI v9               |
+| Frontend build tool  | Vite                       |
+| Mobile framework     | React Native               |
+| Mobile toolchain     | Expo managed workflow      |
+| Remote agent language| Go                         |
+| Compliance           | SOC 2, HIPAA, PCI, GDPR    |
+```
+
+See [`src/harness/project-stack-context.ts`](../src/harness/project-stack-context.ts) for the context reader, parser (`parseStackOverrides`), and renderer (`renderStackContextBlock`).
+
+**Backward compatibility:** Projects without `docs/gsd/stack-overrides.md` continue to receive v6.0.0 defaults (.NET 8). No existing project breaks; no CLI flag is required. Test fixtures under `test-fixtures/stack-overrides/` cover the full, minimal, and empty cases.
+
+### 1.4.2 Stack Leak Validator (v6.1.0+)
+
+Because LLM-generated artifacts can still drift — for example, an agent may emit `net8.0` in a `.csproj` even when the stack context declares `net9.0` — v6.1.0 ships a **stack-leak validator** as defense-in-depth.
+
+**What it does:**
+- Walks the target project directory (respecting common ignore dirs: `node_modules`, `dist`, `.git`, `.gsd-worktrees`, `.gitnexus`, `graphify-out`, `_archive`)
+- Scans every `.csproj`, `.json`, `.md`, `.yaml`, `.yml`, `.xml`, `.targets`, `.props` file
+- Flags any `net{N}.0` token that does not match the declared `backendFramework`
+- Heuristic false-positive filter skips lines in migration/upgrade/legacy/changelog/archived contexts so mentioning the old framework in prose is not flagged
+
+**Two ways to run:**
+
+1. **Automatic (post-phase)** — `MilestoneOrchestrator` runs the validator after each SDLC phase completes. Findings are:
+   - Logged to observability under the `gate-results` category (`memory/observability/gate-results/{runId}.jsonl`)
+   - Persisted as decisions in `state.db` with `action=stack-leak-detected`
+   - Warned to the console (`[MILESTONE] Stack leak validator found N finding(s)`)
+   - **Non-fatal**: the milestone continues; findings are surfaced for human review. To make findings fatal, use the standalone CLI in your CI pipeline (below).
+
+2. **Standalone (CI hook)** — `gsd validate-stack` for pipeline integration:
+
+   ```bash
+   gsd validate-stack --project-root . --fail-on-findings
+   ```
+
+   Exit code `0` = no leaks. Exit code `1` = findings detected. Add this as a final step after any GSD-driven code generation run.
+
+**JSON mode for structured CI:**
+
+```bash
+gsd validate-stack --project-root . --json | jq '.findings | length'
+```
+
+**Implementation:** [`src/harness/v6/stack-leak-validator.ts`](../src/harness/v6/stack-leak-validator.ts). Reports are rendered as markdown by `formatStackLeakReport()` for human review.
+
+### 1.4.3 Inspecting the resolved context (v6.1.0+)
+
+Before running a milestone — especially in CI — verify that GSD sees your override correctly:
+
+```bash
+gsd query stack --project-root /path/to/your-project
+```
+
+Returns JSON:
+
+```json
+{
+  "subject": "stack",
+  "ok": true,
+  "data": {
+    "backendFramework": "net9.0",
+    "backendSdk": ".NET 10 SDK",
+    "solutionFileFormat": "slnx",
+    "dataAccessPattern": "Dapper + stored procedures",
+    "database": "SQL Server",
+    "frontendFramework": "React 18",
+    "frontendUiLibrary": "Fluent UI v9",
+    "frontendBuildTool": "Vite",
+    "mobileFramework": "React Native",
+    "mobileToolchain": "Expo managed workflow",
+    "agentLanguage": "Go",
+    "complianceFrameworks": ["SOC 2", "HIPAA", "PCI", "GDPR"],
+    "source": "override",
+    "resolvedFromPath": "<abs path>/docs/gsd/stack-overrides.md"
+  }
+}
+```
+
+If `source: 'default'` appears, the override file was not found — check the path is `<projectRoot>/docs/gsd/stack-overrides.md` and that `--project-root` points at the right directory.
+
+### 1.4.4 End-to-end workflow (v6.1.0+)
+
+```bash
+# 1. In the TARGET project, declare overrides (copy the template)
+cp <gsd-repo>/docs/stack-overrides-template.md <target-project>/docs/gsd/stack-overrides.md
+#    Edit the file to your values; unspecified rows inherit defaults.
+
+# 2. Verify GSD sees them
+gsd query stack --project-root /path/to/target-project
+
+# 3. Run a milestone against the target project
+gsd run requirements \
+    --project "MyApp" \
+    --description "..." \
+    --project-root /path/to/target-project
+
+# 4. After the run, scan for leaks (CI-friendly)
+gsd validate-stack --project-root /path/to/target-project --fail-on-findings
+```
+
+## 1.5 Getting Started in 5 Minutes
+
+This section is the "I just cloned the repo — what do I do?" path. For full workstation setup including AI CLIs, see [Chapter 4](#chapter-4-workstation-setup).
+
+### Step 1: Verify the harness is healthy (30 sec)
+
+Nothing in this step requires an AI subscription or API key.
+
+```bash
+git clone https://github.com/rjain557/gsd-autonomous-dev.git
+cd gsd-autonomous-dev/gsd-autonomous-dev
+npm install
+npm run typecheck
+npm run test:v6
+```
+
+Expected: `0 errors` from typecheck, `31 passed, 0 failed` from tests.
+
+If either fails, something broke during clone/install. Do not proceed — open an issue with the error output.
+
+### Step 2: Explore the CLI without running anything expensive (30 sec)
+
+```bash
+npx ts-node src/index.ts help
+npx ts-node src/index.ts query stack          # resolved stack context for this cwd (default .NET 8)
+npx ts-node src/index.ts status               # "no state.db yet" until your first run
+```
+
+These three commands do not call any LLM and do not cost anything. They confirm the CLI is wired correctly.
+
+### Step 3: Install the agent stack (before your first run)
+
+This is [§4.3](#43-install-the-external-tools-gsd-expects) condensed. Run it once per workstation:
+
+```bash
+npx playwright install chromium
+pip install graphifyy semgrep
+npm install -g gitnexus @modelcontextprotocol/server-github
+npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+claude auth
+codex auth
+gemini auth
+graphify claude install && graphify install
+gitnexus analyze && gitnexus setup
+claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
+```
+
+### Step 4: Set environment variables (see `.env.example`)
+
+Minimum: `ANTHROPIC_API_KEY` (backup auth when CLI hits rate limit) and `GITHUB_PERSONAL_ACCESS_TOKEN` (for the GitHub MCP server). Set as persistent Windows user env vars:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY', 'sk-ant-...', 'User')
+[System.Environment]::SetEnvironmentVariable('GITHUB_PERSONAL_ACCESS_TOKEN', 'ghp_...', 'User')
+```
+
+Restart your terminal after setting these. See [`.env.example`](../.env.example) for the full list.
+
+### Step 5: (If applicable) Declare a per-project stack override
+
+If your target project is **not** .NET 8, create `docs/gsd/stack-overrides.md` in the **target project** (not this repo). Copy [`docs/stack-overrides-template.md`](stack-overrides-template.md), edit the rows you need (usually just `Backend framework | net9.0`).
+
+Verify:
+
+```bash
+gsd query stack --project-root /path/to/target-project
+# Expected: "source": "override"  and your declared framework
+```
+
+### Step 6: Run your first milestone
+
+```bash
+gsd run requirements \
+    --project "MyApp" \
+    --description "Multi-tenant SaaS" \
+    --project-root /path/to/target-project
+
+gsd status                                        # see progress
+gsd query milestones                              # list all milestones
+gsd query milestone <id>                          # drill into one
+```
+
+### Step 7: (After the run) Validate no stack leaks
+
+```bash
+gsd validate-stack --project-root /path/to/target-project --fail-on-findings
+```
+
+Exit code 0 = no leaks. Exit code 1 = LLM emitted a framework that contradicts your declared stack (see [§1.4.2](#142-stack-leak-validator-v610)).
+
+### Day-2 operations
+
+Once you've run a first milestone:
+
+- **Check status frequently**: `gsd status`
+- **Triage a failure**: `gsd forensics --run <runId> --milestone <milestoneId>`
+- **Mine patterns weekly**: `gsd harvest --since-days 7`
+- **Audit vault health**: `gsd doc-garden`
+- **Free a stuck worktree**: `gsd worktree status` → `gsd worktree teardown <milestoneId> --force`
+
+Full command reference: [Appendix A](#appendix-a-quick-command-reference).
+
 # Chapter 2: System Architecture
 
 ## 2.1 High-Level Control Flow
 
-The v4.2 runtime is a two-orchestrator system.
+The V6 runtime is a two-orchestrator system layered under the Milestone → Slice → Task hierarchy.
 
 ```text
 Developer
   |
-  +--> npx ts-node src/index.ts run <milestone>
+  +--> gsd run <milestone>
           |
-          +--> Preflight validation
+          +--> Preflight validation (vault, CLIs, env vars, worktree setup)
           |
-          +--> SDLC Orchestrator (Phases A-E)
-          |      +--> RequirementsAgent
-          |      +--> ArchitectureAgent
-          |      +--> FigmaIntegrationAgent
-          |      +--> PhaseReconcileAgent
-          |      +--> BlueprintFreezeAgent
-          |      +--> ContractFreezeAgent
+          +--> Create git worktree: .gsd-worktrees/M{nnn}/
           |
-          +--> Pipeline Orchestrator (Phases F-G)
-                 +--> BlueprintAnalysisAgent
-                 +--> CodeReviewAgent
-                 +--> RemediationAgent
-                 +--> QualityGateAgent
-                 +--> E2EValidationAgent
-                 +--> DeployAgent
-                 +--> PostDeployValidationAgent
+          +--> Record milestone in memory/state.db
+          |
+          +--> For each Slice in the Milestone:
+          |      +--> Execute dependency graph of Tasks (parallel where possible)
+          |      |
+          |      +--> SDLC Orchestrator (Phases A-E) per slice
+          |      |      +--> RequirementsAgent
+          |      |      +--> ArchitectureAgent
+          |      |      +--> FigmaIntegrationAgent
+          |      |      +--> PhaseReconcileAgent
+          |      |      +--> BlueprintFreezeAgent
+          |      |      +--> ContractFreezeAgent
+          |      |
+          |      +--> Pipeline Orchestrator (Phases F-G) per slice
+          |             +--> BlueprintAnalysisAgent
+          |             +--> CodeReviewAgent
+          |             +--> RemediationAgent
+          |             +--> QualityGateAgent
+          |             +--> E2EValidationAgent
+          |             +--> DeployAgent
+          |             +--> PostDeployValidationAgent
+          |
+          +--> Merge worktree → main (single milestone PR or slice-scoped PRs)
 ```
 
-The unified command model is implemented in [`src/index.ts`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/src/index.ts), while the SDLC and pipeline control loops live in [`src/harness/sdlc-orchestrator.ts`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/src/harness/sdlc-orchestrator.ts) and [`src/harness/orchestrator.ts`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/src/harness/orchestrator.ts).
+The unified command model lives in [`src/index.ts`](../src/index.ts). The SDLC and pipeline control loops live in [`src/harness/sdlc-orchestrator.ts`](../src/harness/sdlc-orchestrator.ts) and [`src/harness/orchestrator.ts`](../src/harness/orchestrator.ts). V6-specific additions (milestone/slice scheduler, SQLite state adapter, worktree manager) are under [`src/harness/`](../src/harness/).
 
 ## 2.2 Phase Map (A-G)
 
@@ -159,39 +419,61 @@ The agents are not standalone scripts. They sit on top of reusable runtime servi
 | Runtime Component | Purpose |
 |---|---|
 | `VaultAdapter` | Reads and writes Obsidian-compatible notes and state files |
+| `StateDB` | SQLite-backed durable state for milestones, slices, tasks, decisions, rate-limit windows, stuck patterns |
+| `WorktreeManager` | Creates, tracks, and tears down git worktrees per milestone |
+| `ExecutionGraph` | Dependency-aware task scheduler; runs independent tasks in parallel |
 | `BaseAgent` | Loads the vault note, resolves model/tool settings, runs the LLM call, and normalizes structured output |
 | `RateLimiter` | Enforces CLI RPM safety windows and model cooldowns |
+| `BudgetRouter` | Downgrades model selection at 50/75/90% budget thresholds |
+| `StuckDetector` | Hashes PatchSet signatures; escalates when the same hash recurs |
+| `TimeoutHierarchy` | Soft (wrap up), idle (probe), hard (halt + forensics) timeouts per task |
+| `CompactedExec` | Wraps bash/Semgrep/Playwright output; agent sees summary, raw persisted at path |
+| `ProjectStackContext` (v6.1.0) | Reads `docs/gsd/stack-overrides.md` from the target project; resolves backend framework, SDK, solution format, frontend, mobile, compliance. Defaults to .NET 8 when no override. Injected into every agent's system prompt as a `PROJECT STACK CONTEXT` block via `BaseAgent.setProjectStackContext()` |
+| `StackLeakValidator` (v6.1.0) | Post-SDLC defense-in-depth check. Scans generated `.csproj` / `.json` / `.md` / `.yaml` / `.xml` artifacts for framework values that contradict the declared stack context. Heuristic false-positive filter skips migration/changelog/archived contexts. Findings logged to `gate-results` observability + recorded as decisions in `state.db` |
+| `ObservabilityLogger` | Structured JSONL output per category (`e2e-traces`, `deploy-logs`, `gate-results`, `build-output`, `router-decisions`) — agent-queryable |
 | `HookSystem` | Provides lifecycle hooks such as run logging and result validation |
 | `default-hooks` | Registers built-in hooks for costs, validation, and vault logging |
 | `types.ts` + `sdlc-types.ts` | Define the strongly typed I/O contracts for all agents |
-| `preflight()` | Verifies vault structure, CLI availability, `GSD_LLM_MODE`, and optional security tool availability before a run starts |
+| `preflight()` | Verifies vault structure, CLI availability, `GSD_LLM_MODE`, SQLite access, and optional security tool availability before a run starts |
 
 ## 2.5 Repository Layout
 
 ```text
 gsd-autonomous-dev/
   src/
-    agents/                 SDLC and pipeline agents
-    harness/                Orchestrators, types, vault adapter, hooks, rate limiter
+    agents/                 SDLC and pipeline agents (14 total)
+    harness/                Orchestrators, types, vault adapter, hooks, rate limiter, V6 scheduler
     evals/                  Evaluation runner and judges
     index.ts                Unified CLI entry point
   memory/
     agents/                 Vault notes for every agent
     knowledge/              Quality gates, tools reference, model strategy, deploy config, rollback
-    architecture/           Agent system design, state schema, hook registry
+    architecture/           V6 design, agent system design, state schema, hook registry
+    milestones/             V6 hierarchical runtime: M{nnn}/ROADMAP.md, slices/, tasks/
+    observability/          Structured logs: e2e-traces/, deploy-logs/, gate-results/, build-output/
     sessions/               Run state snapshots and append-only evidence
     decisions/              Orchestrator decision trail
+    state.db                SQLite durable state (milestones, slices, tasks, decisions)
+  claude-memory/            Claude's durable knowledge vault (Obsidian, OneDrive-synced)
+    topics/                 Topic pages with YAML frontmatter
+    index.md, HEALTH.md, CHANGELOG.md, .retrieval-log.jsonl
+  .claude/
+    hooks/                  retrieve.sh, consolidate.sh, health-check.sh, impact-check.sh, reindex.sh, preference-extract.sh
+    commands/               vault-status.md, review.md, consolidate.md, contradictions.md, volatility.md, graduate.md
+    settings.json           Hooks + MCP registrations
+  .gsd-worktrees/           Per-milestone git worktrees (ignored)
   docs/
-    GSD-Developer-Guide.md  Canonical v4.2 guide source
-    GSD-Workstation-Setup.md
+    GSD-Developer-Guide.md  Canonical V6 guide (this document)
+    GSD-Workstation-Setup.md  Base toolchain setup
+    workstation.md          Per-workstation Claude memory + hooks config
+    GSD-Configuration.md    Runtime configuration reference
+    GSD-Claude-Code-Skills.md  Installed skills reference
     GSD-Figma-Make-Integration.md
-    GSD-V4-Implementation-Status.md
-    GSD-Architecture.md
     GSD-Troubleshooting.md
+    legacy/                 Archived pre-V6 documentation (do not use)
   graphify-out/             Graphify-generated knowledge graph output
   .gitnexus/                GitNexus graph/index data
   test-fixtures/            Eval fixtures and regression examples
-  v2/, v3/                  Legacy PowerShell generations retained for reference
 ```
 
 # Chapter 3: Vault Memory and State
@@ -209,6 +491,7 @@ memory/
   MEMORY.md                         Long-term project context
   active-tasks.md                   Session handoff notes
   session-state.md                  Crash recovery snapshot
+  state.db                          V6 SQLite durable state (milestones, slices, tasks, decisions)
   agents/
     requirements-agent.md
     architecture-agent.md
@@ -231,10 +514,28 @@ memory/
     project-paths.md
     rollback-procedures.md
     tools-reference.md
+    rules/                          V6 golden-rules-as-code (Semgrep/ESLint YAML)
   architecture/
+    v6-design.md                   Canonical V6 architecture reference
     agent-system-design.md
     state-schema.md
     hook-registry.md
+  milestones/                       V6 hierarchical runtime tree
+    M001-{slug}/
+      ROADMAP.md                    Milestone goal + slice list
+      state.json                    Typed milestone state (mirror of state.db row)
+      slices/
+        S01-{slug}/
+          PLAN.md                   Slice goal + task list
+          state.json
+          tasks/
+            T01-blueprint-analysis.md
+            T02-code-review.md
+  observability/                    V6 structured query surface
+    e2e-traces/{runId}.jsonl
+    deploy-logs/{runId}.jsonl
+    gate-results/{runId}.jsonl
+    build-output/{runId}.jsonl
   evals/
     test-cases.md
   sessions/
@@ -266,24 +567,39 @@ The body of the note then defines:
 
 Changing agent behavior is usually a vault edit, not a code edit.
 
-## 3.4 State Files and Resume Behavior
+## 3.4 State Model and Resume Behavior
 
-The runtime saves explicit state snapshots for both the SDLC and pipeline loops.
+V6 uses a **hybrid state model**: SQLite (`memory/state.db`) for queryable durable state, markdown for human-readable narrative.
 
-| State File | Producer | Purpose |
+### 3.4.1 SQLite Schema
+
+| Table | Columns |
+|---|---|
+| `milestones` | id, name, status, started_at, completed_at, budget_usd, worktree_path |
+| `slices` | id, milestone_id, name, status, depends_on_slice_ids |
+| `tasks` | id, slice_id, agent_id, stage, status, cost_usd, tokens_in, tokens_out, output_hash |
+| `decisions` | id, task_id, action, reason, evidence (FK to `memory/decisions/` markdown) |
+| `rate_limit_windows` | cli_id, timestamp, calls_in_window |
+| `stuck_patterns` | id, signature_hash, occurrences, first_seen, last_seen |
+
+### 3.4.2 Markdown Narrative Files
+
+| File | Producer | Purpose |
 |---|---|---|
-| `memory/sessions/sdlc-state-{runId}.json` | SDLC orchestrator | Snapshot after each SDLC phase |
-| `memory/sessions/sdlc-state-latest.json` | SDLC orchestrator | Latest pointer used for phase resume |
-| `memory/sessions/pipeline-state-{runId}.json` | Pipeline orchestrator | Snapshot after each pipeline stage |
-| `memory/sessions/pipeline-state-latest.json` | Pipeline orchestrator | Latest pointer used for stage resume |
+| `memory/milestones/M{nnn}/ROADMAP.md` | Orchestrator | Milestone goal + slice list |
+| `memory/milestones/M{nnn}/slices/S{nn}/PLAN.md` | Orchestrator | Slice goal + task list |
+| `memory/milestones/M{nnn}/slices/S{nn}/tasks/T{nn}-{stage}.md` | Agent | Per-task narrative + output |
 | `memory/sessions/{date}-run-{runId}.md` | Pipeline orchestrator | Human-readable run summary |
 | `memory/decisions/*` | Orchestrators | Decision trail with action, rationale, and evidence |
+| `memory/observability/{type}/{runId}.jsonl` | Agents + gate | Structured logs for agent-legible queries |
 
-Resume semantics are different at each layer:
+### 3.4.3 Resume Semantics
 
-- The unified `run <milestone>` command is milestone-driven and auto-loads prior SDLC state when the milestone begins after Phase A.
-- `sdlc run --from-phase <phase>` is the explicit phase-level resume surface.
-- `pipeline run --from-stage <stage>` is the explicit stage-level resume surface.
+- `gsd run <milestone>` — resumes from the last completed task if the milestone exists in `state.db`; otherwise creates a new milestone.
+- `sdlc run --from-phase <phase>` — explicit phase-level resume within the active slice.
+- `pipeline run --from-stage <stage>` — explicit stage-level resume within the active slice.
+- `gsd query task <taskId>` — inspects task state without resuming.
+- Auto-lock file `memory/state.db.lock` detects stale locks after crashes; `gsd forensics` packages the forensic bundle for triage.
 
 ## 3.5 Using the Vault in Obsidian
 
@@ -295,6 +611,118 @@ Recommended developer workflow:
 2. Review the relevant agent note before changing prompts or runtime rules.
 3. Edit `memory/knowledge/*.md` to change thresholds or deploy behavior.
 4. Treat `memory/sessions/` and `memory/decisions/` as append-only operational history.
+
+## 3.6 Claude Memory Stack (`claude-memory/`)
+
+In addition to the runtime `memory/` directory, the workstation has a separate **Claude Memory Stack** that persists Claude's durable knowledge across sessions. This is distinct from the TypeScript harness memory — it captures the developer's conversational context with Claude, not the agents' runtime config.
+
+| Layer | Location | Managed By | Purpose |
+|-------|----------|------------|---------|
+| Runtime Vault | `memory/` (in repo) | TypeScript harness | Agent prompts, thresholds, decisions, session logs |
+| **Claude Memory Vault** | `claude-memory/` (in Obsidian) | Claude Code hooks + slash commands | Durable knowledge from conversations with Claude |
+| Auto-memory | `C:\Users\<user>\.claude\projects\...\memory\` | Claude Code built-in | Claude's private working notes |
+| GitNexus Index | `.gitnexus/` (gitignored) | GitNexus MCP | Symbol graph for impact analysis |
+
+### 3.6.1 Claude Memory Vault Structure
+
+```text
+claude-memory/
+  index.md                 Topic registry, rebuilt automatically
+  CHANGELOG.md             Audit trail of all vault mutations
+  HEALTH.md                Live health metrics (status, retrieval quality, freshness)
+  preferences.md           User preferences (always loaded on every prompt)
+  .retrieval-log.jsonl     Retrieval event log (used for health metrics)
+  topics/
+    gsd-pipeline-architecture.md
+    agent-orchestration.md
+    sdlc-phases.md
+    llm-routing-strategy.md
+    quality-gates.md
+  _archive/                Retired or superseded topics
+```
+
+Each topic page follows a typed schema:
+
+```yaml
+---
+topic: <short name>
+aliases: [<alternate names for keyword matching>]
+volatility: stable|evolving|ephemeral
+last_updated: <ISO date>
+confidence: high|medium|low
+sources: [<session dates, commit hashes>]
+access_count: 0
+last_accessed: <ISO date>
+---
+
+# <Topic>
+## Summary
+## Key Facts
+## Decisions & Rationale
+## Open Questions
+## Related Code
+## Related Topics
+```
+
+### 3.6.2 Volatility Semantics
+
+| Level | Review cadence | Consolidation behavior |
+|-------|----------------|------------------------|
+| `stable` | Yearly | Conservative — strong preference for preserving existing content |
+| `evolving` (default) | Quarterly | Normal consolidation with contradiction detection |
+| `ephemeral` | Aggressive | Auto-archive after 60 days with no access or update |
+
+### 3.6.3 Contradiction Handling
+
+When `consolidate.sh` encounters new information during a session, it compares against existing `## Key facts`:
+
+- **Compatible** — extends existing, proceed normally
+- **Clarifying** — refines existing, update in-place with CHANGELOG entry
+- **Contradicting** — genuine conflict; append to `## Open questions` as `CONTRADICTION detected on [date]`, lower confidence by one step, do NOT overwrite
+- **Replacing** — only after the user explicitly says "the old info is wrong"; overwrite with `[replaced]` CHANGELOG entry
+
+### 3.6.4 Hooks (registered in `.claude/settings.json`)
+
+| Hook | Trigger | Purpose |
+|------|---------|---------|
+| `retrieve.sh` | UserPromptSubmit | Loads matching vault topics + preferences.md into context |
+| `impact-check.sh` | PreToolUse (Edit/Write) | Warns on HIGH/CRITICAL agent, orchestrator, or harness edits |
+| `reindex.sh` | PostToolUse (Bash) | Runs `gitnexus analyze` after `git commit` or `git merge` |
+| `consolidate.sh` | Stop | Reminds to run `/consolidate` if vault was accessed |
+| `health-check.sh` | Stop | Rewrites `HEALTH.md` with live metrics |
+| `preference-extract.sh` | Stop | Signals to check for preference-shaped statements |
+
+All hooks resolve the vault path from `$GSD_VAULT_MEMORY` (env var) with a fallback to the default rjain/Technijian path. On a workstation with a different username or org, set `GSD_VAULT_MEMORY` in the Windows user environment — see [Chapter 4.7](#47-claude-memory-stack-bootstrap).
+
+### 3.6.5 Slash Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/vault-status` | Health dashboard — topic count, retrieval quality, freshness |
+| `/consolidate` | Save durable session knowledge to vault topics |
+| `/review` | Weekly vault review — quality, contradictions, volatility calibration |
+| `/contradictions` | List and resolve unresolved fact conflicts |
+| `/volatility <topic> <stable\|evolving\|ephemeral>` | Set topic volatility manually |
+| `/graduate` | Recommend stay vs. migrate to LightRAG |
+
+### 3.6.6 Weekly Review Mandate
+
+Run `/review` every week. Target: 5–10 minutes. Escalation:
+- **7–14 days** since last review: gentle reminder at session end
+- **14–21 days**: warning at session end
+- **>21 days**: "vault health cannot be trusted" notice
+- **>30 days**: `/graduate` refuses to give a recommendation
+
+### 3.6.7 Health Classification
+
+`HEALTH.md` is recomputed at every session stop. The status follows a graduated ladder:
+
+| Status | Criteria |
+|--------|----------|
+| **GREEN** | Topic count < 150, hit rate > 70%, miss rate < 15%, stale-180 < 10% |
+| **YELLOW** | Topic count 150–400, hit rate 50–70%, miss rate 15–30%, stale-180 10–25% |
+| **RED** | Topic count > 400, hit rate < 50%, miss rate > 30%, stale-180 > 25% |
+| **PENDING** | Insufficient retrieval data (< 30 days of `.retrieval-log.jsonl`) |
 
 # Chapter 4: Workstation Setup
 
@@ -421,9 +849,78 @@ Expected outcomes:
 
 The standalone setup and integration references are:
 
-- [`docs/GSD-Workstation-Setup.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Workstation-Setup.md)
-- [`docs/GSD-Figma-Make-Integration.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Figma-Make-Integration.md)
-- [`docs/GSD-Installation-Graphify.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Installation-Graphify.md)
+- [`docs/GSD-Workstation-Setup.md`](GSD-Workstation-Setup.md) — Base toolchain (Node, Python, AI CLIs)
+- [`docs/workstation.md`](workstation.md) — Claude memory stack + hooks + per-machine config
+- [`docs/GSD-Figma-Make-Integration.md`](GSD-Figma-Make-Integration.md)
+- [`docs/GSD-Installation-Graphify.md`](GSD-Installation-Graphify.md)
+
+## 4.7 Claude Memory Stack Bootstrap
+
+After the base workstation setup (Sections 4.1–4.5) is complete, bootstrap the Claude Memory Stack described in [Chapter 3.6](#36-claude-memory-stack-claude-memory).
+
+### 4.7.1 Verify Obsidian Vault Access
+
+The `claude-memory/` vault lives in the Obsidian folder and syncs via OneDrive:
+
+```bash
+ls "/c/Users/$USERNAME/OneDrive - Technijian, Inc/Documents/obsidian/gsd-autonomous-dev/gsd-autonomous-dev/claude-memory/"
+```
+
+Expected output: `CHANGELOG.md  HEALTH.md  _archive  index.md  topics`
+
+If missing, wait for OneDrive sync or copy the vault from another machine.
+
+### 4.7.2 Set `GSD_VAULT_MEMORY` (only if your path differs)
+
+The hooks default to the `rjain` path. Set this env var only if your Windows username or OneDrive org folder name differs:
+
+```powershell
+$vaultPath = "C:\Users\YOUR_USERNAME\OneDrive - YOUR_ORG\Documents\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\claude-memory"
+[System.Environment]::SetEnvironmentVariable('GSD_VAULT_MEMORY', $vaultPath, 'User')
+```
+
+Restart your terminal, then verify with `echo $GSD_VAULT_MEMORY`.
+
+### 4.7.3 Verify Hooks and Commands Are Wired
+
+```bash
+cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
+
+# Hook scripts present
+ls .claude/hooks/
+# Expected: consolidate.sh  health-check.sh  impact-check.sh  preference-extract.sh  reindex.sh  retrieve.sh
+
+# Slash commands present
+ls .claude/commands/
+# Expected: consolidate.md  contradictions.md  graduate.md  review.md  vault-status.md  volatility.md
+
+# Hooks registered in settings.json
+cat .claude/settings.json | python3 -c "import sys,json; s=json.load(sys.stdin); print(list(s['hooks'].keys()))"
+# Expected: ['PreToolUse', 'UserPromptSubmit', 'PostToolUse', 'Stop']
+```
+
+### 4.7.4 Initialize Vault Git Repo (recommended)
+
+Initializing the vault as a git repo lets you roll back any vault mutation. Run once per workstation (one-time setup):
+
+```bash
+VAULT_ROOT="/c/Users/$USERNAME/OneDrive - Technijian, Inc/Documents/obsidian/gsd-autonomous-dev/gsd-autonomous-dev"
+
+git -C "$VAULT_ROOT" init
+cat > "$VAULT_ROOT/.gitignore" << 'EOF'
+.obsidian/workspace*
+.obsidian/cache
+.obsidian/graph.json
+.trash/
+*.tmp
+EOF
+git -C "$VAULT_ROOT" add .
+git -C "$VAULT_ROOT" commit -m "baseline: vault before Claude memory setup"
+```
+
+### 4.7.5 First Run
+
+After bootstrap, run `/vault-status` to see the initial health dashboard, then `/review` to mark the first weekly review as complete.
 
 This developer guide is the full narrative source. Those documents are focused operational runbooks.
 
@@ -508,11 +1005,19 @@ npx ts-node src/index.ts status
 | `--project <name>` | `run`, `sdlc run` | Project name for Intake Pack generation |
 | `--description <text>` | `run`, `sdlc run` | Project description for Intake Pack generation |
 | `--design-path <path>` | `run figma-uploaded`, `sdlc run` | Path to exported Figma Make deliverables |
-| `--vault-path <path>` | all run surfaces | Override the vault directory |
+| `--vault-path <path>` | all run surfaces, `query`, `forensics` | Override the vault directory (default: `./memory`) |
+| `--project-root <path>` (v6.1.0) | `run`, `sdlc run`, `pipeline run`, `query stack`, `validate-stack` | Target project root for `docs/gsd/stack-overrides.md` resolution (default: `process.cwd()`). Lets GSD honor per-project backend framework (net8/net9/net10). |
 | `--review` | `run`, `sdlc run` | Pause after each SDLC phase for human review |
 | `--dry-run` | `run`, `pipeline run` | Skip deployment |
+| `--worktree` (V6) | `run` | Run in an isolated git worktree per milestone |
+| `--base-branch <branch>` (V6) | `run` | Base branch for worktree (default: `main`) |
+| `--budget <usd>` (V6) | `run` | Milestone budget for cost routing (default: `10`) |
 | `--from-phase <phase>` | `sdlc run` | Resume from a specific SDLC phase |
 | `--from-stage <stage>` | `pipeline run` | Resume from a specific pipeline stage |
+| `--json` (v6.1.0) | `validate-stack` | Emit JSON report instead of markdown |
+| `--fail-on-findings` (v6.1.0) | `validate-stack` | Exit 1 if any findings detected (CI hook) |
+| `--since-days <N>` | `harvest` | Window for pattern mining (default: 7) |
+| `--dry-run` | `migrate` | Preview V5 → V6 migration without writing to state.db |
 
 ## 5.6 Recommended Day-to-Day Workflow
 
@@ -532,7 +1037,7 @@ For a review-gated workflow, add `--review` and stop between phases for human si
 
 ## 6.1 Phase A - RequirementsAgent
 
-The RequirementsAgent converts a project name and free-form description into a structured Intake Pack. The runtime contract for this agent is documented in [`memory/agents/requirements-agent.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/memory/agents/requirements-agent.md).
+The RequirementsAgent converts a project name and free-form description into a structured Intake Pack. The runtime contract for this agent is documented in [`memory/agents/requirements-agent.md`](../memory/agents/requirements-agent.md).
 
 The generated Intake Pack includes:
 
@@ -633,7 +1138,7 @@ design/web/v1/src/
       03-seed-data.sql
 ```
 
-That structure is described in the runtime prompt and in [`docs/GSD-Figma-Make-Integration.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Figma-Make-Integration.md).
+That structure is described in the runtime prompt and in [`docs/GSD-Figma-Make-Integration.md`](../docs/GSD-Figma-Make-Integration.md).
 
 ## 7.2 Phase C - FigmaIntegrationAgent
 
@@ -777,7 +1282,7 @@ The pipeline orchestrator executes the following stage order:
 | 6 | `deploy` | Deploy to alpha with rollback |
 | 7 | `post-deploy` | Validate the live environment |
 
-The explicit stage types are defined in [`src/harness/types.ts`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/src/harness/types.ts).
+The explicit stage types are defined in [`src/harness/types.ts`](../src/harness/types.ts).
 
 ## 9.2 Blueprint Analysis and Review
 
@@ -921,9 +1426,9 @@ The target operating mode is still `$0` marginal per run. API fallback is resili
 
 ## 10.3 Integrated Tooling Stack
 
-Obsidian is only the operator view on top of the vault. The actual 4.2 workstation adds an augmentation layer of code intelligence, live documentation, browser validation, security skills, and MCP automation.
+Obsidian is only the operator view on top of the vault. The V6 workstation adds an augmentation layer of code intelligence, live documentation, browser validation, security skills, and MCP automation.
 
-| Tool | Category | Role in v4.2 | Main Location |
+| Tool | Category | Role in V6 | Main Location |
 |---|---|---|---|
 | Graphify | Code intelligence | Community detection, god-node discovery, graph report, optional wiki | `graphify-out/` |
 | GitNexus | Code intelligence | Blast radius, execution flows, symbol context, safe rename | `.gitnexus/` |
@@ -960,7 +1465,7 @@ The repository includes local skills beyond the vault itself. These are separate
 | OWASP Security | Reasoning-time security reference | OWASP Top 10:2025, ASVS 5.0, agentic AI security, C#/TypeScript secure patterns |
 | Shannon | `/shannon` | Docker-based white-box pentest workflow with real exploit verification |
 
-For the long-form skill guide, see [`docs/GSD-Claude-Code-Skills.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Claude-Code-Skills.md).
+For the long-form skill guide, see [`docs/GSD-Claude-Code-Skills.md`](../docs/GSD-Claude-Code-Skills.md).
 
 ## 10.5 MCP Servers and Hook Wiring
 
@@ -1058,7 +1563,7 @@ The quality gate therefore has three layers of security posture:
 
 ## 10.9 Internal Agent Tool Contracts
 
-The augmentation layer above sits on top of a smaller internal tool schema defined in [`memory/knowledge/tool-schemas.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/memory/knowledge/tool-schemas.md).
+The augmentation layer above sits on top of a smaller internal tool schema defined in [`memory/knowledge/tool-schemas.md`](../memory/knowledge/tool-schemas.md).
 
 | Internal Tool | Purpose | Notable restrictions |
 |---|---|---|
@@ -1129,7 +1634,7 @@ Every feature below was tested by running the actual CLI command or checking the
 
 All API keys set as persistent user environment variables (DEEPSEEK_API_KEY and MINIMAX_API_KEY also configured for emergency fallback).
 
-### V5.0 Dual Auth Architecture
+### Dual Auth Architecture
 
 The pipeline uses two auth modes for Claude, switching automatically:
 
@@ -1146,15 +1651,15 @@ All features below verified by running `claude --version` (v2.1.96), `claude --h
 
 | Feature | Where Used | Why | Verified How | Since |
 |---|---|---|---|---|
-| Claude CLI v2.1.96 | All Claude calls | OAuth subscription, $0 marginal | `claude --version` | V4.0 |
-| `--agent` flag | Agent routing | Load custom agent definitions at session start | `claude --help` shows `--agent`, `--agents` flags | V5.0 |
-| `--agents` JSON flag | Inline agent definitions | Define agents without files for testing | `claude --help` shows flag | V5.0 |
-| `agents` subcommand | List configured agents | Verify agent discovery | `claude --help` shows subcommand | V5.0 |
-| Hooks (PreToolUse) | Graphify guidance | Inject knowledge graph context before file searches | `.claude/settings.json` has working hook | V4.2 |
-| MCP: Context7 | Live library docs | .NET, React, Dapper docs during architecture and remediation | `claude mcp list` shows connected | V4.2 |
-| MCP: Playwright | Browser testing | Headless Chromium via MCP protocol | `claude mcp list` shows connected | V4.2 |
-| Anthropic SDK (tool_use) | Structured output fallback | JSON schema compliance via tool_use when GSD_LLM_MODE=sdk | `require('@anthropic-ai/sdk')` loads | V4.1 |
-| Sonnet model for agents | All pipeline agents | Best speed/quality balance for execution | Vault agent notes specify model | V4.0 |
+| Claude CLI v2.1.96 | All Claude calls | OAuth subscription, $0 marginal | `claude --version` | V6 |
+| `--agent` flag | Agent routing | Load custom agent definitions at session start | `claude --help` shows `--agent`, `--agents` flags | V6 |
+| `--agents` JSON flag | Inline agent definitions | Define agents without files for testing | `claude --help` shows flag | V6 |
+| `agents` subcommand | List configured agents | Verify agent discovery | `claude --help` shows subcommand | V6 |
+| Hooks (PreToolUse) | Graphify guidance | Inject knowledge graph context before file searches | `.claude/settings.json` has working hook | V6 |
+| MCP: Context7 | Live library docs | .NET, React, Dapper docs during architecture and remediation | `claude mcp list` shows connected | V6 |
+| MCP: Playwright | Browser testing | Headless Chromium via MCP protocol | `claude mcp list` shows connected | V6 |
+| Anthropic SDK (tool_use) | Structured output fallback | JSON schema compliance via tool_use when GSD_LLM_MODE=sdk | `require('@anthropic-ai/sdk')` loads | V6 |
+| Sonnet model for agents | All pipeline agents | Best speed/quality balance for execution | Vault agent notes specify model | V6 |
 
 **Verified but not yet adopted (with specific reason):**
 
@@ -1178,11 +1683,11 @@ All features below verified by running `codex --version` (v0.110.0) and `codex -
 
 | Feature | Where Used | Why | Verified How | Since |
 |---|---|---|---|---|
-| Codex CLI v0.110.0 | All Codex calls | ChatGPT Max subscription, $0 marginal | `codex --version` | V4.0 |
-| `-a` approval policy | Execute phase | Controls when human approval is needed | `codex --help` shows `--ask-for-approval` | V4.0 |
-| `-s` sandbox mode | Execute phase | Controls shell command sandboxing | `codex --help` shows `--sandbox` | V4.0 |
-| `-m` model selection | Model routing | Switch between GPT-4o, o1, o3 | `codex --help` shows `--model` | V4.0 |
-| `apply` subcommand | Diff application | Apply generated diffs to working tree | `codex --help` shows `apply` | V4.0 |
+| Codex CLI v0.110.0 | All Codex calls | ChatGPT Max subscription, $0 marginal | `codex --version` | V6 |
+| `-a` approval policy | Execute phase | Controls when human approval is needed | `codex --help` shows `--ask-for-approval` | V6 |
+| `-s` sandbox mode | Execute phase | Controls shell command sandboxing | `codex --help` shows `--sandbox` | V6 |
+| `-m` model selection | Model routing | Switch between GPT-4o, o1, o3 | `codex --help` shows `--model` | V6 |
+| `apply` subcommand | Diff application | Apply generated diffs to working tree | `codex --help` shows `apply` | V6 |
 
 **Verified but not yet adopted:**
 
@@ -1204,12 +1709,12 @@ All features below verified by running `gemini --version` (v0.28.2) and `gemini 
 
 | Feature | Where Used | Why | Verified How | Since |
 |---|---|---|---|---|
-| Gemini CLI v0.28.2 | All Gemini calls | Ultra subscription, $0 marginal, cheapest of the three | `gemini --version` | V4.0 |
-| `--approval-mode plan` | Research phase | Read-only mode prevents accidental writes | `gemini --help` shows 4 modes: default, auto_edit, yolo, plan | V4.0 |
-| `--yolo` mode | Spec-fix phase | Auto-approve all actions for autonomous operation | `gemini --help` shows flag | V4.0 |
-| `-p` headless mode | Pipeline calls | Non-interactive mode for scripted execution | `gemini --help` shows `--prompt` flag | V4.0 |
-| `skills` subcommand | Extensibility | Manage agent skills within Gemini | `gemini --help` shows `gemini skills` | V4.2 |
-| 1M context window | Research, large codebase analysis | Process entire repos without chunking | Gemini 2.5 Pro spec | V4.0 |
+| Gemini CLI v0.28.2 | All Gemini calls | Ultra subscription, $0 marginal, cheapest of the three | `gemini --version` | V6 |
+| `--approval-mode plan` | Research phase | Read-only mode prevents accidental writes | `gemini --help` shows 4 modes: default, auto_edit, yolo, plan | V6 |
+| `--yolo` mode | Spec-fix phase | Auto-approve all actions for autonomous operation | `gemini --help` shows flag | V6 |
+| `-p` headless mode | Pipeline calls | Non-interactive mode for scripted execution | `gemini --help` shows `--prompt` flag | V6 |
+| `skills` subcommand | Extensibility | Manage agent skills within Gemini | `gemini --help` shows `gemini skills` | V6 |
+| 1M context window | Research, large codebase analysis | Process entire repos without chunking | Gemini 2.5 Pro spec | V6 |
 
 **Verified but not yet adopted:**
 
@@ -1334,15 +1839,15 @@ The 30-day review should now also scan these skill sources:
 
 ### Change Log
 
-**2026-04-11 (V5.0 scan):** Installed 107 Claude Code skills + 97 agent skills from Trail of Bits, HashiCorp, McGo security audit, caveman token reduction. Completed 90-day platform scan covering Claude Code, Codex CLI, and Gemini CLI changelogs. Added skills marketplace to 30-day review checklist.
+**2026-04-11 (V6 scan):** Installed 107 Claude Code skills + 97 agent skills from Trail of Bits, HashiCorp, McGo security audit, caveman token reduction. Completed 90-day platform scan covering Claude Code, Codex CLI, and Gemini CLI changelogs. Added skills marketplace to 30-day review checklist.
 
-**2026-04-10 (V5.0):** Initial section. Documented all features in active use across 3 subscription CLIs + 2 API fallbacks. Created "watching" tables for features not yet adopted. Established 30-day review cadence.
+**2026-04-10 (V6):** Initial section. Documented all features in active use across 3 subscription CLIs + 2 API fallbacks. Created "watching" tables for features not yet adopted. Established 30-day review cadence.
 
 # Chapter 11: Configuration, Operations, and Troubleshooting
 
 ## 11.1 Quality Gate Configuration
 
-The binary thresholds live in [`memory/knowledge/quality-gates.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/memory/knowledge/quality-gates.md).
+The binary thresholds live in [`memory/knowledge/quality-gates.md`](../memory/knowledge/quality-gates.md).
 
 Key defaults:
 
@@ -1358,12 +1863,12 @@ Changing thresholds is a vault edit. The guide should not be edited to tune a li
 
 Deployment behavior is controlled by:
 
-- [`memory/knowledge/deploy-config.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/memory/knowledge/deploy-config.md)
-- [`memory/knowledge/rollback-procedures.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/memory/knowledge/rollback-procedures.md)
+- [`memory/knowledge/deploy-config.md`](../memory/knowledge/deploy-config.md)
+- [`memory/knowledge/rollback-procedures.md`](../memory/knowledge/rollback-procedures.md)
 
 Design-document lookup for E2E and post-deploy validation is controlled by:
 
-- [`memory/knowledge/project-paths.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/memory/knowledge/project-paths.md)
+- [`memory/knowledge/project-paths.md`](../memory/knowledge/project-paths.md)
 
 ## 11.3 Preflight Failures You Will See First
 
@@ -1401,7 +1906,7 @@ Design-document lookup for E2E and post-deploy validation is controlled by:
 
 ## 11.6 Word Export Workflow
 
-The markdown file [`docs/GSD-Developer-Guide.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Developer-Guide.md) is the canonical source for the Word guide.
+The markdown file [`docs/GSD-Developer-Guide.md`](../docs/GSD-Developer-Guide.md) is the canonical source for the Word guide.
 
 Generate the `.docx` with:
 
@@ -1423,11 +1928,11 @@ When opening the generated document in Word:
 
 Use these documents when you need narrower operational detail than this guide includes:
 
-- [`docs/GSD-Workstation-Setup.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Workstation-Setup.md)
-- [`docs/GSD-Figma-Make-Integration.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Figma-Make-Integration.md)
-- [`docs/GSD-V4-Implementation-Status.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-V4-Implementation-Status.md)
-- [`docs/GSD-Troubleshooting.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Troubleshooting.md)
-- [`docs/GSD-Architecture.md`](/mnt/c/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Architecture.md)
+- [`docs/GSD-Workstation-Setup.md`](../docs/GSD-Workstation-Setup.md)
+- [`docs/GSD-Figma-Make-Integration.md`](../docs/GSD-Figma-Make-Integration.md)
+- [`docs/GSD-V4-Implementation-Status.md`](../docs/GSD-V4-Implementation-Status.md)
+- [`docs/GSD-Troubleshooting.md`](../docs/GSD-Troubleshooting.md)
+- [`docs/GSD-Architecture.md`](../docs/GSD-Architecture.md)
 
 # Chapter 12: Legacy Compatibility and Reference Positioning
 
@@ -1440,65 +1945,67 @@ The repository still contains earlier PowerShell generations under `v2/`, `v3/`,
 - Reference implementations of older convergence behaviors.
 - Troubleshooting legacy projects that still run the PowerShell pipeline.
 
-## 12.2 Which Documents Are Canonical for v4.2
+## 12.2 Canonical V6 Documentation Set
 
-For the current TypeScript lifecycle system, the canonical references are:
+For the current V6 lifecycle system, the canonical references are:
 
-- `docs/GSD-Developer-Guide.md` for the full narrative guide.
-- `docs/GSD-Workstation-Setup.md` for fresh-machine setup.
-- `docs/GSD-Figma-Make-Integration.md` for the design export workflow.
-- `docs/GSD-V4-Implementation-Status.md` for implementation maturity and gap closure notes.
-- `memory/` for live runtime configuration and session history.
+- [`docs/GSD-Developer-Guide.md`](GSD-Developer-Guide.md) — Full narrative developer guide (this document).
+- [`docs/GSD-Workstation-Setup.md`](GSD-Workstation-Setup.md) — Base toolchain setup.
+- [`docs/workstation.md`](workstation.md) — Per-workstation Claude memory + hooks config.
+- [`docs/GSD-Configuration.md`](GSD-Configuration.md) — Runtime configuration reference.
+- [`docs/GSD-Claude-Code-Skills.md`](GSD-Claude-Code-Skills.md) — Installed skills reference.
+- [`docs/GSD-Figma-Make-Integration.md`](GSD-Figma-Make-Integration.md) — Figma export workflow.
+- [`memory/architecture/v6-design.md`](../memory/architecture/v6-design.md) — Canonical V6 architecture.
+- [`memory/`](../memory/) — Live runtime configuration, SQLite state, session history, decisions.
+- [`claude-memory/`](../claude-memory/) — Claude's durable knowledge vault (Obsidian, OneDrive-synced).
 
-Legacy PowerShell documents are still valuable, but they should not override the v4.2 TypeScript control-plane behavior when the two disagree.
+Pre-V6 documentation has been archived to [`docs/legacy/`](legacy/). Those files should not be used as references for the current system.
 
 ## 12.3 Practical Guidance for Future Updates
 
-When updating the system in later versions:
+When updating the system:
 
-1. Update `VERSION` first.
-2. Update this guide next so the narrative source stays authoritative.
-3. Update the narrower runbooks only after the main guide is accurate.
-4. Regenerate `docs/GSD-Developer-Guide.docx` from markdown.
-5. Prefer documenting implementation truth, even when a milestone name or roadmap label is more ambitious than the current code.
+1. Update `package.json` version first.
+2. Update [`memory/architecture/v6-design.md`](../memory/architecture/v6-design.md) for architectural changes.
+3. Update this guide next so the narrative source stays authoritative.
+4. Update the narrower runbooks only after the main guide is accurate.
+5. Regenerate `docs/GSD-Developer-Guide.docx` from markdown.
+6. Prefer documenting implementation truth, even when a roadmap label is more ambitious than the current code.
 
-That last rule matters most in v4.2 because the unified lifecycle surface is now broad enough that inaccurate documentation becomes an operational risk.
+That last rule matters most in V6 because the unified lifecycle surface is broad and inaccurate documentation becomes an operational risk.
 
 ---
 
-# Chapter 13: V6 Design Roadmap (Planned)
+# Chapter 13: V6 Implementation Tiers
 
-V6 is currently a design specification, not an implementation. The canonical design lives in `memory/architecture/v6-design.md`. This chapter summarizes what V6 changes, why, and how it differs from V5.
+V6 is the canonical architecture. The full design lives in [`memory/architecture/v6-design.md`](../memory/architecture/v6-design.md). This chapter summarizes the five tiers and their implementation order so contributors can locate where new work slots in.
 
-## 13.1 Why V6 Exists
+## 13.1 Why V6
 
-V5 was synthesized by comparing the pipeline against two external sources:
+V6 was synthesized by comparing the prior pipeline against two external sources:
 
 1. **gsd-build/gsd-2** — a general-purpose autonomous coding kernel with hierarchical decomposition, git worktree isolation, SQLite durable state, and execution graph scheduling
 2. **OpenAI harness-engineering playbook** — repo-as-record, golden rules enforced mechanically, filesystem-as-memory, agent-legible environment, self-healing feedback loops
 
-V5 already satisfies parts of both. V6 fills the remaining gaps.
+V6 adopts the strongest ideas from both while keeping the 14-agent SDLC Phase A-G roster intact.
 
-## 13.2 Core Design Shift
+## 13.2 Architectural Pillars
 
-V5 has a flat 7-stage pipeline with long-lived agent sessions running in the main checkout. V6 introduces three levels above the stages and changes how state is stored:
+| Pillar | V6 Behavior |
+|---|---|
+| Task graph | Milestone → Slice → Task → Stage |
+| Context model | Fresh session per task with explicit preamble |
+| Filesystem | Git worktree per milestone (`.gsd-worktrees/M001/`) |
+| State | Hybrid: SQLite (`memory/state.db`) + markdown narrative |
+| Scheduler | Execution graph with parallel independent tasks |
+| Commits | Turn-level git transaction per task |
+| Memory | `claude-memory/` vault (Obsidian-backed) with retrieval hooks |
 
-| Aspect | V5 | V6 |
-|---|---|---|
-| Task graph | Flat 7 stages | Milestone → Slice → Task → Stage |
-| Context model | Long-lived agent sessions | Fresh session per task with explicit preamble |
-| Filesystem | Main checkout | Git worktree per milestone (`.gsd-worktrees/M001/`) |
-| State | Markdown only | Hybrid: SQLite (`memory/state.db`) + markdown narrative |
-| Scheduler | Linear stage order | Execution graph with parallel independent tasks |
-| Commits | At end of run | Turn-level git transaction per task |
+## 13.3 Five Implementation Tiers
 
-V6 is a breaking change. Projects mid-SDLC on V5 finish on V5. New milestones start on V6.0.
+V6 ships in five tiers. Each tier is independently deployable.
 
-## 13.3 Five-Tier Roadmap
-
-V6 ships in five tiers, roughly one every one or two weeks after design freeze.
-
-**Tier 1 — Execution Kernel (breaking)**
+**Tier 1 — Execution Kernel**
 
 - Hierarchical decomposition with `memory/milestones/M###-NAME/slices/S##-NAME/tasks/T##-*.md`
 - Hybrid state model: SQLite durable store + markdown narrative
@@ -1536,16 +2043,13 @@ V6 ships in five tiers, roughly one every one or two weeks after design freeze.
 - Knowledge harvest job (weekly pattern mining from decisions)
 - Scout and Researcher subagents for context gathering
 
-## 13.4 What V6 Preserves From V5
+## 13.4 V6 Agent Roster (14 agents, unchanged across tiers)
 
-- All 14 agents (no rewrites)
-- Dual auth (CLI OAuth primary, API key auto-fallback)
-- Vault memory structure (`memory/agents/`, `memory/knowledge/`, `memory/architecture/`, `memory/sessions/`, `memory/decisions/`)
-- 30-day feature-check cadence
-- Verification-first adoption process
-- The 5-model stack (Claude, Codex, Gemini, DeepSeek, MiniMax)
-- The SDLC Phase A-G workflow
-- All installed skills (107 Claude Code + 97 agent skills)
+- Orchestrator
+- 6 SDLC agents (Requirements, Architecture, Figma, Reconcile, BlueprintFreeze, ContractFreeze)
+- 7 Pipeline agents (BlueprintAnalysis, CodeReview, Remediation, QualityGate, E2E, Deploy, PostDeploy)
+
+The agents themselves are not rewritten between tiers. Only the orchestrator and runtime services evolve.
 
 ## 13.5 What V6 Does NOT Do
 
@@ -1554,30 +2058,22 @@ V6 ships in five tiers, roughly one every one or two weeks after design freeze.
 - Does not introduce a new LLM provider
 - Does not alter the SDLC Phase A-G structure
 
-## 13.6 Migration Plan
-
-1. Complete any in-progress V5 milestones on V5 using `--from-stage` resume.
-2. For new work on V6.0+: run `gsd run <milestone>` — the same command still works; the implementation underneath migrates.
-3. Existing `memory/agents/`, `memory/knowledge/`, `memory/decisions/` stay in place.
-4. V6 adds `memory/milestones/`, `memory/state.db`, `memory/observability/`.
-5. `.gsd-worktrees/` gitignored; worktrees created on demand per milestone.
-
-## 13.7 Risks and Mitigations
+## 13.6 Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
 | SQLite contention on concurrent writes | Use `better-sqlite3` (synchronous) with vault-adapter-style lock |
 | Git worktrees unfamiliar to some devs | Document in developer guide; add `gsd worktree status` |
-| Hierarchical decomp overhead for tiny changes | Skip Milestone/Slice for single-task runs; fall through to V5 flow |
+| Hierarchical decomp overhead for tiny changes | Skip Milestone/Slice for single-task runs; fall through to a single default slice |
 | Compaction loses information agents need | Always persist raw to disk; agents can request by path |
 | Cross-review gate adds latency | Runs on Gemini Ultra (15 RPM, $0 marginal, 1M context); deploy-bound changes only |
 | Golden rules block edge cases | Each rule has `severity`; warnings don't block |
 
-## 13.8 Canonical References
+## 13.7 Canonical References
 
-- Full design: `memory/architecture/v6-design.md`
-- ADR-006 (V4 harness decision)
-- ADR-007 (V5 hybrid + dual auth)
+- Full design: [`memory/architecture/v6-design.md`](../memory/architecture/v6-design.md)
+- Agent system design: [`memory/architecture/agent-system-design.md`](../memory/architecture/agent-system-design.md)
+- State schema: [`memory/architecture/state-schema.md`](../memory/architecture/state-schema.md)
 - gsd-build/gsd-2: <https://github.com/gsd-build/gsd-2>
 - OpenAI harness engineering: <https://openai.com/index/harness-engineering/>
 
@@ -1585,20 +2081,59 @@ V6 ships in five tiers, roughly one every one or two weeks after design freeze.
 
 # Appendix A: Quick Command Reference
 
+## Milestone Runs
+
 | Task | Command |
 |---|---|
-| Start a new project | `npx ts-node src/index.ts run requirements --project "X" --description "Y"` |
-| Validate uploaded Figma deliverables | `npx ts-node src/index.ts run figma-uploaded --design-path design/web/v1/src/` |
-| Freeze contracts | `npx ts-node src/index.ts run contracts` |
-| Run the code pipeline | `npx ts-node src/index.ts run blueprint` |
-| Deploy to alpha | `npx ts-node src/index.ts run deploy` |
-| Run the full lifecycle | `npx ts-node src/index.ts run full --project "X" --description "Y"` |
-| Check status | `npx ts-node src/index.ts status` |
-| Explicit SDLC resume | `npx ts-node src/index.ts sdlc run --from-phase phase-d --project "X"` |
-| Explicit pipeline resume | `npx ts-node src/index.ts pipeline run --from-stage gate` |
+| Start a new project | `gsd run requirements --project "X" --description "Y"` |
+| Validate uploaded Figma deliverables | `gsd run figma-uploaded --design-path design/web/v1/src/` |
+| Freeze contracts | `gsd run contracts` |
+| Run the code pipeline | `gsd run blueprint` |
+| Deploy to alpha | `gsd run deploy` |
+| Run the full lifecycle | `gsd run full --project "X" --description "Y"` |
+| Run against a different project root | `gsd run full --project-root /path/to/target-project` |
+| Run in an isolated worktree with budget | `gsd run full --worktree --budget 25 --base-branch main` |
+| Explicit SDLC resume | `gsd sdlc run --from-phase phase-d --project "X"` |
+| Explicit pipeline resume | `gsd pipeline run --from-stage gate` |
+
+## V6 State Inspection
+
+| Task | Command |
+|---|---|
+| Status (milestones + legacy SDLC) | `gsd status` |
+| List all milestones | `gsd query milestones` |
+| Milestone detail | `gsd query milestone <milestoneId>` |
+| Slice detail | `gsd query slice <sliceId>` |
+| Task detail | `gsd query task <taskId>` |
+| Cost rollup | `gsd query cost --since 2026-04-01` |
+| Stuck-loop patterns | `gsd query stuck --min 2` |
+| Decisions for a milestone | `gsd query decisions <milestoneId>` |
+| Resolved project stack context (v6.1.0) | `gsd query stack --project-root /path` |
+
+## V6 Maintenance
+
+| Task | Command |
+|---|---|
+| Milestone worktree status | `gsd worktree status` |
+| Prune stale worktree metadata | `gsd worktree prune` |
+| Tear down milestone worktree | `gsd worktree teardown <milestoneId>` |
+| Forensics bundle for a run | `gsd forensics --run <runId> --milestone <milestoneId> --out ./forensics` |
+| Scan vault notes for drift | `gsd doc-garden --vault-path ./memory` |
+| Mine decisions for patterns (weekly) | `gsd harvest --since-days 7` |
+| V5 → V6 state migration (one-time) | `gsd migrate [--dry-run]` |
+| **Stack-leak validator (v6.1.0)** | `gsd validate-stack --project-root /path [--json] [--fail-on-findings]` |
+
+## Utilities
+
+| Task | Command |
+|---|---|
+| Typecheck | `npm run typecheck` |
+| Run V6 unit tests | `npm run test:v6` |
 | Generate the Word guide | `python docs/generate-docx.py` |
 
 # Appendix B: Artifact Inventory
+
+## SDLC Phase Artifacts (generated per run in the target project)
 
 | Artifact | Produced By | Why It Matters |
 |---|---|---|
@@ -1609,9 +2144,52 @@ V6 ships in five tiers, roughly one every one or two weeks after design freeze.
 | `docs/sdlc/phase-d-frozen-blueprint.json` | BlueprintFreezeAgent | Immutable UI/UX implementation target |
 | `docs/sdlc/phase-e-contract-artifacts.json` | ContractFreezeAgent | Structured SCG1 contract summary |
 | `docs/spec/validation-report.md` | ContractFreezeAgent | Human-readable gap report |
+
+## V6 Runtime State
+
+| Artifact | Produced By | Why It Matters |
+|---|---|---|
+| `memory/state.db` | MilestoneOrchestrator (SQLite) | Durable milestone/slice/task state, rate-limit windows, stuck patterns — source of truth for `gsd query` |
+| `memory/state.db.lock` | AutoLock | Crash-recovery lock file; stale-lock detection on next run |
+| `memory/milestones/M{id}/ROADMAP.md` | MilestoneOrchestrator | Human-readable milestone narrative + slice list |
+| `memory/milestones/M{id}/slices/S{nn}/PLAN.md` | Orchestrator | Slice narrative + task list |
+| `memory/milestones/M{id}/slices/S{nn}/tasks/T{nn}-{stage}.md` | Agents | Per-task narrative + output |
+| `.gsd-worktrees/M{id}/` | WorktreeManager | Per-milestone git worktree (gitignored) |
+
+## V6 Observability (JSONL per category, per run)
+
+| Artifact | Produced By | Why It Matters |
+|---|---|---|
+| `memory/observability/e2e-traces/{runId}.jsonl` | E2EValidationAgent | Flow-by-flow traces for post-mortem |
+| `memory/observability/deploy-logs/{runId}.jsonl` | DeployAgent | Step-by-step deploy record |
+| `memory/observability/gate-results/{runId}.jsonl` | QualityGateAgent, ReviewAuditor, stack-leak validator | Gate evidence + audit findings |
+| `memory/observability/build-output/{runId}.jsonl` | BaseAgent (via CompactedExec) | Compacted bash/Semgrep/Playwright output |
+| `memory/observability/router-decisions/{runId}.jsonl` | Orchestrator, BaseAgent, MilestoneOrchestrator | Budget/capability routing decisions |
+
+## Legacy Session State
+
+| Artifact | Produced By | Why It Matters |
+|---|---|---|
 | `memory/sessions/sdlc-state-latest.json` | SDLC orchestrator | Current SDLC resume state |
 | `memory/sessions/pipeline-state-latest.json` | Pipeline orchestrator | Current pipeline resume state |
 | `memory/sessions/{date}-run-{runId}.md` | Pipeline orchestrator | Human-readable run summary |
 | `memory/decisions/*` | Orchestrators | Why the system routed and halted the way it did |
 
-*End of GSD v4.2 Developer Guide*
+## Claude Memory Stack (Obsidian-backed, v6.0.0+)
+
+| Artifact | Produced By | Why It Matters |
+|---|---|---|
+| `claude-memory/index.md` | Manual + hooks | Topic registry for the vault |
+| `claude-memory/HEALTH.md` | health-check.sh hook | Live retrieval-quality metrics |
+| `claude-memory/CHANGELOG.md` | Every vault mutation | Audit trail |
+| `claude-memory/.retrieval-log.jsonl` | retrieve.sh hook | Topic-match retrieval events |
+| `claude-memory/topics/*.md` | `/consolidate` command + manual | Durable human knowledge |
+| `claude-memory/preferences.md` | preference-extract.sh hook | Always-loaded user preferences |
+
+## Target-Project Inputs (v6.1.0+)
+
+| Artifact | Provided By | Why It Matters |
+|---|---|---|
+| `<projectRoot>/docs/gsd/stack-overrides.md` | The target project (optional) | Declares per-project backend framework, SDK, solution format, frontend, mobile, compliance. Read by `getProjectStackContext()` at the start of every SDLC/Pipeline run. See [`docs/stack-overrides-template.md`](stack-overrides-template.md) for the template. |
+
+*End of GSD V6 Developer Guide*
