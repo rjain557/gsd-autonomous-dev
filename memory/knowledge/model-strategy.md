@@ -1,8 +1,8 @@
 ---
 type: knowledge
 description: V6 model strategy — 3 Max subscriptions + 2 emergency API fallbacks, $0 marginal cost target
-date: 2026-04-19
-version: 6.0.0
+date: 2026-04-22
+version: 6.0.1
 ---
 
 # V6 Model Strategy
@@ -15,9 +15,9 @@ Run the entire pipeline on 3 Max/Ultra subscription CLIs for $0 marginal token c
 
 | Model | CLI | Subscription | RPM | Context | Primary Phases |
 |---|---|---|---|---|---|
-| Claude | `claude` | Claude Max ($100-200/mo) | 10 | 200K-1M | Review, plan, blueprint analysis |
-| Codex | `codex` | ChatGPT Max ($200/mo) | 10 | 200K | Execute (bulk code gen — 60% of tokens) |
-| Gemini | `gemini` | Gemini Ultra ($20/mo) | 15 | 1M | Research, bulk review chunks |
+| Claude | `claude` | Claude Max ($100-200/mo) | 10 | 1M | Review, plan, blueprint analysis — use `claude-opus-4-7` for orchestration |
+| Codex | `codex` | ChatGPT Max ($200/mo) | 10 | 272K | Execute (bulk code gen — 60% of tokens) — underlying model now GPT-5.3-Codex or GPT-5.4 |
+| Gemini | `gemini` | Gemini Ultra ($20/mo) | 15 | 1M | Research, bulk review chunks — underlying model now Gemini 3 Flash |
 
 **Why this works:** At 10-15 RPM with 30s throttle between phases, a single pipeline iteration uses ~4 requests per agent. A 20-iteration convergence run uses ~80 requests per agent across ~60 minutes — well within daily limits.
 
@@ -117,7 +117,8 @@ Resume:  CLI (OAuth) ──$0──> back to normal
 
 Review new Claude/OpenAI/Google features every 30 days. Full checklist: `memory/knowledge/feature-check-schedule.md`
 
-**Next check: 2026-05-10**
+**Last check: 2026-04-22** (early check triggered by V6.5 spec rule #12)
+**Next check: 2026-05-22**
 
 ## Cost Comparison
 

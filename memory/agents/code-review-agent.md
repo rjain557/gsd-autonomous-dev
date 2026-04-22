@@ -1,6 +1,6 @@
 ---
 agent_id: code-review-agent
-model: claude-sonnet-4-6
+model: claude-opus-4-7
 tools: [read_file, bash]
 forbidden_tools: [write_file, deploy]
 reads:

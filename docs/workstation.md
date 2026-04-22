@@ -101,7 +101,7 @@ npx gitnexus --version   # should be 1.5.3+
 ls .gitnexus/meta.json   # should exist
 ```
 
-Expected output from meta.json: ~1084 symbols, ~2133 edges, 68 processes.
+Expected output from meta.json: ~2800 nodes, ~5200 edges, ~220 processes (grows with the codebase).
 
 The `reindex.sh` hook will keep it current automatically after each `git commit` or `git merge`.
 
@@ -112,8 +112,11 @@ The `reindex.sh` hook will keep it current automatically after each `git commit`
 ```bash
 cd C:\vscode\gsd-autonomous-dev\gsd-autonomous-dev
 
-# Build the graph
-graphify .
+# Install once (Python package is `graphifyy`, CLI is `graphify`)
+pip install graphifyy
+
+# Build the graph (the CLI requires the `update` subcommand)
+graphify update .
 
 # Verify
 ls graphify-out/GRAPH_REPORT.md

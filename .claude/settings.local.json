@@ -144,7 +144,24 @@
       "Bash(RESIL=\"/c/Users/rjain/.gsd-global/lib/modules/resilience.ps1\")",
       "Bash(awk:*)",
       "Bash(powershell.exe:*)",
-      "Bash(\"D:/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Developer-Guide.md\":*)"
+      "Bash(\"D:/vscode/gsd-autonomous-dev/gsd-autonomous-dev/docs/GSD-Developer-Guide.md\":*)",
+      "Bash(git --version)",
+      "Bash(git -C /d/obsidian/gsd-autonomous-dev/gsd-autonomous-dev status)",
+      "Read(//d/obsidian/gsd-autonomous-dev/gsd-autonomous-dev/**)",
+      "Bash(git -C /d/obsidian/gsd-autonomous-dev/gsd-autonomous-dev status --short)",
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(pip search *)",
+      "Bash(pip install *)",
+      "PowerShell([System.Environment]::SetEnvironmentVariable\\('GSD_VAULT_MEMORY', 'D:\\\\obsidian\\\\gsd-autonomous-dev\\\\gsd-autonomous-dev\\\\claude-memory', 'User'\\); [System.Environment]::GetEnvironmentVariable\\('GSD_VAULT_MEMORY', 'User'\\))",
+      "Bash(npx gitnexus *)",
+      "Bash(/c/Users/rjain/AppData/Local/Programs/Python/Python314/Scripts/graphify .)",
+      "Bash(/c/Users/rjain/AppData/Local/Programs/Python/Python314/Scripts/graphify --help)",
+      "Bash(/c/Users/rjain/AppData/Local/Programs/Python/Python314/Scripts/graphify update *)",
+      "Bash(chmod +x \"/d/obsidian/gsd-autonomous-dev/gsd-autonomous-dev/.git/hooks/pre-commit\")",
+      "PowerShell($vars=@\\('ANTHROPIC_API_KEY','GITHUB_PERSONAL_ACCESS_TOKEN','GSD_VAULT_MEMORY','GEMINI_API_KEY','OPENAI_API_KEY'\\); foreach \\($v in $vars\\) { $val=[System.Environment]::GetEnvironmentVariable\\($v,'User'\\); if \\($val\\) { Write-Output \"OK: $v\" } else { Write-Output \"MISSING: $v\" } })",
+      "Bash(GSD_VAULT_MEMORY=\"/d/obsidian/gsd-autonomous-dev/gsd-autonomous-dev/claude-memory\" bash .claude/hooks/retrieve.sh)",
+      "Bash(GSD_VAULT_MEMORY=\"/d/obsidian/gsd-autonomous-dev/gsd-autonomous-dev/claude-memory\" bash .claude/hooks/health-check.sh)"
     ]
   }
 }

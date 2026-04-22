@@ -1,8 +1,8 @@
 ---
 type: knowledge
 description: 30-day feature check schedule — review Claude/OpenAI/Google for new capabilities that improve speed, quality, or cost
-last_checked: 2026-04-10
-next_check: 2026-05-10
+last_checked: 2026-04-22
+next_check: 2026-05-22
 ---
 
 # 30-Day Feature Check Schedule
@@ -129,16 +129,59 @@ The pipeline auto-switches: CLI fails → 5-min cooldown → SDK takes over → 
 
 ## Change Log
 
+### 2026-04-22 (Early check — triggered by V6.5 spec rule #12)
+
+**Anthropic:**
+
+- Claude Opus 4.7 (`claude-opus-4-7`) released 2026-04-16. 1M ctx, adaptive thinking, step-change agentic coding. **Use for orchestration/review phases.**
+- Claude Sonnet 4.6 + Haiku 4.5 unchanged — remain best workhorse/fast tiers.
+- ⚠️ Retire before 2026-06-15: `claude-sonnet-4-20250514`, `claude-opus-4-20250514`
+- New: 1M context standard at base price (no surcharge), adaptive thinking (dynamic budget vs fixed)
+- Batch API: up to 300K output tokens via beta header — useful for bulk reviews (TODO next sprint)
+- Agent teams: still being evaluated
+
+**OpenAI:**
+
+- `gpt-5.1-codex-mini` **obsolete** — replaced by `gpt-5.3-codex` ($1.75/$14/M) for coding tasks
+- GPT-5.4 ($2.50/$15/M) now flagship — integrates Codex coding capability into mainline model
+- ChatGPT Max subscription CLI now routes to GPT-5.4 / GPT-5.3-Codex depending on task
+- Batch API at 50% discount on GPT-5.4-mini — evaluate for bulk review chunks
+
+**Google:**
+
+- Gemini 3 series is current production. Gemini 2.5 Pro free tier **ended 2026-04-01**.
+- Current Flash: `gemini-3-flash-preview` ($0.50/$3.00/M) — Gemini Ultra subscription routes here
+- Context caching at 90% discount — evaluate for repeated system prompts
+
+**DeepSeek:**
+
+- No config change needed. `deepseek-chat` → V3.2 (same routing key). $0.28/$0.42/M. Cache hit 90% off.
+
+**Kimi:**
+
+- K2.6 released 2026-04-20. 262K ctx, 300 sub-agents, $0.75/$3.50/M. model-registry.json updated to `kimi-k2.6`.
+
+**MiniMax:**
+
+- M1 is current ($0.40/$2.20/M, 1M ctx). `MiniMax-M2.5` doesn't exist — model-registry.json corrected to `MiniMax-M1`.
+
+**GLM:**
+
+- `glm-4.7-flash` is free tier (replaces `glm-4-flash`). Still disabled due to firewall. model-registry.json updated.
+
 ### 2026-04-10 (Initial)
+
 - Established 30-day check schedule
 - V6: Hybrid architecture (TypeScript harness + Claude Code native features, SQLite state, worktrees)
 - Dual auth: CLI OAuth primary, API key backup with auto-switch
 - Agent teams: experimental, monitoring for GA
-- Prompt caching: not yet applied (TODO for next check)
-- Batch API: not yet applied (TODO for bulk reviews)
+- Prompt caching: not yet applied
+- Batch API: not yet applied
 
-### Next Check: 2026-05-10
+### Next Check: 2026-05-22
+
+- Verify Opus 4.7 adaptive thinking vs Sonnet 4.6 extended thinking for orchestrator use — run evals
+- Apply Batch API to CodeReviewAgent bulk chunking (50% cost reduction opportunity)
+- Apply context caching to agent system prompts (repeated on every call — high cache hit rate expected)
 - Check if agent teams reached GA
-- Evaluate prompt caching for system prompts
-- Evaluate batch API for bulk code reviews
-- Check for Claude Opus 5 / Sonnet 5 availability
+- Check for Claude Sonnet 5 / Haiku 5 availability

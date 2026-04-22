@@ -33,7 +33,7 @@ if [ -d "$TOPICS" ] && [ -n "$PROMPT" ]; then
         TOPIC_WORDS=$(echo "$TOPIC_NAME" | tr '-' ' ')
 
         # Check topic name and aliases header against prompt
-        ALIASES=$(grep -m1 "^aliases:" "$topic_file" 2>/dev/null | sed 's/aliases: \[//;s/\]//;tr ',' '\n'' | tr ',' '\n' | tr -d '[]"' | xargs)
+        ALIASES=$(grep -m1 "^aliases:" "$topic_file" 2>/dev/null | sed 's/aliases: \[//;s/\]//' | tr ',' '\n' | tr -d '[]"' | xargs)
         MATCH=0
         for kw in $TOPIC_WORDS $ALIASES; do
             [ ${#kw} -lt 4 ] && continue

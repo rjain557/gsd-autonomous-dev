@@ -1,6 +1,6 @@
 ---
 agent_id: remediation-agent
-model: claude-sonnet-4-6
+model: claude-opus-4-7
 tools: [read_file, write_file, bash]
 forbidden_tools: [deploy, merge, modify_pipeline_config]
 reads:

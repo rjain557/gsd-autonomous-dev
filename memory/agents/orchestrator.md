@@ -1,6 +1,6 @@
 ---
 agent_id: orchestrator
-model: claude-opus-4-6
+model: claude-opus-4-7
 tools: [spawn_agent, read_file, write_file]
 forbidden_tools: [bash, deploy, direct_code_read]
 reads:

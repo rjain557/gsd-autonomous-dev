@@ -1,6 +1,6 @@
 ---
 agent_id: blueprint-analysis-agent
-model: claude-sonnet-4-6
+model: claude-opus-4-7
 tools: [read_file, list_directory, search_files]
 forbidden_tools: [write_file, bash, deploy]
 reads:
