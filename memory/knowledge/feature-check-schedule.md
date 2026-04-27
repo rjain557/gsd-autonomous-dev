@@ -167,6 +167,20 @@ The pipeline auto-switches: CLI fails → 5-min cooldown → SDK takes over → 
 - **VMAO fork-join DAG** (EMNLP Findings 2025 extended 2026) — Plan→Execute→Verify→**Replan**→Synthesize. Replan node queued for V8 (overlaps with existing Remediation loop; warrants own release)
 - **Harvey "Harness Engineering"** (April 2026) — auto-generated toolkits from I/O examples + rubric. Strict superset of SkillForge Upgrade 2; queued for V8
 
+**NVIDIA Build / NIM API (provisioned 2026-04-23):**
+
+- API key provisioned at `https://build.nvidia.com`; live probe of `https://integrate.api.nvidia.com/v1/models` returned 130+ model ids
+- Free tier: ~1000 req/day during evaluation, ~40 RPM burst, no published monthly token cap
+- OpenAI Chat Completions schema; tool calling supported on most Llama / Qwen / Mistral / DeepSeek / Nemotron variants
+- **NVIDIA becomes the legitimate 4th family for V7.0 Upgrade 5 hard generator/evaluator split** (distinct lineage from Anthropic / OpenAI / Google):
+  - Generator: `qwen/qwen3-coder-480b-a35b-instruct` (256K, SWE-bench ~69%) and `mistralai/devstral-2-123b-instruct-2512` (256K, agent-tuned)
+  - Evaluator: `nvidia/llama-3.3-nemotron-super-49b-v1.5` (128K, RLHF-tuned, Arena-Hard 88.3)
+- **DeepSeek V4 is now live via NIM** (`deepseek-ai/deepseek-v4-pro` and `-flash`) — flips the pending V4 gate from "wait for direct API" to "live now via NIM at $0"
+- **Llama 4 Maverick at 1M context** (`meta/llama-4-maverick-17b-128e-instruct`) undercuts Gemini 3.1 Pro for cost-sensitive long-context retrieval at $0
+- Quirks: no native prompt caching; `max_tokens` per-model (4096 default, 8192 for Nemotron Ultra and Llama 4 Maverick); some ids redirect via `nvcf.nvidia.com` — probe before pinning; Nemotron variants prefer system content prepended to first user turn
+- Concrete routing changes captured in `memory/knowledge/model-strategy.md` under "NVIDIA Build / NIM (4th family — V7.0 family-split tie-breaker)"
+- Action for V7.0 Upgrade 7 commit: add `NVIDIA_API_KEY` to `.env.example` (done 2026-04-23) and the runtime probe list, append the recommended ids to the generator/evaluator/bulk/long-context/Hermes priority tables
+
 ### 2026-04-22 (Early check — triggered by V7.0 spec rule #12)
 
 **Anthropic:**

@@ -139,11 +139,63 @@ Not applied to the active routing table above — captured here so the next feat
 - Route candidate for: generator-side bulk execution of small slices, non-critical scaffolding, and high-volume token-sensitive phases
 - Concrete routing table update deferred until first GSD project runs with V7.0 Upgrade 5 enabled
 
-### DeepSeek V4 (gate on release)
+### DeepSeek V4 (now live via NVIDIA NIM)
 
-- Announced 1T MoE, ~81% SWE-bench, ~$0.30/MTok; Reuters 2026-04-06 described release as "coming in next few weeks" — not yet shipped
-- Would rewrite the cost-routing math for bulk generation if the price point holds
-- Action: re-evaluate at next feature check (2026-05-23)
+- 1T MoE, ~81% SWE-bench, ~$0.30/MTok via DeepSeek's own API (still gated on direct release per Reuters 2026-04-06)
+- **Update 2026-04-23:** `deepseek-ai/deepseek-v4-pro` and `deepseek-ai/deepseek-v4-flash` are both serving via NVIDIA Build (NIM) on the OpenAI-compatible endpoint at $0 marginal cost (free tier). Operators can route to V4 *now* through NIM without waiting for DeepSeek's direct API to confirm
+- Action: when V7.0 Upgrade 7 lands, gate the DeepSeek V4 slot on a probe of NIM first (free), then DeepSeek direct (paid) as fallback once it ships
+
+### NVIDIA Build / NIM (4th family — V7.0 family-split tie-breaker)
+
+NVIDIA Build (`build.nvidia.com`) hosts an OpenAI-compatible inference endpoint with a free tier (~1000 requests/day during evaluation, ~40 RPM burst, no published monthly token cap). API key provisioned 2026-04-23 (see `~/.claude/projects/.../memory/api-keys.md`). NVIDIA's lineage is distinct from Anthropic, OpenAI, and Google — making it a legitimate fourth family for V7.0 Upgrade 5's hard generator/evaluator split.
+
+**API basics**
+
+- Endpoint: `POST https://integrate.api.nvidia.com/v1/chat/completions`
+- Auth: `Authorization: Bearer $NVIDIA_API_KEY`
+- Format: OpenAI Chat Completions schema; tool calling supported on most Llama / Qwen / Mistral / DeepSeek / Nemotron variants
+- `max_tokens` cap varies per model (most: 4096; Nemotron Ultra: 8192; Llama 4 Maverick: 8192)
+- No native prompt caching — every call is full-cost in tokens (free tier still $0 marginal)
+- Quirks: Nemotron variants prefer system content prepended to first user turn for best instruction-following; JSON mode is not universally available — verify per model
+
+**Recommended routing slots (V7.0 high priority)**
+
+| Slot | Model id | Params | Context | Why |
+|---|---|---|---|---|
+| Generator (4th-family) | `qwen/qwen3-coder-480b-a35b-instruct` | 480B MoE (35B active) | 256K | SWE-bench Verified ~69%, LiveCodeBench ~74% — open-weight peer to Codex-mini for whole-repo edits |
+| Generator (agentic) | `mistralai/devstral-2-123b-instruct-2512` | 123B dense | 256K | Mistral's agent-tuned coder; reliable tool calling; SWE-bench ~63% |
+| Evaluator (4th-family) | `nvidia/llama-3.3-nemotron-super-49b-v1.5` | 49B dense | 128K | NVIDIA RLHF-tuned for skeptical reward modeling; Arena-Hard 88.3, MT-Bench 9.0 — distinct from Anthropic evaluator lineage |
+| Bulk code-gen | `deepseek-ai/deepseek-v4-pro` | 1T MoE | 128K | SWE-bench ~81%, HumanEval 92% — flips the V4 gate above |
+| Bulk code-gen (cheap) | `deepseek-ai/deepseek-v4-flash` | ~37B active MoE | 128K | SWE-bench ~73% — replaces DeepSeek-Chat in cost lane at $0 |
+
+**Worth-considering (medium priority — adopt when first project hits the slot)**
+
+| Slot | Model id | Params | Context | Why |
+|---|---|---|---|---|
+| Long-context retrieval | `meta/llama-4-maverick-17b-128e-instruct` | 17B active / 128 experts | **1M** | Free 1M-context lane that undercuts Gemini 3.1 Pro for cost-sensitive RAG; RULER@1M ~80% |
+| Generator alt | `qwen/qwen3.5-397b-a17b` | 397B MoE (17B active) | 256K | LiveCodeBench ~76% — newer Qwen flagship with improved tool use vs qwen3-coder |
+| Evaluator alt (heavy) | `mistralai/mistral-large-3-675b-instruct-2512` | 675B MoE | 256K | MMLU-Pro 78, GPQA 64 — strong code-review judgment |
+| Evaluator (cheap) | `nvidia/nemotron-3-super-120b-a12b` | 120B MoE (12B active) | 128K | Arena-Hard ~91 — newer Nemotron family at lower active-param count |
+| Hermes notification | `openai/gpt-oss-120b` | 120B dense | 128K | OpenAI open-weight, tool-call native, free on NIM — fallback when Haiku 4.5 is on cooldown |
+| Bulk code-gen (small) | `mistralai/codestral-22b-instruct-v0.1` | 22B | 32K | HumanEval 81 — fits remediation micro-fixes |
+
+**Skip (informational):** `bigcode/starcoder2-15b`, `meta/codellama-70b`, `ibm/granite-34b-code-instruct`, `google/codegemma-7b`, `microsoft/phi-4-mini-instruct`, `mistralai/mixtral-8x22b-instruct-v0.1`, `meta/llama-3.1-405b-instruct`, `nvidia/nemotron-4-340b-instruct`, `qwen/qwen2.5-coder-32b-instruct` — superseded by entries in the tables above.
+
+**Concrete routing-table updates planned for V7.0 Upgrade 7 commit**
+
+1. **Generator priority list** (Phase Execute / Remediate): append Qwen3-Coder 480B then Devstral 2 123B as 4th-family options. Satisfies Upgrade 5 hard family-split when Anthropic and OpenAI are both pinned to evaluator duty
+2. **Evaluator priority list** (Phase Review / Gate): append Llama 3.3 Nemotron Super 49B v1.5 as 4th-family fallback
+3. **Bulk code-gen API fallback table:** replace MiniMax second-emergency slot with `deepseek-ai/deepseek-v4-flash` via NIM ($0 vs $0.29/$1.20). Keep MiniMax as third
+4. **Long-context retrieval:** add Llama 4 Maverick as Gemini 3.1 Pro fallback (1M context, free tier)
+5. **Hermes notification cheap lane:** add `openai/gpt-oss-120b` as free alternative to Haiku 4.5 on cooldown
+6. **Env var:** add `NVIDIA_API_KEY` to `.env.example` and to the runtime check list
+
+**Free-tier caveats**
+
+- Per-model RPM and daily caps vary; check the model's page on `build.nvidia.com` before routing high-volume bulk work
+- Treat free-tier exhaustion as a graceful router fallback, not a hard pipeline failure — the existing Anthropic / OpenAI / Google subscription CLIs remain primary
+- No SLA on free tier; expect occasional 429s and cold-start latency on niche models
+- Some model ids are served via `nvcf.nvidia.com` redirect — always probe before pinning
 
 ## Cost Comparison
 
