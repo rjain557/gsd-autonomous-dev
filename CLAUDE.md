@@ -127,6 +127,59 @@ Legacy write paths: `.gsd/health/`, `.gsd/code-review/`, `.gsd/generation-queue/
 
 ## Installed Skills
 
+### `/fluent-v9-mastery` — Fluent UI React v9 Design & Implementation Discipline
+**Activate when:** any frontend work, React components, Fluent UI, UI/UX design, screen implementation,
+form building, or any visual polish pass on generated projects. Output must feel like it was built by a
+senior product designer + senior frontend engineer at Microsoft — not an AI-generated admin panel.
+
+Skill path: `.claude/skills/fluent-v9-mastery/SKILL.md`
+
+Covers token system, Griffel styling, theming, layout, component selection, forms (React Hook Form + Zod
++ TanStack Query), the four-states rule, accessibility, polish details, code quality standards, forbidden
+anti-patterns, and a pre/post-coding checklist. Layers on top of the narrower React skills below rather
+than replacing them — activates first on any frontend request.
+
+### `/fluent-v9-design-review` + `/design-review` — Fluent UI React v9 Design Review
+**Activate when:** "review this", "audit", "design review", "check the code", end of a Phase D feature
+implementation, or explicit `/design-review <scope>` invocation.
+
+Skill path: `.claude/skills/fluent-v9-design-review/SKILL.md`
+Slash command: `.claude/commands/design-review.md`
+
+Companion to `/fluent-v9-mastery` — the mastery skill shapes generation, the review skill enforces it.
+Runs 15 review categories against the mastery guide and emits a severity-classified report (🔴 Blocker /
+🟠 Critical / 🟡 Major / 🔵 Minor / ⚪ Nit) with an 8-dimension quality scorecard (overall score /80).
+When the user says "apply fixes", auto-fixes all Blockers + Criticals, re-runs typecheck and lint, and
+reports what remains. Cites mastery-guide part numbers for teaching-while-reviewing.
+
+### `/react-native-mastery` — React Native + Expo Mobile Design & Implementation Discipline
+**Activate when:** any mobile app work, React Native components, screens, navigation, or any mobile
+frontend implementation. Output must feel native on both iOS and Android — not like a web page in a
+WebView, not like a cross-platform app that betrays its cross-platform nature.
+
+Skill path: `.claude/skills/react-native-mastery/SKILL.md`
+
+Mobile counterpart to `/fluent-v9-mastery`. Covers the unify-vs-diverge rule, design tokens, safe areas,
+React Navigation patterns (Native Stack, Tabs, Drawer), the core 18-component library, FlashList
+performance, forms with autofill + return-key chains, the five-states rule (loading / empty / error /
+success / **offline**), motion + haptics with Reanimated v3 + expo-haptics, accessibility (VoiceOver,
+TalkBack, Dynamic Type), platform-specific polish (iOS large titles, Android edge-to-edge), and the
+forbidden anti-patterns list. Same Swagger backend and feature folder structure as web for symmetry.
+
+### `/react-native-design-review` + `/mobile-design-review` — React Native Mobile Design Review
+**Activate when:** "review this", "audit", "design review", "check the code", end of a mobile feature
+implementation, or explicit `/mobile-design-review <scope>` invocation on mobile code.
+
+Skill path: `.claude/skills/react-native-design-review/SKILL.md`
+Slash command: `.claude/commands/mobile-design-review.md`
+
+Companion to `/react-native-mastery` — the mastery skill shapes generation, the review skill enforces it.
+Runs 17 review categories against the mobile mastery guide and emits a severity-classified report plus a
+unique **Platform Parity Check** table (iOS vs Android per concern) with a 10-dimension quality scorecard
+(overall score /100). When the user says "apply fixes", auto-fixes all Blockers + Criticals, re-runs
+typecheck and lint, and offers to re-run on the other platform's simulator if platform-specific fixes
+were made.
+
 ### `/sql-expert` — MS SQL Server Schema & T-SQL
 **Activate when:** "design a table/schema", "write a stored procedure", "normalize this",
 "write a CTE", "use window functions", "model this relationship", "generate a migration script"

@@ -117,8 +117,33 @@ Resume:  CLI (OAuth) ──$0──> back to normal
 
 Review new Claude/OpenAI/Google features every 30 days. Full checklist: `memory/knowledge/feature-check-schedule.md`
 
-**Last check: 2026-04-22** (early check triggered by V6.5 spec rule #12)
-**Next check: 2026-05-22**
+**Last check: 2026-04-23** (V7.0 spec + live research sweep)
+**Next check: 2026-05-23**
+
+## Pending Routing Updates (V7.0 Upgrade 5 + 2026-04-23 research sweep)
+
+Not applied to the active routing table above — captured here so the next feature-check review picks them up.
+
+### GPT-5.5 (announced 2026-04-23, API not live at time of writing)
+
+- **Use once API SKU is confirmed** as the generator for long-horizon agentic coding, whole-repo edits (Terminal-Bench 2.0 82.7%, OpenAI MRCR v2 74.0% on 512K–1M context)
+- **Keep Claude Opus 4.7 as evaluator** — wins SWE-Bench Pro at 64.3% vs GPT-5.5 at 58.6%; matches V7.0 Upgrade 5's hard-split requirement (generator ≠ evaluator family)
+- **Hard rule:** do NOT hard-code `gpt-5.5` as a model id until `developers.openai.com/api/docs/models/gpt-5.5` is reachable and returns a real 200 on a probe call
+- **OAuth-Codex path:** GPT-5.5 rolled out to Codex CLI before the API endpoint went live. If `codex` CLI exposes `gpt-5.5` (or equivalent id) and the operator's subscription tier is in the rollout wave, generator work may route to GPT-5.5 at **$0 marginal cost** via the existing Codex OAuth flow. Verify both conditions before flipping the router
+- **Pricing (announced):** $5 / $30 per 1M input/output; `GPT-5.5 Pro` tier at $30 / $180. Assume 2x input surcharge above 272K tokens (inherited from GPT-5.4) until confirmed otherwise
+- **Context window:** 1M tokens on API, 400K in ChatGPT/Codex
+
+### Gemini 3.1 Flash-Lite (cheap generator lane)
+
+- Add as a third family option for V7.0 `familySplit` tie-breaking — widens the generator pool and keeps cost-sensitive bulk work off Sonnet/Codex-mini when Opus-family evaluation is pinned
+- Route candidate for: generator-side bulk execution of small slices, non-critical scaffolding, and high-volume token-sensitive phases
+- Concrete routing table update deferred until first GSD project runs with V7.0 Upgrade 5 enabled
+
+### DeepSeek V4 (gate on release)
+
+- Announced 1T MoE, ~81% SWE-bench, ~$0.30/MTok; Reuters 2026-04-06 described release as "coming in next few weeks" — not yet shipped
+- Would rewrite the cost-routing math for bulk generation if the price point holds
+- Action: re-evaluate at next feature check (2026-05-23)
 
 ## Cost Comparison
 

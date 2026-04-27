@@ -129,7 +129,45 @@ The pipeline auto-switches: CLI fails → 5-min cooldown → SDK takes over → 
 
 ## Change Log
 
-### 2026-04-22 (Early check — triggered by V6.5 spec rule #12)
+### 2026-04-23 (V7.0 spec + live research sweep)
+
+**OpenAI:**
+
+- **GPT-5.5 announced 2026-04-23.** Rolled out to ChatGPT Plus/Pro/Business/Enterprise and **Codex CLI first**; API rollout described as "coming very soon" but no public SKU confirmed at time of writing. Do NOT hard-code `gpt-5.5` as a model id in any config or router until a 200 response is verified from a real API probe.
+  - Benchmarks: Terminal-Bench 2.0 **82.7%** (vs Opus 4.7 69.4%), SWE-Bench Pro **58.6%** (vs Opus 4.7 64.3%), OpenAI MRCR v2 8-needle 512K–1M ctx **74.0%** (vs Opus 4.7 32.2%)
+  - Pricing: $5 / $30 per 1M input/output; `GPT-5.5 Pro` tier at $30 / $180
+  - Context: 1M API / 400K ChatGPT+Codex
+  - Assume 2x surcharge above 272K input tokens (GPT-5.4 inheritance) until confirmed otherwise
+  - **Action for GSD V7.0 Upgrade 5:** once confirmed, route generator work to GPT-5.5; keep Opus 4.7 as evaluator (hard-split family invariant satisfied automatically)
+  - **OAuth-Codex access path:** if Codex CLI exposes `gpt-5.5` (likely given rollout order), generator work may route through it at $0 marginal cost via the existing OAuth flow. Verify both (a) CLI exposes the id and (b) the operator's subscription tier is in the rollout wave before flipping the router
+- SWE-Bench Verified **deprecated** as internal benchmark — frontier models memorized gold patches. Switch rubric calibration references to **SWE-Bench Pro** (`labs.scale.com/leaderboard/swe_bench_pro_public`)
+
+**Anthropic:**
+
+- **Agent Skills open standard** (`agentskills.io`, `github.com/anthropics/skills`) now adopted by Atlassian, Figma, Canva, Stripe, Notion, Zapier, and OpenAI. V7.0 Upgrade 2 (SkillForge) will emit nominations in this schema for portability
+- **Claude Mythos Preview** ("Capybara" tier) released 2026-04-07 — invitation-only tier above Opus, finds zero-days in browsers/OSes; not for general GSD use but note for security-focused projects
+- Claude Haiku 4.5 unchanged — still the right Hermes notifier / fast-tier slot
+- **Claude Agent SDK Python** added `list_subagents()` / `get_subagent_messages()` helpers — would replace our custom subagent tap logging but introduces a Python runtime dependency. Queued for V8
+
+**Google:**
+
+- **Gemini 3.1 Pro / Flash-Lite / Deep Think** tier split — Flash-Lite is a new cheap-generator lane we should add to the `familySplit` pool for V7.0 Upgrade 5 tie-breaking
+
+**DeepSeek:**
+
+- **V4 (1T MoE, ~81% SWE-bench, ~$0.30/MTok projected)** — Reuters 2026-04-06 says "coming in next few weeks" on Huawei chips; NOT shipped yet. Re-evaluate next feature check
+
+**Microsoft:**
+
+- **Playwright CLI recommended over Playwright MCP** for coding agents — ~4x fewer tokens per evaluator session. V7.0 Upgrade 3 standardizes evaluator tools on Playwright CLI transport; MCP stays as fallback
+
+**Research papers (net-new since 2026-04-22):**
+
+- **Confucius Code Agent** (arXiv:2512.10398) — hierarchical working memory + AX/UX/DX three-audience split. V7.0 Upgrade 6 adopts the AX/UX/DX split in scratch-pad schema. Hierarchical memory tiers queued for V8
+- **VMAO fork-join DAG** (EMNLP Findings 2025 extended 2026) — Plan→Execute→Verify→**Replan**→Synthesize. Replan node queued for V8 (overlaps with existing Remediation loop; warrants own release)
+- **Harvey "Harness Engineering"** (April 2026) — auto-generated toolkits from I/O examples + rubric. Strict superset of SkillForge Upgrade 2; queued for V8
+
+### 2026-04-22 (Early check — triggered by V7.0 spec rule #12)
 
 **Anthropic:**
 
