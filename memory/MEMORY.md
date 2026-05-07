@@ -28,6 +28,8 @@
 7. **GSD-Troubleshooting.md** - Installation, runtime, health, JSON, and boundary issues
 8. **memory/architecture/v6-design.md** - Canonical V6 architecture design
 9. **docs/legacy/** - Pre-V6 archived docs (do not use)
+10. **docs/GSD-v7.0-Feature-Benefits.md** - Plain-English V7 feature list and pipeline benefits
+11. **docs/GSD-v7.0-Managed-Agents-Addendum.md** + **memory/managed-agents/** - V7 external-link review, managed source-agent catalog, and per-source watch contracts
 
 ## Iteration Flow (2026-03-10)
 ```
@@ -92,3 +94,4 @@ At 100% convergence: Full code review + spec/Figma verification + quality gate -
 - [knowledge/deploy-config.md](knowledge/deploy-config.md) - Alpha environment deploy targets
 - [knowledge/model-strategy.md](knowledge/model-strategy.md) - 3 CLI subscriptions + 2 API fallbacks
 - [evals/test-cases.md](evals/test-cases.md) - 6 golden test cases for agent validation
+- [managed-agents/](managed-agents/) - V7 managed external source agents for watched links, model probes, SkillForge inputs, routing research, and production-runtime references

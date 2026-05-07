@@ -12,6 +12,8 @@ references: [harness-engineering-literature-2026]
 
 # GSD V7.0 Upgrade Spec
 
+For a concise feature-by-feature explanation of what V7 adds and why each item improves the pipeline, see `docs/GSD-v7.0-Feature-Benefits.md`.
+
 ## Executive Summary
 
 V7.0 is the next numbered release after V6. It ships eleven additive upgrades that close concrete gaps surfaced during a review of the current repo against (a) the missing-Hermes-agent question, (b) Letta Code's memory-first harness, (c) the 2026 harness-design literature (Rajasekaran / Anthropic Engineering, Böckeler / martinfowler.com, Raschka, Generative Programmer's 12 patterns, WaveSpeedAI operational breakdown, Anthropic "How Claude Code works", OpenDev paper arXiv:2603.05344, scaffold taxonomy arXiv:2604.03515, Confucius Code Agent arXiv:2512.10398), and (d) a 2026-04-23 live research sweep surfacing GPT-5.5, DeepSeek V4, Gemini 3.1 Flash-Lite, the Anthropic Agent Skills open standard, and Playwright CLI as recommended harness inputs.
@@ -1616,3 +1618,22 @@ Until both are confirmed, leave the capability-router defaulting to Opus 4.7 / C
 ---
 
 **Status: spec-only for Upgrades 1–7. Upgrades 8, 9, 10, and 11 are shipped in this session — `.claude/skills/fluent-v9-mastery/SKILL.md`, `.claude/skills/fluent-v9-design-review/SKILL.md`, `.claude/skills/react-native-mastery/SKILL.md`, `.claude/skills/react-native-design-review/SKILL.md`, `.claude/commands/design-review.md`, and `.claude/commands/mobile-design-review.md` are written and registered. No other code or vault mutations performed. Execute the remaining upgrades via the fifteen-commit migration plan when approved.**
+
+## Appendix C — Managed External Source Agents (2026-04-27)
+
+The 2026-04-27 external-link review is captured in `docs/GSD-v7.0-Managed-Agents-Addendum.md` and `memory/managed-agents/`. These managed agents are source-specific sidecars, not runtime `AgentId` classes. They preserve watched links, classify what belongs in V7 versus V8, and give DocGardener / SkillForge / model probes a durable source contract.
+
+Net changes recommended by the addendum:
+
+- Add a Simplicity/Surgicality rubric dimension from the Karpathy-inspired guidance.
+- Promote DeepSeek V4 direct API probing and track the 2026-07-24 retirement of `deepseek-chat` / `deepseek-reasoner`.
+- Add optional self-verification mode to high-risk evaluator contracts.
+- Track Goose recipes, ACP, subagents, and adversary-reviewer patterns as V8 candidates.
+- Add Gemini Deep Research / Deep Research Max as explicit research-tier routing candidates.
+- Treat EvoMap Evolver's Gene/Capsule model as a V8 SkillForge evolution experiment, not a V7 runtime dependency.
+- Keep NVIDIA NIM DeepSeek V4 Pro as a separate hosting lane from direct DeepSeek API.
+- Add GPT-5.5 stuck-task escalation and tool-call efficiency tracking from Lovable / Analytics Vidhya field reports, gated by official OpenAI/Codex probes.
+- Track OpenMythos recurrent-depth/adaptive-computation controls as a V8 routing research item.
+- Use AgentSPEX as validation for V7 `PipelineGraph` and queue typed YAML workflow specs as a V8 candidate.
+- Add a LangChain-inspired production-runtime readiness checklist for durable execution, memory, HITL, observability, sandboxes, integrations, and cron.
+- Route models by correctness risk using the Kilo Claude Opus 4.7 vs Kimi K2.6 benchmark: cheap open-weight models for scaffolds, frontier/evaluator passes plus targeted reproductions for hard state-machine paths.

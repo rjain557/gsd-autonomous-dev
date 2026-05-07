@@ -158,6 +158,16 @@ NVIDIA Build (`build.nvidia.com`) hosts an OpenAI-compatible inference endpoint 
 - No native prompt caching — every call is full-cost in tokens (free tier still $0 marginal)
 - Quirks: Nemotron variants prefer system content prepended to first user turn for best instruction-following; JSON mode is not universally available — verify per model
 
+**Authenticated probe — 2026-04-27**
+
+- Key source: `C:\Users\rjain\.claude\projects\D--vscode-gsd-autonomous-dev-gsd-autonomous-dev\memory\api-keys.md` (key masked in logs; never print)
+- `GET https://integrate.api.nvidia.com/v1/models` succeeded with the vault key and returned **136 model ids**
+- Smoke test succeeded through `POST /v1/chat/completions` with `max_tokens=8` for:
+  - `deepseek-ai/deepseek-v4-flash` — candidate bulk-codegen / cheap remediation lane
+  - `nvidia/llama-3.3-nemotron-super-49b-v1.5` — candidate evaluator / reviewer lane
+- Local shell requires network escalation for the probe; the sandboxed shell hit an SSL/network boundary before escalation
+- Cost status: NVIDIA docs state Developer Program members have free access to NIM API endpoints for prototyping, research, development, and testing. Production use requires NVIDIA AI Enterprise licensing.
+
 **Recommended routing slots (V7.0 high priority)**
 
 | Slot | Model id | Params | Context | Why |
