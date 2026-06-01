@@ -33,6 +33,24 @@ All system prompts live in `memory/agents/` vault notes, runtime configuration l
 | E2EValidationAgent | `src/agents/e2e-validation-agent.ts` | `memory/agents/e2e-validation-agent.md` | Test API contracts, SPs, mock data, auth |
 | DeployAgent | `src/agents/deploy-agent.ts` | `memory/agents/deploy-agent.md` | Deploy with rollback |
 | PostDeployValidationAgent | `src/agents/post-deploy-validation-agent.ts` | `memory/agents/post-deploy-validation-agent.md` | Validate live env: SPA cache, DI, no 500s |
+| SecurityAgent (v6.2) | `src/agents/security-agent.ts` | `memory/agents/security-agent.md` | Security-engineer-of-record. BINDING signoff on security-critical paths. Semgrep + CodeQL + SCA + license deny-list. Threat-model deltas. |
+| ComplianceAgent (v6.2) | `src/agents/compliance-agent.ts` | `memory/agents/compliance-agent.md` | All-16-framework mapping (CMMC/FedRAMP/HIPAA/PCI/SOC2/...). Evidence packs + management assertion drafts + gap analysis. |
+| LegalAgent (v6.2) | `src/agents/legal-agent.ts` | `memory/agents/legal-agent.md` | Drafts MSA/BAA/EULA/privacy/consent/breach-notification documents. UPL boundary enforced. Reads `D:/VSCode/tech-legal/`. |
+| PMAgent (v6.2) | `src/agents/pm-agent.ts` | `memory/agents/pm-agent.md` | Vendor relationship tracking + renewal calendar + milestone progress + weekly RJain action items. |
+
+## v6.2 Domain Agents — Hard-5% Coverage
+
+These four agents replace human-hire roles identified in myJian
+platform-coverage decision §10.15. AI does the drafting/analysis; RJain
+(or named officer) is the human-of-record only where statute or contract
+requires a human signatory (compliance attestations, contract execution,
+Apple MDM verification calls, breach escalations to client GCs).
+
+See: `memory/agents/{security,compliance,legal,pm}-agent.md` for full
+contracts, and `memory/knowledge/{security-policy,security-critical-paths,
+threat-model,edge-telemetry-catalog,control-mapping-policy,jurisdiction-matrix,
+upl-boundaries,legal-policy,vendor-relationships,renewal-calendar,
+milestone-catalog,calendar-time-tracks}.md` for the supporting knowledge files.
 
 ## Vault Memory Structure (V6)
 

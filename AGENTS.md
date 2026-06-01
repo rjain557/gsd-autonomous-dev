@@ -40,6 +40,20 @@ Top-level progressive-disclosure map of every agent in the V6 pipeline. Read thi
 | `scout-agent` | Blueprint, Review, Remediation | Reads specs and vault notes, returns summarized context |
 | `researcher-agent` | Remediation, E2E | Runs Context7 / GitNexus / Graphify queries, returns synthesized findings |
 
+## v6.2 — Hard-5% Domain Agents
+
+Per myJian platform-coverage decision §10.15 + §11 q3, these 4 agents replace
+human-hire roles (senior security engineer + compliance lead + retained
+counsel + PM). AI agents do the drafting + analysis; RJain (or named officer)
+is the human-of-record where statute or contract requires a human signatory.
+
+| Agent | Phase | Role | Vault Note |
+|-------|-------|------|------------|
+| `security-agent` | Cross-pipeline | Security engineer of record. BINDING signoff on PRs touching security-critical paths (/security, /auth, /crypto, /transport, /sandbox, /catalog, /peer-repair, /self-guard). Runs Semgrep + CodeQL + SCA + license deny-list. Drafts threat-model updates. Surfaces signatory actions for HSM ceremonies, cert rotations, vendor applications. | `memory/agents/security-agent.md` |
+| `compliance-agent` | Cross-pipeline | Compliance lead. Maps Edge telemetry → controls across all 16 frameworks (CMMC / FedRAMP / FISMA / DFARS / ITAR / CJIS / HIPAA / PCI / GLBA / SOX / SOC 2 / NIST 800-53 / ISO 27001 / StateRAMP / NERC CIP / FERPA). Generates evidence packs. Drafts management assertions for CEO/CFO/CISO signature. Detects control gaps. | `memory/agents/compliance-agent.md` |
+| `legal-agent` | Cross-pipeline | Legal drafter (NOT counsel — UPL boundary enforced). Drafts MSA amendments, BAA updates, EULAs, privacy notices, employment-monitoring notices, consent forms, breach-notification templates, vendor contract summaries. Reads `D:/VSCode/tech-legal/` baseline templates. Every output flagged `requires_licensed_attorney_review` per the boundary table. | `memory/agents/legal-agent.md` |
+| `pm-agent` | Cross-pipeline | Program manager. Tracks vendor relationships (Apple MDM, Android EMM, Samsung Knox, code-signing CA, AV allow-listing), renewal calendar, milestone progress. Consolidates `signatoryActions` from Security/Compliance/Legal into a weekly RJain action list. | `memory/agents/pm-agent.md` |
+
 ## V6 Agent Invocation Rules
 
 - Agents are invoked with a **fresh context per task** (no long-lived accumulation across stages)

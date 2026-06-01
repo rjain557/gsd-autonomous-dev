@@ -19,7 +19,12 @@ export type AgentId =
   | 'milestone-orchestrator'
   | 'review-auditor-agent'
   | 'scout-agent'
-  | 'researcher-agent';
+  | 'researcher-agent'
+  // v6.2: hard-5% domain agents (replaces human hires per myJian §10.15):
+  | 'security-agent'
+  | 'compliance-agent'
+  | 'legal-agent'
+  | 'pm-agent';
 
 export type PipelineStage =
   | 'blueprint'
@@ -390,4 +395,264 @@ export class EscalationError extends Error {
     super(`Agent ${agentId} failed after ${attempts} attempts: ${lastError.message}`);
     this.name = 'EscalationError';
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// v6.2 — Hard-5% Domain Agents (Security / Compliance / Legal / PM)
+// Replaces the senior security engineer + compliance lead +
+// retained counsel + PM hires from myJian §10.15. AI agents do the
+// drafting; RJain (or named officer) is the human-of-record where
+// statute or contract requires a human signatory.
+// ═══════════════════════════════════════════════════════════════
+
+// ── Security Agent ──────────────────────────────────────────
+
+export interface SecurityAgentInput extends AgentInput {
+  convergenceReport: ConvergenceReport;
+  changedFiles: string[];
+  patchSet?: PatchSet;
+  securityCriticalPaths: string[];
+}
+
+export interface SecurityFinding {
+  id: string;
+  file: string;
+  line: number;
+  severity: Severity;
+  category: 'static-analysis' | 'secret-leak' | 'crypto' | 'auth' | 'sandbox-escape' | 'supply-chain' | 'threat-model-delta' | 'hsm-bypass' | 'audit-gap';
+  cwe?: string;
+  message: string;
+  suggestedRemediation: string;
+  securityCriticalPath: boolean;
+}
+
+export interface ThreatModelDelta {
+  affected_components: string[];
+  new_trust_boundaries: string[];
+  new_attack_surfaces: string[];
+  draft_update_text: string;
+}
+
+export interface SignatoryAction {
+  category: 'hsm' | 'cert-rotation' | 'compliance-attestation' | 'vendor-application' | 'incident-response' | 'legal-execution';
+  description: string;
+  signatory: 'CEO' | 'CISO' | 'GC' | 'named-officer';
+  dueDate?: string;
+  blocking: boolean;
+  artifactPath?: string;
+}
+
+export interface SecurityReviewResult extends AgentOutput {
+  signoffGranted: boolean;
+  findings: SecurityFinding[];
+  threatModelDelta: ThreatModelDelta | null;
+  scaResults: {
+    npmAuditCritical: number;
+    npmAuditHigh: number;
+    dotnetVulnCount: number;
+    denyListLicenses: string[];
+  };
+  signatoryActions: SignatoryAction[];
+  evidence: string[];
+}
+
+// ── Compliance Agent ────────────────────────────────────────
+
+export type ComplianceFramework =
+  | 'CMMC' | 'FedRAMP' | 'FISMA' | 'DFARS' | 'ITAR' | 'CJIS'
+  | 'HIPAA' | 'PCI-DSS' | 'GLBA' | 'SOX' | 'SOC2'
+  | 'NIST-800-53' | 'ISO-27001'
+  | 'StateRAMP' | 'NERC-CIP' | 'FERPA';
+
+export interface ComplianceAgentInput extends AgentInput {
+  requested_frameworks: ComplianceFramework[];
+  client_scope: 'all' | string;
+  window: { start: string; end: string };
+  evidence_mode: 'point-in-time' | 'continuous';
+  prior_evidence_pack_ids?: string[];
+}
+
+export interface ComplianceException {
+  control_id: string;
+  description: string;
+  remediated_at?: string;
+}
+
+export interface FrameworkResult {
+  framework: ComplianceFramework;
+  total_controls: number;
+  mapped_controls: number;
+  gap_count: number;
+  management_assertion_draft: string;
+  exceptions: ComplianceException[];
+}
+
+export interface ControlMappingGroup {
+  group_id: string;
+  mapped_to: { framework: ComplianceFramework; control_id: string }[];
+  evidence_sources: string[];
+}
+
+export interface ComplianceGap {
+  framework: ComplianceFramework;
+  control_id: string;
+  description: string;
+  remediation_task: string;
+  effort: 'low' | 'medium' | 'high';
+  risk_severity: Severity;
+}
+
+export interface AttestationDriftItem {
+  control_id: string;
+  evidence_source: string;
+  last_evidence_at: string;
+  expected_cadence: string;
+  drift_severity: 'low' | 'medium' | 'high';
+}
+
+export interface ComplianceArtifacts extends AgentOutput {
+  pack_id: string;
+  generated_at: string;
+  client_scope: string;
+  window: { start: string; end: string };
+  framework_results: FrameworkResult[];
+  control_mapping_groups: ControlMappingGroup[];
+  gaps: ComplianceGap[];
+  continuous_attestation_drift: AttestationDriftItem[];
+  signatoryActions: SignatoryAction[];
+  evidence_pack_path: string;
+}
+
+// ── Legal Agent ─────────────────────────────────────────────
+
+export type LegalDocumentType =
+  | 'msa-amendment' | 'baa-update' | 'eula' | 'privacy-notice'
+  | 'employment-monitoring-notice' | 'consent-form' | 'breach-notification'
+  | 'data-processing-addendum' | 'vendor-contract-summary'
+  | 'state-law-summary' | 'sub-processor-disclosure' | 'nda';
+
+export type LegalJurisdiction =
+  | 'US-CA' | 'US-IL' | 'US-NY' | 'US-CT' | 'US-CO' | 'US-WA' | 'US-VA' | 'US-TX' | 'US-FL'
+  | 'US-FEDERAL' | 'EU' | 'UK' | 'CA' | 'AU' | 'ALL-US-STATES';
+
+export interface LegalAgentInput extends AgentInput {
+  document_type: LegalDocumentType;
+  triggering_capability: string;
+  affected_jurisdictions: LegalJurisdiction[];
+  counterparty?: {
+    name: string;
+    type: 'client' | 'vendor' | 'employee' | 'regulator';
+    existing_contract_id?: string;
+  };
+  client_codes?: string[];
+  baseline_template_path?: string;
+}
+
+export interface LegalCitation {
+  jurisdiction: LegalJurisdiction;
+  statute: string;
+  effective_date: string;
+  url?: string;
+  freshness_verified_at?: string;
+}
+
+export interface JurisdictionSection {
+  jurisdiction: LegalJurisdiction;
+  variation_from_baseline: string;
+  controlling_statute: string;
+}
+
+export interface BoundaryViolation {
+  clause_id: string;
+  reason: string;
+  recommended_action: 'remove' | 'route-to-attorney' | 'rewrite-as-preparation';
+}
+
+export interface LegalArtifact extends AgentOutput {
+  draft_path: string;
+  document_type: LegalDocumentType;
+  affected_jurisdictions: LegalJurisdiction[];
+  requires_licensed_attorney_review: boolean;
+  attorney_review_level: 'in-house' | 'outside-counsel-general' | 'outside-counsel-specialist';
+  citations: LegalCitation[];
+  jurisdiction_specific_sections: JurisdictionSection[];
+  redline_against?: string;
+  signatoryActions: SignatoryAction[];
+  boundary_violations: BoundaryViolation[];
+  draft_body: string;
+  plain_english_summary: string;
+  statute_verification_recommended: boolean;
+}
+
+// ── PM Agent ────────────────────────────────────────────────
+
+export type PMReportType = 'weekly-status' | 'vendor-only' | 'milestone-only' | 'rjain-action-items' | 'full';
+
+export interface PMAgentInput extends AgentInput {
+  report_type: PMReportType;
+  window?: { start: string; end: string };
+  include_archived_vendors?: boolean;
+}
+
+export interface PMActionItem {
+  category: 'vendor-call' | 'signature' | 'decision' | 'review';
+  description: string;
+  due_date?: string;
+  priority: 'urgent' | 'high' | 'normal';
+  artifact_path?: string;
+}
+
+export interface VendorStatus {
+  vendor: string;
+  capability: string;
+  status: 'not-started' | 'in-progress' | 'active' | 'lapsed' | 'archived';
+  technijian_poc: string;
+  vendor_poc?: string;
+  last_activity: string;
+  next_action: string;
+  next_action_owner: 'pm-agent' | 'legal-agent' | 'security-agent' | 'rjain';
+}
+
+export interface RenewalItem {
+  item: string;
+  due_date: string;
+  days_until: number;
+  preparation_status: 'not-started' | 'in-progress' | 'ready-for-signature' | 'complete';
+  owner: string;
+}
+
+export interface MilestoneStatus {
+  milestone_id: string;
+  phase_number?: number;
+  title: string;
+  status: 'pending' | 'in-progress' | 'blocked' | 'complete' | 'cancelled';
+  percent_complete: number;
+  eta?: string;
+  blocking_dependencies: string[];
+}
+
+export interface PMBlocker {
+  description: string;
+  blocking_milestones: string[];
+  owner: string;
+  severity: Severity;
+}
+
+export interface SignatoryItem {
+  document_type: string;
+  artifact_path: string;
+  signatory: string;
+  due_date?: string;
+}
+
+export interface PMStatusReport extends AgentOutput {
+  report_date: string;
+  report_type: PMReportType;
+  status_report_markdown: string;
+  rjain_action_items: PMActionItem[];
+  vendor_relationships: VendorStatus[];
+  urgent_renewals: RenewalItem[];
+  milestone_status: MilestoneStatus[];
+  blockers: PMBlocker[];
+  artifacts_awaiting_signature: SignatoryItem[];
 }
