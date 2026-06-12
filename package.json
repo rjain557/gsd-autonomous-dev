@@ -9,6 +9,7 @@
     "pipeline": "ts-node src/index.ts pipeline run",
     "pipeline:dry": "ts-node src/index.ts pipeline run --dry-run",
     "evals": "ts-node src/evals/runner.ts",
+    "model-sync": "ts-node src/tools/model-catalog-sync.ts",
     "typecheck": "tsc --noEmit",
     "test:v6": "ts-node src/harness/v6/__tests__/v6-tests.ts",
     "test": "npm run typecheck && npm run test:v6 && npm run evals"

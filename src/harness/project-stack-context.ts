@@ -1,9 +1,10 @@
 // ═══════════════════════════════════════════════════════════
 // GSD V6 — Per-Project Stack Context
 // Resolves target-project stack configuration from
-// docs/gsd/stack-overrides.md. Defaults to .NET 8 if the file
-// is absent. Preserves existing behavior for projects
-// bootstrapped before v6.1.0.
+// docs/gsd/stack-overrides.md. Defaults to .NET 10 (LTS) if the
+// file is absent (upgraded from .NET 8 on 2026-06-11 — .NET 8 and 9
+// both reach end-of-support 2026-11-10). Projects can still pin
+// net8.0/net9.0 via stack-overrides for legacy/compat work.
 // ═══════════════════════════════════════════════════════════
 
 import * as fs from 'fs/promises';
@@ -43,8 +44,8 @@ export interface ProjectStackContext {
 }
 
 export const DEFAULT_STACK_CONTEXT: ProjectStackContext = {
-  backendFramework: 'net8.0',
-  backendSdk: '.NET 8 SDK',
+  backendFramework: 'net10.0',
+  backendSdk: '.NET 10 SDK',
   solutionFileFormat: 'sln',
   dataAccessPattern: 'Dapper + stored procedures',
   database: 'SQL Server',
@@ -62,8 +63,8 @@ export const DEFAULT_STACK_CONTEXT: ProjectStackContext = {
 
 /**
  * Reads `<projectRoot>/docs/gsd/stack-overrides.md` and parses known
- * fields. If the file is absent, returns v6.0.0 defaults (`.NET 8`) for
- * backward compatibility.
+ * fields. If the file is absent, returns the default stack (`.NET 10` as of
+ * 2026-06-11; was `.NET 8` pre-upgrade). Projects pin net8.0/net9.0 to override.
  *
  * @param projectRoot Absolute path to the target project root
  */

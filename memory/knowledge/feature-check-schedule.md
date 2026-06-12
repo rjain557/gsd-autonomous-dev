@@ -81,6 +81,16 @@ Every 30 days, review the latest releases from Anthropic, OpenAI, and Google for
 - [ ] Can any paid feature replace a custom implementation?
 - [ ] Is caveman actually reducing token usage? Check session logs.
 
+### Model registry drift (automated — run first)
+
+- [ ] Run `npm run model-sync` (or `npx ts-node src/tools/model-catalog-sync.ts`). It diffs
+      `config/model-registry.json` against the Cortex `model_catalog.md` (re-verified weekly) and
+      flags model_ids that have been renamed/deprecated plus catalog deprecation notes.
+- [ ] For each 🔴 DRIFT line, verify against the provider, then update the registry by hand
+      (the tool is read-only — never auto-applies). Re-run until clean.
+- [ ] Cross-check the per-task model assignments in `memory/knowledge/model-strategy.md` and
+      `docs/GSD-Model-Cost-Optimization.md` against the latest catalog prices.
+
 ## Verification-First Process
 
 NEVER implement a feature based on assumptions or training data. Every feature must be verified before adoption.

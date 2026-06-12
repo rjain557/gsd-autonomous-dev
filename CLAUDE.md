@@ -2,7 +2,7 @@
 
 ## What this project is
 
-A V6 multi-agent autonomous development system that drives .NET (configurable, default .NET 8) + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. Canonical architecture is documented in `memory/architecture/v6-design.md` and `docs/GSD-Developer-Guide.md`. Projects can declare `net9.0` or `net10.0` in `docs/gsd/stack-overrides.md` (see GSD Developer Guide §1.4.1).
+A V6 multi-agent autonomous development system that drives .NET (configurable, **default .NET 10 LTS** as of 2026-06-11 — .NET 8 and 9 both reach end-of-support 2026-11-10) + React 18 + SQL Server projects from requirements extraction through architecture, Figma validation, contract freeze, code review, remediation, quality gates, and alpha deployment. Canonical architecture is documented in `memory/architecture/v6-design.md` and `docs/GSD-Developer-Guide.md`. Projects can still pin `net8.0`/`net9.0` in `docs/gsd/stack-overrides.md` for legacy/compat work (see GSD Developer Guide §1.4.1).
 
 V6 combines a TypeScript harness with typed agent contracts, hierarchical decomposition (Milestone → Slice → Task → Stage), hybrid SQLite + vault memory, git worktree isolation per milestone, an execution graph scheduler, dual-auth LLM routing (CLI OAuth primary at $0, API key backup when limits hit), and a workstation augmentation stack built around Graphify, GitNexus, Context7, Semgrep, Playwright, GitHub MCP, OWASP, and Shannon.
 
@@ -241,7 +241,7 @@ Full skills reference: `docs/GSD-Claude-Code-Skills.md`
 
 ## Project Patterns (enforced for all generated projects)
 
-- **Backend**: .NET (configurable per project via `docs/gsd/stack-overrides.md`; default .NET 8) + Dapper + SQL Server stored procedures only (no EF Core, no inline SQL)
+- **Backend**: .NET (configurable per project via `docs/gsd/stack-overrides.md`; **default .NET 10 LTS**) + Dapper + SQL Server stored procedures only (no EF Core, no inline SQL). On .NET 9+ use built-in OpenAPI (`Microsoft.AspNetCore.OpenApi`), not Swashbuckle.
 - **Frontend**: React 18 + TypeScript + Fluent UI React v9 + React Query v5
 - **Auth**: JWT, role-based, with DB-driven module-level navigation guards (SEC-FE-17–21)
 - **Compliance**: HIPAA, SOC 2, PCI, GDPR
@@ -279,7 +279,7 @@ WHERE TenantId = @TenantId AND IsDeleted = 0
 ### SP Rules
 - `SET NOCOUNT ON` at top
 - `BEGIN TRY / END TRY BEGIN CATCH THROW END CATCH` always
-- All parameters explicitly typed with length (`NVARCHAR(100)` not `NVARCHAR(MAX)`)
+- All parameters explicitly typed with length (`NVARCHAR(100)` not `NVARCHAR(MAX)`). **SQL Server 2025:** for JSON payloads use the native `JSON` type instead of `NVARCHAR(MAX)`; `REGEXP_*` for in-DB validation; `VECTOR` + `AI_GENERATE_EMBEDDINGS` are GA. See `docs/GSD-Frontend-Stack-2026.md` §3.
 - No implicit conversions — parameter type must match column type exactly
 - No `SELECT *` — explicit column list only
 - `GRANT EXECUTE ON dbo.usp_... TO [AppRole];` after every SP
@@ -353,7 +353,19 @@ const useStyles = makeStyles({
 
 ## LLM API Quick Reference
 
-See `C:\Users\rjain\.claude\CLAUDE.md` for full model endpoint reference (Anthropic, OpenAI, DeepSeek, Kimi, MiniMax, GLM5).
+Model endpoints, pricing, and routing live in two places (this machine = `Administrator`):
+- **Credentials**: the key vault — `C:\Users\Administrator\OneDrive - Technijian, Inc\Documents\VSCODE\keys\`
+  (`anthropic.md`, `openai.md`, `azure-openai.md`, `deepseek.md`, `gemini.md`, `kimi-moonshot.md`,
+  `minimax.md`, `glm-zhipu.md`, `nvidia-build.md`, `litellm*.md`). Never print or commit values.
+- **Live model catalog / pricing** (re-verified weekly): the Cortex vault topics `model_catalog`
+  and `litellm_gateway` (see Knowledge Sources above) + repo `config/model-registry.json`.
+
+**Routing (full-gateway, 2026-06-11):** every LLM call routes through the LiteLLM gateway
+(pay-per-token) so spend is tracked per project. Env: `LITELLM_BASE_URL`
+(`http://10.100.254.102:4000`), `LITELLM_VIRTUAL_KEY` (`sk-tj-gsd-autonomouse-dev`, from key vault —
+never hardcode), `GSD_LLM_MODE` (`gateway`|`sdk`|`cli`), `GSD_PROJECT`. Per-task model picks +
+Fable 5 guidance: `docs/GSD-Model-Cost-Optimization.md`. Drift check: `npm run model-sync`. Canonical
+wiring: `memory/knowledge/litellm-gateway.md`.
 
 ## Quality, Security, and Automation Tools
 
@@ -420,6 +432,54 @@ This project is indexed by GitNexus as **gsd-autonomous-dev** (2820 symbols, 526
 
 ---
 
+## Knowledge Sources & Vault Locations — READ THIS EVERY SESSION
+
+> **Active workstation: `Administrator` (TE-AI fleet host).** Paths below are absolute for
+> this machine. The repo's git author is `Ravi Jain`; older `C:\Users\rjain\...` paths that
+> appear elsewhere in this file are stale carry-overs from a laptop — on this machine use the
+> `Administrator` paths registered here. Full machine-readable registry:
+> `memory/knowledge/knowledge-sources.md` (canonical — edit there, not in code).
+
+Three external knowledge stores back this project. Consult them in this order of authority for
+their respective domains; never hardcode their contents into code.
+
+### 1. GSD project vault (Obsidian) — durable engineering knowledge
+`C:\Users\Administrator\OneDrive - Technijian, Inc\Documents\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\`
+(note the doubled folder name; `claude-memory/` lives one level deeper)
+
+- **Purpose**: knowledge-accumulation layer for the GSD pipeline — diseases, solutions,
+  patterns, ADRs, per-project health, session logs, standing feedback rules.
+- **Read when**: a pipeline failure looks familiar; before architecture/agent changes; to recall
+  why a decision was made. Start at `00-Home/GSD-Index.md`, `03-Patterns/index.md`,
+  `05-Architecture/index.md`, `07-Feedback/index.md`, and `claude-memory/topics/`.
+- **Standing rules live in** `07-Feedback/index.md` (e.g. *No Pipeline Auto-Start*, *Requirements
+  from specs only*, *Proactive not reactive*) — treat these as binding.
+
+### 2. Key vault (OneDrive) — secrets & credentials  ⚠️ HANDLE WITH CARE
+`C:\Users\Administrator\OneDrive - Technijian, Inc\Documents\VSCODE\keys\`
+
+- **Purpose**: API keys, certs, and connection secrets (186 files). LLM creds:
+  `anthropic.md`, `azure-openai.md`, `openai.md`, `deepseek.md`, `gemini.md`,
+  `kimi-moonshot.md`, `minimax.md`, `glm-zhipu.md`, `nvidia-build.md`, `amazon-bedrock.md`,
+  `litellm.md` / `litellm-master.md` / `litellm-virtual-keys.md` (central LiteLLM gateway),
+  plus M365 cert-auth, `Technijian-Agent-Harness.pfx`, and per-tenant `*-eop-*` files.
+- **Rules**: read a specific file ONLY when a task needs that credential. **Never print, echo,
+  log, or commit secret values.** **Never paste a key into source — load from env or the gateway.**
+  Reference creds by filename, not contents. This directory is OUTSIDE the repo and must stay so.
+
+### 3. Cortex knowledge brain (Obsidian "rjain557-knowledge") — research feed
+`C:\Users\Administrator\OneDrive - Technijian, Inc\Documents\obsidian\rjain557-knowledge\rjain557-knowledge\`
+
+- **Purpose**: self-improving research brain ("Inbox Brain"). `Inbox/` holds 450+ clipped
+  articles (2026+) on agent harnesses, Claude Code workflows, agentic design patterns, RAG/hybrid
+  memory, LLM observability. `claude-memory/topics/` holds durable facts incl. `litellm_gateway`,
+  `model_catalog` (re-verified weekly), `llm_cost_tracking`, `ai_fleet_infrastructure`,
+  `deep_research_pipeline`.
+- **Read when**: designing/upgrading agents, harnesses, skills, or workflows — this is the
+  research evidence base. Check `model_catalog` / `litellm_gateway` before model-routing changes.
+
+---
+
 ## Memory + Code Intelligence Stack
 
 ### Layer Boundaries
@@ -427,11 +487,11 @@ This project is indexed by GitNexus as **gsd-autonomous-dev** (2820 symbols, 526
 | Layer | Location | Purpose |
 |-------|----------|---------|
 | **Vault (Obsidian)** | `claude-memory/` in Obsidian vault | Durable human knowledge — topic pages only |
-| **Auto-memory (CC built-in)** | `C:\Users\rjain\.claude\projects\c--VSCode-gsd-autonomous-dev\memory\` | Claude's working notes, managed automatically |
+| **Auto-memory (CC built-in)** | `C:\Users\Administrator\.claude\projects\d--VSCode-gsd-autonomous-dev-gsd-autonomous-dev\memory\` | Claude's working notes, managed automatically |
 | **GitNexus** | `.gitnexus/` + MCP server | Code structure, impact analysis, symbol graph |
 
 ### Vault Path
-`C:\Users\rjain\OneDrive - Technijian, Inc\Documents\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\claude-memory\`
+`C:\Users\Administrator\OneDrive - Technijian, Inc\Documents\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\claude-memory\`
 
 ### Retrieval Rules
 - Vault topics are loaded automatically on `UserPromptSubmit` when topic keywords appear in the prompt

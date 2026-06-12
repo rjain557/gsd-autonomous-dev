@@ -2192,4 +2192,56 @@ The agents themselves are not rewritten between tiers. Only the orchestrator and
 |---|---|---|
 | `<projectRoot>/docs/gsd/stack-overrides.md` | The target project (optional) | Declares per-project backend framework, SDK, solution format, frontend, mobile, compliance. Read by `getProjectStackContext()` at the start of every SDLC/Pipeline run. See [`docs/stack-overrides-template.md`](stack-overrides-template.md) for the template. |
 
+---
+
+# Appendix Z — 2026 Updates (Knowledge Sources, LLM Routing, Stack Refresh)
+
+> Added 2026-06-11. Consolidates the session's infrastructure + stack changes. Each item links to
+> its canonical doc; this appendix is the index, not the source of truth.
+
+## Z.1 Knowledge sources (read every session)
+
+Three external stores back this project (active host `Administrator`). Canonical registry:
+[`memory/knowledge/knowledge-sources.md`](../memory/knowledge/knowledge-sources.md); also in CLAUDE.md.
+
+| Store | Path (under `…\OneDrive - Technijian, Inc\Documents`) | Role |
+|---|---|---|
+| GSD project vault | `…\obsidian\gsd-autonomous-dev\gsd-autonomous-dev\` | diseases/solutions/ADRs/sessions + binding feedback rules |
+| Key vault ⚠️ | `…\VSCODE\keys\` | API keys/certs — **read by filename, never print/commit values** |
+| Cortex brain | `…\obsidian\rjain557-knowledge\rjain557-knowledge\` | research feed + weekly-verified `model_catalog` / `litellm_gateway` |
+
+## Z.2 LLM routing — full gateway (per-project cost tracking)
+
+Owner decision 2026-06-11: **every LLM call routes through the LiteLLM gateway** (pay-per-token),
+attributed to this repo's virtual key `sk-tj-gsd-autonomouse-dev`. Supersedes "$0 CLIs first" (now a
+fallback via `GSD_LLM_MODE=cli`). Wiring: [`base-agent.ts`](../src/harness/base-agent.ts) `callLLM` →
+gateway client when `LITELLM_BASE_URL` is set; tags `x-litellm-tags: repo:…,agent:…,run:…`.
+
+| Env var | Purpose |
+|---|---|
+| `LITELLM_BASE_URL` | gateway base (`http://10.100.254.102:4000`); presence flips default mode to `gateway` |
+| `LITELLM_VIRTUAL_KEY` | repo's `sk-tj-…` key (from key vault — never hardcode) |
+| `GSD_LLM_MODE` | override: `gateway` \| `sdk` \| `cli` |
+| `GSD_PROJECT` | repo tag for attribution (default `gsd-autonomouse-dev`) |
+
+Canonical: [`memory/knowledge/litellm-gateway.md`](../memory/knowledge/litellm-gateway.md).
+
+## Z.3 Per-task model selection (cost/quality)
+
+Pick the **cheapest model meeting the task's quality bar**; reserve escalate for binding work.
+Full per-agent table + tiers (catalog 2026-06-08): [`docs/GSD-Model-Cost-Optimization.md`](GSD-Model-Cost-Optimization.md).
+- triage (deepseek-v4-flash / haiku-4-5 / gemini-3.1-flash-lite) → mechanical/high-volume.
+- decision (sonnet-4-6 / gemini-3.5-flash / kimi-k2.6 / minimax-m3 / deepseek-v4-pro) → coding + judgment.
+- escalate (**claude-opus-4-8** default / gpt-5.5 / gemini-3.1-pro) → Security/Compliance/Legal/Deploy/SCG1.
+- frontier (**claude-fable-5**, $10/$50, ~2.6× Opus 4.8 effective) → ONLY when Opus 4.8 demonstrably fails.
+Drift check: `npm run model-sync` ([`src/tools/model-catalog-sync.ts`](../src/tools/model-catalog-sync.ts)).
+
+## Z.4 Stack refresh (mid-2026) — full detail in [`docs/GSD-Frontend-Stack-2026.md`](GSD-Frontend-Stack-2026.md)
+
+- **.NET:** 8 **and** 9 both EOL **Nov 10 2026** → plan **.NET 10 LTS** (allow `net10.0` in stack-overrides). Replace Swashbuckle with **built-in OpenAPI**; verify OpenAPI 3.1 client codegen.
+- **SQL Server 2025 (GA):** native **`JSON` type** (sanctioned alternative to `NVARCHAR(MAX)` for JSON payloads), **`REGEXP_*`**, **Optimized Locking**, **`VECTOR` + `AI_GENERATE_EMBEDDINGS`**. Vector-search/Change-Event-Streaming remain preview — keep out of prod.
+- **Fluent UI React v9:** rolling line (no v10); adopt `react-motion` props + `*Base_unstable` hooks.
+- **Figma:** **Make** emits React+Tailwind (prototype validation only, fits Phase C); use **Dev Mode MCP + Code Connect** to make AI codegen emit `@fluentui/react-components` + `tokens.*`.
+- **Mobile:** **Expo SDK 56 / RN 0.85**, New Architecture mandatory; Reanimated v4 (+`react-native-worklets`), FlashList v2, Expo Router v6, Expo UI (SwiftUI/Compose). Share tokens+types+data with web, never UI components.
+
 *End of GSD V6 Developer Guide*

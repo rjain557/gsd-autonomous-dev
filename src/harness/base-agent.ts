@@ -36,6 +36,7 @@ export abstract class BaseAgent {
   protected systemPrompt: string = '';
   private rateLimiter: RateLimiter | null = null;
   private cliAgentId: string = 'claude'; // which CLI model this agent routes to
+  private _gatewayWarned = false; // one-time warn when gateway mode is misconfigured
   // V6: milestone context (optional — null for standalone slice/phase runs)
   protected observability: ObservabilityLogger | null = null;
   protected budgetRouter: BudgetRouter | null = null;
@@ -285,7 +286,10 @@ export abstract class BaseAgent {
     jsonSchema?: Record<string, unknown>,
   ): Promise<string> {
     const model = (this.agentConfig.model as string) ?? 'claude-sonnet-4-6';
-    const mode = process.env.GSD_LLM_MODE ?? 'cli';
+    // Mode resolution: explicit GSD_LLM_MODE wins; otherwise default to the
+    // LiteLLM gateway when its base URL is configured (full-gateway policy —
+    // every call billed per-token and attributed per repo), else CLI ($0 OAuth).
+    const mode = process.env.GSD_LLM_MODE ?? (process.env.LITELLM_BASE_URL ? 'gateway' : 'cli');
 
     // Enforce rate limit BEFORE the call
     if (this.rateLimiter) {
@@ -295,7 +299,12 @@ export abstract class BaseAgent {
     try {
       let result: string;
 
-      if (mode === 'sdk') {
+      if (mode === 'gateway') {
+        // Gateway mode: route through LiteLLM with the per-repo virtual key so
+        // spend is attributed to this project. Falls back to CLI ($0) if the
+        // gateway call fails and no virtual key resolves.
+        result = await this.callLLMWithSDK(systemPromptText, userMessage, model, jsonSchema, true);
+      } else if (mode === 'sdk') {
         // SDK mode: always use API key (pay-per-token)
         result = await this.callLLMWithSDK(systemPromptText, userMessage, model, jsonSchema);
       } else {
@@ -328,15 +337,55 @@ export abstract class BaseAgent {
     }
   }
 
+  /**
+   * Build the Anthropic SDK client. In gateway mode it points at the LiteLLM
+   * proxy (LITELLM_BASE_URL) and authenticates with this repo's virtual key
+   * (LITELLM_VIRTUAL_KEY, e.g. `sk-tj-gsd-autonomouse-dev`) so spend is
+   * attributed per project. The key is read from the environment only — never
+   * hardcoded or logged. Default mode uses the ambient Anthropic credentials.
+   */
+  private buildAnthropicClient(useGateway: boolean): Anthropic {
+    if (useGateway) {
+      const baseURL = process.env.LITELLM_BASE_URL;
+      const apiKey = process.env.LITELLM_VIRTUAL_KEY ?? process.env.LITELLM_API_KEY;
+      if (baseURL && apiKey) {
+        return new Anthropic({ baseURL, apiKey });
+      }
+      // Misconfigured gateway — fall through to ambient credentials so the call
+      // still works, but it won't be attributed. Surfaced via a one-time warn.
+      if (!this._gatewayWarned) {
+        console.warn('[LLM] gateway mode requested but LITELLM_BASE_URL/VIRTUAL_KEY missing — using ambient creds (spend unattributed)');
+        this._gatewayWarned = true;
+      }
+    }
+    return new Anthropic();
+  }
+
+  /**
+   * Per-project / per-agent cost-attribution tags for LiteLLM. The virtual key
+   * already attributes spend to the repo; `x-litellm-tags` adds agent/phase
+   * granularity to the daily cost report (see memory/knowledge/litellm-gateway.md).
+   */
+  private gatewayHeaders(useGateway: boolean): Record<string, string> | undefined {
+    if (!useGateway) return undefined;
+    const project = process.env.GSD_PROJECT ?? 'gsd-autonomouse-dev';
+    const tags = [`repo:${project}`, `agent:${this.agentId}`];
+    if (this.milestoneRunId) tags.push(`run:${this.milestoneRunId}`);
+    return { 'x-litellm-tags': tags.join(',') };
+  }
+
   /** Anthropic SDK path — uses tool_use for structured JSON when schema provided. */
   private async callLLMWithSDK(
     systemPromptText: string,
     userMessage: string,
     model: string,
     jsonSchema?: Record<string, unknown>,
+    useGateway = false,
   ): Promise<string> {
-    const client = new Anthropic();
+    const client = this.buildAnthropicClient(useGateway);
     const timeout = ((this.agentConfig.timeout_seconds as number) ?? 120) * 1000;
+    const headers = this.gatewayHeaders(useGateway);
+    const reqOpts = headers ? { timeout, headers } : { timeout };
 
     try {
       if (jsonSchema) {
@@ -352,7 +401,7 @@ export abstract class BaseAgent {
             input_schema: jsonSchema as Anthropic.Tool.InputSchema,
           }],
           tool_choice: { type: 'tool', name: 'structured_output' },
-        }, { timeout });
+        }, reqOpts);
 
         // Extract the tool_use result
         for (const block of response.content) {
@@ -369,7 +418,7 @@ export abstract class BaseAgent {
         max_tokens: 8192,
         system: systemPromptText,
         messages: [{ role: 'user', content: userMessage }],
-      }, { timeout });
+      }, reqOpts);
 
       return response.content
         .filter(b => b.type === 'text')
@@ -377,7 +426,7 @@ export abstract class BaseAgent {
         .join('\n');
     } catch (error) {
       throw new Error(
-        `SDK call failed for ${this.agentId}: ${error instanceof Error ? error.message : String(error)}`,
+        `${useGateway ? 'Gateway' : 'SDK'} call failed for ${this.agentId}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

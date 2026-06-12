@@ -7,7 +7,15 @@ version: 6.0.1
 
 # V6 Model Strategy
 
-## Principle
+> **SUPERSEDED in part (2026-06-11): full-gateway routing.** The owner chose to route **every** LLM
+> call through the LiteLLM gateway (pay-per-token) so spend is tracked per project — see
+> [litellm-gateway.md](litellm-gateway.md) and `docs/GSD-Model-Cost-Optimization.md`. The "$0
+> subscription CLIs first" principle below is the prior model, retained for the $0 fallback path
+> only (`GSD_LLM_MODE=cli`). Per-task model selection now follows the cheapest-sufficient tiers in
+> `docs/GSD-Model-Cost-Optimization.md` (catalog 2026-06-08; Opus 4.8 = escalate default, Fable 5 =
+> frontier last-resort). Run `npm run model-sync` to catch `config/model-registry.json` drift.
+
+## Principle (prior model — now the $0 fallback path)
 
 Run the entire pipeline on 3 Max/Ultra subscription CLIs for $0 marginal token cost. API models are emergency-only fallbacks — used only when ALL three subscription CLIs are simultaneously on cooldown.
 
