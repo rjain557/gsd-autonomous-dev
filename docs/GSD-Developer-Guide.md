@@ -2244,4 +2244,22 @@ Drift check: `npm run model-sync` ([`src/tools/model-catalog-sync.ts`](../src/to
 - **Figma:** **Make** emits React+Tailwind (prototype validation only, fits Phase C); use **Dev Mode MCP + Code Connect** to make AI codegen emit `@fluentui/react-components` + `tokens.*`.
 - **Mobile:** **Expo SDK 56 / RN 0.85**, New Architecture mandatory; Reanimated v4 (+`react-native-worklets`), FlashList v2, Expo Router v6, Expo UI (SwiftUI/Compose). Share tokens+types+data with web, never UI components.
 
+## Z.5 Maintenance flow — Phase U (v6.3, added 2026-06-12)
+
+The SDLC now covers **existing applications**: a client-reported issue → triage → frozen change
+spec → the unchanged pipeline implements/gates/deploys. Canonical doc (use it to update the main
+guide chapters): [`docs/GSD-Maintenance-Flow.md`](GSD-Maintenance-Flow.md).
+
+- **New agents:** IssueTriageAgent (U1 — classify, reproduce-first hard gate, hierarchical fault
+  localization with cited rationales, blast radius) and UpdateSpecAgent (U2 — OpenSpec/Kiro-style
+  change spec: delta specs + EARS criteria + tasks + test plan; persists to vault `changes/CH-{runId}/`).
+  Vault contracts: `memory/agents/{issue-triage,update-spec}-agent.md`; rules:
+  `memory/knowledge/{triage-rules,spec-update-guidelines}.md`.
+- **New pipeline stages:** `triage`, `update-spec` (lead the stage order; auto-skip greenfield).
+  New CLI milestone: `gsd run maintenance --issue "<text>"`. Pauses: not-actionable triage
+  (clarifying questions) and `requiresHumanApproval` specs (resume `--from-stage blueprint`).
+- **New skill:** `/issue-triage` — interactive counterpart using GitNexus for localization.
+- **Verification:** typecheck clean, **31/31 v6 tests** (better-sqlite3 upgraded 11→12 for Node 24
+  prebuilds, fixing previously-broken StateDB tests; stale net8.0 default assertion updated to net10.0).
+
 *End of GSD V6 Developer Guide*

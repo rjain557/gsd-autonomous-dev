@@ -54,6 +54,8 @@ export interface MilestoneRunInput {
   // Pipeline inputs
   pipelineFromStage?: PipelineStage;
   dryRun?: boolean;
+  /** v6.3: client-reported issue — starts the maintenance flow (triage → update-spec → F1…) */
+  issueDescription?: string;
 }
 
 export interface MilestoneRunResult {
@@ -286,6 +288,7 @@ export class MilestoneOrchestrator {
           fromStage: input.pipelineFromStage,
           dryRun: input.dryRun,
           vaultPath: this.opts.vaultPath,
+          issueDescription: input.issueDescription,
         });
 
         // V6: scan decisions and any returned state for capability gaps

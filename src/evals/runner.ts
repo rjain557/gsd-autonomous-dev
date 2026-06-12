@@ -247,6 +247,9 @@ export class EvalRunner {
       costAccumulator: [],
       startedAt: new Date().toISOString(),
       completedAt: null,
+      triageContext: null,
+      triageResult: null,
+      specUpdateResult: null,
     };
   }
 

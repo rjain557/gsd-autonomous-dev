@@ -24,9 +24,14 @@ export type AgentId =
   | 'security-agent'
   | 'compliance-agent'
   | 'legal-agent'
-  | 'pm-agent';
+  | 'pm-agent'
+  // v6.3: maintenance flow (Phase U — update existing applications):
+  | 'issue-triage-agent'
+  | 'update-spec-agent';
 
 export type PipelineStage =
+  | 'triage'         // v6.3: maintenance — issue intake + fault localization
+  | 'update-spec'    // v6.3: maintenance — frozen change spec generation
   | 'blueprint'
   | 'review'
   | 'remediate'
@@ -70,6 +75,10 @@ export interface PipelineState {
   costAccumulator: CostEntry[];
   startedAt: string;
   completedAt: string | null;
+  // v6.3: maintenance flow (Phase U) — null on greenfield runs
+  triageContext: { issueDescription: string } | null;
+  triageResult: TriageResult | null;
+  specUpdateResult: SpecUpdateResult | null;
 }
 
 // ── Blueprint Analysis ──────────────────────────────────────
@@ -195,6 +204,64 @@ export interface DeployRecord extends AgentOutput {
   rollbackExecuted: boolean;
 }
 
+// ── Maintenance Flow (Phase U — v6.3) ───────────────────────
+
+export type ReproStatus = 'confirmed' | 'not-reproducible' | 'needs-info';
+export type MaintenanceCategory = 'bug' | 'feature' | 'change-request' | 'question';
+
+export interface SuspectLocation {
+  file: string;
+  symbol: string;        // function / class / component / stored procedure
+  lines: string;         // e.g. "120-145" (best effort)
+  confidence: number;    // 0-1; <0.4 suspects are excluded by triage rules
+  rationale: string;     // must cite the code excerpt (attribution over confidence)
+}
+
+export interface TriageInput extends AgentInput {
+  issueDescription: string;
+  repoRoot: string;
+  candidateFiles: Array<{ path: string; excerpt: string; matchScore: number }>;
+  specPaths: string[];
+}
+
+export interface TriageResult extends AgentOutput {
+  isValid: boolean;                  // actionable now (bugs require confirmed repro)
+  category: MaintenanceCategory;
+  severity: Severity;
+  reproStatus: ReproStatus;
+  reproArtifact: string;             // failing test sketch / Playwright steps / SQL state
+  clarifyingQuestions: string[];     // populated when reproStatus = needs-info
+  suspects: SuspectLocation[];
+  affectedComponents: string[];
+  affectedSpecs: string[];           // frozen spec areas the fix will touch
+  riskLevel: RiskLevel;
+  recommendedAction: string;
+  scopeAnalysis: string;
+}
+
+export interface UpdateSpecInput extends AgentInput {
+  triageResult: TriageResult;
+  repoRoot: string;
+  specExcerpts: Array<{ path: string; excerpt: string }>;
+}
+
+export interface DeltaSpec {
+  target: string;                    // e.g. "06-api-contracts §Orders"
+  change: string;                    // ADDED / MODIFIED / REMOVED content in target's format
+}
+
+export interface SpecUpdateResult extends AgentOutput {
+  changeId: string;                  // CH-{runId}
+  proposal: string;                  // root cause, approach, alternative, non-goals
+  deltaSpecs: DeltaSpec[];
+  earsCriteria: string[];            // WHEN ... THE SYSTEM SHALL ... (repro flip first)
+  tasks: string[];                   // ordered checklist for RemediationAgent
+  testPlan: string;
+  riskLevel: RiskLevel;
+  requiresHumanApproval: boolean;
+  summary: string;
+}
+
 // ── Orchestrator ────────────────────────────────────────────
 
 export interface PipelineTrigger {
@@ -202,6 +269,8 @@ export interface PipelineTrigger {
   fromStage?: PipelineStage;
   dryRun?: boolean;
   vaultPath: string;
+  /** v6.3: client-reported issue text — starts the maintenance flow at stage 'triage' */
+  issueDescription?: string;
 }
 
 export interface Decision {

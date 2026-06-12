@@ -17,6 +17,21 @@ escalate_after_retries: true
 
 Validates Figma Make deliverables (12 analysis files + stubs) after user exports them to the design path. Two-stage: structural validation first, then design skill compliance audit. Phase C of the Technijian SDLC v6.0.
 
+### Phase C flow (updated 2026-06-11)
+
+Phase C now begins BEFORE Figma Make; this agent validates the end of it:
+
+- **Step 0 — Stitch layout templates (automated):** Google Stitch (via the `stitch` MCP server) generates
+  layout/IA template candidates per module type (list/detail/form/dashboard). Stitch supplies *structure* only.
+- **Step 1 — Make prompt + kit (automated):** the `figma-prompts` milestone emits the Make prompt pack; the
+  human attaches the repo's `figma-make-kit/` artifacts (setup.md + design.md + guidelines/) so Make follows
+  the Fluent v9 design language — Fluent supplies the *language*.
+- **Step 2 — Human (2 clicks):** generate in Make, Publish, paste the `*.figma.site` URL back.
+- **Step 3 — this agent:** structural validation + design-skill audit below; when a published URL is provided,
+  also Playwright-validate it (page loads, no console errors, screenshot pack to `memory/observability/`).
+
+Reference: `docs/GSD-UI-Prototyping-Automation.md`, `figma-make-kit/README.md`.
+
 ## System prompt
 
 You are the Figma Integration Agent. Validate that Figma Make output is complete AND compliant with 4 design skills.

@@ -88,6 +88,9 @@ export class SdlcOrchestrator {
       costAccumulator: [],
       startedAt: this.state.startedAt,
       completedAt: null,
+      triageContext: null,
+      triageResult: null,
+      specUpdateResult: null,
     }));
 
     this.rateLimiter.registerAgent('claude', { rpm: 10, cooldownMs: 5 * 60_000, safetyFactor: 0.8 });

@@ -37,6 +37,8 @@ All system prompts live in `memory/agents/` vault notes, runtime configuration l
 | ComplianceAgent (v6.2) | `src/agents/compliance-agent.ts` | `memory/agents/compliance-agent.md` | All-16-framework mapping (CMMC/FedRAMP/HIPAA/PCI/SOC2/...). Evidence packs + management assertion drafts + gap analysis. |
 | LegalAgent (v6.2) | `src/agents/legal-agent.ts` | `memory/agents/legal-agent.md` | Drafts MSA/BAA/EULA/privacy/consent/breach-notification documents. UPL boundary enforced. Reads `D:/VSCode/tech-legal/`. |
 | PMAgent (v6.2) | `src/agents/pm-agent.ts` | `memory/agents/pm-agent.md` | Vendor relationship tracking + renewal calendar + milestone progress + weekly RJain action items. |
+| IssueTriageAgent (v6.3) | `src/agents/issue-triage-agent.ts` | `memory/agents/issue-triage-agent.md` | Phase U1: classify client issue → reproduce (hard gate) → localize fault (file→symbol→line) → blast radius. |
+| UpdateSpecAgent (v6.3) | `src/agents/update-spec-agent.ts` | `memory/agents/update-spec-agent.md` | Phase U2: TriageResult → frozen change spec (delta specs + EARS criteria + tasks + test plan) → feeds pipeline F1. |
 
 ## v6.2 Domain Agents — Hard-5% Coverage
 
@@ -110,8 +112,14 @@ npx ts-node src/index.ts run full --dry-run
 
 ## Current Pipeline Stage Map
 
+**Maintenance flow (v6.3, Phase U — existing apps):** `gsd run maintenance --issue "<client issue>"`
+prepends U1 IssueTriageAgent → U2 UpdateSpecAgent before Step 1; both auto-skip on greenfield runs.
+Not-actionable triage or high-risk specs PAUSE for human input. See `docs/GSD-Maintenance-Flow.md`.
+
 | Step | Agent | Depends On | On Success | On Failure |
 |---|---|---|---|---|
+| U1 | IssueTriageAgent (maintenance only) | --issue trigger | U2 | Not actionable → PAUSE + clarifying questions |
+| U2 | UpdateSpecAgent (maintenance only) | U1 valid | Step 1 (change spec frozen) | Needs approval → PAUSE; resume --from-stage blueprint |
 | 1 | BlueprintAnalysisAgent | (trigger) | Step 2 | Retry 3x then HALT |
 | 2 | CodeReviewAgent | Step 1 | If passed: Step 4; If failed: Step 3 | Retry 3x then HALT |
 | 3 | RemediationAgent | Step 2 (failed) | Step 4 | Retry 2x then HALT |
@@ -470,13 +478,23 @@ their respective domains; never hardcode their contents into code.
 ### 3. Cortex knowledge brain (Obsidian "rjain557-knowledge") — research feed
 `C:\Users\Administrator\OneDrive - Technijian, Inc\Documents\obsidian\rjain557-knowledge\rjain557-knowledge\`
 
-- **Purpose**: self-improving research brain ("Inbox Brain"). `Inbox/` holds 450+ clipped
-  articles (2026+) on agent harnesses, Claude Code workflows, agentic design patterns, RAG/hybrid
-  memory, LLM observability. `claude-memory/topics/` holds durable facts incl. `litellm_gateway`,
-  `model_catalog` (re-verified weekly), `llm_cost_tracking`, `ai_fleet_infrastructure`,
-  `deep_research_pipeline`.
-- **Read when**: designing/upgrading agents, harnesses, skills, or workflows — this is the
-  research evidence base. Check `model_catalog` / `litellm_gateway` before model-routing changes.
+- **⚡ RESEARCH-FIRST RULE: search Cortex BEFORE doing fresh web research.** The owner pre-loads
+  verified deep-research here precisely so sessions don't repeat full online searches. Grep/Glob
+  these folders by keyword first; only go to the web for what Cortex doesn't cover or to verify
+  volatile facts (prices, versions) older than the note's date.
+- **`Topics/` (310+ notes — the main knowledge store):** verified deep-research reports
+  (frontmatter: `generated_by: deep_research`, ~30 sources cited each, `verified: passed`,
+  `domain:` tags). Coverage: agent orchestration/harnesses, Claude Code workflows & memory, MCP
+  servers, coding-agent benchmarks, models, SEO, infra. `_refresh-*.md` notes are recurring
+  re-research (e.g. coding-agent benchmarks) — prefer the newest.
+- **`claude-memory/topics/`** (18 + `models/` 36): durable curated facts — `model_catalog` +
+  per-model cards (re-verified weekly), `litellm_gateway`, `llm_cost_tracking`,
+  `ai_fleet_infrastructure`, `deep_research_pipeline`. Check before any model-routing change.
+- **`Inbox/` (468+):** raw clippings awaiting synthesis — fallback when Topics has no hit.
+- **`Meta/`:** daily lint reports + `Proposals/pending/` (reviewer-loop output — owner decisions,
+  don't act on them unprompted).
+- **Read when**: designing/upgrading agents, harnesses, skills, workflows; any "what's the latest
+  X" question; before model-routing changes.
 
 ---
 

@@ -333,7 +333,8 @@ test('ProjectStackContext: getProjectStackContext on missing path returns defaul
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-stack-ctx-'));
   const ctx = await getProjectStackContext(dir);
   assert.strictEqual(ctx.source, 'default');
-  assert.strictEqual(ctx.backendFramework, 'net8.0');
+  // default upgraded net8.0 → net10.0 LTS on 2026-06-11 (.NET 8/9 EOL 2026-11-10)
+  assert.strictEqual(ctx.backendFramework, 'net10.0');
   assert.strictEqual(ctx.rawMarkdown, null);
 });
 

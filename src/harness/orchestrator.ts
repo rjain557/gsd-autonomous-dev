@@ -20,6 +20,8 @@ import type {
   DeployRecord,
   QualityGateThresholds,
   ProjectPaths,
+  TriageResult,
+  SpecUpdateResult,
 } from './types';
 import { QualityGateFailure, EscalationError, HardGateViolation } from './types';
 import { VaultAdapter } from './vault-adapter';
@@ -37,6 +39,8 @@ import { E2EValidationAgent } from '../agents/e2e-validation-agent';
 import { PostDeployValidationAgent } from '../agents/post-deploy-validation-agent';
 import { DeployAgent } from '../agents/deploy-agent';
 import { ReviewAuditorAgent } from '../agents/review-auditor-agent';
+import { IssueTriageAgent } from '../agents/issue-triage-agent';
+import { UpdateSpecAgent } from '../agents/update-spec-agent';
 
 // V6 primitives
 import { StuckDetector } from './v6/stuck-detector';
@@ -56,6 +60,8 @@ import * as path from 'path';
  * DeepSeek/MiniMax are emergency-only (pay-per-token API).
  */
 const PHASE_ROUTING: Record<string, string[]> = {
+  triage:       ['claude', 'gemini', 'codex'],  // v6.3: issue analysis + fault localization
+  'update-spec': ['claude', 'codex'],           // v6.3: change-spec generation (contract precision)
   blueprint:    ['claude', 'gemini', 'codex'],
   review:       ['claude', 'gemini', 'codex'],
   remediate:    ['claude', 'codex', 'gemini'],
@@ -125,6 +131,8 @@ export class Orchestrator {
 
     // Instantiate agents
     const agentDefs: Array<[AgentId, new (...args: ConstructorParameters<typeof BaseAgent>) => BaseAgent]> = [
+      ['issue-triage-agent', IssueTriageAgent],   // v6.3: maintenance flow U1
+      ['update-spec-agent', UpdateSpecAgent],     // v6.3: maintenance flow U2
       ['blueprint-analysis-agent', BlueprintAnalysisAgent],
       ['code-review-agent', CodeReviewAgent],
       ['remediation-agent', RemediationAgent],
@@ -246,9 +254,14 @@ export class Orchestrator {
   async run(trigger: PipelineTrigger): Promise<PipelineState> {
     this.state = this.createInitialState(trigger.trigger);
 
+    // v6.3: maintenance flow — issue context flips the run into Phase U (triage → update-spec → F1…)
+    if (trigger.issueDescription) {
+      this.state.triageContext = { issueDescription: trigger.issueDescription };
+    }
+
     // Resume from stage if specified
     const startStage = trigger.fromStage ?? 'blueprint';
-    if (trigger.fromStage) {
+    if (trigger.fromStage && trigger.fromStage !== 'triage') {
       console.log(`[ORCHESTRATOR] Resuming from stage: ${trigger.fromStage}`);
       await this.loadLastState(trigger);
     }
@@ -258,8 +271,9 @@ export class Orchestrator {
     console.log(`[ORCHESTRATOR] Pipeline run=${this.state.runId} trigger=${trigger.trigger}`);
     console.log(`[ORCHESTRATOR] Task graph: ${graph.nodes.length} steps`);
 
-    // Execute stages in dependency order (V6: audit inserted between gate and e2e)
-    const stageOrder: PipelineStage[] = ['blueprint', 'review', 'remediate', 'gate', 'audit', 'e2e', 'deploy', 'post-deploy'];
+    // Execute stages in dependency order (V6: audit between gate and e2e;
+    // v6.3: triage/update-spec lead the maintenance flow and are skipped on greenfield runs)
+    const stageOrder: PipelineStage[] = ['triage', 'update-spec', 'blueprint', 'review', 'remediate', 'gate', 'audit', 'e2e', 'deploy', 'post-deploy'];
     const startIdx = stageOrder.indexOf(startStage);
 
     for (let i = startIdx; i < stageOrder.length; i++) {
@@ -299,6 +313,8 @@ export class Orchestrator {
       try {
         await this.executeStage(stage);
         await this.saveState(); // Persist state after each stage for --from-stage resume
+        // v6.3: a stage may pause the run (triage needs-info / spec needs human approval)
+        if (this.state.status !== 'running') break;
       } catch (err) {
         if (err instanceof QualityGateFailure) {
           // Gate failed — enter remediation loop
@@ -365,6 +381,68 @@ export class Orchestrator {
   /** Execute a single pipeline stage. */
   private async executeStage(stage: PipelineStage): Promise<void> {
     switch (stage) {
+      case 'triage': {
+        // v6.3 maintenance flow U1 — skipped entirely on greenfield runs
+        if (!this.state.triageContext) {
+          await this.logDecision('triage', 'skip', 'No issue context — greenfield run, skipping triage', '');
+          break;
+        }
+        const agent = this.agents.get('issue-triage-agent')!;
+        const triage = await this.executeWithRetry(agent, {
+          issueDescription: this.state.triageContext.issueDescription,
+          repoRoot: this.projectRoot,
+          candidateFiles: [],
+          specPaths: await this.findSpecPaths(),
+        }) as TriageResult;
+
+        this.state.triageResult = triage;
+        await this.logDecision('triage', triage.isValid ? 'complete' : 'halt_not_actionable',
+          `Triage: category=${triage.category} severity=${triage.severity} repro=${triage.reproStatus} suspects=${triage.suspects.length} risk=${triage.riskLevel}`,
+          triage.recommendedAction);
+
+        if (!triage.isValid) {
+          // Not actionable: needs-info / not-reproducible / no grounded suspects.
+          // Surface clarifying questions and pause for the human.
+          if (triage.clarifyingQuestions?.length) {
+            console.log('\n[TRIAGE] Issue needs clarification before the fix flow can start:');
+            for (const q of triage.clarifyingQuestions) console.log(`  • ${q}`);
+          }
+          console.log(`[TRIAGE] ${triage.recommendedAction}`);
+          this.state.status = 'paused';
+        }
+        break;
+      }
+
+      case 'update-spec': {
+        // v6.3 maintenance flow U2 — only runs after a valid triage
+        if (!this.state.triageResult) {
+          await this.logDecision('update-spec', 'skip', 'No triage result — skipping change-spec stage', '');
+          break;
+        }
+        const agent = this.agents.get('update-spec-agent')!;
+        const spec = await this.executeWithRetry(agent, {
+          triageResult: this.state.triageResult,
+          repoRoot: this.projectRoot,
+          specExcerpts: [],
+        }) as SpecUpdateResult;
+
+        this.state.specUpdateResult = spec;
+        await this.logDecision('update-spec', 'complete',
+          `Change spec ${spec.changeId}: ${spec.deltaSpecs.length} deltas, ${spec.earsCriteria.length} EARS criteria, ${spec.tasks.length} tasks, risk=${spec.riskLevel}`,
+          spec.summary);
+
+        if (spec.requiresHumanApproval) {
+          await this.logDecision('update-spec', 'pause_for_approval',
+            `Change spec ${spec.changeId} requires human approval (risk=${spec.riskLevel})`,
+            `Review memory/changes/${spec.changeId}/change-spec.md then resume: pipeline run --from-stage blueprint`);
+          console.log(`\n[UPDATE-SPEC] ${spec.changeId} requires human approval — pipeline paused.`);
+          console.log(`  Review: memory/changes/${spec.changeId}/change-spec.md`);
+          console.log(`  Resume: pipeline run --from-stage blueprint\n`);
+          this.state.status = 'paused';
+        }
+        break;
+      }
+
       case 'blueprint': {
         const agent = this.agents.get('blueprint-analysis-agent')!;
         const report = await this.executeWithRetry(agent, {
@@ -799,6 +877,8 @@ export class Orchestrator {
 
   private getAgentIdForStage(stage: PipelineStage): AgentId | undefined {
     const map: Partial<Record<PipelineStage, AgentId>> = {
+      triage: 'issue-triage-agent',
+      'update-spec': 'update-spec-agent',
       blueprint: 'blueprint-analysis-agent',
       review: 'code-review-agent',
       remediate: 'remediation-agent',
@@ -827,6 +907,9 @@ export class Orchestrator {
       costAccumulator: [],
       startedAt: new Date().toISOString(),
       completedAt: null,
+      triageContext: null,
+      triageResult: null,
+      specUpdateResult: null,
     };
   }
 

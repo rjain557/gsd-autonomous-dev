@@ -172,6 +172,7 @@ const MILESTONE_TO_PHASES: Record<string, { sdlcFrom?: SdlcPhase; sdlcTo?: SdlcP
   'blueprint':     { pipelineFrom: 'blueprint', description: 'Run GSD pipeline: blueprint → review → gate → e2e' },
   'deploy':        { pipelineFrom: 'deploy', description: 'Deploy to alpha + post-deploy validation' },
   'full':          { sdlcFrom: 'phase-a', description: 'Full lifecycle: requirements → deploy' },
+  'maintenance':   { pipelineFrom: 'triage', description: 'Phase U: triage client issue → change spec → pipeline → deploy' },
 };
 
 async function handleStatus(): Promise<void> {
@@ -341,6 +342,7 @@ Examples:
     'contracts':     { needs: 'figma-uploaded', check: 'docs/sdlc/phase-ab-reconciliation-report.json' },
     'blueprint':     { needs: 'contracts', check: 'docs/sdlc/phase-e-contract-artifacts.json' },
     'deploy':        { needs: 'blueprint', check: '' },  // Pipeline state checked by orchestrator
+    'maintenance':   { needs: 'an existing project (contracts complete)', check: '' },  // v6.3: --issue is validated below
   };
   const prereq = prereqs[milestone];
   if (prereq?.check) {
@@ -353,6 +355,14 @@ Examples:
         process.exit(1);
       }
     } catch { /* fs check failed, proceed anyway */ }
+  }
+
+  // v6.3: maintenance flow requires the client issue text
+  const issueDescription = options['issue'];
+  if (milestone === 'maintenance' && (!issueDescription || issueDescription === 'true' || issueDescription.trim().length < 10)) {
+    console.error('  Maintenance flow requires the reported issue text:');
+    console.error('    gsd run maintenance --issue "Orders page shows 500 after saving a new order" --project-root D:\\path\\to\\app');
+    process.exit(1);
   }
 
   // V6: run everything inside a Milestone (SQLite state, worktree, budget, auto-lock)
@@ -384,6 +394,7 @@ Examples:
         review,
         pipelineFromStage: config.pipelineFrom ?? (milestone === 'full' ? 'blueprint' : undefined),
         dryRun,
+        issueDescription,
       },
       () => new SdlcOrchestrator(vaultPath, projectRoot),
       () => new Orchestrator(vaultPath, projectRoot),

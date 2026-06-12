@@ -45,11 +45,17 @@
 ### 3. Cortex knowledge brain ("rjain557-knowledge", a.k.a. Inbox Brain)
 - Full path: `C:\Users\Administrator\OneDrive - Technijian, Inc\Documents\obsidian\rjain557-knowledge\rjain557-knowledge\`
   (folder name doubled; is its own git repo).
-- `Inbox\` — 450+ clipped articles (2026+) on agent harnesses, Claude Code workflows, agentic design
-  patterns, RAG/hybrid memory, LLM observability. Research evidence base.
-- `claude-memory\topics\` — durable facts: `model_catalog` & `litellm_gateway` (re-verified weekly —
-  check before model-routing changes), `llm_cost_tracking`, `ai_fleet_infrastructure`,
-  `deep_research_pipeline`, `litellm_gateway`.
+- **⚡ Research-first rule (owner directive 2026-06-11): grep Cortex BEFORE fresh web research.**
+  Only hit the web for what Cortex lacks, or to re-verify volatile facts older than the note date.
+- `Topics\` — **310+ verified deep-research reports** (frontmatter `generated_by: deep_research`,
+  ~30 cited sources each, `verified: passed`, `domain:` tags): agent orchestration/harnesses, Claude
+  Code, MCP servers, coding-agent benchmarks, models, SEO, infra. `_refresh-*.md` = recurring
+  re-research, prefer newest. **Primary research store.**
+- `claude-memory\topics\` — durable curated facts (18 + 36 per-model cards in `models\`):
+  `model_catalog` & `litellm_gateway` (re-verified weekly — check before model-routing changes),
+  `llm_cost_tracking`, `ai_fleet_infrastructure`, `deep_research_pipeline`.
+- `Inbox\` — 468+ raw clippings awaiting synthesis (fallback when Topics misses).
+- `Meta\` — daily lint + `Proposals\pending\` (reviewer-loop output; owner decisions — don't act unprompted).
 - Read before designing/upgrading any agent, harness, skill, or workflow.
 
 ## Retrieval guidance for sessions
